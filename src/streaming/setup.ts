@@ -21,6 +21,7 @@ import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
+import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { Readable } from "node:stream";
 import { chromeFetch } from "../utils/index.ts";
 import { createCaptureSession } from "./captureSession.ts";
@@ -205,6 +206,10 @@ export interface StreamSetupOptions {
   // recovery is disabled.
   onTabReplacementFactory?: TabReplacementHandlerFactory;
 
+  // The probe-cache identity this stream resolves under, built by completeStreamSetup - the one caller holding both the true per-stream key and the binding it
+  // is stamped from on every entry path. Required, because a stream without one could only look the cache up under a partial identity.
+  probeIdentity: ProbeCacheIdentity;
+
   // Override the autodetected profile with a specific profile name.
   profileOverride?: string;
 
@@ -247,6 +252,10 @@ export interface StreamSetupResult {
 
   // The browser page for this stream.
   page: Page;
+
+  // The probe-cache identity this stream resolves under, echoed back so the native chain and the registry entry read the same value the setup path looked the
+  // cache up with.
+  probeIdentity: ProbeCacheIdentity;
 
   // The resolved site profile.
   profile: ResolvedSiteProfile;
@@ -960,7 +969,8 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
  */
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, onTabReplacementFactory, profileOverride, staticCapture, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, onTabReplacementFactory, probeIdentity, profileOverride, staticCapture,
+    url } = options;
 
   // Use pre-allocated IDs from a pending registry entry when available, or generate new ones. Pre-allocated IDs ensure the abort controller, health monitor, and
   // tab replacement handler all reference the same stream identity as the pending entry in the registry.
@@ -1076,9 +1086,9 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     try {
 
-      // Skip CDP manifest interception if the probe cache already knows this channel uses DRM. This avoids creating a CDP session that sits idle for 15 seconds
-      // before the interceptor timeout cleans it up.
-      const skipInterception = channelName ? (getCachedEncryption(channelName) === "drm") : false;
+      // Skip CDP manifest interception if the probe cache already knows this stream's binding resolves to DRM. This avoids creating a CDP session that sits idle
+      // for 15 seconds before the interceptor timeout cleans it up. Every stream carries an identity, ad-hoc URLs included, so the lookup needs no guard.
+      const skipInterception = getCachedEncryption(probeIdentity) === "drm";
 
       // Build the persistResolution closure for the active channel. When the resolution layer in selectChannel() converts a category selector to a concrete call
       // sign, this closure writes the result to the user's channel store as a per-service-variant override - the same shape produced when a user manually edits
@@ -1249,6 +1259,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       monitor,
       numericStreamId,
       page,
+      probeIdentity,
       profile,
       profileName,
       serviceName,

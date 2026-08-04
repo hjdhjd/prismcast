@@ -2,8 +2,8 @@
  *
  * probe.ts: HLS manifest probe and media-feed normalizer.
  */
-import { LOG, chromeFetch, startTimer } from "../utils/index.ts";
-import type { MediaContainer, Nullable } from "../types/index.ts";
+import type { DELTA_ELIGIBLE_BINDING_KEYS, MediaContainer, Nullable, ResolvedChannel } from "../types/index.ts";
+import { LOG, chromeFetch, startTimer, stringifySorted } from "../utils/index.ts";
 import { inferMediaCodec } from "./codecInference.ts";
 
 /* This module probes an intercepted HLS playlist URL and produces a fully described MediaFeed - the canonical input to the native proxy. The HLS spec defines
@@ -271,34 +271,86 @@ export interface MediaFeed {
   resolution: Nullable<string>;
 }
 
-// Cache of encryption types keyed by channel name. Stores the classification (clear/aes128/drm) with a timestamp for TTL expiration. Variant URLs and key URLs
-// contain session-bound auth tokens that expire between tunes, so they must never be cached - only the stable encryption type is safe to persist across sessions.
-// The DRM skip optimization in setup.ts uses this cache to avoid installing the CDP interceptor for channels known to use DRM.
-const probeCache = new Map<string, { encryption: EncryptionType; timestamp: number }>();
+/**
+ * Identity of a probe-cache entry: which channel a classification belongs to, and which channel binding it was derived from. The key is the lookup identity and
+ * the stamp is the validity test - a stamp built from different binding values never matches, so a lookup carrying the current binding reads an entry probed
+ * under any other binding as absent rather than as a fact about the stream this tune reaches.
+ */
+export interface ProbeCacheIdentity {
+
+  // The stable channel key the classification is stored under: the registry's store key for a predefined channel, the synthetic per-binding key for an ad-hoc stream.
+  key: string;
+
+  // Canonical serialization of the user-editable binding the classification was derived from, as produced by buildProbeCacheStamp.
+  stamp: string;
+}
+
+/**
+ * The binding projection a probe-cache stamp is derived from: one member per field of DELTA_ELIGIBLE_BINDING_KEYS (types/channels.ts), which is the system's
+ * single source of truth for which fields determine the stream a tune reaches.
+ *
+ * The mapping deliberately drops the optionality those fields carry on ResolvedChannel, so every member must be named at the construction site even when its
+ * value is undefined. That is what makes the tie to the partition a real one: adding a field to the array turns the construction site into a compile error,
+ * where a projection that merely picked the fields would inherit their optionality and let the new field escape the stamp in silence.
+ */
+export type ProbeCacheBinding = { [Field in typeof DELTA_ELIGIBLE_BINDING_KEYS[number]]: ResolvedChannel[Field] };
+
+/**
+ * Builds the validity stamp for a probe-cache entry from the binding a tune resolves under. Serialization runs through stringifySorted, the house canonical
+ * serializer, so equal bindings produce byte-equal stamps whatever order their properties were written in...and a member whose value is undefined drops out of
+ * JSON entirely, which is the normalization we want: a channel that never carried a selector and one whose selector was cleared describe the same binding and
+ * must stamp identically.
+ *
+ * Every input is a stored configuration value, never the per-tune manifest URL, whose session tokens rotate on every tune and would defeat the cache outright.
+ *
+ * @param binding - The user-editable binding projection the classification is derived from.
+ * @returns The canonical stamp string for that binding.
+ */
+export function buildProbeCacheStamp(binding: ProbeCacheBinding): string {
+
+  return stringifySorted(binding, 0);
+}
+
+// Cache of encryption types keyed by channel key. Each entry is bound by its stamp to the user-editable binding it was derived from - the
+// DELTA_ELIGIBLE_BINDING_KEYS projection in types/channels.ts - so a reconfigured channel never reads a prior binding's classification. Entries hold only the
+// stable classification (clear/aes128/drm) plus a timestamp for TTL expiration: variant URLs and key URLs contain session-bound auth tokens that expire between
+// tunes, so they must never be cached. The DRM skip optimization in setup.ts uses this cache to avoid installing the CDP interceptor for channels known to use DRM.
+const probeCache = new Map<string, { encryption: EncryptionType; stamp: string; timestamp: number }>();
 
 // Cache entries older than this are considered stale and re-probed. 24 hours covers the case where a service changes a channel's encryption profile (e.g., free ->
 // premium DRM). The DRM short-circuit in probeManifest() still applies within the TTL, so frequently-tuned DRM channels avoid repeated probe overhead.
 const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 /**
- * Returns the cached encryption type for a channel, or null if the channel has not been probed or the cache entry has expired. Used by the stream setup path to skip
- * CDP interceptor installation for channels already known to use DRM.
+ * Returns the cached encryption type for a channel, or null if the channel has not been probed under this binding or the cache entry has expired. Used by the
+ * stream setup path to skip CDP interceptor installation for channels already known to use DRM.
  *
- * @param channelName - The channel name to look up.
- * @returns The cached encryption type, or null if not probed or expired.
+ * @param identity - The probe-cache identity to look up: the channel key that locates the entry, and the binding stamp the entry must match.
+ * @returns The cached encryption type, or null if not probed, probed under a different binding, or expired.
  */
-export function getCachedEncryption(channelName: string): Nullable<EncryptionType> {
+export function getCachedEncryption(identity: ProbeCacheIdentity): Nullable<EncryptionType> {
 
-  const entry = probeCache.get(channelName);
+  const entry = probeCache.get(identity.key);
 
   if(!entry) {
 
     return null;
   }
 
+  /* The stamp test runs ahead of the age test because a mismatch asks a different question than staleness does. A classification describes the stream one
+   * binding reached, and a different binding reaches a different stream, so an entry whose stamp does not match is not old - it is about something else. We
+   * delete it on the way out so the slot is free for the classification the current binding produces.
+   */
+  if(entry.stamp !== identity.stamp) {
+
+    probeCache.delete(identity.key);
+
+    return null;
+  }
+
   if((Date.now() - entry.timestamp) > PROBE_CACHE_TTL) {
 
-    probeCache.delete(channelName);
+    probeCache.delete(identity.key);
 
     return null;
   }
@@ -307,13 +359,14 @@ export function getCachedEncryption(channelName: string): Nullable<EncryptionTyp
 }
 
 /**
- * Clears the probe cache for a specific channel. Called when a native stream fails, forcing a fresh probe on the next attempt.
+ * Clears the probe cache for a specific channel. Called when a native stream fails, forcing a fresh probe on the next attempt. The clear is by key alone: a
+ * failure invalidates whatever classification the channel holds, whichever binding produced it.
  *
- * @param channelName - The channel name to clear from the cache.
+ * @param channelKey - The channel key to clear from the cache.
  */
-export function clearProbeCache(channelName: string): void {
+export function clearProbeCache(channelKey: string): void {
 
-  probeCache.delete(channelName);
+  probeCache.delete(channelKey);
 }
 
 /**
@@ -323,7 +376,7 @@ export function clearProbeCache(channelName: string): void {
  * probe because the variant URL and key URL contain auth tokens that expire between browser sessions.
  *
  * @param playlistUrl - The HLS playlist URL (master or media; contains auth tokens from the browser's original request).
- * @param channelName - The channel name for cache lookup.
+ * @param identity - The probe-cache identity this stream resolves under: the channel key for lookup, and the binding stamp any entry read or written must carry.
  * @param options - Probe options.
  * @param options.maxVariantAttempts - How many ranked variants a master playlist may try. Tune-time callers omit it and take capped descending-bandwidth
  *                                     fallback. The token-refresh path pins a single attempt: a refresh applies its result to a running proxy as URL swaps
@@ -333,7 +386,7 @@ export function clearProbeCache(channelName: string): void {
  *                                        already relaying, so admitting the channel is not its decision to make.
  * @returns The MediaFeed, or null if probing fails.
  */
-export async function probeManifest(playlistUrl: string, channelName: string,
+export async function probeManifest(playlistUrl: string, identity: ProbeCacheIdentity,
   options: { maxVariantAttempts?: number; rejectStaticPlaylists?: boolean } = {}): Promise<Nullable<MediaFeed>> {
 
   const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS, rejectStaticPlaylists = false } = options;
@@ -344,11 +397,11 @@ export async function probeManifest(playlistUrl: string, channelName: string,
 
   // Short-circuit for DRM channels only. The cached DRM classification is stable within the TTL window (services rarely change DRM type), and the caller returns
   // null immediately on DRM without using any URLs. For clear/aes128 channels, we must re-probe to get fresh variant and key URLs with current auth tokens.
-  const cached = getCachedEncryption(channelName);
+  const cached = getCachedEncryption(identity);
 
   if(cached === "drm") {
 
-    LOG.debug("native:probe", "Probe cache hit for %s: drm.", channelName);
+    LOG.debug("native:probe", "Probe cache hit for %s: drm.", identity.key);
 
     return { audioVariantUrl: null, bandwidth: 0, bestVariantUrl: "", codec: null, container: null, encryption: "drm", keyUrl: null, resolution: null };
   }
@@ -364,7 +417,7 @@ export async function probeManifest(playlistUrl: string, channelName: string,
 
     if(!body) {
 
-      LOG.debug("native:probe", "Failed to fetch playlist for %s.", channelName);
+      LOG.debug("native:probe", "Failed to fetch playlist for %s.", identity.key);
 
       return null;
     }
@@ -376,7 +429,7 @@ export async function probeManifest(playlistUrl: string, channelName: string,
 
     if(!resolved) {
 
-      LOG.debug("native:probe", "Could not resolve %s playlist for %s.", kind, channelName);
+      LOG.debug("native:probe", "Could not resolve %s playlist for %s.", kind, identity.key);
 
       return null;
     }
@@ -395,7 +448,7 @@ export async function probeManifest(playlistUrl: string, channelName: string,
       if(segments < MIN_ADMISSIBLE_SEGMENT_COUNT) {
 
         LOG.debug("native:probe", "Declining native streaming for %s: the playlist window holds %s segment(s), which is a fixed asset rather than a channel.",
-          channelName, segments);
+          identity.key, segments);
 
         return null;
       }
@@ -403,16 +456,25 @@ export async function probeManifest(playlistUrl: string, channelName: string,
 
     // Classify encryption from the media body. This branch is identical for master-derived and media-only feeds because #EXT-X-KEY tags live on the media
     // playlist regardless of which playlist kind originally arrived.
-    const result = await classifyEncryption(resolved, channelName);
+    const result = await classifyEncryption(resolved, identity.key);
 
-    probeCache.set(channelName, { encryption: result.encryption, timestamp: Date.now() });
+    /* Record the classification as the channel's fact only when the top-ranked variant produced it. The master walk falls back to a lower variant when the one
+     * above it fails to fetch, and a fallback-derived classification describes a variant the next tune may not select - while the top variant's own encryption
+     * is exactly what stays unknown, since its fetch is what failed. Writing it down would let one variant's encryption stand in for another's for the length
+     * of the TTL, including the DRM short-circuit that skips interception outright. The returned MediaFeed is unaffected either way: the caller streams the
+     * variant that answered, and only the persisted claim is withheld.
+     */
+    if(resolved.topRankedVariant) {
 
-    LOG.debug("native:probe", "Probe completed for %s in %sms: %s (%s).", channelName, elapsed(), result.encryption, kind);
+      probeCache.set(identity.key, { encryption: result.encryption, stamp: identity.stamp, timestamp: Date.now() });
+    }
+
+    LOG.debug("native:probe", "Probe completed for %s in %sms: %s (%s).", identity.key, elapsed(), result.encryption, kind);
 
     return result;
   } catch(error) {
 
-    LOG.debug("native:probe", "Probe failed for %s: %s.", channelName, String(error));
+    LOG.debug("native:probe", "Probe failed for %s: %s.", identity.key, String(error));
 
     return null;
   }
@@ -475,6 +537,10 @@ interface ResolvedMedia {
   // Video resolution (e.g., "1920x1080") from the master's RESOLUTION attribute. Always null for media-only feeds because TS PMT does not carry resolution and
   // SPS-level inference is out of scope; recovering it would require parsing the SPS NALU inside a video access unit.
   resolution: Nullable<string>;
+
+  // Whether the variant that answered was the first-ranked candidate. False when the master walk fell back past a broken top variant, which is what tells the
+  // probe that this feed's encryption describes a variant the next tune may not select. Always true for media-only feeds - a single feed is trivially the top.
+  topRankedVariant: boolean;
 }
 
 /**
@@ -505,7 +571,7 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
     LOG.debug("native:probe", "Attempting the top %s of %s advertised variant(s).", candidates.length, variants.length);
   }
 
-  for(const variant of candidates) {
+  for(const [ index, variant ] of candidates.entries()) {
 
     LOG.debug("native:probe", "Attempting variant at %s bps: %s.", variant.bandwidth, variant.url.slice(0, 120));
 
@@ -537,7 +603,8 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
       codec: variant.codec,
       mediaBody: variantBody,
       mediaUrl: variant.url,
-      resolution: variant.resolution
+      resolution: variant.resolution,
+      topRankedVariant: index === 0
     };
   }
 
@@ -567,7 +634,8 @@ async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string): Promis
     codec: inferred.codec,
     mediaBody,
     mediaUrl,
-    resolution: null
+    resolution: null,
+    topRankedVariant: true
   };
 }
 
@@ -674,7 +742,7 @@ function selectVariants(masterBody: string, masterUrl: string): VariantSelection
  * because #EXT-X-KEY tags are a media-playlist-level concept regardless of whether a master playlist sat above the media.
  *
  * @param resolved - The resolved media feed metadata.
- * @param channelName - The channel name for logging.
+ * @param channelKey - The channel key for logging.
  * @returns The MediaFeed with the classified encryption type and (when applicable) the AES-128 key URL.
  */
 /**
@@ -699,7 +767,7 @@ function classifyContainer(mediaBody: string): MediaContainer {
   return "ts";
 }
 
-async function classifyEncryption(resolved: ResolvedMedia, channelName: string): Promise<MediaFeed> {
+async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): Promise<MediaFeed> {
 
   const lines = resolved.mediaBody.split("\n");
   let encryption: EncryptionType = "clear";
@@ -733,7 +801,7 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
 
       if(!uri) {
 
-        LOG.debug("native:probe", "AES-128 key tag has no URI for %s.", channelName);
+        LOG.debug("native:probe", "AES-128 key tag has no URI for %s.", channelKey);
         encryption = "drm";
 
         break;
@@ -751,7 +819,7 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
         keyUrl = rawKeyUrl;
       } else {
 
-        LOG.debug("native:probe", "AES-128 key inaccessible or wrong size for %s.", channelName);
+        LOG.debug("native:probe", "AES-128 key inaccessible or wrong size for %s.", channelKey);
         encryption = "drm";
       }
 
@@ -759,7 +827,7 @@ async function classifyEncryption(resolved: ResolvedMedia, channelName: string):
     }
 
     // SAMPLE-AES, SAMPLE-AES-CTR, or any other method indicates DRM.
-    LOG.debug("native:probe", "Unsupported encryption method '%s' for %s.", method, channelName);
+    LOG.debug("native:probe", "Unsupported encryption method '%s' for %s.", method, channelKey);
     encryption = "drm";
 
     break;

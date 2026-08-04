@@ -7,6 +7,7 @@ import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/ind
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream, validateStreamUrl } from "./setup.ts";
+import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
@@ -21,11 +22,11 @@ import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.
 import { markChannelFailure, markChannelSuccess } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
+import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { StreamSetupResult } from "./setup.ts";
 import type { TabReplacementHandlerFactory } from "./setup.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";
-import { clearProbeCache } from "../native/probe.ts";
 import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
 import { createHash } from "node:crypto";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
@@ -1108,6 +1109,7 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     nativeResolution: null,
     page: null,
     preTuned: options.preTuned ?? false,
+    probeIdentity: null,
     profile: null,
     startTime: options.streamStartTime ?? new Date(),
     streamIdStr,
@@ -1215,6 +1217,7 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
     page: setup.page,
     prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
     prerollSegmentCount: nativePrerollSegmentCount,
+    probeIdentity: setup.probeIdentity,
     streamId: numericStreamId,
     streamIdStr: setup.streamId,
     url
@@ -1392,6 +1395,22 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
 
   const { channel, channelName, channelSelector, clickSelector, clickToPlay, mpegTsClient, numericStreamId, profileOverride, streamIdStr, url } = options;
 
+  /* Build the probe-cache identity once, here, and hand it onward as a value. This is the only frame that holds both halves of it on every entry path: the true
+   * per-stream key (channelName is the route key for a predefined tune, the binding hash for an ad-hoc /play, the channel id for a pretune) and the binding
+   * inputs the stamp is derived from. Nothing downstream may build one - setupStream's own channelName is deliberately undefined for ad-hoc streams, and a
+   * stamp assembled from a frame holding only part of the binding would silently describe a different stream than the one the tune reaches.
+   *
+   * The effective profile is the query override when one was supplied, otherwise the stored profile: an overridden tune reaches a different stream than the
+   * stored profile would, so the stamp honestly differs and an entry cached under the stored profile re-probes once under the override rather than answering
+   * for a page it never described.
+   */
+  const probeIdentity: ProbeCacheIdentity = {
+
+    key: channelName,
+    stamp: buildProbeCacheStamp(channel ? { channelSelector: channel.channelSelector, profile: profileOverride ?? channel.profile, url } :
+      { channelSelector, profile: profileOverride, url })
+  };
+
   // Circuit breaker callback - terminate the stream on unrecoverable errors.
   const onCircuitBreak = (): void => {
 
@@ -1428,6 +1447,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       clickToPlay: channel ? undefined : clickToPlay,
       numericStreamId,
       onTabReplacementFactory: tabReplacementFactory,
+      probeIdentity,
       profileOverride,
       streamId: streamIdStr,
       url
@@ -1452,6 +1472,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
   stream.captureSession = setup.captureSession;
   stream.monitor = setup.monitor;
   stream.page = setup.page;
+  stream.probeIdentity = setup.probeIdentity;
   stream.profile = setup.profile;
   stream.startTime = setup.startTime;
   stream.url = setup.url;

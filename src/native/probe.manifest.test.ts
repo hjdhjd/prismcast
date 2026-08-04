@@ -9,8 +9,9 @@
 /* eslint-disable sort-keys -- fixture route maps are ordered by HLS resolution chain (master -> variant -> key), not alphabetical key strings, so the logical
  * dependency direction is visible to readers. */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
+import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
 import { LOG } from "../utils/index.ts";
+import type { ProbeCacheIdentity } from "./probe.ts";
 import assert from "node:assert/strict";
 
 /* makeFetchRouter installs a mock for globalThis.fetch that dispatches to URL-keyed responses. Tests register their fixtures keyed by URL prefix; any request to
@@ -45,7 +46,23 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
+/* Builds the probe-cache identity a describe block addresses the cache with. The key is the block's existing channel key - the one its clearProbeCache call
+ * resets - and the stamp comes from the production builder, so fixtures exercise the same projection-to-stamp rule a tune does rather than a literal string.
+ *
+ * @param key - The channel key entries are stored under.
+ * @param url - The configured binding URL the stamp is derived from.
+ * @returns The identity to pass to the probe and the cache reads.
+ */
+function makeIdentity(key: string, url: string): ProbeCacheIdentity {
+
+  return { key, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) };
+}
+
 describe("probeManifest", () => {
+
+  // The one identity every cache-touching call in this block shares: the key its clearProbeCache resets, stamped from a stable binding through the
+  // production builder. Sequential calls inside a test must present the identical identity or the earlier call's entry would read as belonging to another binding.
+  const PROBE_IDENTITY = makeIdentity("probe-channel", "https://cdn.test/probe-channel");
 
   beforeEach(() => {
 
@@ -82,7 +99,7 @@ describe("probeManifest", () => {
       ].join("\n"), { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved with a result");
     assert.equal(result.encryption, "clear", "clear classification");
@@ -105,7 +122,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.encryption, "clear", "METHOD=NONE classified as clear");
@@ -126,7 +143,7 @@ describe("probeManifest", () => {
       [keyUrl]: () => new Response(Buffer.alloc(16), { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.encryption, "aes128", "AES-128 with 16-byte key classified as aes128");
@@ -148,7 +165,7 @@ describe("probeManifest", () => {
       [keyUrl]: () => new Response("forbidden", { status: 403 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.encryption, "drm", "inaccessible key downgrades to DRM");
@@ -168,7 +185,7 @@ describe("probeManifest", () => {
       [keyUrl]: () => new Response(Buffer.alloc(24), { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.encryption, "drm", "24-byte key downgrades to DRM");
   });
@@ -185,7 +202,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://wv\"\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.encryption, "drm", "SAMPLE-AES classified as DRM");
   });
@@ -202,7 +219,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI=\"skd://fp\"\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.encryption, "drm", "SAMPLE-AES-CTR classified as DRM");
   });
@@ -219,7 +236,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.encryption, "drm", "AES-128 with missing URI downgrades to DRM");
   });
@@ -245,7 +262,7 @@ describe("probeManifest", () => {
       "https://cdn.test/high.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.bandwidth, 4000000, "highest bandwidth variant chosen");
@@ -263,7 +280,7 @@ describe("probeManifest", () => {
       [masterUrl]: () => new Response("server error", { status: 500 })
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "master fetch failure returns null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "master fetch failure returns null");
   });
 
   test("returns null when the master manifest contains no variant streams", async () => {
@@ -276,7 +293,7 @@ describe("probeManifest", () => {
       [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-VERSION:3\n", { status: 200 })
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "no variants returns null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "no variants returns null");
   });
 
   test("returns null when the variant manifest fetch fails", async () => {
@@ -291,7 +308,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("not found", { status: 404 })
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "variant fetch failure returns null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "variant fetch failure returns null");
   });
 
   test("short-circuits with a synthetic DRM result when the cache holds 'drm'", async () => {
@@ -307,8 +324,8 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
     });
 
-    await probeManifest(masterUrl, "probe-channel");
-    assert.equal(getCachedEncryption("probe-channel"), "drm", "first probe cached DRM");
+    await probeManifest(masterUrl, PROBE_IDENTITY);
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), "drm", "first probe cached DRM");
 
     // Reset the mock - if the function re-fetches, the request will fail.
     mock.reset();
@@ -322,7 +339,7 @@ describe("probeManifest", () => {
       return new Response("should not be reached", { status: 500 });
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(fetchCalls, 0, "no fetch calls for cached DRM (short-circuit fires)");
     assert.ok(result, "cached DRM probe still resolves to a non-null result");
@@ -343,8 +360,8 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    await probeManifest(masterUrl, "probe-channel");
-    assert.equal(getCachedEncryption("probe-channel"), "clear", "first probe cached clear");
+    await probeManifest(masterUrl, PROBE_IDENTITY);
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), "clear", "first probe cached clear");
 
     // Re-fixture: the second probe must observe a real fetch.
     mock.reset();
@@ -362,7 +379,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    await probeManifest(masterUrl, "probe-channel");
+    await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(fetchCalls > 0, "clear cache does not short-circuit; master is re-fetched");
   });
@@ -387,7 +404,7 @@ describe("probeManifest", () => {
       [videoVariantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, audioVariantUrl, "audio rendition URL surfaces from #EXT-X-MEDIA");
   });
@@ -412,7 +429,7 @@ describe("probeManifest", () => {
       [videoVariantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, null, "no URI -> null audio rendition");
   });
@@ -434,7 +451,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.codec, "H264", "avc1 -> H264");
   });
@@ -455,7 +472,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.codec, "HEVC", "hvc1 -> HEVC");
   });
@@ -477,7 +494,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.codec, null, "absent CODECS -> null label");
   });
@@ -500,7 +517,7 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.codec, null, "unknown prefix -> null label");
   });
@@ -517,7 +534,7 @@ describe("probeManifest", () => {
       "https://cdn.test/path/relative-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.bestVariantUrl, "https://cdn.test/path/relative-variant.m3u8", "relative URL resolved against master");
   });
@@ -535,13 +552,15 @@ describe("probeManifest", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    await probeManifest(masterUrl, "probe-channel");
+    await probeManifest(masterUrl, PROBE_IDENTITY);
 
-    assert.equal(getCachedEncryption("probe-channel"), "clear", "clear classification populated in cache");
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), "clear", "clear classification populated in cache");
   });
 });
 
 describe("probeManifest: media-only playlists", () => {
+
+  const MEDIA_ONLY_IDENTITY = makeIdentity("media-only-channel", "https://cdn.test/media-only-channel");
 
   beforeEach(() => {
 
@@ -576,7 +595,7 @@ describe("probeManifest: media-only playlists", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "media-only-channel");
+    const result = await probeManifest(playlistUrl, MEDIA_ONLY_IDENTITY);
 
     assert.ok(result, "media-only probe resolved");
     assert.equal(result.encryption, "clear", "no #EXT-X-KEY -> clear");
@@ -607,7 +626,7 @@ describe("probeManifest: media-only playlists", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "media-only-channel");
+    const result = await probeManifest(playlistUrl, MEDIA_ONLY_IDENTITY);
 
     assert.ok(result, "media-only AES-128 probe resolved");
     assert.equal(result.encryption, "aes128", "AES-128 classification");
@@ -633,7 +652,7 @@ describe("probeManifest: media-only playlists", () => {
       "https://cdn.test/path/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "media-only-channel");
+    const result = await probeManifest(playlistUrl, MEDIA_ONLY_IDENTITY);
 
     assert.equal(result?.keyUrl, "https://cdn.test/path/keys/segment.key", "relative key URL resolved against playlist URL");
   });
@@ -649,7 +668,7 @@ describe("probeManifest: media-only playlists", () => {
       [playlistUrl]: () => new Response("<html>not a playlist</html>", { status: 200 })
     });
 
-    assert.equal(await probeManifest(playlistUrl, "media-only-channel"), null);
+    assert.equal(await probeManifest(playlistUrl, MEDIA_ONLY_IDENTITY), null);
   });
 
   test("populates the cache with 'clear' after a successful media-only probe", async () => {
@@ -664,9 +683,9 @@ describe("probeManifest: media-only playlists", () => {
       "https://cdn.test/seg.ts": () => new Response("not found", { status: 404 })
     });
 
-    await probeManifest(playlistUrl, "media-only-channel");
+    await probeManifest(playlistUrl, MEDIA_ONLY_IDENTITY);
 
-    assert.equal(getCachedEncryption("media-only-channel"), "clear", "clear classification cached for media-only path");
+    assert.equal(getCachedEncryption(MEDIA_ONLY_IDENTITY), "clear", "clear classification cached for media-only path");
   });
 });
 
@@ -674,6 +693,8 @@ describe("probeManifest: uncovered branches", () => {
 
   // Mirrors PROBE_CACHE_TTL in probe.ts (24 hours). The constant is module-private, so the TTL test hardcodes the same 24h value and steps Date.now() past it.
   const PROBE_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+  const PROBE_IDENTITY = makeIdentity("probe-channel", "https://cdn.test/probe-channel");
 
   beforeEach(() => {
 
@@ -703,7 +724,7 @@ describe("probeManifest: uncovered branches", () => {
       ].join("\n"), { status: 200 })
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "master with no resolvable variant URL returns null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "master with no resolvable variant URL returns null");
   });
 
   test("ignores an #EXT-X-MEDIA rendition that is not TYPE=AUDIO even when it carries a URI", async () => {
@@ -726,7 +747,7 @@ describe("probeManifest: uncovered branches", () => {
       [videoVariantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.audioVariantUrl, null, "TYPE=SUBTITLES rendition with a URI is not treated as audio");
@@ -746,7 +767,7 @@ describe("probeManifest: uncovered branches", () => {
       }
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "thrown fetch surfaces as null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "thrown fetch surfaces as null");
   });
 
   test("downgrades AES-128 to 'drm' when the key fetch throws", async () => {
@@ -767,7 +788,7 @@ describe("probeManifest: uncovered branches", () => {
       }
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.encryption, "drm", "thrown key fetch downgrades AES-128 to drm");
@@ -790,20 +811,20 @@ describe("probeManifest: uncovered branches", () => {
 
     const seededAt = Date.now();
 
-    await probeManifest(masterUrl, "probe-channel");
-    assert.equal(getCachedEncryption("probe-channel"), "drm", "seed probe cached drm before any clock manipulation");
+    await probeManifest(masterUrl, PROBE_IDENTITY);
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), "drm", "seed probe cached drm before any clock manipulation");
 
     // Advance the clock past the TTL. The seed timestamp is >= seededAt, so this difference is guaranteed to exceed PROBE_CACHE_TTL.
     let nowValue = seededAt + PROBE_CACHE_TTL + 1000;
 
     mock.method(Date, "now", () => nowValue);
 
-    assert.equal(getCachedEncryption("probe-channel"), null, "entry older than the TTL is treated as a miss");
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), null, "entry older than the TTL is treated as a miss");
 
     // Rewind the clock inside the TTL window. A live entry would now read as fresh; a deleted one stays a miss. This distinguishes deletion from a pure age check.
     nowValue = seededAt;
 
-    assert.equal(getCachedEncryption("probe-channel"), null, "the stale entry was deleted, not merely compared against the clock");
+    assert.equal(getCachedEncryption(PROBE_IDENTITY), null, "the stale entry was deleted, not merely compared against the clock");
   });
 });
 
@@ -812,6 +833,8 @@ describe("probeManifest: variant fallback and audio group binding", () => {
   // Mirrors MAX_VARIANT_FALLBACK_ATTEMPTS in probe.ts (3 attempts). The constant is module-private, so the cap test hardcodes the same bound and declares one more
   // variant than it allows.
   const MAX_VARIANT_FALLBACK_ATTEMPTS = 3;
+
+  const PROBE_IDENTITY = makeIdentity("probe-channel", "https://cdn.test/probe-channel");
 
   /* recordFetch wraps a router handler so the test can observe which URLs the walk touched and in what order. Order and count are the only way to tell a ranked,
    * short-circuiting crawl apart from an unordered or exhaustive one, since several of these fixtures would produce the same feed either way.
@@ -864,7 +887,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [lowUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the probe resolves through the fallback variant");
     assert.equal(result.bandwidth, 2000000, "metadata comes from the variant that actually answered");
@@ -903,7 +926,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [fourthUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 }))
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "every attempted candidate failed, so the probe surfaces null");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "every attempted candidate failed, so the probe surfaces null");
     assert.equal(fetched.length, 1 + MAX_VARIANT_FALLBACK_ATTEMPTS, "one master fetch plus one fetch for each candidate the cap allows");
     assert.deepEqual(fetched, [ masterUrl, topUrl, secondUrl, thirdUrl ], "the three highest-bandwidth variants, each tried once, in descending order");
     assert.ok(!fetched.includes(fourthUrl), "the fourth-ranked variant is never reached");
@@ -932,7 +955,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [secondUrl]: recordFetch(fetched, () => mediaBody())
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "a master with no advertised bandwidth still resolves");
     assert.equal(result.bestVariantUrl, firstUrl, "the first declared variant wins the all-equal ranking");
@@ -960,7 +983,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, "https://cdn.test/group-hi.m3u8", "the rendition belonging to the variant's own group is chosen");
   });
@@ -984,7 +1007,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the probe resolves");
     assert.equal(result.audioVariantUrl, null, "a variant with no audio group reports muxed audio");
@@ -1020,7 +1043,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [bottomUrl]: recordFetch(fetched, () => mediaBody())
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the probe resolves through the middle variant");
     assert.equal(result.audioVariantUrl, "https://cdn.test/rebind-audio-b.m3u8", "audio comes from the selected variant's group");
@@ -1046,7 +1069,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, "https://cdn.test/default-english.m3u8", "the default rendition wins over the earlier one");
   });
@@ -1074,7 +1097,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [lowUrl]: recordFetch(fetched, () => mediaBody())
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the probe resolves");
     assert.equal(result.bestVariantUrl, highUrl, "the highest-bandwidth variant is selected");
@@ -1101,7 +1124,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [orphanUrl]: recordFetch(fetched, () => mediaBody())
     });
 
-    assert.equal(await probeManifest(masterUrl, "probe-channel"), null, "a STREAM-INF with no URI line yields no candidate");
+    assert.equal(await probeManifest(masterUrl, PROBE_IDENTITY), null, "a STREAM-INF with no URI line yields no candidate");
     assert.deepEqual(fetched, [], "the orphan URI a forward-scanner would claim is never fetched");
   });
 
@@ -1125,7 +1148,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, "https://cdn.test/type-audio.m3u8", "the audio rendition is chosen over the subtitle track in the same group");
   });
@@ -1150,7 +1173,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, "https://cdn.test/descriptive-spanish.m3u8", "the walk continues past a URI-less default to a playable rendition");
   });
@@ -1174,7 +1197,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.equal(result?.audioVariantUrl, "https://cdn.test/nodefault-english.m3u8", "the first declared rendition of the group is taken");
   });
@@ -1198,7 +1221,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [videoUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the video feed still resolves");
     assert.equal(result.audioVariantUrl, null, "an undeclared group yields no audio rather than another group's rendition");
@@ -1227,7 +1250,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [siblingUrl]: recordFetch(fetched, () => mediaBody())
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel", { maxVariantAttempts: 1 });
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY, { maxVariantAttempts: 1 });
 
     assert.equal(result, null, "the pinned probe gives up with the top variant rather than falling back");
     assert.deepEqual(fetched, [topUrl], "exactly one variant fetch, aimed at the top-ranked candidate");
@@ -1253,7 +1276,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [healthyUrl]: () => mediaBody()
     });
 
-    const result = await probeManifest(masterUrl, "probe-channel");
+    const result = await probeManifest(masterUrl, PROBE_IDENTITY);
 
     assert.ok(result, "the healthy variant still resolves");
     assert.equal(result.bestVariantUrl, healthyUrl, "the unresolvable variant drops out and the healthy one is selected");
@@ -1261,6 +1284,8 @@ describe("probeManifest: variant fallback and audio group binding", () => {
 });
 
 describe("probeManifest: container classification (T1)", () => {
+
+  const CONTAINER_IDENTITY = makeIdentity("container-channel", "https://cdn.test/container-channel");
 
   beforeEach(() => {
 
@@ -1291,7 +1316,7 @@ describe("probeManifest: container classification (T1)", () => {
       "https://cdn.test/video_1.cmfv": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "container-channel");
+    const result = await probeManifest(playlistUrl, CONTAINER_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.container, "fmp4", "an EXT-X-MAP declaration means fMP4");
@@ -1314,7 +1339,7 @@ describe("probeManifest: container classification (T1)", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "container-channel");
+    const result = await probeManifest(playlistUrl, CONTAINER_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.container, "ts", "no EXT-X-MAP means self-describing MPEG-TS");
@@ -1341,7 +1366,7 @@ describe("probeManifest: container classification (T1)", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "container-channel");
+    const result = await probeManifest(playlistUrl, CONTAINER_IDENTITY);
 
     assert.ok(result, "probe resolved");
     assert.equal(result.container, "ts", "the decoy URI does not classify the playlist as fMP4");
@@ -1366,14 +1391,14 @@ describe("probeManifest: container classification (T1)", () => {
       [playlistUrl]: () => new Response(playlistBody, { status: 200 })
     });
 
-    const first = await probeManifest(playlistUrl, "container-channel");
+    const first = await probeManifest(playlistUrl, CONTAINER_IDENTITY);
 
     assert.ok(first, "probe resolved");
     assert.equal(first.encryption, "drm", "the body classifies as DRM");
     assert.equal(first.container, null, "a DRM feed carries no container");
 
     // The second probe takes the cache short-circuit, which builds its own synthetic MediaFeed.
-    const cached = await probeManifest(playlistUrl, "container-channel");
+    const cached = await probeManifest(playlistUrl, CONTAINER_IDENTITY);
 
     assert.ok(cached, "the cached probe resolved");
     assert.equal(cached.encryption, "drm", "the cache short-circuit still reports DRM");
@@ -1432,6 +1457,8 @@ function soleDebugCall(calls: readonly { arguments: readonly unknown[] }[], patt
 
 describe("probeManifest: static-playlist tune admission", () => {
 
+  const STATIC_IDENTITY = makeIdentity("static-channel", "https://cdn.test/static-channel");
+
   beforeEach(() => {
 
     clearProbeCache("static-channel");
@@ -1451,7 +1478,7 @@ describe("probeManifest: static-playlist tune admission", () => {
 
     routeBumper();
 
-    const result = await probeManifest(BUMPER_MASTER_URL, "static-channel", { rejectStaticPlaylists: true });
+    const result = await probeManifest(BUMPER_MASTER_URL, STATIC_IDENTITY, { rejectStaticPlaylists: true });
 
     assert.equal(result, null, "a one-segment window is not admitted as a channel");
 
@@ -1460,7 +1487,7 @@ describe("probeManifest: static-playlist tune admission", () => {
     assert.equal(logged[0], "native:probe", "the rejection logs under the existing probe category");
     assert.equal(logged[2], "static-channel", "the channel name is interpolated");
     assert.equal(logged[3], 1, "the count comes from the resolved variant body, not the master");
-    assert.equal(getCachedEncryption("static-channel"), null, "a refused playlist contributes no channel-level encryption fact");
+    assert.equal(getCachedEncryption(STATIC_IDENTITY), null, "a refused playlist contributes no channel-level encryption fact");
   });
 
   test("probes the same bumper bytes exactly as the flag-less path does", async () => {
@@ -1469,7 +1496,7 @@ describe("probeManifest: static-playlist tune admission", () => {
     // encryption fact as usual. Every refresh call site takes this path, so this case is also what pins refresh immunity at the probe level.
     routeBumper();
 
-    const result = await probeManifest(BUMPER_MASTER_URL, "static-channel");
+    const result = await probeManifest(BUMPER_MASTER_URL, STATIC_IDENTITY);
 
     assert.ok(result, "the flag-less probe resolves the bumper");
     assert.equal(result.encryption, "clear", "encryption classified from the variant body");
@@ -1478,7 +1505,7 @@ describe("probeManifest: static-playlist tune admission", () => {
     assert.equal(result.bandwidth, 1800000, "bandwidth from the master's BANDWIDTH attribute");
     assert.equal(result.codec, "H264", "codec from the master's CODECS attribute");
     assert.equal(result.resolution, "1280x720", "resolution from the master's RESOLUTION attribute");
-    assert.equal(getCachedEncryption("static-channel"), "clear", "the flag-less path writes the probe cache");
+    assert.equal(getCachedEncryption(STATIC_IDENTITY), "clear", "the flag-less path writes the probe cache");
   });
 
   test("declines a one-segment VOD window, since liveness tagging does not make a window consumable", async () => {
@@ -1501,7 +1528,7 @@ describe("probeManifest: static-playlist tune admission", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+    const result = await probeManifest(playlistUrl, STATIC_IDENTITY, { rejectStaticPlaylists: true });
 
     assert.equal(result, null, "the segment count decides, not the ENDLIST or VOD tagging");
   });
@@ -1526,7 +1553,7 @@ describe("probeManifest: static-playlist tune admission", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+    const result = await probeManifest(playlistUrl, STATIC_IDENTITY, { rejectStaticPlaylists: true });
 
     assert.ok(result, "two segments clear the admission floor");
     assert.equal(result.encryption, "clear", "the admitted feed classifies exactly as it would without the flag");
@@ -1554,7 +1581,7 @@ describe("probeManifest: static-playlist tune admission", () => {
       "https://cdn.test/seg0.ts": () => new Response("not found", { status: 404 })
     });
 
-    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+    const result = await probeManifest(playlistUrl, STATIC_IDENTITY, { rejectStaticPlaylists: true });
 
     assert.equal(result, null, "the decoy does not count toward the window");
   });
@@ -1574,12 +1601,146 @@ describe("probeManifest: static-playlist tune admission", () => {
       [playlistUrl]: () => new Response(playlistBody, { status: 200 })
     });
 
-    const result = await probeManifest(playlistUrl, "static-channel", { rejectStaticPlaylists: true });
+    const result = await probeManifest(playlistUrl, STATIC_IDENTITY, { rejectStaticPlaylists: true });
 
     assert.equal(result, null, "an empty window is not a channel either");
 
     const logged = soleDebugCall(debug.mock.calls, /Declining native streaming/);
 
     assert.equal(logged[3], 0, "the guard refused it on a zero count, rather than the resolver refusing the body");
+  });
+});
+
+describe("probeManifest: binding-stamped cache entries", () => {
+
+  const CHANNEL_KEY = "stamped-channel";
+
+  // The binding the entries in this block are probed under. Each identity below varies exactly one of its fields, which is what makes each axis a genuine
+  // single-field check rather than a check that any two different bindings differ.
+  const BASE_BINDING = { channelSelector: "ABC", profile: "keyboardDynamic", url: "https://cdn.test/stamped-channel" };
+
+  const PROBING_IDENTITY: ProbeCacheIdentity = { key: CHANNEL_KEY, stamp: buildProbeCacheStamp(BASE_BINDING) };
+  const CHANGED_URL: ProbeCacheIdentity = { key: CHANNEL_KEY, stamp: buildProbeCacheStamp({ ...BASE_BINDING, url: "https://cdn.test/stamped-elsewhere" }) };
+  const CHANGED_SELECTOR: ProbeCacheIdentity = { key: CHANNEL_KEY, stamp: buildProbeCacheStamp({ ...BASE_BINDING, channelSelector: "XYZ" }) };
+  const CHANGED_PROFILE: ProbeCacheIdentity = { key: CHANNEL_KEY, stamp: buildProbeCacheStamp({ ...BASE_BINDING, profile: "fullscreenApi" }) };
+
+  const masterUrl = "https://cdn.test/stamped-master.m3u8";
+  const topVariantUrl = "https://cdn.test/stamped-top.m3u8";
+  const lowerVariantUrl = "https://cdn.test/stamped-lower.m3u8";
+
+  // A master declaring two ranked variants. Both the withheld-write pair and the stamp axes read from this one shape, so the only thing that varies between them
+  // is which variant answers.
+  const MASTER_BODY = [
+    "#EXTM3U",
+    "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+    "stamped-top.m3u8",
+    "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+    "stamped-lower.m3u8",
+    ""
+  ].join("\n");
+
+  // A media playlist whose SAMPLE-AES key tag classifies as drm - the one classification the cache short-circuits on, so a cache hit is observable as a skipped fetch.
+  const DRM_BODY = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n";
+
+  /* Routes the two-variant master and counts master fetches, which is how these tests tell a real probe from a cache short-circuit. When topVariantAnswers is
+   * false the top-ranked variant fails and the walk falls back to the sibling beneath it - the shape whose classification must never be written down.
+   *
+   * @param topVariantAnswers - Whether the highest-bandwidth variant serves its media playlist.
+   * @returns A reader for the number of master fetches issued so far.
+   */
+  function routeRankedMaster(topVariantAnswers: boolean): () => number {
+
+    let masterFetches = 0;
+
+    makeFetchRouter({
+
+      [masterUrl]: () => {
+
+        masterFetches++;
+
+        return new Response(MASTER_BODY, { status: 200 });
+      },
+      [topVariantUrl]: () => (topVariantAnswers ? new Response(DRM_BODY, { status: 200 }) : new Response("server error", { status: 500 })),
+      [lowerVariantUrl]: () => new Response(DRM_BODY, { status: 200 })
+    });
+
+    return () => masterFetches;
+  }
+
+  beforeEach(() => {
+
+    clearProbeCache(CHANNEL_KEY);
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("reads an entry probed under a different binding as absent, one axis at a time", async () => {
+
+    /* Each axis runs its own populate-then-mismatch cycle. A mismatched lookup deletes the entry, so one population serves exactly one axis - sharing a single
+     * populated entry across all three would let the later axes pass against a builder that had quietly dropped their field, since they would be reading an
+     * already-empty slot. The final probe is the eviction proof: with the entry gone, it fetches the master again instead of taking the DRM short-circuit.
+     */
+    const masterFetches = routeRankedMaster(true);
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(getCachedEncryption(PROBING_IDENTITY), "drm", "the probing identity reads back its own classification");
+    assert.equal(getCachedEncryption(CHANGED_URL), null, "a changed url reads the entry as absent");
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(getCachedEncryption(CHANGED_SELECTOR), null, "a changed channelSelector reads the entry as absent");
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(getCachedEncryption(CHANGED_PROFILE), null, "a changed profile reads the entry as absent");
+
+    const beforeEviction = masterFetches();
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(masterFetches(), beforeEviction + 1, "the mismatched lookup deleted the entry, so the next probe runs the full fetch path");
+  });
+
+  test("withholds a fallback-derived classification from the cache while still returning the feed", async () => {
+
+    // The top variant fails and the sibling beneath it classifies as DRM. The caller still gets the feed the sibling describes, but nothing is recorded: the
+    // top variant's own encryption is exactly what stayed unknown, and the next tune may well select it.
+    const masterFetches = routeRankedMaster(false);
+
+    const result = await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.ok(result, "the probe still resolves through the fallback variant");
+    assert.equal(result.encryption, "drm", "the returned feed carries the fallback variant's classification");
+    assert.equal(result.bestVariantUrl, lowerVariantUrl, "and the fallback variant is the feed URL");
+    assert.equal(getCachedEncryption(PROBING_IDENTITY), null, "no channel-level classification is recorded from a fallback variant");
+
+    const beforeReprobe = masterFetches();
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(masterFetches(), beforeReprobe + 1, "so the next probe re-runs the full walk rather than short-circuiting on a fallback's claim");
+  });
+
+  test("records the classification when the top-ranked variant is the one that answered", async () => {
+
+    // The contrasting half of the pair: identical master bytes, identical identity, and the only difference is that the top-ranked variant serves its playlist.
+    // Its classification does describe the variant the next tune selects, so it is written down and the short-circuit applies.
+    const masterFetches = routeRankedMaster(true);
+
+    const result = await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.ok(result, "the probe resolves through the top variant");
+    assert.equal(result.bestVariantUrl, topVariantUrl, "the top-ranked variant is the feed URL");
+    assert.equal(getCachedEncryption(PROBING_IDENTITY), "drm", "the top variant's classification is recorded for the identity");
+
+    const beforeReprobe = masterFetches();
+
+    await probeManifest(masterUrl, PROBING_IDENTITY);
+
+    assert.equal(masterFetches(), beforeReprobe, "and the next probe under the same identity takes the DRM short-circuit");
   });
 });

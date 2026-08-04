@@ -7,12 +7,12 @@
  * globalThis.fetch responses for the master/variant/key URLs, and a minimal page stub.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { buildProbeCacheStamp, clearProbeCache } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
 import type { AttemptNativeStreamingOptions } from "./index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { attemptNativeStreaming } from "./index.ts";
-import { clearProbeCache } from "./probe.ts";
 
 /* eslint-disable sort-keys -- fixture route maps are ordered by HLS resolution chain (master -> variant -> key), not alphabetical key strings, so the logical
  * dependency direction is visible to readers. */
@@ -92,18 +92,26 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
 
 /* makeAttemptOptions builds an AttemptNativeStreamingOptions literal with sensible defaults for the orchestration tests. Tests override the interceptionPromise
  * to inject the desired branch (null vs valid manifest), and channelName to keep the probe cache partitioned across test cases.
+ *
+ * The probe-cache identity is derived from the resolved channelName so that partitioning holds: the cache is addressed by identity, so a fixed identity would
+ * put every test in one slot and make each test's clearProbeCache call address a key nothing reads. The stamp comes from the production builder over the
+ * options' own URL, which is the binding an orchestration test has.
  */
 function makeAttemptOptions(overrides: Partial<AttemptNativeStreamingOptions> = {}): AttemptNativeStreamingOptions {
 
+  const channelName = overrides.channelName ?? "test-channel";
+  const url = overrides.url ?? "https://example.test/channel";
+
   return {
 
-    channelName: "test-channel",
+    channelName,
     interceptionPromise: Promise.resolve(null),
     onError: noop,
     page: makeFakePage(),
+    probeIdentity: { key: channelName, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) },
     streamId: 1,
     streamIdStr: "test-stream",
-    url: "https://example.test/channel",
+    url,
     ...overrides
   };
 }

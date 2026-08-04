@@ -548,6 +548,19 @@ export function monitorPlaybackHealth(
       return;
     }
 
+    /* The refresh probes under the identity the tune established, which the entry holds. It is null only for a pending entry whose setup has not filled it in,
+     * and a stream with a running native proxy is past that point - so this answers a window that recovery does not reach rather than papering over one.
+     * Declining is the honest response either way: an identity assembled here would stamp a binding this frame cannot see, and the stall escalates to L3.
+     */
+    const probeIdentity = entry.probeIdentity;
+
+    if(!probeIdentity) {
+
+      LOG.debug("native:monitor", "Skipping L2 recovery for %s: the stream has no probe-cache identity yet.", entry.info.storeKey);
+
+      return;
+    }
+
     recoveryState.inProgress = true;
 
     LOG.debug("native:monitor", "Starting L2 recovery (page reload) for %s.", entry.info.storeKey);
@@ -558,6 +571,7 @@ export function monitorPlaybackHealth(
 
         channelName: entry.info.storeKey,
         page: currentPage,
+        probeIdentity,
         proxy,
         streamIdStr: streamId,
         url

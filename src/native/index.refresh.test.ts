@@ -6,11 +6,12 @@
  * focus on the direct-fetch branch and the early-exit conditions (proxy stopped, page closed). The companion attemptNativeStreaming tests live in index.test.ts.
  */
 import { afterEach, describe, test } from "node:test";
+import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
 import type { NativeProxy } from "./proxy.ts";
 import type { Page } from "puppeteer-core";
+import type { ProbeCacheIdentity } from "./probe.ts";
 import assert from "node:assert/strict";
-import { clearProbeCache } from "./probe.ts";
 import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
 
@@ -158,6 +159,19 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
+/* Builds the probe-cache identity for a refresh test. Each test keeps its own channel key - the same key its clearProbeCache call addresses - because the cache
+ * is addressed by identity, so a single shared identity would put every test in one slot and let one test's classification answer another's probe. The stamp
+ * comes from the production builder over the configured channel URL these tests refresh against, never the master URL, whose token rotates per refresh.
+ *
+ * @param key - The channel key this test's entry lives under.
+ * @param url - The configured binding URL the stamp is derived from.
+ * @returns The identity to thread through refreshNativeManifest.
+ */
+function refreshIdentity(key: string, url = "https://example.test/channel"): ProbeCacheIdentity {
+
+  return { key, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) };
+}
+
 describe("refreshNativeManifest", () => {
 
   afterEach(() => {
@@ -184,6 +198,7 @@ describe("refreshNativeManifest", () => {
 
       channelName: "stopped-channel",
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("stopped-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "stopped-stream",
       url: "https://example.test/channel"
@@ -202,6 +217,7 @@ describe("refreshNativeManifest", () => {
 
       channelName: "closed-page-channel",
       page: makeFakePage(true),
+      probeIdentity: refreshIdentity("closed-page-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "closed-page-stream",
       url: "https://example.test/channel"
@@ -234,6 +250,7 @@ describe("refreshNativeManifest", () => {
       channelName: "refresh-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("refresh-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "refresh-stream",
       url: "https://example.test/channel"
@@ -266,6 +283,7 @@ describe("refreshNativeManifest", () => {
       channelName: "flip-channel",
       masterUrl,
       page: makeFakePage(true),
+      probeIdentity: refreshIdentity("flip-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "flip-stream",
       url: "https://example.test/channel"
@@ -293,6 +311,7 @@ describe("refreshNativeManifest", () => {
       channelName: "refresh-fail-channel",
       masterUrl,
       page: makeFakePage(true),
+      probeIdentity: refreshIdentity("refresh-fail-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "refresh-fail-stream",
       url: "https://example.test/channel"
@@ -330,6 +349,7 @@ describe("refreshNativeManifest", () => {
       channelName: "refresh-dai-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("refresh-dai-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "refresh-dai-stream",
       url: "https://example.test/channel"
@@ -367,6 +387,7 @@ describe("refreshNativeManifest", () => {
       channelName: "inside-margin-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("inside-margin-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "inside-margin-stream",
       url: "https://example.test/channel"
@@ -409,6 +430,7 @@ describe("refreshNativeManifest", () => {
       channelName: "comfortable-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("comfortable-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "comfortable-stream",
       url: "https://example.test/channel"
@@ -451,6 +473,7 @@ describe("refreshNativeManifest", () => {
       channelName: "variant-bound-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("variant-bound-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "variant-bound-stream",
       url: "https://example.test/channel"
@@ -491,6 +514,7 @@ describe("refreshNativeManifest", () => {
       channelName: "near-expiry-channel",
       masterUrl,
       page: makeFakePage(true),
+      probeIdentity: refreshIdentity("near-expiry-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "near-expiry-stream",
       url: "https://example.test/channel"
@@ -533,6 +557,7 @@ describe("refreshNativeManifest", () => {
       channelName: "stop-midprobe-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("stop-midprobe-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "stop-midprobe-stream",
       url: "https://example.test/channel"
@@ -577,6 +602,7 @@ describe("refreshNativeManifest", () => {
       channelName: "pin-channel",
       masterUrl,
       page: makeFakePage(true),
+      probeIdentity: refreshIdentity("pin-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "pin-stream",
       url: "https://example.test/channel"
@@ -614,6 +640,7 @@ describe("refreshNativeManifest", () => {
       channelName: "thin-window-channel",
       masterUrl,
       page: makeFakePage(),
+      probeIdentity: refreshIdentity("thin-window-channel"),
       proxy: makeFakeProxy(hooks),
       streamIdStr: "thin-window-stream",
       url: "https://example.test/channel"
@@ -622,5 +649,45 @@ describe("refreshNativeManifest", () => {
     assert.equal(result, true, "the refresh succeeds against a one-segment window");
     assert.equal(hooks.variantUrl, variantUrl, "the proxy still receives the refreshed variant URL");
     assert.equal(hooks.setTokenRefreshTimerCalls, 1, "and the next refresh is still scheduled");
+  });
+
+  test("records the refreshed classification under the threaded identity, not one derived from the master URL", async () => {
+
+    /* The refresh path is where a probe is furthest from the tune that established the stream: the only URL in scope is the master, whose token rotates on
+     * every refresh, and stamping with it would mint a new cache slot each time - the cache would never answer, and the entry it did write would describe
+     * nothing durable. So the refresh probes under the stream's own identity, stamped from the configured binding. The two-sided assertion is what gives this
+     * pin teeth: the classification is readable under the threaded identity AND absent under an identity stamped from the master URL.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/stamp-master.m3u8?token=rotates-every-refresh&exp=" + String(expirySeconds);
+    const configuredUrl = "https://example.test/stamp-channel";
+
+    makeFetchRouter({
+
+      "https://cdn.test/stamp-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nstamp-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }),
+      "https://cdn.test/stamp-variant.m3u8": () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const identity = refreshIdentity("stamp-channel", configuredUrl);
+
+    clearProbeCache("stamp-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "stamp-channel",
+      masterUrl,
+      page: makeFakePage(),
+      probeIdentity: identity,
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "stamp-stream",
+      url: configuredUrl
+    });
+
+    assert.equal(result, true, "the direct-fetch refresh succeeds");
+    assert.equal(getCachedEncryption(identity), "clear", "the classification is readable under the identity the refresh was threaded with");
+    assert.equal(getCachedEncryption(refreshIdentity("stamp-channel", masterUrl)), null,
+      "and is absent under an identity stamped from the master URL, which the refresh must never stamp with");
   });
 });

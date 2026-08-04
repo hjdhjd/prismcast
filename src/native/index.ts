@@ -4,10 +4,10 @@
  */
 import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
 import type { MediaContainer, Nullable } from "../types/index.ts";
+import type { MediaFeed, ProbeCacheIdentity } from "./probe.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
-import type { MediaFeed } from "./probe.ts";
 import type { NativeProxy } from "./proxy.ts";
 import type { Page } from "puppeteer-core";
 import { createNativeProxy } from "./proxy.ts";
@@ -84,6 +84,10 @@ export interface AttemptNativeStreamingOptions {
   // composite playlist reads the base URL dynamically from the stream's HLS state.
   prerollSegmentCount?: number;
 
+  // The probe-cache identity this stream resolves under, built by the stream setup path and carried through the native chain unchanged. Every probe on this
+  // stream - the tune-time one here and each token refresh after it - reads and writes the cache under this one identity.
+  probeIdentity: ProbeCacheIdentity;
+
   // Numeric stream ID for segment storage.
   streamId: number;
 
@@ -129,7 +133,7 @@ export interface NativeStreamResult {
  */
 export async function attemptNativeStreaming(options: AttemptNativeStreamingOptions): Promise<Nullable<NativeStreamResult>> {
 
-  const { channelName, interceptionPromise, mpegTsClient, onError, page, streamId, streamIdStr, url } = options;
+  const { channelName, interceptionPromise, mpegTsClient, onError, page, probeIdentity, streamId, streamIdStr, url } = options;
 
   const elapsed = startTimer();
 
@@ -170,7 +174,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
    * service that fronts its player with a per-session bumper that master describes the bumper rather than the channel. Declining lands on the null path below,
    * where capture serves the channel the relay could not.
    */
-  const mediaFeed = await probeManifest(interception.manifestUrl, channelName, { rejectStaticPlaylists: true });
+  const mediaFeed = await probeManifest(interception.manifestUrl, probeIdentity, { rejectStaticPlaylists: true });
 
   if(!mediaFeed) {
 
@@ -245,6 +249,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     channelName,
     masterUrl: interception.manifestUrl,
     page,
+    probeIdentity,
     proxy,
     streamIdStr,
     url,
@@ -267,6 +272,11 @@ interface TokenRefreshOptions {
   channelName: string;
   masterUrl: string;
   page: Page;
+
+  // The stream's probe-cache identity, carried so every refresh probes under the identity the tune established rather than one derived from the rotating
+  // manifest URL it is refreshing.
+  probeIdentity: ProbeCacheIdentity;
+
   proxy: NativeProxy;
   streamIdStr: string;
   url: string;
@@ -320,7 +330,7 @@ function computeRefreshBoundary(masterUrl: string, variantUrl: string): Nullable
  */
 function scheduleTokenRefresh(options: TokenRefreshOptions): void {
 
-  const { channelName, masterUrl, page, proxy, streamIdStr, url, variantUrl } = options;
+  const { channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url, variantUrl } = options;
 
   const boundary = computeRefreshBoundary(masterUrl, variantUrl);
 
@@ -345,7 +355,7 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
   // direct fetch before falling back to a page reload.
   const timer = setTimeout(() => {
 
-    void refreshNativeManifest({ channelName, masterUrl, page, proxy, streamIdStr, url });
+    void refreshNativeManifest({ channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url });
   }, refreshIn);
 
   proxy.setTokenRefreshTimer(timer);
@@ -363,19 +373,21 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
  *
  * L2 recovery (failure-triggered) from the monitor omits masterUrl, going straight to page reload since the stream is already failing and needs a full refresh.
  *
- * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first.
+ * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first. probeIdentity is the stream's own, so the probe on
+ *                  either strategy reads and writes the cache under the identity the tune established.
  * @returns True if the refresh succeeded (proxy updated with new manifest), false otherwise.
  */
 export async function refreshNativeManifest(options: {
   channelName: string;
   masterUrl?: string;
   page: Page;
+  probeIdentity: ProbeCacheIdentity;
   proxy: NativeProxy;
   streamIdStr: string;
   url: string;
 }): Promise<boolean> {
 
-  const { channelName, masterUrl, page, proxy, streamIdStr, url } = options;
+  const { channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url } = options;
   const streamLog = LOG.withStreamId(streamIdStr);
 
   if(proxy.isStopped()) {
@@ -391,7 +403,7 @@ export async function refreshNativeManifest(options: {
   // master URL's own CDN auth token hasn't expired. When it does expire, probeManifest returns null (403) and we fall through to the page reload strategy.
   if(masterUrl) {
 
-    const directResult = await tryDirectManifestRefresh(masterUrl, channelName, streamLog);
+    const directResult = await tryDirectManifestRefresh(masterUrl, probeIdentity, streamLog);
 
     if(directResult) {
 
@@ -420,6 +432,7 @@ export async function refreshNativeManifest(options: {
         channelName,
         masterUrl,
         page,
+        probeIdentity,
         proxy,
         streamIdStr,
         url,
@@ -490,7 +503,7 @@ export async function refreshNativeManifest(options: {
 
     // Probe the new manifest to get the updated variant URL. The interceptor has already released its observer by the time the promise resolves, so a probe
     // failure here only requires giving up on this refresh attempt - no session bookkeeping to unwind.
-    const refreshedFeed = await probeManifest(newInterception.manifestUrl, channelName, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
+    const refreshedFeed = await probeManifest(newInterception.manifestUrl, probeIdentity, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
 
     if(!refreshedFeed) {
 
@@ -522,6 +535,7 @@ export async function refreshNativeManifest(options: {
       channelName,
       masterUrl: newInterception.manifestUrl,
       page,
+      probeIdentity,
       proxy,
       streamIdStr,
       url,
@@ -545,14 +559,15 @@ export async function refreshNativeManifest(options: {
  * has sufficient token lifetime remaining, or null if the direct fetch should be abandoned in favor of a page reload.
  *
  * @param masterUrl - The master manifest URL to re-fetch.
- * @param channelName - The channel name for logging and cache keys.
+ * @param probeIdentity - The stream's probe-cache identity. The master URL passing through here carries session tokens that rotate on every refresh, so it is
+ *                        never what the cache is keyed or stamped by; the stream's own identity is.
  * @param streamLog - The stream-scoped logger.
  * @returns A MediaFeed with a fresh variant URL, or null on failure.
  */
-async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
+async function tryDirectManifestRefresh(masterUrl: string, probeIdentity: ProbeCacheIdentity,
   streamLog: ReturnType<typeof LOG.withStreamId>): Promise<Nullable<MediaFeed>> {
 
-  const mediaFeed = await probeManifest(masterUrl, channelName, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
+  const mediaFeed = await probeManifest(masterUrl, probeIdentity, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
 
   if(!mediaFeed || (mediaFeed.encryption === "drm")) {
 
@@ -570,7 +585,8 @@ async function tryDirectManifestRefresh(masterUrl: string, channelName: string,
 
     if(remaining < MIN_USABLE_TOKEN_LIFETIME) {
 
-      streamLog.debug("native:token", "Direct fetch returned near-expired variant for %s (%ss remaining). Discarding.", channelName, Math.round(remaining / 1000));
+      streamLog.debug("native:token", "Direct fetch returned near-expired variant for %s (%ss remaining). Discarding.", probeIdentity.key,
+        Math.round(remaining / 1000));
 
       return null;
     }

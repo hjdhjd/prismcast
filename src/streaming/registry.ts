@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import type { MonitorHandle } from "./recovery.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
+import type { ProbeCacheIdentity } from "../native/probe.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
  * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The
@@ -225,6 +226,11 @@ export interface StreamRegistryEntry {
   // Whether this stream was started by the pretune module ahead of a scheduled recording. Pretuned streams are exempt from idle timeout until a real client
   // connects, at which point this flag is cleared and the stream follows normal idle timeout behavior.
   preTuned: boolean;
+
+  // The probe-cache identity this stream resolves under - the channel key plus the stamp of the binding it was tuned from. Native recovery reads it here to
+  // re-probe under the same identity the tune used, rather than reassembling one from a recovery frame that does not hold the binding. Null for pending stream
+  // entries that have been registered but whose async setup has not yet completed.
+  probeIdentity: Nullable<ProbeCacheIdentity>;
 
   // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile. Null for pending stream entries
   // that have been registered but whose async setup has not yet completed.

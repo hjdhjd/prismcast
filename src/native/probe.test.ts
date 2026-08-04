@@ -5,8 +5,10 @@
  * the per-file line guideline. The cache helpers are round-tripped via real probeManifest invocations so the cache state observed in tests matches the
  * production write path; the classifier and URL resolver are pure functions and are tested directly without I/O.
  */
+import type { ProbeCacheBinding, ProbeCacheIdentity } from "./probe.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { classifyHlsPlaylist, clearProbeCache, extractChildPlaylistUrls, getCachedEncryption, isLiveMediaPlaylist, probeManifest, resolveUrl } from "./probe.ts";
+import { buildProbeCacheStamp, classifyHlsPlaylist, clearProbeCache, extractChildPlaylistUrls, getCachedEncryption, isLiveMediaPlaylist, probeManifest,
+  resolveUrl } from "./probe.ts";
 import assert from "node:assert/strict";
 
 /* makeFetchRouter installs a mock for globalThis.fetch that dispatches to URL-keyed responses. Tests register their fixtures keyed by URL prefix; any request to
@@ -41,7 +43,76 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
+/* Every cache read and write is addressed by a ProbeCacheIdentity - the channel key the entry lives under, plus the stamp of the binding it was derived from.
+ * Fixtures build theirs through the production stamp builder rather than a hand-written string, so a test exercises the same projection-to-stamp rule a tune
+ * does. The key is each block's existing channel key, which is also what the clearProbeCache calls address.
+ *
+ * @param key - The channel key the entry is stored under.
+ * @param binding - The binding fields the stamp is derived from; the url defaults to a stable fixture since most tests vary only the key.
+ * @returns The identity to pass to the cache helpers and the probe.
+ */
+function makeIdentity(key: string,
+  binding: ProbeCacheBinding = { channelSelector: undefined, profile: undefined, url: "https://cdn.test/fixture.m3u8" }): ProbeCacheIdentity {
+
+  return { key, stamp: buildProbeCacheStamp(binding) };
+}
+
+describe("buildProbeCacheStamp", () => {
+
+  // The binding every comparison in this block varies one field of. Written as a full projection so each single-field variation below is a genuine one-field change.
+  const BASE_BINDING = { channelSelector: "ABC", profile: "keyboardDynamic", url: "https://cdn.test/channel" };
+
+  test("produces byte-equal stamps for equal binding projections", () => {
+
+    // The cache's entire validity test is a string comparison, so equal bindings must serialize identically or an unchanged channel would re-probe on every tune.
+    assert.equal(buildProbeCacheStamp({ ...BASE_BINDING }), buildProbeCacheStamp({ ...BASE_BINDING }), "equal projections stamp identically");
+  });
+
+  test("produces a different stamp when the url changes", () => {
+
+    assert.notEqual(buildProbeCacheStamp(BASE_BINDING), buildProbeCacheStamp({ ...BASE_BINDING, url: "https://cdn.test/other" }), "url participates");
+  });
+
+  test("produces a different stamp when the channel selector changes", () => {
+
+    // The selector is what distinguishes two channels reached through one shared provider URL, so a stamp that ignored it would let a re-selected channel read
+    // the previous channel's classification.
+    assert.notEqual(buildProbeCacheStamp(BASE_BINDING), buildProbeCacheStamp({ ...BASE_BINDING, channelSelector: "XYZ" }), "channelSelector participates");
+  });
+
+  test("produces a different stamp when the profile changes", () => {
+
+    assert.notEqual(buildProbeCacheStamp(BASE_BINDING), buildProbeCacheStamp({ ...BASE_BINDING, profile: "fullscreenApi" }), "profile participates");
+  });
+
+  test("leaves a member whose value is undefined out of the stamp entirely", () => {
+
+    // A channel that never carried a selector and one whose selector was cleared both arrive here as undefined, and JSON serialization drops them, so the two
+    // stamp identically. Asserting on the stamp's content rather than comparing two literals is what pins the normalization itself: a serializer that wrote
+    // undefined members as nulls would still make those two cases equal to each other while making them differ from every stamp built before the field existed.
+    const stamp = buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url: "https://cdn.test/channel" });
+
+    assert.ok(!stamp.includes("channelSelector"), "an unset selector contributes nothing to the stamp");
+    assert.ok(!stamp.includes("profile"), "an unset profile contributes nothing to the stamp");
+    assert.ok(stamp.includes("https://cdn.test/channel"), "the members that do carry values are serialized");
+  });
+
+  test("is insensitive to the property order of the input literal", () => {
+
+    // The serializer sorts keys at every depth, so a caller cannot change a stamp by writing the same binding in a different order. The reversed literal is the
+    // fixture here, which is why it opts out of the alphabetical-keys rule rather than being written in the order the rule wants.
+    /* eslint-disable-next-line sort-keys -- the reversed key order is the fixture; sorting it would leave the test comparing two identically-ordered literals. */
+    const reversed = buildProbeCacheStamp({ url: "https://cdn.test/channel", profile: "keyboardDynamic", channelSelector: "ABC" });
+
+    assert.equal(buildProbeCacheStamp({ channelSelector: "ABC", profile: "keyboardDynamic", url: "https://cdn.test/channel" }), reversed,
+      "property order does not affect the stamp");
+  });
+});
+
 describe("getCachedEncryption", () => {
+
+  const NEVER_PROBED_IDENTITY = makeIdentity("never-probed-channel");
+  const CHANNEL_1_IDENTITY = makeIdentity("test-channel-1");
 
   beforeEach(() => {
 
@@ -59,7 +130,7 @@ describe("getCachedEncryption", () => {
   test("returns null for a channel that has never been probed", () => {
 
     // Boundary: a fresh channel name with no cache entry must return null, not throw and not return a default classification.
-    assert.equal(getCachedEncryption("never-probed-channel"), null, "fresh channel returns null");
+    assert.equal(getCachedEncryption(NEVER_PROBED_IDENTITY), null, "fresh channel returns null");
   });
 
   test("returns the cached encryption type after a successful DRM probe", async () => {
@@ -75,15 +146,17 @@ describe("getCachedEncryption", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://example\"\n", { status: 200 })
     });
 
-    const result = await probeManifest(masterUrl, "test-channel-1");
+    const result = await probeManifest(masterUrl, CHANNEL_1_IDENTITY);
 
     assert.ok(result, "probe resolved with a result");
     assert.equal(result.encryption, "drm", "SAMPLE-AES classified as DRM");
-    assert.equal(getCachedEncryption("test-channel-1"), "drm", "cache holds the DRM classification");
+    assert.equal(getCachedEncryption(CHANNEL_1_IDENTITY), "drm", "cache holds the DRM classification");
   });
 });
 
 describe("clearProbeCache", () => {
+
+  const CLEAR_TEST_IDENTITY = makeIdentity("clear-test-channel");
 
   beforeEach(() => {
 
@@ -108,11 +181,11 @@ describe("clearProbeCache", () => {
       [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
     });
 
-    await probeManifest(masterUrl, "clear-test-channel");
-    assert.equal(getCachedEncryption("clear-test-channel"), "drm", "cache populated after first probe");
+    await probeManifest(masterUrl, CLEAR_TEST_IDENTITY);
+    assert.equal(getCachedEncryption(CLEAR_TEST_IDENTITY), "drm", "cache populated after first probe");
 
     clearProbeCache("clear-test-channel");
-    assert.equal(getCachedEncryption("clear-test-channel"), null, "cache empty after clear");
+    assert.equal(getCachedEncryption(CLEAR_TEST_IDENTITY), null, "cache empty after clear");
   });
 
   test("is a no-op when the channel has no cache entry", () => {
