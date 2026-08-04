@@ -880,6 +880,19 @@ async function discoverSlingChannels(page: Page): Promise<DiscoveredChannel[]> {
     return buildSlingDiscoveredChannels();
   }
 
+  /* A full walk measures completeness from zero. Entries accumulated by earlier incomplete walks or by individual tunes must not count toward the threshold the
+   * fully-enumerated flag is gated on below, or the complete-lineup claim would certify a union of separately-incomplete captures and would keep serving channels
+   * a shrunken lineup has dropped. Clearing the flag alongside the cache also covers the corner where a set flag would outlive an emptied cache.
+   *
+   * The reset is deliberately narrower than clearSlingCache(): the row cache and the playback-info base are tune-path state this walk never writes (the row
+   * cache's writers are the binary-search locator and its affiliate alias), so wiping them here would open a degradation that outlives the walk instead of one
+   * the walk itself repairs...they keep their own lifecycles, the session-end clear and each tune's own stale-row self-heal. A tune racing this walk therefore
+   * reads the walk's partial channel cache and takes its normal miss fallback, which is what any mid-walk view of a progressively populated cache gives it. On
+   * the precache path the service's full cache clear runs first and this baseline reset is a no-op behind it.
+   */
+  slingChannelCache.clear();
+  slingFullyEnumerated = false;
+
   // Set up response interception BEFORE navigation so we capture all paginated grid API responses during page load. These responses populate the channel cache
   // that discovery reads from.
   setupGridResponseInterception(page);
@@ -960,15 +973,24 @@ async function discoverSlingChannels(page: Page): Promise<DiscoveredChannel[]> {
     }
   }
 
-  // Do not cache empty results - leave the fully-enumerated flag unset so subsequent calls retry the full walk. Empty results can indicate no subscription or
-  // API failure.
+  /* The walk has three exits, each with its own flag outcome. An empty cache returns nothing and leaves the fully-enumerated flag unset - no subscription or an
+   * API failure, and either way the next call retries the whole walk. A cache below PRECACHE_MIN_CHANNELS returns what this walk did capture, so the calling
+   * request is still served, but leaves the flag unset as well: the retry loop above already spent its full patience on a lineup that never filled out, and
+   * recording the complete-lineup claim over a truncated capture would teach every reader of the flag (getSlingCachedChannels and this walk's own cached return)
+   * to serve that truncation for the life of the process. A cache at or above the threshold records the claim - and thanks to the reset at this walk's entry,
+   * the claim is about this walk's own capture rather than an accumulated union.
+   *
+   * The gate reuses the retry loop's completeness condition so the two stay one rule: what the loop waits for is exactly what the flag certifies.
+   */
   if(slingChannelCache.size === 0) {
 
     return [];
   }
 
-  // Mark the channel cache as fully enumerated so that getSlingCachedChannels() and future discoverSlingChannels() calls can derive from it without repeating the walk.
-  slingFullyEnumerated = true;
+  if(slingChannelCache.size >= PRECACHE_MIN_CHANNELS) {
+
+    slingFullyEnumerated = true;
+  }
 
   return buildSlingDiscoveredChannels();
 }
