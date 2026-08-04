@@ -44,15 +44,22 @@ const pendingTunes = new WeakMap<Page, TuneState>();
 // DirecTV guide URL. All tunes navigate here - the webpack interceptor handles channel selection during page load.
 const DIRECTV_GUIDE_URL = "https://stream.directv.com/guide";
 
-// Maximum time to wait for the webpack interceptor to emit a tune result. This covers the time from page navigation start through webpack chunk interception,
-// React fiber tree traversal, Redux store discovery, channel matching, and playConsumable dispatch. Validated tunes complete in 2-5 seconds; eight seconds
-// provides headroom for slow page loads while failing fast enough that logo click fallback isn't delayed excessively.
-const TUNE_TIMEOUT = 8000;
+// The in-page interceptor's overall poll budget for the React mount, passed into the injected script as an argument so the Node-side waits can derive from it. The
+// interceptor is the inner operation and each Node-side timeout is its outer bound, so the derivations below keep that relationship in the compiler's hands rather
+// than in a comment that a later edit to one number can quietly falsify.
+const INTERCEPTOR_POLL_BUDGET_MS = 10000;
 
-// Maximum time to wait for the [DIRECTV-CHANNELS] console signal during discovery. The Redux store extraction polls for the React mount point with a 10-second
-// overall timeout and a 5-second milestone timeout after DOM content appears. This Node-side timeout should exceed the browser-side timeout to avoid race
-// conditions where the browser script succeeds but the console signal hasn't been processed yet.
-const DISCOVERY_TIMEOUT = 15000;
+// Maximum time to wait for the webpack interceptor to emit a tune result. This covers the time from page navigation start through webpack chunk interception, React
+// fiber tree traversal, Redux store discovery, channel matching, and playConsumable dispatch. The margin over the poll budget covers only the console-message
+// bridging that follows, since the tune signal is emitted the instant the dispatch completes. Deriving it rather than picking a smaller literal is the deliberate
+// trade: a genuinely dead interceptor delays the logo-click fallback by the margin, and in exchange no tune is abandoned while the in-page poll still has budget
+// left to succeed with.
+const TUNE_TIMEOUT = INTERCEPTOR_POLL_BUDGET_MS + 2000;
+
+// Maximum time to wait for the [DIRECTV-CHANNELS] console signal during discovery. The Redux store extraction polls for the React mount point within the budget
+// above, with a 5-second milestone timeout after DOM content appears. The margin covers the signal processing that follows a successful in-page extraction, so this
+// Node-side wait cannot expire while the browser script is still within its own budget.
+const DISCOVERY_TIMEOUT = INTERCEPTOR_POLL_BUDGET_MS + 5000;
 
 // Network names that have local affiliates on DirecTV Stream, named as "{NETWORK}-{CALLSIGN}" (e.g., "ABC-WABC", "PBS-WNET"). Used for cache aliasing in
 // processChannelLineup. The in-page interceptor and logo click fallback perform generic prefix matching independent of this set.
@@ -235,7 +242,8 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
   // source of truth for both initial setup and recovery - so a recovery re-tune calls it again on the same page. Without the gate, each re-tune would stack another
   // webpack-interceptor script; every subsequent navigation would then run multiple competing chunk-push wrappers and Redux-store polls in the same frame. The
   // discovery path uses its own fresh page, so the single per-page key never blocks a discover-then-tune sequence on distinct pages.
-  await installOncePerPage(page, "webpack-interceptor", async () => await page.evaluateOnNewDocument((targetName: string, discoverOnlyFlag: boolean): void => {
+  await installOncePerPage(page, "webpack-interceptor", async () => await page.evaluateOnNewDocument((targetName: string, discoverOnlyFlag: boolean,
+    maxPollTime: number): void => {
 
     // Phase 1: Main-frame guard. The evaluateOnNewDocument script runs in every frame, including ad iframes. We only want to intercept webpack chunks in the main
     // frame where the DirecTV SPA loads.
@@ -306,9 +314,9 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
     // Phase 3: Poll for React fiber root, extract Redux store and channel lineup. React mounts asynchronously after webpack chunks load, so we poll the DOM for
     // the fiber root at 200ms intervals. Once found, BFS through the fiber tree to locate pendingProps.store (the Redux store), then extract the channel lineup
-    // from the store's state.
+    // from the store's state. The overall budget for that poll arrives as maxPollTime, passed in from Node so the waits on the other side of the console bridge
+    // derive from the same number this loop spends.
     const POLL_INTERVAL = 200;
-    const MAX_POLL_TIME = 10000;
     const pollStart = Date.now();
 
     // React property prefixes to search for on candidate mount elements. Covers React 18 createRoot (__reactContainer$), React 17-18 individual fibers
@@ -338,12 +346,12 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
 
     const pollTimer = setInterval((): void => {
 
-      if((Date.now() - pollStart) > MAX_POLL_TIME) {
+      if((Date.now() - pollStart) > maxPollTime) {
 
         clearInterval(pollTimer);
 
         // eslint-disable-next-line no-console
-        console.log("[DIRECTV-DIAG] Overall poll timeout (" + String(MAX_POLL_TIME) + "ms) - " +
+        console.log("[DIRECTV-DIAG] Overall poll timeout (" + String(maxPollTime) + "ms) - " +
           (cachedStore ? "Redux store found but channel lineup never populated." : "Redux store not found."));
 
         if(!discoverOnlyFlag) {
@@ -739,7 +747,7 @@ async function installDirectTuneInterceptor(page: Page, channelName: string, dis
         console.log("[DIRECTV-TUNE-FAIL] Dispatch error: " + String(err));
       }
     }, POLL_INTERVAL);
-  }, channelName, discoverOnly));
+  }, channelName, discoverOnly, INTERCEPTOR_POLL_BUDGET_MS));
 }
 
 /**
@@ -809,7 +817,7 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
 
     // Race the tune promise against a cancellable timeout. The tune promise maps to discriminated string results so we can distinguish "interceptor reported
     // failure" from "no signal arrived" - critical for debugging whether the interceptor ran at all or stalled silently. cancellableTimeout owns the underlying
-    // setTimeout; we cancel it in finally when the tune wins so the ref'd 8-second timer does not linger on the event loop after the tune has already resolved.
+    // setTimeout; we cancel it in finally when the tune wins so the ref'd timer does not linger on the event loop after the tune has already resolved.
     const timeout = cancellableTimeout(TUNE_TIMEOUT);
     let result: string;
 
@@ -1078,10 +1086,13 @@ async function discoverDirectvChannels(page: Page): Promise<DiscoveredChannel[]>
 
   await page.goto(DIRECTV_GUIDE_URL, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
 
-  // Wait for the channel lineup to be emitted by the interceptor. The Redux store extraction polls at 200ms intervals in the browser context.
+  // Wait for the channel lineup to be emitted by the interceptor. The Redux store extraction polls at 200ms intervals in the browser context. The page check ends
+  // the wait as soon as the page is gone: a closed page can never deliver another console signal, so waiting out the remaining clock would only postpone this
+  // walk's settlement - and a refresh that cancelled this walk by closing its page waits on that settlement before it clears the caches. The empty-result path
+  // below handles the early exit.
   const discoveryStart = Date.now();
 
-  while(!directvFullyDiscovered && ((Date.now() - discoveryStart) < DISCOVERY_TIMEOUT)) {
+  while(!directvFullyDiscovered && !page.isClosed() && ((Date.now() - discoveryStart) < DISCOVERY_TIMEOUT)) {
 
     // eslint-disable-next-line no-await-in-loop
     await delay(500);
