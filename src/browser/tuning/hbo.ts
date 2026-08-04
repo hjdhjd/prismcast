@@ -3,7 +3,7 @@
  * hbo.ts: HBO Max channel selection strategy. Lands on the /channels hub and reads the "Everything You Love From HBO" rail for live linear channel watch URLs.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
-import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
 import { logAvailableChannels } from "./shared.ts";
@@ -78,11 +78,23 @@ function buildHboDiscoveredChannels(): DiscoveredChannel[] {
 }
 
 /**
- * Populates the unified channel cache from raw channel rail data. For each channel, builds a DiscoveredChannel and pairs it with the full watch URL.
+ * Populates the unified channel cache from raw channel rail data. For each channel, builds a DiscoveredChannel and pairs it with the full watch URL. A non-empty
+ * read replaces the cached lineup rather than merging into it, so the cache mirrors the rail the read saw instead of accumulating every rail ever read.
  * Shared by hboGridStrategy (tuning-time population) and discoverHboChannels (discovery endpoint).
  * @param rawChannels - Array of channel names and watch paths from readHboChannelRail().
  */
 function populateHboChannelCache(rawChannels: { name: string; watchPath: string }[]): void {
+
+  // An empty read is a no-op rather than a wipe: the only way to reach here with zero channels is a found rail whose extraction matched nothing, and discarding a
+  // working cache on that remote failure would break every subsequent tune the stale-but-live entries still serve.
+  if(rawChannels.length === 0) {
+
+    return;
+  }
+
+  // Replace rather than merge: the cache is a picture of the current rail, and carrying entries the rail no longer lists would keep serving dead watch URLs for
+  // removed or renamed channels until the browser restarts.
+  hboChannelCache.clear();
 
   for(const ch of rawChannels) {
 
@@ -138,6 +150,33 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
   } catch {
 
     return { channels: [], railFound: false };
+  }
+
+  /* Wait for the anchor count to settle before extracting. The wait above resolves the instant the FIRST anchor appears, while the IntersectionObserver-driven
+   * lazy load is still filling in tiles, so an extraction taken at that moment can be non-empty yet partial - and the cache population downstream trusts this
+   * read to BE the current rail, so a partial read would shrink the cache on ordinary tuning traffic. Two consecutive equal, nonzero counts mean the tiles have
+   * stopped arriving. The count reads through evaluateWithAbort, the same abort-aware primitive the extraction below uses, so a stream termination mid-wait
+   * short-circuits the loop rather than riding Puppeteer's default protocol timeout. At the iteration cap we extract whatever is present, which is what an
+   * immediate extraction would have returned anyway, only later. The budget sits inside its outer bound: a tune races the whole playback initialization against
+   * setup.ts's 45-second deadline, and this read's worst case - the section wait, the five-second anchor wait, and this loop's roughly three seconds - leaves
+   * that deadline ample room.
+   */
+  let previousAnchorCount = 0;
+
+  for(let attempt = 0; attempt < 10; attempt++) {
+
+    // eslint-disable-next-line no-await-in-loop
+    const anchorCount = await evaluateWithAbort(page, (selector: string): number => document.querySelectorAll(selector + " a").length, [HBO_RAIL_SELECTOR]);
+
+    if((anchorCount > 0) && (anchorCount === previousAnchorCount)) {
+
+      break;
+    }
+
+    previousAnchorCount = anchorCount;
+
+    // eslint-disable-next-line no-await-in-loop
+    await delay(300);
   }
 
   // Read all channels from the rail. Each tile contains an anchor with the watch URL and a backup text paragraph with the channel name.
