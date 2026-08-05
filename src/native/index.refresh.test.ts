@@ -443,6 +443,47 @@ describe("refreshNativeManifest", () => {
     assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 600000) <= 2000, "reschedule leads the boundary by TOKEN_REFRESH_MARGIN");
   });
 
+  test("clamps a boundary beyond the platform timer ceiling to the largest delay a timer can carry", async () => {
+
+    /* setTimeout carries its delay as a 32-bit signed millisecond count, and a delay past that ceiling wraps to a value the platform fires immediately - which
+     * turns a distant expiry into a refresh cycle running at the speed of the network rather than a timer aimed weeks out. A token good for weeks must therefore
+     * schedule at the ceiling, where the refresh fires early and re-derives the boundary from the URLs it holds.
+     */
+
+    // Mirrors MAX_TIMER_DELAY_MS in index.ts, which is module-private, so the pin restates the same ceiling. The expiry sits roughly 34 days out, well past it.
+    const MAX_TIMER_DELAY_MS = 2147483647;
+    const expirySeconds = Math.floor(Date.now() / 1000) + 3000000;
+    const masterUrl = "https://cdn.test/far-future-master.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/far-future-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nfar-future-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }),
+      "https://cdn.test/far-future-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("far-future-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "far-future-channel",
+      masterUrl,
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("far-future-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "far-future-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "direct refresh succeeds");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh scheduled");
+    assert.equal(hooks.lastRefreshDelayMs, MAX_TIMER_DELAY_MS, "the reschedule is clamped to the timer ceiling rather than overflowing it");
+  });
+
   test("pins the refresh boundary to the variant expiry when the variant token expires before the master token", async () => {
 
     /* The variant URL the proxy polls rotates independently of the master and can expire first. The boundary must be the earlier of the two so the proxy never holds

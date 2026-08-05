@@ -10,7 +10,7 @@
  * them.
  */
 import { createNativeProxy, manifestFailureThreshold, pruneKeyCache, resolveSegmentIv } from "./proxy.ts";
-import { describe, test } from "node:test";
+import { describe, mock, test } from "node:test";
 import type { NativeProxyOptions } from "./proxy.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
@@ -208,6 +208,47 @@ describe("NativeProxy.setTokenRefreshTimer", () => {
 
     clearTimeout(timer);
     proxy.stop();
+  });
+
+  test("retires the previous timer when a second one is armed", () => {
+
+    /* The proxy owns a single refresh timer slot, and this setter is the only site that writes it. A reschedule must therefore cancel the handle it replaces:
+     * every refresh over a long recording arms a successor, so a setter that only overwrote the slot would leave each predecessor live, firing a refresh against
+     * a proxy whose newer schedule already speaks for it. The spy records which handles were cancelled while still cancelling them for real, so the timers this
+     * test creates cannot outlive it.
+     */
+    const proxy = createNativeProxy(makeProxyOptions());
+    const cleared: NodeJS.Timeout[] = [];
+    const realClearTimeout = globalThis.clearTimeout;
+
+    mock.method(globalThis, "clearTimeout", (timer: NodeJS.Timeout): void => {
+
+      cleared.push(timer);
+      realClearTimeout(timer);
+    });
+
+    try {
+
+      const first = setTimeout((): void => undefined, 50);
+      const second = setTimeout((): void => undefined, 50);
+
+      proxy.setTokenRefreshTimer(first);
+
+      assert.equal(cleared.length, 0, "the first arming has no predecessor to retire");
+
+      proxy.setTokenRefreshTimer(second);
+
+      assert.equal(cleared.length, 1, "arming a successor cancels exactly one handle");
+      assert.equal(cleared[0], first, "and the handle it cancels is the one it replaced");
+
+      proxy.stop();
+
+      assert.equal(cleared.length, 2, "the stop path retires the handle that is live");
+      assert.equal(cleared[1], second, "which is the successor, leaving no timer behind");
+    } finally {
+
+      mock.reset();
+    }
   });
 });
 

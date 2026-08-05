@@ -41,6 +41,11 @@ const TOKEN_REFRESH_MARGIN = 300000;
 // cadence - inside the margin window we schedule a single refresh aimed at the actual expiry boundary, not a repeating MIN_REFRESH_DELAY poll (see scheduleTokenRefresh).
 const MIN_REFRESH_DELAY = 30000;
 
+// The longest delay Node's setTimeout accepts: a 32-bit signed millisecond count, roughly 24.8 days. A boundary further out than that is clamped to this ceiling,
+// where the refresh fires early, re-probes, and reschedules against the boundary it re-derives - one harmless extra refresh per ceiling interval. An unclamped
+// delay would instead overflow the timer, which Node fires immediately, turning a distant expiry into a refresh loop running at the speed of the network.
+const MAX_TIMER_DELAY_MS = 2147483647;
+
 // Minimum remaining token lifetime (in milliseconds) for a direct-fetched variant URL to be considered usable. If the variant URL's token expires sooner than this,
 // the direct fetch result is discarded and we fall back to a page reload to get a genuinely fresh token. This prevents handing the proxy a variant URL that expires
 // almost immediately. Set low (5s) because the proxy only needs the variant URL to survive one poll cycle (~3s). A higher threshold (e.g., 30s) would cause Fox.com
@@ -344,9 +349,10 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
   const timeUntilExpiry = boundary - Date.now();
 
   // Outside the margin we lead the boundary by TOKEN_REFRESH_MARGIN; inside it we aim straight at the boundary so the direct fetch fails into a page reload exactly
-  // once. Either way the result is clamped to MIN_REFRESH_DELAY so a past-due or imminent boundary still yields a single, non-thrashing timer.
+  // once. The floor of MIN_REFRESH_DELAY keeps a past-due or imminent boundary from thrashing, and the ceiling of MAX_TIMER_DELAY_MS keeps a distant one inside
+  // the range setTimeout can actually represent.
   const lead = (timeUntilExpiry > TOKEN_REFRESH_MARGIN) ? TOKEN_REFRESH_MARGIN : 0;
-  const refreshIn = Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - lead);
+  const refreshIn = Math.min(Math.max(MIN_REFRESH_DELAY, timeUntilExpiry - lead), MAX_TIMER_DELAY_MS);
 
   LOG.debug("native:token", "Token expires in %ss for %s. Refresh scheduled in %ss.",
     Math.round(timeUntilExpiry / 1000), channelName, Math.round(refreshIn / 1000));

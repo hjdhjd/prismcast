@@ -185,7 +185,8 @@ export interface NativeProxy {
   // Returns true if the proxy has been stopped.
   isStopped: () => boolean;
 
-  // Sets the token refresh timer handle so it can be cancelled on stop. Called by the coordinator after scheduling a refresh.
+  // Sets the token refresh timer handle so it can be cancelled on stop. Called by the coordinator after scheduling a refresh. The proxy holds at most one live
+  // refresh timer: arming a successor retires its predecessor.
   setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>) => void;
 
   // Stops the proxy and cancels the pending token refresh timer.
@@ -2225,7 +2226,16 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
     isStopped: (): boolean => lifecycle.stopped,
 
+    /* The proxy holds at most one live refresh timer, and this is the single site that writes the slot. Arming a successor therefore retires its predecessor
+     * here, so a reschedule cannot leave an orphaned handle firing against a proxy that a newer schedule already speaks for, and the stop path retires whichever
+     * handle is live when the stream ends.
+     */
     setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>): void => {
+
+      if(lifecycle.tokenRefreshTimer) {
+
+        clearTimeout(lifecycle.tokenRefreshTimer);
+      }
 
       lifecycle.tokenRefreshTimer = timer;
     },
