@@ -34,6 +34,12 @@ export interface ChannelIdentity {
   // is canonical-only: VariantChannel carries no channelNumber field, so every variant inherits the canonical's value unchanged at resolution time.
   channelNumber?: number;
 
+  // Whether this channel always uses screen capture, skipping native HLS extraction. When true, the stream never installs the CDP manifest interceptor, so no
+  // native attempt, probe, or encryption-cache write happens for it - the escape hatch for a site whose native stream misbehaves without erroring, where the
+  // automatic capture fallback never fires because nothing reports an error. When absent, the channel uses native extraction wherever it is eligible. Only
+  // stored in user config when explicitly enabled (sparse storage).
+  forceCapture?: boolean;
+
   // Human-readable title for electronic program guide display. When set, this value is emitted as the tvg-name attribute in the M3U playlist instead of the
   // channel name. Useful for channels without EPG data (e.g., static page channels) where the channel name alone doesn't describe the content.
   guideTitle?: string;
@@ -198,7 +204,9 @@ export type ResolvedChannelMap = Record<string, ResolvedChannel>;
  * canonical, by the M3U/HDHR output layers to know which fields to read for guide metadata, and by the user-edit form's allowlist for predefined-channel
  * overrides. Adding a field to ChannelIdentity without listing it here is a compile error via the exhaustiveness check below.
  */
-export const CHANNEL_IDENTITY_KEYS = [ "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift" ] as const;
+export const CHANNEL_IDENTITY_KEYS = [
+  "channelNumber", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift"
+] as const;
 
 /**
  * Single source of truth for which Channel fields are service-bindings. Used by the variant builder, the resolver (which excludes these from canonical->variant
@@ -236,7 +244,7 @@ void _partitionCompleteness;
  * The `satisfies` constraint guarantees every entry is in CHANNEL_IDENTITY_KEYS - this array can never include a field that isn't structurally identity.
  */
 export const DELTA_ELIGIBLE_IDENTITY_KEYS = [
-  "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift"
+  "channelNumber", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift"
 ] as const satisfies readonly typeof CHANNEL_IDENTITY_KEYS[number][];
 
 /**
@@ -384,6 +392,9 @@ export interface ChannelDelta {
 
   // Override for channel selector, or null to clear the predefined value.
   channelSelector?: Nullable<string>;
+
+  // Override forcing screen capture, or null to clear the value. When true, the channel skips native HLS extraction entirely.
+  forceCapture?: Nullable<boolean>;
 
   // Override for guide title, or null to clear the value.
   guideTitle?: Nullable<string>;

@@ -38,11 +38,14 @@ export function tagsEqual(a: readonly string[], b: readonly string[]): boolean {
 /**
  * Normalized form values submitted for a channel save. String fields use "" for empty (matching HTML form inputs). channelNumber uses undefined for empty.
  * hdhrEnabled defaults to true when absent from the form (a checkbox is only submitted when checked, but our form includes a hidden input for the unchecked state).
+ * forceCapture takes the inverse convention: its default is false, so the form carries no hidden input and an absent field simply means unchecked. Forcing
+ * capture is the exception rather than the norm, which is what keeps the stored shape sparse - an untouched channel stores nothing for it.
  */
 export interface ChannelFormValues {
 
   readonly channelNumber: number | undefined;
   readonly channelSelector: string;
+  readonly forceCapture: boolean;
   readonly guideTitle: string;
   readonly hdhrEnabled: boolean;
   readonly logoUrl: string;
@@ -59,15 +62,16 @@ export interface ChannelFormValues {
  */
 const FORM_SCALAR_FIELDS = [
 
-  "channelNumber", "channelSelector", "guideTitle", "hdhrEnabled", "logoUrl", "name", "profile", "stationId", "url"
+  "channelNumber", "channelSelector", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "profile", "stationId", "url"
 ] as const satisfies readonly (keyof ResolvedChannel & keyof ChannelDelta)[];
 
 type FormScalarField = (typeof FORM_SCALAR_FIELDS)[number];
 
 /**
  * Reads the comparable value for a scalar form field from a channel record. String fields default to "" when absent (matching the form's empty representation).
- * hdhrEnabled is derived as (value !== false), matching the form's default-true semantics. channelNumber stays number | undefined, matching the form's empty
- * representation. This normalization lets us compare form values against channel records with strict equality.
+ * hdhrEnabled is derived as (value !== false), matching the form's default-true semantics. forceCapture is derived as (value === true), matching its opposite
+ * default-false semantics. channelNumber stays number | undefined, matching the form's empty representation. This normalization lets us compare form values
+ * against channel records with strict equality.
  * @param channel - The channel to read from.
  * @param field - The scalar field name.
  * @returns The comparable value as a boolean, number, string, or undefined.
@@ -79,6 +83,12 @@ function channelScalar(channel: ResolvedChannel, field: FormScalarField): boolea
     case "channelNumber": {
 
       return channel.channelNumber;
+    }
+
+    case "forceCapture": {
+
+      // Absent means the channel uses native extraction where it is eligible, so anything other than an explicit true reads as unchecked.
+      return channel.forceCapture === true;
     }
 
     case "hdhrEnabled": {
@@ -131,7 +141,8 @@ export interface PredefinedDeltaResult {
 /**
  * Computes a ChannelDelta representing the difference between submitted form values and the predefined base. Fields that differ from the base are stored in the
  * delta; fields that are cleared (empty string or undefined) are stored as null so the normalizer preserves the explicit clear (absent field means inherit;
- * null means override to "no value"). Tags are compared separately against the base's effective tags and stored as null when cleared.
+ * null means override to "no value"). Tags are compared separately against the base's effective tags and stored as null when cleared. forceCapture is the one
+ * exception to the clearing rule: it stores only its enabled state, and leaving it out of the delta is what turns it off.
  * @param predefinedBase - The canonical predefined channel to diff against.
  * @param formValues - The normalized form values.
  * @param tags - The tag array submitted with the form. Internal comparison via tagsEqual sorts defensively; caller does not need to pre-sort.
@@ -153,11 +164,24 @@ export function computePredefinedDelta(predefinedBase: ResolvedChannel, formValu
       continue;
     }
 
+    hasChanges = true;
+
+    /* forceCapture stores only the enabled state and never a clearing null. No catalog entry declares the field, so the comparison base always reads false and
+     * the only way to reach this write is a checked box. Turning it off is expressed by leaving the field out of the delta: every save path through here
+     * replaces the stored entry wholesale, so omission is what clears it. The null-clearing idiom the other fields use matters in PATCH's merge-into-existing
+     * path, which this field deliberately does not join.
+     */
+    if(field === "forceCapture") {
+
+      deltaWrite[field] = true;
+
+      continue;
+    }
+
     const formVal = formValues[field];
 
     // Empty string or undefined means "clear this field" - store null so the normalizer preserves the explicit clear through the delta model.
     deltaWrite[field] = ((formVal === "") || (formVal === undefined)) ? null : formVal;
-    hasChanges = true;
   }
 
   // Tags delta: compare against the base's effective (vocabulary-filtered) tags. Using effective tags prevents editing an unrelated field from baking a

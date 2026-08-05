@@ -7,30 +7,11 @@
  */
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
-import type { ChannelFormValues } from "../../../src/config/channelForm.ts";
 import { PREDEFINED_CHANNELS } from "../../../src/channels/index.ts";
 import assert from "node:assert/strict";
 import { findMatchingVariant } from "../../../src/config/channelForm.ts";
 import { getResolvedChannel } from "../../../src/config/services.ts";
-
-/* makeForm builds a ChannelFormValues literal with empty/undefined sentinels by default. Callers override the fields they want to test.
- */
-function makeForm(overrides: Partial<ChannelFormValues> = {}): ChannelFormValues {
-
-  return {
-
-    channelNumber: undefined,
-    channelSelector: "",
-    guideTitle: "",
-    hdhrEnabled: true,
-    logoUrl: "",
-    name: "",
-    profile: "",
-    stationId: "",
-    url: "",
-    ...overrides
-  };
-}
+import { makeForm } from "../../../src/config/channelForm.helpers.ts";
 
 describe("findMatchingVariant - iteration body and positive match", () => {
 

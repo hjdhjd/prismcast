@@ -428,7 +428,8 @@ interface AdvancedFieldOptions {
 
   // Set of field names the user has explicitly customized (presence in stored deltas, on either canonical or active variant entry). Drives the "modified"
   // visual treatment for each field. Independent of value comparison - storage provenance is the single source of truth. Field names use the form-input
-  // names (channelNumber, channelSelector, guideTitle, hdhrEnabled, logoUrl, stationId, tags). Omit for forms with no predefined baseline (add, user-created).
+  // names (channelNumber, channelSelector, forceCapture, guideTitle, hdhrEnabled, logoUrl, stationId, tags). Omit for forms with no predefined baseline (add,
+  // user-created).
   customizedFields?: ReadonlySet<string>;
 
   // Reset values for each field. Each entry is the stringified default value the form embeds into the data-default attribute on the input - resetValueFor in
@@ -438,12 +439,16 @@ interface AdvancedFieldOptions {
 
     channelNumber?: string;
     channelSelector?: string;
+    forceCapture?: string;
     guideTitle?: string;
     hdhrEnabled?: string;
     logoUrl?: string;
     stationId?: string;
     tags?: string;
   };
+
+  // Whether the channel is pinned to screen capture, skipping native HLS extraction. Defaults to false.
+  forceCapture?: boolean;
 
   // Current guide title value (empty string for none).
   guideTitleValue?: string;
@@ -465,15 +470,15 @@ interface AdvancedFieldOptions {
 }
 
 /**
- * Generates HTML for the advanced fields section (station ID, guide title, logo URL, channel selector, channel number, tags, HDHomeRun toggle).
+ * Generates HTML for the advanced fields section (station ID, guide title, logo URL, channel selector, channel number, tags, HDHomeRun toggle, force capture).
  * @param idPrefix - Prefix for element IDs ("add" or "edit").
  * @param options - Field values, defaults, and customization metadata. See AdvancedFieldOptions.
  * @returns Array of HTML strings for the advanced fields section.
  */
 function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions = {}): string[] {
 
-  const { channelNumberValue = "", channelSelectorValue = "", guideTitleValue = "", hdhrEnabled = true, logoUrlValue = "", showHints = true,
-    stationIdValue = "", tagsValue = "" } = options;
+  const { channelNumberValue = "", channelSelectorValue = "", forceCapture = false, guideTitleValue = "", hdhrEnabled = true, logoUrlValue = "",
+    showHints = true, stationIdValue = "", tagsValue = "" } = options;
 
   const lines: string[] = [];
 
@@ -585,6 +590,30 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
   if(hdhrHint) {
 
     lines.push("<div class=\"hint\">" + hdhrHint + "</div>");
+  }
+
+  // Force screen capture. There is no hidden-input partner here: this field's default is false, so an unchecked box submitting nothing is unambiguous and the
+  // stored shape stays sparse. The value="true" the checkbox carries is the exact token parseFormBody tests for.
+  const forceCaptureChecked = forceCapture ? " checked" : "";
+  // Customization is presence in stored deltas (identity field, lives on canonical entry); surfaced via customizedFields. The default value arrives
+  // pre-stringified from resetValueFor, which yields the empty string for a field no predefined source declares - and the empty string unchecks the box.
+  const forceCaptureModified = customized?.has("forceCapture") === true;
+  const forceCaptureModifiedClass = forceCaptureModified ? " modified" : "";
+  const forceCaptureModifiedDot = forceCaptureModified ? "<span class=\"modified-dot\" title=\"Modified from predefined default\"></span>" : "";
+  const forceCaptureDefaultAttr = (defs?.forceCapture !== undefined) ? " data-default=\"" + defs.forceCapture + "\"" : "";
+  const forceCaptureHint = showHints ?
+    "When checked, this channel always uses screen capture, skipping native HLS streaming. Useful for sites whose native stream misbehaves." :
+    undefined;
+
+  lines.push("<div class=\"form-row form-row-checkbox" + forceCaptureModifiedClass + "\">");
+  lines.push(forceCaptureModifiedDot + "<label for=\"" + idPrefix + "-forceCapture\">Force capture</label>");
+  lines.push("<input type=\"checkbox\" id=\"" + idPrefix + "-forceCapture\" name=\"forceCapture\" value=\"true\"" + forceCaptureChecked +
+    forceCaptureDefaultAttr + ">");
+  lines.push("</div>");
+
+  if(forceCaptureHint) {
+
+    lines.push("<div class=\"hint\">" + forceCaptureHint + "</div>");
   }
 
   // Close the advanced-fields wrapper opened at the top of this builder.
@@ -1202,12 +1231,14 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
 
       channelNumber: resetValueFor("channelNumber"),
       channelSelector: resetValueFor("channelSelector"),
+      forceCapture: resetValueFor("forceCapture"),
       guideTitle: resetValueFor("guideTitle"),
       hdhrEnabled: resetValueFor("hdhrEnabled"),
       logoUrl: resetValueFor("logoUrl"),
       stationId: resetValueFor("stationId"),
       tags: resetValueFor("tags")
     } : undefined,
+    forceCapture: channel.forceCapture === true,
     guideTitleValue: channel.guideTitle ?? "",
     hdhrEnabled: getEffectiveHdhrEnabled(channel),
     logoUrlValue: channel.logoUrl ?? "",
@@ -1887,11 +1918,13 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Profile dropdown.
   lines.push(...generateProfileDropdown("add-profile", formValues?.get("profile") ?? "", profiles));
 
-  // Advanced fields (station ID, guide title, logo URL, channel selector, channel number, tags, HDHR).
+  // Advanced fields (station ID, guide title, logo URL, channel selector, channel number, tags, HDHR, force capture). The force-capture read mirrors
+  // parseFormBody's exact-"true" test, so a re-render after a validation error preserves whatever the user had checked.
   lines.push(...generateAdvancedFields("add", {
 
     channelNumberValue: formValues?.get("channelNumber") ?? "",
     channelSelectorValue: formValues?.get("channelSelector") ?? "",
+    forceCapture: formValues?.get("forceCapture") === "true",
     hdhrEnabled: formValues?.get("hdhrEnabled") !== "false",
     stationIdValue: formValues?.get("stationId") ?? ""
   }));

@@ -67,6 +67,10 @@ function parseFormBody(body: Record<string, string | undefined>): { formValues: 
 
     channelNumber: channelNumberStr ? parseInt(channelNumberStr, 10) : undefined,
     channelSelector: sanitizeString(body["channelSelector"] ?? ""),
+
+    // The force-capture checkbox carries value="true" and has no hidden-input partner, so an unchecked box posts nothing at all. Testing for the exact "true"
+    // the markup emits keeps the parse and the markup a single contract - a value-less checkbox would post "on" and silently read as unchecked here.
+    forceCapture: body["forceCapture"] === "true",
     guideTitle: sanitizeString(body["guideTitle"] ?? ""),
     hdhrEnabled: body["hdhrEnabled"] !== "false",
     logoUrl: sanitizeString(body["logoUrl"] ?? ""),
@@ -200,6 +204,13 @@ function buildUserChannelFromForm(formValues: ChannelFormValues, tags: readonly 
   if(!formValues.hdhrEnabled) {
 
     channel.hdhrEnabled = false;
+  }
+
+  // Absent forceCapture means native extraction where eligible - the inverse polarity of hdhrEnabled above. Only persist when explicitly enabled. This builder
+  // backs both the create and the standalone-channel replace, and both write the record wholesale, so omitting the field is what clears a prior override.
+  if(formValues.forceCapture) {
+
+    channel.forceCapture = true;
   }
 
   return channel;

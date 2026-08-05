@@ -6,28 +6,9 @@
  */
 import { channelMatches, computePredefinedDelta, findMatchingVariant } from "./channelForm.ts";
 import { describe, test } from "node:test";
-import type { ChannelFormValues } from "./channelForm.ts";
 import assert from "node:assert/strict";
 import { makeChannel } from "./userChannels.helpers.ts";
-
-// makeForm builds a ChannelFormValues literal. All scalar fields default to the empty/undefined sentinel matching an empty form submission.
-function makeForm(overrides: Partial<ChannelFormValues> = {}): ChannelFormValues {
-
-  return {
-
-    channelNumber: undefined,
-    channelSelector: "",
-    guideTitle: "",
-    hdhrEnabled: true,
-    logoUrl: "",
-    name: "",
-    profile: "",
-    stationId: "",
-    url: "",
-    ...overrides
-  };
-}
-
+import { makeForm } from "./channelForm.helpers.ts";
 
 describe("channelMatches", () => {
 
@@ -76,6 +57,24 @@ describe("channelMatches", () => {
 
     const channel = makeChannel({ hdhrEnabled: false, name: "ABC", url: "https://abc.com" });
     const form = makeForm({ hdhrEnabled: true, name: "ABC", url: "https://abc.com" });
+
+    assert.equal(channelMatches(channel, form, []), false);
+  });
+
+  test("forceCapture comparison treats an absent channel field as false", () => {
+
+    // The inverse of hdhrEnabled's default: channelScalar derives (value === true), so anything other than an explicit true reads as unchecked. An untouched
+    // channel therefore matches a form whose box is clear, which is what keeps a plain save from writing the field.
+    const channel = makeChannel({ name: "ABC", url: "https://abc.com" });
+    const form = makeForm({ forceCapture: false, name: "ABC", url: "https://abc.com" });
+
+    assert.equal(channelMatches(channel, form, []), true);
+  });
+
+  test("forceCapture mismatch surfaces (channel has true, form has false)", () => {
+
+    const channel = makeChannel({ forceCapture: true, name: "ABC", url: "https://abc.com" });
+    const form = makeForm({ forceCapture: false, name: "ABC", url: "https://abc.com" });
 
     assert.equal(channelMatches(channel, form, []), false);
   });
@@ -201,6 +200,29 @@ describe("computePredefinedDelta", () => {
 
     assert.equal(result.hasChanges, true);
     assert.equal(result.delta.hdhrEnabled, false);
+  });
+
+  test("forceCapture checked against an unforced base contributes true to the delta", () => {
+
+    const base = makeChannel({ name: "ABC", url: "https://abc.com" });
+    const form = makeForm({ forceCapture: true, name: "ABC", url: "https://abc.com" });
+    const result = computePredefinedDelta(base, form, []);
+
+    assert.equal(result.hasChanges, true);
+    assert.equal(result.delta.forceCapture, true);
+  });
+
+  test("forceCapture unchecked contributes nothing - not a clearing null", () => {
+
+    /* The delta omits the field entirely rather than storing null. Every save path replaces the stored entry wholesale, so an absent field is what turns the
+     * override off; a null here would persist as an explicit "no value" and is the shape PATCH's merge path needs, not this one.
+     */
+    const base = makeChannel({ name: "ABC", url: "https://abc.com" });
+    const form = makeForm({ forceCapture: false, name: "ABC Renamed", url: "https://abc.com" });
+    const result = computePredefinedDelta(base, form, []);
+
+    assert.equal(result.hasChanges, true, "the rename is still a change");
+    assert.equal("forceCapture" in result.delta, false, "the field must be absent, not null");
   });
 });
 

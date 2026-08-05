@@ -1086,9 +1086,12 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     try {
 
-      // Skip CDP manifest interception if the probe cache already knows this stream's binding resolves to DRM. This avoids creating a CDP session that sits idle
-      // for 15 seconds before the interceptor timeout cleans it up. Every stream carries an identity, ad-hoc URLs included, so the lookup needs no guard.
-      const skipInterception = getCachedEncryption(probeIdentity) === "drm";
+      /* Skip CDP manifest interception when the channel is pinned to screen capture, or when the probe cache already knows this stream's binding resolves to
+       * DRM. The per-channel override short-circuits first, so a forced channel never installs the interceptor: nothing intercepts a manifest, no native
+       * attempt runs, no probe fires, and the encryption cache stays untouched by that stream. The cache half avoids creating a CDP session that sits idle for
+       * 15 seconds before the interceptor timeout cleans it up; every stream carries an identity, ad-hoc URLs included, so that lookup needs no guard.
+       */
+      const skipInterception = (channel?.forceCapture === true) || (getCachedEncryption(probeIdentity) === "drm");
 
       // Build the persistResolution closure for the active channel. When the resolution layer in selectChannel() converts a category selector to a concrete call
       // sign, this closure writes the result to the user's channel store as a per-service-variant override - the same shape produced when a user manually edits

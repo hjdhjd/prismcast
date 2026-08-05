@@ -360,9 +360,10 @@ export function exportServicePack(
 
       if(entry.channel.profile && keySet.has(entry.channel.profile)) {
 
-        // Strip hdhrEnabled from exported channels - it's a local deployment preference, not a service configuration property.
+        // Strip forceCapture and hdhrEnabled from exported channels - both are local deployment preferences, not service configuration properties.
         const exportChannel = { ...entry.channel };
 
+        Reflect.deleteProperty(exportChannel, "forceCapture");
         Reflect.deleteProperty(exportChannel, "hdhrEnabled");
         channels[entry.key] = exportChannel;
       }

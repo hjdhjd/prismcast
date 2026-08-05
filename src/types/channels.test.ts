@@ -19,7 +19,7 @@ describe("CHANNEL_IDENTITY_KEYS", () => {
     // coverage; this test pins the literal membership so an accidental rename or omission surfaces as a value-level failure too.
     assert.deepEqual(
       [...CHANNEL_IDENTITY_KEYS],
-      [ "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift" ]
+      [ "channelNumber", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift" ]
     );
   });
 
@@ -43,7 +43,7 @@ describe("CHANNEL_IDENTITY_KEYS", () => {
 
     // The `as const` assertion gives us a readonly tuple type whose length is fixed. We assert the expected count so that adding or removing a field surfaces
     // here as well as in the deepEqual membership test above - two failing assertions point a reviewer at the same root cause.
-    assert.equal(CHANNEL_IDENTITY_KEYS.length, 9);
+    assert.equal(CHANNEL_IDENTITY_KEYS.length, 10);
   });
 });
 
@@ -101,7 +101,7 @@ describe("DELTA_ELIGIBLE_IDENTITY_KEYS", () => {
     // Delta-eligible identity is a subset of CHANNEL_IDENTITY_KEYS that excludes catalog-driven structural fields (currently pacificStationId).
     assert.deepEqual(
       [...DELTA_ELIGIBLE_IDENTITY_KEYS],
-      [ "channelNumber", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift" ]
+      [ "channelNumber", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "stationId", "tags", "tvgShift" ]
     );
   });
 

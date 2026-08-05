@@ -327,6 +327,33 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
     assert.equal(stored["abc"], undefined, "stored override must be cleared on revert");
   });
 
+  test("forceCapture round-trip: a checked box stores the flag on the canonical entry and a later unchecked save removes it", async () => {
+
+    // A rename rides along with the flag so the second save still carries a change of its own. That keeps the clear on the delta path rather than emptying the
+    // delta and routing through the revert branch, which would prove nothing about how the field itself is stored.
+    const setBody = makeFormBody({ forceCapture: "true", name: "ABC Renamed", tags: "Local", url: "https://abc.com/watch-live" });
+    const set = makeReqRes({ body: setBody, params: { key: "abc" } });
+
+    await put(set.req, set.res, () => undefined);
+
+    const afterSet = (await readChannelsFile(dir))["abc"];
+
+    assert.ok(afterSet, "the canonical entry must be written");
+    assert.equal(afterSet["forceCapture"], true, "a checked box stores the flag on the canonical entry");
+
+    // Second save with the box clear. The stored delta is replaced wholesale, so the field goes away rather than persisting as an explicit null.
+    const clearBody = makeFormBody({ name: "ABC Renamed", tags: "Local", url: "https://abc.com/watch-live" });
+    const clear = makeReqRes({ body: clearBody, params: { key: "abc" } });
+
+    await put(clear.req, clear.res, () => undefined);
+
+    const afterClear = (await readChannelsFile(dir))["abc"];
+
+    assert.ok(afterClear, "the rename override still stands");
+    assert.equal(afterClear["name"], "ABC Renamed", "the unrelated override survives the clear");
+    assert.equal("forceCapture" in afterClear, false, "unchecking removes the field rather than storing null");
+  });
+
   test("missing key in URL produces a 400 validation error", async () => {
 
     const { json, req, res, status } = makeReqRes({ body: {}, params: {} });
@@ -812,6 +839,61 @@ describe("POST /config/channels - profile reference validation", () => {
     const errors = body["errors"] as Record<string, string>;
 
     assert.equal(errors["profile"], "Unknown profile: noSuchProfileAnywhere.");
+  });
+});
+
+describe("forceCapture on the user-channel path (POST /config/channels, PUT /config/channels/:key)", () => {
+
+  let dir: string;
+  let create: RequestHandler;
+  let put: RequestHandler;
+
+  beforeEach(async () => {
+
+    dir = await setupTempDataDir();
+
+    const { app, routes } = makeMockApp();
+
+    registerCrudRoutes(app);
+
+    create = findRoute(routes, "post", "/config/channels");
+    put = findRoute(routes, "put", "/config/channels/:key");
+  });
+
+  afterEach(async () => {
+
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("create with the box checked stores the flag, and a later save with the box clear removes it", async () => {
+
+    /* A channel with no predefined base never reaches the delta machinery: buildUserChannelFromForm hand-enumerates each field onto a fresh record, and both
+     * the create and the standalone-channel replace go through it. No predefined-path test exercises that builder, so this is the pin that covers it.
+     */
+    const createBody = makeFormBody({ forceCapture: "true", key: "forced-user", name: "Forced", url: "https://example.com/live.m3u8" });
+    const created = makeReqRes({ body: createBody });
+
+    await create(created.req, created.res, () => undefined);
+
+    const createdBody = created.json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(createdBody["success"], true, "the create succeeds; errors: " + JSON.stringify(createdBody["errors"] ?? createdBody["error"]));
+
+    const afterCreate = (await readChannelsFile(dir))["forced-user"];
+
+    assert.ok(afterCreate, "the created record must be written");
+    assert.equal(afterCreate["forceCapture"], true, "a checked box stores the flag on the user record");
+
+    // The standalone-channel PUT replaces the record wholesale, so leaving the box clear drops the field.
+    const clearBody = makeFormBody({ key: "forced-user", name: "Forced", url: "https://example.com/live.m3u8" });
+    const cleared = makeReqRes({ body: clearBody, params: { key: "forced-user" } });
+
+    await put(cleared.req, cleared.res, () => undefined);
+
+    const afterClear = (await readChannelsFile(dir))["forced-user"];
+
+    assert.ok(afterClear, "the record still exists after the second save");
+    assert.equal("forceCapture" in afterClear, false, "unchecking removes the field from the stored record");
   });
 });
 
