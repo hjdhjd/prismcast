@@ -29,6 +29,7 @@ function makeProxyOptions(overrides: Partial<NativeProxyOptions> = {}): NativePr
 
     audioVariantUrl: null,
     channelName: "test-channel",
+    container: "ts",
     encryption: "clear",
     keyUrl: null,
     onError: (): void => {

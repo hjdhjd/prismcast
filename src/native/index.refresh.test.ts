@@ -5,12 +5,13 @@
  * entangled with real Chrome via Puppeteer (page.goto, installManifestInterceptor's CDP listener wiring) and is deferred to e2e coverage; the unit tests here
  * focus on the direct-fetch branch and the early-exit conditions (proxy stopped, page closed). The companion attemptNativeStreaming tests live in index.test.ts.
  */
+import type { PipelineShape, ProbeCacheIdentity } from "./probe.ts";
 import { afterEach, describe, test } from "node:test";
-import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption } from "./probe.ts";
+import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
 import type { NativeProxy } from "./proxy.ts";
 import type { Page } from "puppeteer-core";
-import type { ProbeCacheIdentity } from "./probe.ts";
+import type { RefreshedFeedMetadata } from "./index.ts";
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
@@ -58,16 +59,33 @@ interface ProxyStubHooks {
   // the expiry boundary or degenerates into a tight MIN_REFRESH_DELAY poll.
   lastRefreshDelayMs: number | null;
 
+  // The compatibility envelope this stub reports as the running pipeline's, which the refresh probe selects within. Each test names the shape its own fixtures
+  // describe: a stub claiming a topology its manifests do not serve would have every candidate skipped as ineligible, which is a different outcome from the one
+  // the test means to pin.
+  pipelineShape: PipelineShape;
+
   setTokenRefreshTimerCalls: number;
 
   variantUrl: string;
 }
+
+/* The two pipeline shapes this file's fixtures describe. Every manifest here serves MPEG-TS segments with no key tags, so the axis that actually varies between
+ * tests is whether audio arrives as a separate rendition.
+ */
+const MUXED_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "clear", separateAudio: false };
+const SEPARATE_AUDIO_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "clear", separateAudio: true };
 
 /* scheduledTimerDelays records the delay every setTimeout call was scheduled with, keyed by the timer handle it produced. The spyScheduledTimers helper installs a
  * globalThis.setTimeout spy that populates this map so the proxy stub can recover the delay of the timer handed to setTokenRefreshTimer. A WeakMap keeps the entries
  * garbage-collectable once the handles are cleared, and survives across mock.reset (which only restores the spy, not module state).
  */
 const scheduledTimerDelays = new WeakMap<object, number>();
+
+/* The callback of the most recent timer the spy observed. The proxy stub cancels every timer handed to it, so a scheduled refresh never fires on its own; a test
+ * that wants to watch the NEXT cycle - the one a fired timer starts - invokes this callback itself. Only tests that install the spy read it, and each of those
+ * schedules exactly once before reading, so the module-level lifetime is deterministic.
+ */
+let lastScheduledCallback: (() => void) | null = null;
 
 /* spyScheduledTimers replaces globalThis.setTimeout with a spy that records each call's delay against the timer it returns, then delegates to the real (unref'd)
  * implementation already installed at the top of this file. Tests that need to assert on the scheduled refresh delay install this spy; mock.reset in afterEach
@@ -77,11 +95,18 @@ function spyScheduledTimers(): void {
 
   const wrapped = globalThis.setTimeout;
 
+  lastScheduledCallback = null;
+
   mock.method(globalThis, "setTimeout", ((handler: TimerHandler, timeout?: number, ...args: unknown[]): NodeJS.Timeout => {
 
     const timer = (wrapped as unknown as (h: TimerHandler, t?: number, ...a: unknown[]) => NodeJS.Timeout)(handler, timeout, ...args);
 
     scheduledTimerDelays.set(timer, timeout ?? 0);
+
+    if(typeof handler === "function") {
+
+      lastScheduledCallback = handler as () => void;
+    }
 
     return timer;
   }) as unknown as typeof globalThis.setTimeout);
@@ -97,6 +122,7 @@ function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
     getConsecutiveErrors: (): number => 0,
     getLastSegmentSize: (): null => null,
     getLastSegmentTime: (): number => 0,
+    getPipelineShape: (): PipelineShape => hooks.pipelineShape,
     getSegmentIndex: (): number => 0,
     getStats: (): { fetchErrors: number; segmentsFetched: number; tokenRefreshes: number } => ({ fetchErrors: 0, segmentsFetched: 0, tokenRefreshes: 0 }),
     getTargetDuration: (): number => 6,
@@ -192,7 +218,8 @@ describe("refreshNativeManifest", () => {
       return new Response("should not be reached", { status: 500 });
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: true, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: true, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -211,7 +238,8 @@ describe("refreshNativeManifest", () => {
   test("returns false when no masterUrl is provided and the page is closed (no recovery path available)", async () => {
 
     // Boundary: when the L2 recovery path runs (no masterUrl) and the page itself is closed, the function has nothing to do and returns false.
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -241,7 +269,8 @@ describe("refreshNativeManifest", () => {
       "https://cdn.test/refresh-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("refresh-channel");
 
@@ -267,14 +296,26 @@ describe("refreshNativeManifest", () => {
     // hand a DRM manifest to the proxy. The function then attempts page reload, which we short-circuit by closing the page.
     const masterUrl = "https://cdn.test/flip-master.m3u8";
     const variantUrl = "https://cdn.test/flip-variant.m3u8";
+    const fetched: string[] = [];
 
     makeFetchRouter({
 
-      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nflip-variant.m3u8\n", { status: 200 }),
-      [variantUrl]: () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 })
+      [masterUrl]: () => {
+
+        fetched.push(masterUrl);
+
+        return new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nflip-variant.m3u8\n", { status: 200 });
+      },
+      [variantUrl]: () => {
+
+        fetched.push(variantUrl);
+
+        return new Response("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n", { status: 200 });
+      }
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("flip-channel");
 
@@ -292,6 +333,10 @@ describe("refreshNativeManifest", () => {
     // The function falls through to page reload; the page is closed so it returns false.
     assert.equal(result, false, "DRM flip + closed page -> false");
     assert.equal(hooks.variantUrl, "", "proxy variant URL was NOT updated");
+
+    // The candidate was fetched and read, so the refusal came from what its body declares rather than from an eligibility skip that never looked. Without this,
+    // a stub whose shape disagreed with these fixtures would produce the same two observables above for an entirely different reason.
+    assert.deepEqual(fetched, [ masterUrl, variantUrl ], "the master and its one candidate were both fetched");
   });
 
   test("returns false when the direct-fetch probe fails entirely (master 500) and the page is closed", async () => {
@@ -304,7 +349,8 @@ describe("refreshNativeManifest", () => {
       [masterUrl]: () => new Response("server error", { status: 500 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     const result = await refreshNativeManifest({
 
@@ -340,7 +386,8 @@ describe("refreshNativeManifest", () => {
       [videoUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: SEPARATE_AUDIO_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("refresh-dai-channel");
 
@@ -378,7 +425,8 @@ describe("refreshNativeManifest", () => {
 
     spyScheduledTimers();
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("inside-margin-channel");
 
@@ -421,7 +469,8 @@ describe("refreshNativeManifest", () => {
 
     spyScheduledTimers();
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("comfortable-channel");
 
@@ -464,7 +513,8 @@ describe("refreshNativeManifest", () => {
 
     spyScheduledTimers();
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("far-future-channel");
 
@@ -505,7 +555,8 @@ describe("refreshNativeManifest", () => {
 
     spyScheduledTimers();
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("variant-bound-channel");
 
@@ -538,15 +589,26 @@ describe("refreshNativeManifest", () => {
     const variantExpirySeconds = Math.floor(Date.now() / 1000) + 2;
     const masterUrl = "https://cdn.test/near-expiry-master.m3u8";
     const variantPath = "near-expiry-variant.m3u8?exp=" + String(variantExpirySeconds);
+    const fetched: string[] = [];
 
     makeFetchRouter({
 
-      "https://cdn.test/near-expiry-master.m3u8":
-        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n" + variantPath + "\n", { status: 200 }),
-      "https://cdn.test/near-expiry-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+      "https://cdn.test/near-expiry-master.m3u8": (url) => {
+
+        fetched.push(url);
+
+        return new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n" + variantPath + "\n", { status: 200 });
+      },
+      "https://cdn.test/near-expiry-variant.m3u8": (url) => {
+
+        fetched.push(url);
+
+        return new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+      }
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("near-expiry-channel");
 
@@ -564,6 +626,10 @@ describe("refreshNativeManifest", () => {
     assert.equal(result, false, "near-expired variant discarded, closed page yields false");
     assert.equal(hooks.variantUrl, "", "proxy variant URL was NOT updated from the discarded direct fetch");
     assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh scheduled on the discard-then-fail path");
+
+    // The candidate was fetched and its feed resolved, so the discard came from the token lifetime the fixture encodes rather than from an eligibility skip that
+    // never reached it - the same three observables would otherwise appear for a stub whose shape disagreed with these fixtures.
+    assert.deepEqual(fetched, [ masterUrl, "https://cdn.test/" + variantPath ], "the master and its one candidate were both fetched");
   });
 
   test("does not update the proxy and returns false when the proxy is stopped during the direct-fetch probe", async () => {
@@ -576,7 +642,8 @@ describe("refreshNativeManifest", () => {
     const masterUrl = "https://cdn.test/stop-midprobe-master.m3u8";
     const variantUrl = "https://cdn.test/stop-midprobe-variant.m3u8";
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     makeFetchRouter({
 
@@ -609,12 +676,12 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled after the mid-probe stop");
   });
 
-  test("does not fall back to a lower variant when the refreshed master's top variant is broken", async () => {
+  test("falls back to the healthy sibling when the refreshed master's top variant is broken", async () => {
 
-    /* The refresh path pins a single variant attempt. Falling back here would swap the proxy's variant URL to a different rendition of the master while the proxy's
-     * audio topology stays as it was constructed, so the refresh must fail rather than reselect. The master offers a healthy sibling below the broken top variant -
-     * exactly what a leak would land on - and that sibling serves a CLEAR media playlist, so a leak cannot be mistaken for the DRM abort that tryDirectManifestRefresh
-     * performs on its own. The page is closed, so the page-reload strategy short-circuits and the direct-fetch outcome is what the return value reports.
+    /* A refresh runs the same ranked walk a tune runs, narrowed to what the running pipeline can absorb, so a master whose top variant is broken still refreshes
+     * through the healthy sibling beneath it rather than failing outright. The sibling here serves a clear MPEG-TS playlist with muxed audio - the shape this
+     * stub's pipeline reports - so it is eligible, and binding it is the whole point: the alternative would strand the stream on a dying token because one rung
+     * of the ladder went bad. The page is closed, so the page-reload strategy short-circuits and the direct-fetch outcome is what the return value reports.
      */
     const masterUrl = "https://cdn.test/pin-master.m3u8";
     const topUrl = "https://cdn.test/pin-top.m3u8";
@@ -634,7 +701,8 @@ describe("refreshNativeManifest", () => {
       [topUrl]: () => new Response("server error", { status: 500 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("pin-channel");
 
@@ -649,9 +717,13 @@ describe("refreshNativeManifest", () => {
       url: "https://example.test/channel"
     });
 
-    assert.equal(result, false, "the refresh fails rather than reselecting a lower variant");
-    assert.equal(hooks.variantUrl, "", "updateVariantUrl was never called");
-    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh rescheduled");
+    assert.equal(result, true, "the refresh succeeds through the sibling beneath the broken top variant");
+    assert.equal(hooks.variantUrl, siblingUrl, "the proxy is bound to the sibling the walk selected");
+    assert.equal(hooks.audioVariantUrl, "", "and no audio URL is applied, since this pipeline's audio is muxed");
+
+    // Neither of these fixture URLs carries an expiry token, so the boundary computation finds nothing to aim at and no timer is armed. The cadence tests above
+    // own that behavior; what this pin owns is which variant the walk binds.
+    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no boundary exists to schedule against on these tokenless fixtures");
   });
 
   test("refreshes against a one-segment window, since static-playlist rejection is a tune-admission decision only", async () => {
@@ -672,7 +744,8 @@ describe("refreshNativeManifest", () => {
       "https://cdn.test/thin-window-variant.m3u8": () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
     clearProbeCache("thin-window-channel");
 
@@ -710,7 +783,8 @@ describe("refreshNativeManifest", () => {
       "https://cdn.test/stamp-variant.m3u8": () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n", { status: 200 })
     });
 
-    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
     const identity = refreshIdentity("stamp-channel", configuredUrl);
 
     clearProbeCache("stamp-channel");
@@ -730,5 +804,259 @@ describe("refreshNativeManifest", () => {
     assert.equal(getCachedEncryption(identity), "clear", "the classification is readable under the identity the refresh was threaded with");
     assert.equal(getCachedEncryption(refreshIdentity("stamp-channel", masterUrl)), null,
       "and is absent under an identity stamped from the master URL, which the refresh must never stamp with");
+  });
+
+  test("declines a refreshed master that offers no variant matching the pipeline's audio topology, applying nothing", async () => {
+
+    /* A pipeline whose audio is a separate rendition polls two manifests, so a variant carrying muxed audio cannot serve it: applying such a feed would swap the
+     * video URL onto a new CDN session while the audio kept polling the session it is already on, which is a half-refresh that plays until that session's token
+     * expires. Selection therefore
+     * skips a candidate whose topology differs - and skips it without a fetch, since the master body alone answers the question - so a master offering nothing
+     * else leaves the refresh with nothing to apply. The page is closed, so the reload strategy short-circuits and the direct-fetch outcome is what is reported.
+     */
+    const masterUrl = "https://cdn.test/topology-master.m3u8";
+    const variantUrl = "https://cdn.test/topology-muxed.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: () => {
+
+        fetched.push(masterUrl);
+
+        return new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\ntopology-muxed.m3u8\n", { status: 200 });
+      },
+      [variantUrl]: () => {
+
+        fetched.push(variantUrl);
+
+        return new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+      }
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: SEPARATE_AUDIO_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("topology-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "topology-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("topology-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "topology-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "a master with no compatible variant refreshes nothing");
+    assert.equal(hooks.variantUrl, "", "the video URL is untouched - no half-application");
+    assert.equal(hooks.audioVariantUrl, "", "and neither is the audio URL");
+    assert.deepEqual(fetched, [masterUrl], "the ineligible candidate was never fetched - the master body alone ruled it out");
+  });
+
+  test("hands the streaming layer the refreshed feed's quality facts", async () => {
+
+    /* A refresh re-runs selection, so the rung of the ladder it lands on can differ from the one the tune bound. The native layer does not write the registry -
+     * it reports upward through this callback, exactly as it reports proxy errors - and the caller's closure records the bandwidth, codec, and resolution the
+     * stream is now actually serving.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/quality-master.m3u8?exp=" + String(expirySeconds);
+    const applied: RefreshedFeedMetadata[] = [];
+
+    makeFetchRouter({
+
+      "https://cdn.test/quality-master.m3u8": () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\"",
+        "quality-variant.m3u8?exp=" + String(expirySeconds),
+        ""
+      ].join("\n"), { status: 200 }),
+      "https://cdn.test/quality-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("quality-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "quality-channel",
+      masterUrl,
+      onFeedApplied: (metadata) => {
+
+        applied.push(metadata);
+      },
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("quality-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "quality-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "the direct-fetch refresh succeeds");
+    assert.equal(applied.length, 1, "the quality report fires exactly once for one applied feed");
+    assert.deepEqual(applied[0], { bandwidth: 5000000, codec: "H264", resolution: "1920x1080" }, "carrying the bound variant's declared quality");
+  });
+
+  test("keeps a refresh successful when the quality report throws", async () => {
+
+    /* The quality report crosses into the streaming layer, whose closure this code does not own. A throw there must not undo an application that has already
+     * happened: the URLs are swapped, the stream is playing on fresh tokens, and reporting the outcome as a failure would re-arm a retry against a refresh that
+     * worked. The stale status metadata is the smaller harm, so the throw is warned about and the cycle carries on to its reschedule.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/throwing-master.m3u8?exp=" + String(expirySeconds);
+    const variantUrl = "https://cdn.test/throwing-variant.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/throwing-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nthrowing-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }),
+      "https://cdn.test/throwing-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("throwing-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "throwing-channel",
+      masterUrl,
+      onFeedApplied: () => {
+
+        throw new Error("the streaming layer's closure failed");
+      },
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("throwing-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "throwing-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "the refresh still reports the success it achieved");
+    assert.equal(hooks.variantUrl, variantUrl, "the URL swap stands");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "and the next refresh is still scheduled");
+  });
+
+  test("declines a refresh whose cached classification is DRM, leaving the entry readable for the next tune", async () => {
+
+    /* The probe cache answers a DRM channel without touching the network, which is exactly right for a tune deciding whether to try native streaming at all. A
+     * refresh asking the same question is in a different position: its proxy is already relaying a clear stream, and the cache's answer describes a feed no
+     * running pipeline can absorb. So the constrained probe declines rather than handing back the sentinel, whose empty variant URL would read as a successful
+     * refresh. Declining is not invalidating: the classification is still the channel's, so it stays where it is and the next unconstrained probe still reads it.
+     */
+    const masterUrl = "https://cdn.test/cached-drm.m3u8";
+    const identity = refreshIdentity("cached-drm-channel");
+    let masterFetches = 0;
+
+    makeFetchRouter({
+
+      [masterUrl]: () => {
+
+        masterFetches++;
+
+        return new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\nseg0.ts\n", { status: 200 });
+      }
+    });
+
+    clearProbeCache("cached-drm-channel");
+
+    // Seed the cache the way the field does: an ordinary probe classifies the channel and records it.
+    const seeded = await probeManifest(masterUrl, identity);
+
+    assert.equal(seeded?.encryption, "drm", "the seeding probe classified the channel as DRM");
+    assert.equal(masterFetches, 1, "and paid one fetch to do it");
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    const result = await refreshNativeManifest({
+
+      channelName: "cached-drm-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: identity,
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "cached-drm-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "the refresh declines rather than applying the cache sentinel");
+    assert.equal(hooks.variantUrl, "", "the proxy's URL is untouched - the sentinel carries none to apply");
+    assert.equal(hooks.audioVariantUrl, "", "and no audio URL is applied either");
+
+    // The decline left the entry alone, which is the contract: an unconstrained probe still short-circuits on it, spending no fetch to do so.
+    assert.equal(getCachedEncryption(identity), "drm", "the classification survives the decline");
+
+    const afterwards = await probeManifest(masterUrl, identity);
+
+    assert.equal(afterwards?.encryption, "drm", "an unconstrained probe still reads the entry");
+    assert.equal(masterFetches, 1, "and reads it from the cache, without going back to the network");
+  });
+
+  test("carries the quality report through a fired refresh timer into the next cycle", async () => {
+
+    /* Each refresh schedules the next one, so the callback the caller supplied has to survive every hop of that chain rather than only the first. The chain's
+     * weak point is the timer callback, which rebuilds the options for the cycle it starts: a member dropped there would go unnoticed, since the stream keeps
+     * refreshing perfectly well while its reported quality quietly freezes at whatever the tune bound. This pin fires the scheduled timer and watches the second
+     * cycle report.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/chained-master.m3u8?exp=" + String(expirySeconds);
+    const applied: RefreshedFeedMetadata[] = [];
+    const { promise: secondCycleReported, resolve: reportSecondCycle } = Promise.withResolvers<RefreshedFeedMetadata>();
+
+    makeFetchRouter({
+
+      "https://cdn.test/chained-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nchained-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }),
+      "https://cdn.test/chained-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("chained-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "chained-channel",
+      masterUrl,
+      onFeedApplied: (metadata) => {
+
+        applied.push(metadata);
+
+        if(applied.length === 2) {
+
+          reportSecondCycle(metadata);
+        }
+      },
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("chained-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "chained-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "the first cycle succeeds");
+    assert.equal(applied.length, 1, "and reports once");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "having armed the timer that starts the next cycle");
+    assert.notEqual(lastScheduledCallback, null, "the spy captured that timer's callback");
+
+    // Fire the timer the way the platform would, then wait for the cycle it starts to report.
+    lastScheduledCallback?.();
+
+    const second = await secondCycleReported;
+
+    assert.equal(applied.length, 2, "the fired timer's cycle reports too");
+    assert.deepEqual(second, { bandwidth: 2000000, codec: null, resolution: null }, "carrying the second cycle's own feed");
   });
 });

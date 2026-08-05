@@ -1214,6 +1214,22 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
 
       clearProbeCache(channelName);
     },
+    onFeedApplied: (metadata) => {
+
+      // The registry write stays in the streaming layer, exactly as the error report above does: native reports upward and the layer that owns the entry is the
+      // layer that writes it. A refresh can land on a different rung of the service's ladder, so the status display reads the quality the stream is actually
+      // serving rather than the one it tuned to. An entry that is already gone means the stream is terminating, which is nothing to record.
+      const refreshed = getStream(numericStreamId);
+
+      if(!refreshed) {
+
+        return;
+      }
+
+      refreshed.captureCodec = metadata.codec;
+      refreshed.nativeBandwidth = metadata.bandwidth;
+      refreshed.nativeResolution = metadata.resolution;
+    },
     page: setup.page,
     prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
     prerollSegmentCount: nativePrerollSegmentCount,

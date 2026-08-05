@@ -8,10 +8,10 @@
  */
 /* eslint-disable sort-keys -- fixture route maps are ordered by HLS resolution chain (master -> variant -> key), not alphabetical key strings, so the logical
  * dependency direction is visible to readers. */
+import type { PipelineShape, ProbeCacheIdentity } from "./probe.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
 import { LOG } from "../utils/index.ts";
-import type { ProbeCacheIdentity } from "./probe.ts";
 import assert from "node:assert/strict";
 
 /* makeFetchRouter installs a mock for globalThis.fetch that dispatches to URL-keyed responses. Tests register their fixtures keyed by URL prefix; any request to
@@ -1280,6 +1280,211 @@ describe("probeManifest: variant fallback and audio group binding", () => {
 
     assert.ok(result, "the healthy variant still resolves");
     assert.equal(result.bestVariantUrl, healthyUrl, "the unresolvable variant drops out and the healthy one is selected");
+  });
+});
+
+/* A probe run by a stream that is already relaying carries the shape of that stream's pipeline, and selection is narrowed to the candidates the pipeline can
+ * absorb. These fixtures exercise the narrowing on each axis: the audio topology, which the master body answers on its own; and the container and encryption
+ * kind, which need the candidate's own body. The distinction shows up in the fetch trace, which is the instrument throughout - what the walk did NOT fetch is as
+ * much a part of the policy as what it bound.
+ */
+describe("probeManifest: pipeline-constrained selection", () => {
+
+  const CONSTRAINED_IDENTITY = makeIdentity("constrained-channel", "https://cdn.test/constrained-channel");
+
+  // The running pipeline these tests select against: an MPEG-TS relay serving a clear stream whose audio is muxed into the video segments.
+  const MUXED_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "clear", separateAudio: false };
+
+  // A minimal, valid, unencrypted MPEG-TS media playlist - a body this pipeline can absorb.
+  function tsMediaBody(): Response {
+
+    return new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+  }
+
+  // The same window declaring an initialization segment, which makes it fMP4 - a container this MPEG-TS pipeline cannot absorb.
+  function fmp4MediaBody(): Response {
+
+    return new Response("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2,\nseg.m4s\n", { status: 200 });
+  }
+
+  // Records every URL the walk fetches, in order, so a skipped candidate is provably one the walk never paid for.
+  function recordFetch(fetched: string[], respond: () => Response): FetchHandler {
+
+    return (url: string): Response => {
+
+      fetched.push(url);
+
+      return respond();
+    };
+  }
+
+  beforeEach(() => {
+
+    clearProbeCache("constrained-channel");
+  });
+
+  afterEach(() => {
+
+    mock.reset();
+  });
+
+  test("skips a topology-ineligible top variant without fetching it and binds the eligible sibling", async () => {
+
+    // The top variant names an audio group, so its audio arrives separately - a shape this muxed pipeline cannot serve. The master body alone says so, so the
+    // walk skips it without spending a fetch or an attempt, and the sibling beneath it becomes the feed.
+    const masterUrl = "https://cdn.test/topology-master.m3u8";
+    const separateUrl = "https://cdn.test/topology-separate.m3u8";
+    const muxedUrl = "https://cdn.test/topology-muxed.m3u8";
+    const fetched: string[] = [];
+
+    const masterFixture = [
+      "#EXTM3U",
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES,URI=\"topology-audio.m3u8\"",
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,AUDIO=\"aac\"",
+      "topology-separate.m3u8",
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+      "topology-muxed.m3u8",
+      ""
+    ].join("\n");
+
+    makeFetchRouter({
+
+      [masterUrl]: recordFetch(fetched, () => new Response(masterFixture, { status: 200 })),
+      [separateUrl]: recordFetch(fetched, tsMediaBody),
+      [muxedUrl]: recordFetch(fetched, tsMediaBody)
+    });
+
+    const constrained = await probeManifest(masterUrl, CONSTRAINED_IDENTITY, { pipelineShape: MUXED_TS_PIPELINE });
+
+    assert.ok(constrained, "the walk resolves through the eligible sibling");
+    assert.equal(constrained.bestVariantUrl, muxedUrl, "the muxed variant is what a muxed pipeline binds");
+    assert.equal(constrained.audioVariantUrl, null, "and it carries no separate rendition");
+    assert.deepEqual(fetched, [ masterUrl, muxedUrl ], "the ineligible top variant was never fetched");
+
+    // The other side of the pin: with no pipeline to be compatible with, the same master resolves through its top-ranked variant exactly as a tune would.
+    fetched.length = 0;
+
+    const unconstrained = await probeManifest(masterUrl, CONSTRAINED_IDENTITY);
+
+    assert.ok(unconstrained, "the unconstrained walk resolves too");
+    assert.equal(unconstrained.bestVariantUrl, separateUrl, "and it binds the top-ranked variant, ineligibility being a constrained walk's concern only");
+    assert.deepEqual(fetched, [ masterUrl, separateUrl ], "reaching that variant on its first attempt");
+  });
+
+  test("spends an attempt on a container-mismatched candidate and continues to a matching sibling", async () => {
+
+    // The container is only knowable from the candidate's own body, so ruling this one out costs the fetch that read it. That is the same price a broken variant
+    // costs, and the walk answers it the same way: move down the ranking.
+    const masterUrl = "https://cdn.test/container-master.m3u8";
+    const fmp4Url = "https://cdn.test/container-fmp4.m3u8";
+    const tsUrl = "https://cdn.test/container-ts.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: recordFetch(fetched, () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "container-fmp4.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "container-ts.m3u8",
+        ""
+      ].join("\n"), { status: 200 })),
+      [fmp4Url]: recordFetch(fetched, fmp4MediaBody),
+      [tsUrl]: recordFetch(fetched, tsMediaBody)
+    });
+
+    const result = await probeManifest(masterUrl, CONSTRAINED_IDENTITY, { pipelineShape: MUXED_TS_PIPELINE });
+
+    assert.ok(result, "the walk resolves through the sibling that matches");
+    assert.equal(result.bestVariantUrl, tsUrl, "the MPEG-TS variant is what an MPEG-TS pipeline binds");
+    assert.equal(result.container, "ts", "and the feed reports the container it was selected for");
+    assert.deepEqual(fetched, [ masterUrl, fmp4Url, tsUrl ], "the mismatched candidate was fetched, read, and passed over");
+  });
+
+  test("spends an attempt on an encryption-mismatched candidate and continues without fetching its key", async () => {
+
+    /* An encryption kind changing under a running relay is a different pipeline, not a token rotation: the relay would have to start decrypting a stream it was
+     * built to pass through. The kind reads from the tag scan alone, so passing over this candidate costs the body fetch and nothing more - the key it names is
+     * never requested, because a key is only worth fetching for a candidate that could actually be bound.
+     */
+    const masterUrl = "https://cdn.test/encryption-master.m3u8";
+    const encryptedUrl = "https://cdn.test/encryption-aes.m3u8";
+    const clearUrl = "https://cdn.test/encryption-clear.m3u8";
+    const keyUrl = "https://cdn.test/encryption-key.bin";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: recordFetch(fetched, () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "encryption-aes.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "encryption-clear.m3u8",
+        ""
+      ].join("\n"), { status: 200 })),
+      [encryptedUrl]: recordFetch(fetched,
+        () => new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg.ts\n", { status: 200 })),
+      [clearUrl]: recordFetch(fetched, tsMediaBody),
+      [keyUrl]: recordFetch(fetched, () => new Response(Buffer.alloc(16), { status: 200 }))
+    });
+
+    const result = await probeManifest(masterUrl, CONSTRAINED_IDENTITY, { pipelineShape: MUXED_TS_PIPELINE });
+
+    assert.ok(result, "the walk resolves through the clear sibling");
+    assert.equal(result.bestVariantUrl, clearUrl, "a clear pipeline binds the clear variant");
+    assert.deepEqual(fetched, [ masterUrl, encryptedUrl, clearUrl ], "the encrypted candidate was read and passed over");
+    assert.ok(!fetched.includes(keyUrl), "and its key was never fetched, the tag scan having settled the question");
+  });
+
+  test("resolves null when no candidate matches the pipeline", async () => {
+
+    // Every candidate mismatches, so the constrained walk ends the same way an exhausted one does: with nothing to hand back. The caller reads that as a refresh
+    // it cannot apply, not as an error to escalate on.
+    const masterUrl = "https://cdn.test/nomatch-master.m3u8";
+    const firstUrl = "https://cdn.test/nomatch-first.m3u8";
+    const secondUrl = "https://cdn.test/nomatch-second.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [masterUrl]: recordFetch(fetched, () => new Response([
+        "#EXTM3U",
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
+        "nomatch-first.m3u8",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
+        "nomatch-second.m3u8",
+        ""
+      ].join("\n"), { status: 200 })),
+      [firstUrl]: recordFetch(fetched, fmp4MediaBody),
+      [secondUrl]: recordFetch(fetched, fmp4MediaBody)
+    });
+
+    assert.equal(await probeManifest(masterUrl, CONSTRAINED_IDENTITY, { pipelineShape: MUXED_TS_PIPELINE }), null,
+      "no candidate this pipeline can absorb means no feed");
+    assert.deepEqual(fetched, [ masterUrl, firstUrl, secondUrl ], "both candidates were tried before the walk gave up");
+  });
+
+  test("declines a media-only playlist the pipeline cannot absorb before inferring its codec", async () => {
+
+    /* A media playlist is its own single candidate. Under a shape it is admitted or declined on the body already in hand, and the decline lands ahead of codec
+     * inference - which fetches a segment - so a feed that is about to be refused never costs a segment request.
+     */
+    const playlistUrl = "https://cdn.test/media-only-fmp4.m3u8";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [playlistUrl]: recordFetch(fetched, () => new Response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg0.m4s\n",
+        { status: 200 })),
+      "https://cdn.test/seg0.m4s": recordFetch(fetched, () => new Response(Buffer.alloc(64), { status: 200 })),
+      "https://cdn.test/init.mp4": recordFetch(fetched, () => new Response(Buffer.alloc(64), { status: 200 }))
+    });
+
+    assert.equal(await probeManifest(playlistUrl, CONSTRAINED_IDENTITY, { pipelineShape: MUXED_TS_PIPELINE }), null,
+      "an fMP4 media playlist is not something an MPEG-TS pipeline can absorb");
+    assert.deepEqual(fetched, [playlistUrl], "the decline cost exactly the playlist fetch that answered the question");
   });
 });
 

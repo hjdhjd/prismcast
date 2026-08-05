@@ -190,6 +190,10 @@ function makeHarness(overrides: Partial<NativeProxyOptions> = {}): Harness {
     audioVariantUrl: null,
     channelName: "map-test-channel",
     clock: makeImmediateClock(),
+
+    // The container the proxy reports as its pipeline shape. Nothing in this file reads it - the relay follows whatever bodies the router serves - so the harness
+    // names the fMP4 sources these initialization tests are about.
+    container: "fmp4",
     encryption: "clear",
     keyUrl: null,
     onError: (): void => { /* Overridden by tests that observe escalation. */ },
@@ -808,6 +812,7 @@ describe("fMP4 relay: composite playlists with preroll", () => {
       audioVariantUrl: null,
       channelName: "composite-channel",
       clock: makeImmediateClock(),
+      container: "fmp4",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => { /* Unused. */ },
@@ -877,6 +882,7 @@ describe("fMP4 relay: composite playlists with preroll", () => {
       audioVariantUrl: null,
       channelName: "composite-ts-channel",
       clock: makeImmediateClock(),
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => { /* Unused. */ },
@@ -1013,6 +1019,7 @@ describe("fMP4 relay: pruning and lifecycle", () => {
       audioVariantUrl: null,
       channelName: "straggler-channel",
       clock: makeImmediateClock(),
+      container: "fmp4",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => { /* Unused. */ },

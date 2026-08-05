@@ -3,6 +3,7 @@
  * proxy.ts: Native HLS proxy - manifest polling, segment fetching, and playlist generation.
  */
 import { LOG, chromeFetch, realClock, startTimer } from "../utils/index.ts";
+import type { MediaContainer, Nullable } from "../types/index.ts";
 import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
 import { findNamedInitSegment, pruneNamedInitSegments, storeAudioSegment, storeNamedInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist,
@@ -11,7 +12,7 @@ import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { Clock } from "../utils/index.ts";
 import type { InitSegmentTrack } from "../streaming/registry.ts";
-import type { Nullable } from "../types/index.ts";
+import type { PipelineShape } from "./probe.ts";
 import type { PlaylistSegmentEntry } from "../streaming/playlistBuilder.ts";
 import { buildPlaylist } from "../streaming/playlistBuilder.ts";
 import { getStream } from "../streaming/registry.ts";
@@ -123,6 +124,11 @@ export interface NativeProxyOptions {
   // is unchanged when callers omit it.
   clock?: Clock;
 
+  // Container format of the upstream segments, as classified by the probe. It is fixed for the proxy's lifetime: an "fmp4" relay fetches and re-references the
+  // initialization segments the source's #EXT-X-MAP tags name, while a "ts" relay passes self-describing segments through, and no running relay switches between
+  // the two. It is part of the compatibility envelope getPipelineShape() reports.
+  container: MediaContainer;
+
   // Encryption type classified by the probe.
   encryption: "aes128" | "clear";
 
@@ -169,6 +175,10 @@ export interface NativeProxy {
 
   // Returns the timestamp of the last successfully stored segment.
   getLastSegmentTime: () => number;
+
+  // Returns the compatibility envelope this proxy was constructed around - the container it relays, the encryption kind it handles, and whether its audio is a
+  // separate rendition. A token refresh selects a fresh feed against it, so what the refresh binds is always something this pipeline can serve.
+  getPipelineShape: () => PipelineShape;
 
   // Returns the current segment index.
   getSegmentIndex: () => number;
@@ -1545,7 +1555,7 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
  */
 export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
-  const { channelName, clock = realClock, encryption, keyUrl, onError, streamId } = options;
+  const { channelName, clock = realClock, container, encryption, keyUrl, onError, streamId } = options;
   const hasAudio = options.audioVariantUrl !== null;
 
   // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
@@ -2210,6 +2220,12 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     getLastSegmentSize: (): Nullable<number> => video.lastSegmentSize,
 
     getLastSegmentTime: (): number => video.lastSegmentTime,
+
+    /* The envelope a refresh selects against, assembled from what construction fixed: the container the relay reads, the encryption kind it was built to handle,
+     * and whether its audio arrives as a separate rendition. It lives here because the pipeline lives here - the coordinator that runs the refresh holds a proxy
+     * reference and nothing else that could answer the question.
+     */
+    getPipelineShape: (): PipelineShape => ({ container, encryption, separateAudio: hasAudio }),
 
     getSegmentIndex: (): number => video.segmentIndex,
 

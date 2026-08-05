@@ -570,6 +570,14 @@ export function monitorPlaybackHealth(
       const success = await refreshNativeManifest({
 
         channelName: entry.info.storeKey,
+        onFeedApplied: (metadata) => {
+
+          // The registry write belongs to this layer, not to the native one: recovery already holds the entry, so a refresh that binds a different rung of the
+          // service's ladder is recorded here as the stream's current quality.
+          entry.captureCodec = metadata.codec;
+          entry.nativeBandwidth = metadata.bandwidth;
+          entry.nativeResolution = metadata.resolution;
+        },
         page: currentPage,
         probeIdentity,
         proxy,

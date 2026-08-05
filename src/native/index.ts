@@ -4,7 +4,7 @@
  */
 import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
 import type { MediaContainer, Nullable } from "../types/index.ts";
-import type { MediaFeed, ProbeCacheIdentity } from "./probe.ts";
+import type { MediaFeed, PipelineShape, ProbeCacheIdentity } from "./probe.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
@@ -31,6 +31,10 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  * involvement), falling back to a browser page reload when the master URL itself has expired. Each refresh reschedules from the boundary it is aiming at, not from a
  * shrinking-but-unchanging master expiry, so the schedule never degenerates into a per-cycle re-probe loop in the final minutes before expiry. The proxy
  * continues serving cached segments during the refresh.
+ *
+ * A refresh re-runs the same ranked selection a tune runs, narrowed to the candidates the running proxy can absorb, so a stream heals in both directions as the
+ * service's ladder changes underneath it. A refreshed manifest offering nothing that pipeline can serve is declined outright rather than half-applied: the
+ * refresh reports failure, and the monitor's own escalation owns the one designed transition from relaying back to capture.
  */
 
 // Time in milliseconds before token expiry to trigger a refresh. We refresh 5 minutes early to ensure the new manifest is ready before the old one expires.
@@ -51,11 +55,6 @@ const MAX_TIMER_DELAY_MS = 2147483647;
 // almost immediately. Set low (5s) because the proxy only needs the variant URL to survive one poll cycle (~3s). A higher threshold (e.g., 30s) would cause Fox.com
 // channels to reject perfectly usable variant URLs - Fox.com tokens have ~57s total lifetime, leaving ~27s at the 30s refresh point.
 const MIN_USABLE_TOKEN_LIFETIME = 5000;
-
-// How many ranked variants a token-refresh probe may consider. A refresh applies its result to a running proxy as URL swaps behind truthiness guards, against an
-// audio topology the proxy fixed when it was constructed, so a refresh that reselected a different variant could leave the stream playing one variant's video
-// against another's audio. Refresh therefore keeps to the single top-ranked variant: walking down to a healthy sibling is a tune-time capability.
-const REFRESH_VARIANT_ATTEMPTS = 1;
 
 // Timeout for awaiting the manifest interception promise after playback init.
 const INTERCEPTION_AWAIT_TIMEOUT = 5000;
@@ -78,6 +77,10 @@ export interface AttemptNativeStreamingOptions {
 
   // Callback invoked on native proxy errors for recovery orchestration.
   onError: (error: string) => void;
+
+  // Callback invoked when a token refresh binds a fresh feed, carrying the quality facts that rebind may have changed. Optional because recording them is a
+  // streaming-layer concern the native layer only relays: the layer that owns the registry entry supplies the closure that writes it.
+  onFeedApplied?: (metadata: RefreshedFeedMetadata) => void;
 
   // The browser page (kept alive for token refresh).
   page: Page;
@@ -130,6 +133,22 @@ export interface NativeStreamResult {
 }
 
 /**
+ * The quality facts a token refresh can change when it binds a fresh feed. Selection is constrained to the running pipeline's shape, which holds the container
+ * and the audio topology equal across a rebind, so what a refresh can move is the rung of the ladder it landed on: the bandwidth, the codec, and the resolution.
+ */
+export interface RefreshedFeedMetadata {
+
+  // Declared bandwidth of the bound variant in bits per second. Zero when the BANDWIDTH attribute is absent or unparseable.
+  bandwidth: number;
+
+  // Video codec label (e.g., "H264", "HEVC", "AV1"), or null when the CODECS attribute is absent or unrecognized.
+  codec: Nullable<string>;
+
+  // Video resolution of the bound variant (e.g., "1920x1080"), or null when the attribute is absent.
+  resolution: Nullable<string>;
+}
+
+/**
  * Attempts to upgrade a stream from screen capture to native HLS streaming. Returns the native proxy on success, or null if the stream is not viable for native
  * consumption (DRM, interception timeout, or probe failure).
  *
@@ -138,7 +157,7 @@ export interface NativeStreamResult {
  */
 export async function attemptNativeStreaming(options: AttemptNativeStreamingOptions): Promise<Nullable<NativeStreamResult>> {
 
-  const { channelName, interceptionPromise, mpegTsClient, onError, page, probeIdentity, streamId, streamIdStr, url } = options;
+  const { channelName, interceptionPromise, mpegTsClient, onError, onFeedApplied, page, probeIdentity, streamId, streamIdStr, url } = options;
 
   const elapsed = startTimer();
 
@@ -204,6 +223,16 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     return null;
   }
 
+  /* The proxy is built around the feed's container, so a feed that carries none cannot become a pipeline. Only a DRM classification leaves it null, and that
+   * path returned above, so this guard answers a state the flow does not reach rather than inventing a container to satisfy the option's type.
+   */
+  if(mediaFeed.container === null) {
+
+    LOG.debug("native:coordinator", "Native streaming not viable for %s: the probe returned no container classification.", channelName);
+
+    return null;
+  }
+
   LOG.debug("native:coordinator", "Native streaming viable for %s (%s, variant: %s).", channelName, mediaFeed.encryption, mediaFeed.bestVariantUrl.slice(0, 80));
 
   // For AES-128 streams, pre-fetch the decryption key before committing to native mode. This validates key accessibility while the capture pipeline is still intact,
@@ -236,6 +265,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
     audioVariantUrl: mediaFeed.audioVariantUrl,
     channelName,
+    container: mediaFeed.container,
     encryption: mediaFeed.encryption,
     keyUrl: mediaFeed.keyUrl,
     onError,
@@ -253,6 +283,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
     channelName,
     masterUrl: interception.manifestUrl,
+    onFeedApplied,
     page,
     probeIdentity,
     proxy,
@@ -276,6 +307,11 @@ interface TokenRefreshOptions {
 
   channelName: string;
   masterUrl: string;
+
+  // Callback the refresh invokes when it binds a fresh feed, carried through every reschedule so a stream's quality reporting survives the whole chain of
+  // refreshes rather than only the first.
+  onFeedApplied?: (metadata: RefreshedFeedMetadata) => void;
+
   page: Page;
 
   // The stream's probe-cache identity, carried so every refresh probes under the identity the tune established rather than one derived from the rotating
@@ -335,7 +371,7 @@ function computeRefreshBoundary(masterUrl: string, variantUrl: string): Nullable
  */
 function scheduleTokenRefresh(options: TokenRefreshOptions): void {
 
-  const { channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url, variantUrl } = options;
+  const { channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url, variantUrl } = options;
 
   const boundary = computeRefreshBoundary(masterUrl, variantUrl);
 
@@ -361,10 +397,35 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
   // direct fetch before falling back to a page reload.
   const timer = setTimeout(() => {
 
-    void refreshNativeManifest({ channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url });
+    void refreshNativeManifest({ channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url });
   }, refreshIn);
 
   proxy.setTokenRefreshTimer(timer);
+}
+
+/**
+ * Options for refreshing a native stream's manifest.
+ */
+interface ManifestRefreshOptions {
+
+  channelName: string;
+
+  // The master manifest URL a direct fetch re-fetches. Omitted by the monitor's failure-triggered recovery, which knows no live master and goes straight to the
+  // page reload.
+  masterUrl?: string;
+
+  // Callback invoked when this refresh binds a fresh feed, carrying the quality facts the rebind may have changed.
+  onFeedApplied?: (metadata: RefreshedFeedMetadata) => void;
+
+  page: Page;
+
+  // The stream's probe-cache identity, carried so every refresh probes under the identity the tune established rather than one derived from the rotating
+  // manifest URL it is refreshing.
+  probeIdentity: ProbeCacheIdentity;
+
+  proxy: NativeProxy;
+  streamIdStr: string;
+  url: string;
 }
 
 /**
@@ -383,15 +444,7 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
  *                  either strategy reads and writes the cache under the identity the tune established.
  * @returns True if the refresh succeeded (proxy updated with new manifest), false otherwise.
  */
-export async function refreshNativeManifest(options: {
-  channelName: string;
-  masterUrl?: string;
-  page: Page;
-  probeIdentity: ProbeCacheIdentity;
-  proxy: NativeProxy;
-  streamIdStr: string;
-  url: string;
-}): Promise<boolean> {
+export async function refreshNativeManifest(options: ManifestRefreshOptions): Promise<boolean> {
 
   const { channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url } = options;
   const streamLog = LOG.withStreamId(streamIdStr);
@@ -409,7 +462,7 @@ export async function refreshNativeManifest(options: {
   // master URL's own CDN auth token hasn't expired. When it does expire, probeManifest returns null (403) and we fall through to the page reload strategy.
   if(masterUrl) {
 
-    const directResult = await tryDirectManifestRefresh(masterUrl, probeIdentity, streamLog);
+    const directResult = await tryDirectManifestRefresh(masterUrl, proxy.getPipelineShape(), probeIdentity, streamLog);
 
     if(directResult) {
 
@@ -419,36 +472,24 @@ export async function refreshNativeManifest(options: {
         return false;
       }
 
-      // Direct fetch succeeded. Update the proxy with the fresh variant URL(s).
-      proxy.updateVariantUrl(directResult.bestVariantUrl);
+      /* Apply the fresh feed, carrying the master URL forward: a direct fetch does not mint a new master, and the one in hand may still serve further direct
+       * fetches. The boundary the next schedule aims at therefore comes from the earlier of that unchanging master expiry and the freshly-fetched variant's,
+       * which is what keeps a still-valid master from being re-probed on a cadence of its own.
+       */
+      const applied = applyRefreshedFeed(directResult, masterUrl, options, streamLog);
 
-      if(directResult.audioVariantUrl) {
+      if(applied) {
 
-        proxy.updateAudioVariantUrl(directResult.audioVariantUrl);
+        streamLog.debug("native:token", "Manifest refresh completed for %s via direct fetch in %sms.", channelName, refreshElapsed());
       }
 
-      streamLog.debug("native:token", "Manifest refresh completed for %s via direct fetch in %sms.", channelName, refreshElapsed());
-
-      // Schedule the next refresh aimed at the new boundary. The master URL is unchanged by a direct fetch and may still be valid for further direct fetches, but
-      // the boundary is now driven by the earlier of the (unchanging) master expiry and the freshly-fetched variant expiry. Because scheduleTokenRefresh aims at
-      // that boundary - leading it only when there is comfortable margin - the schedule does not degenerate into a per-cycle re-probe of the still-valid master.
-      // Once the master URL expires, the next refresh's direct fetch fails and the page-reload fallback generates a new master URL.
-      scheduleTokenRefresh({
-
-        channelName,
-        masterUrl,
-        page,
-        probeIdentity,
-        proxy,
-        streamIdStr,
-        url,
-        variantUrl: directResult.bestVariantUrl
-      });
-
-      return true;
+      return applied;
     }
 
-    // Direct fetch failed. Fall through to page reload.
+    /* The direct fetch produced nothing usable - the master's token has expired, the fetch failed, or the manifest offered nothing this pipeline can absorb -
+     * so the page reload gets the second opinion. A fresh session can mint a ladder the running pipeline fits again, and a decline that persists through the
+     * reload leaves through the failure path below.
+     */
     streamLog.debug("native:token", "Direct manifest fetch failed for %s. Falling back to page reload.", channelName);
   }
 
@@ -509,7 +550,7 @@ export async function refreshNativeManifest(options: {
 
     // Probe the new manifest to get the updated variant URL. The interceptor has already released its observer by the time the promise resolves, so a probe
     // failure here only requires giving up on this refresh attempt - no session bookkeeping to unwind.
-    const refreshedFeed = await probeManifest(newInterception.manifestUrl, probeIdentity, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
+    const refreshedFeed = await probeManifest(newInterception.manifestUrl, probeIdentity, { pipelineShape: proxy.getPipelineShape() });
 
     if(!refreshedFeed) {
 
@@ -524,40 +565,97 @@ export async function refreshNativeManifest(options: {
       return false;
     }
 
-    // Update the proxy with the new variant URL(s).
-    proxy.updateVariantUrl(refreshedFeed.bestVariantUrl);
+    // Apply the fresh feed, carrying the NEW master URL from this interception forward: subsequent direct fetches use it until it expires, and the next boundary
+    // is the earlier of its expiry and the freshly-probed variant's.
+    const applied = applyRefreshedFeed(refreshedFeed, newInterception.manifestUrl, options, streamLog);
 
-    if(refreshedFeed.audioVariantUrl) {
+    if(applied) {
 
-      proxy.updateAudioVariantUrl(refreshedFeed.audioVariantUrl);
+      streamLog.debug("native:token", "Manifest refresh completed for %s via page reload in %sms.", channelName, refreshElapsed());
     }
 
-    streamLog.debug("native:token", "Manifest refresh completed for %s via page reload in %sms.", channelName, refreshElapsed());
-
-    // Schedule the next proactive token refresh with the NEW master URL from the fresh interception and the freshly-probed variant URL. Subsequent direct fetches
-    // will use the master URL until it expires; the boundary is the earlier of the master and variant expirations.
-    scheduleTokenRefresh({
-
-      channelName,
-      masterUrl: newInterception.manifestUrl,
-      page,
-      probeIdentity,
-      proxy,
-      streamIdStr,
-      url,
-      variantUrl: refreshedFeed.bestVariantUrl
-    });
-
-    return true;
+    return applied;
   } catch(error) {
 
     streamLog.debug("native:token", "Manifest refresh failed for %s: %s.", channelName, formatError(error));
 
-    // Clear the probe cache so a subsequent attempt re-probes.
-    clearProbeCache(channelName);
+    // Clear the probe cache so a subsequent attempt re-probes. The clear addresses the stream's own identity, which is what every probe on this stream reads and
+    // writes under.
+    clearProbeCache(probeIdentity.key);
 
     return false;
   }
+}
+
+/**
+ * Applies an accepted refresh to the running proxy and schedules the next one. Both strategies converge here, so the sequence a successful refresh performs - the
+ * URL swaps, the quality report, the reschedule - has exactly one home, and a future check on whether the refreshed feed still describes the same channel has one
+ * place to live.
+ *
+ * @param feed - The accepted feed, already selected against the proxy's pipeline shape.
+ * @param masterUrl - The master URL the next schedule should carry, which is the caller's to name: a direct fetch reuses the master it re-fetched, a page reload
+ *                    carries the one its fresh interception produced.
+ * @param options - The refresh options this cycle was invoked with, threaded into the reschedule so the chain outlives this cycle.
+ * @param streamLog - The stream-scoped logger.
+ * @returns True when the feed was applied, false when it was declined.
+ */
+function applyRefreshedFeed(feed: MediaFeed, masterUrl: string, options: ManifestRefreshOptions,
+  streamLog: ReturnType<typeof LOG.withStreamId>): boolean {
+
+  const { channelName, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url } = options;
+
+  /* A separate-audio pipeline polls two manifests, so it must be handed both URLs or neither: a video URL swapped without its audio would leave the two tracks
+   * on different CDN sessions. Selection admits only candidates whose audio topology matches this pipeline's, so an accepted feed arriving here without a
+   * rendition contradicts the selection that produced it - the refresh declines the whole application rather than performing half of it. Declining rather than
+   * throwing keeps a background cycle survivable: the false return is the same outcome every other refusal produces, and the caller already handles it.
+   */
+  const { separateAudio } = proxy.getPipelineShape();
+  const audioVariantUrl = separateAudio ? feed.audioVariantUrl : null;
+
+  if(separateAudio && (audioVariantUrl === null)) {
+
+    streamLog.debug("native:token", "Declining the refreshed feed for %s: it carries no audio rendition for a pipeline whose audio is a separate one.",
+      channelName);
+
+    return false;
+  }
+
+  proxy.updateVariantUrl(feed.bestVariantUrl);
+
+  if(audioVariantUrl !== null) {
+
+    proxy.updateAudioVariantUrl(audioVariantUrl);
+  }
+
+  /* Report the fresh quality facts upward. The callback belongs to the streaming layer, which owns the registry entry these facts are written to, and its
+   * failure must not undo an application that has already happened: a swap that succeeded is worth more than the status display it feeds, so a throw is warned
+   * about and the refresh still counts as the success it was.
+   */
+  if(onFeedApplied) {
+
+    try {
+
+      onFeedApplied({ bandwidth: feed.bandwidth, codec: feed.codec, resolution: feed.resolution });
+    } catch(error) {
+
+      streamLog.warn("The refreshed stream quality could not be recorded for %s: %s.", channelName, formatError(error));
+    }
+  }
+
+  scheduleTokenRefresh({
+
+    channelName,
+    masterUrl,
+    onFeedApplied,
+    page,
+    probeIdentity,
+    proxy,
+    streamIdStr,
+    url,
+    variantUrl: feed.bestVariantUrl
+  });
+
+  return true;
 }
 
 /**
@@ -565,17 +663,20 @@ export async function refreshNativeManifest(options: {
  * has sufficient token lifetime remaining, or null if the direct fetch should be abandoned in favor of a page reload.
  *
  * @param masterUrl - The master manifest URL to re-fetch.
+ * @param pipelineShape - The running proxy's compatibility envelope, which the probe selects within.
  * @param probeIdentity - The stream's probe-cache identity. The master URL passing through here carries session tokens that rotate on every refresh, so it is
  *                        never what the cache is keyed or stamped by; the stream's own identity is.
  * @param streamLog - The stream-scoped logger.
  * @returns A MediaFeed with a fresh variant URL, or null on failure.
  */
-async function tryDirectManifestRefresh(masterUrl: string, probeIdentity: ProbeCacheIdentity,
+async function tryDirectManifestRefresh(masterUrl: string, pipelineShape: PipelineShape, probeIdentity: ProbeCacheIdentity,
   streamLog: ReturnType<typeof LOG.withStreamId>): Promise<Nullable<MediaFeed>> {
 
-  const mediaFeed = await probeManifest(masterUrl, probeIdentity, { maxVariantAttempts: REFRESH_VARIANT_ATTEMPTS });
+  const mediaFeed = await probeManifest(masterUrl, probeIdentity, { pipelineShape });
 
-  if(!mediaFeed || (mediaFeed.encryption === "drm")) {
+  // A null feed is the only refusal to read here. A constrained probe hands back nothing the running pipeline cannot absorb - a mismatched encryption kind,
+  // container, or audio topology comes back as null - so the admission question is answered before this line, in the one place that can answer it completely.
+  if(!mediaFeed) {
 
     return null;
   }

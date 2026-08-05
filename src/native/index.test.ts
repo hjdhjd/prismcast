@@ -6,10 +6,10 @@
  * orchestration branches exercised here are driven by a directly-injected interceptionPromise (resolving to null vs a valid manifest, or rejecting), mocked
  * globalThis.fetch responses for the master/variant/key URLs, and a minimal page stub.
  */
+import type { AttemptNativeStreamingOptions, RefreshedFeedMetadata } from "./index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { buildProbeCacheStamp, clearProbeCache } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
-import type { AttemptNativeStreamingOptions } from "./index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { attemptNativeStreaming } from "./index.ts";
@@ -90,6 +90,11 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
+/* Payloads the factory's default quality-report hook receives. The orchestrator threads that hook onward to the token-refresh chain rather than calling it, so
+ * the record stays empty across this file's tuning branches; it exists so the factory carries the member and a later orchestration case has somewhere to read it.
+ */
+const feedAppliedPayloads: RefreshedFeedMetadata[] = [];
+
 /* makeAttemptOptions builds an AttemptNativeStreamingOptions literal with sensible defaults for the orchestration tests. Tests override the interceptionPromise
  * to inject the desired branch (null vs valid manifest), and channelName to keep the probe cache partitioned across test cases.
  *
@@ -107,6 +112,10 @@ function makeAttemptOptions(overrides: Partial<AttemptNativeStreamingOptions> = 
     channelName,
     interceptionPromise: Promise.resolve(null),
     onError: noop,
+    onFeedApplied: (metadata): void => {
+
+      feedAppliedPayloads.push(metadata);
+    },
     page: makeFakePage(),
     probeIdentity: { key: channelName, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) },
     streamId: 1,

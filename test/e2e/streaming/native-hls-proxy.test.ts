@@ -140,6 +140,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-clear",
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -225,6 +226,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-aes128",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => undefined,
@@ -301,6 +303,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-iv-lower",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => undefined,
@@ -376,6 +379,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-iv-upper",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => undefined,
@@ -456,6 +460,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-iv-malformed",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => { errorFired = true; },
@@ -534,6 +539,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-iv-decoy",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => undefined,
@@ -609,6 +615,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-iv-colon",
+      container: "ts",
       encryption: "aes128",
       keyUrl: stub.urlFor("/key"),
       onError: (): void => undefined,
@@ -697,6 +704,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: null,
       channelName: "stub-refresh",
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -793,6 +801,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
       audioVariantUrl: null,
       channelName: "stub-stop",
       clock,
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -917,6 +926,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: stub.urlFor("/audio.m3u8"),
       channelName: "stub-audio",
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -1049,6 +1059,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: stub.urlFor("/audio.m3u8"),
       channelName: "stub-audio-refresh",
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (): void => undefined,
@@ -1124,6 +1135,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
       audioVariantUrl: stub.urlFor("/audio.m3u8"),
       channelName: "stub-audio-fail",
+      container: "ts",
       encryption: "clear",
       keyUrl: null,
       onError: (message: string): void => { errors.push(message); },

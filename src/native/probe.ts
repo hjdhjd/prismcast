@@ -11,7 +11,8 @@ import { inferMediaCodec } from "./codecInference.ts";
  *
  * - Master (multivariant) playlists declare variant streams via #EXT-X-STREAM-INF and reference media playlist URLs. We rank the variants by descending bandwidth
  *   and take the first whose body fetches, resolve any separate audio rendition declared via #EXT-X-MEDIA:TYPE=AUDIO for that variant's own audio group, and
- *   classify the chosen body's encryption.
+ *   classify the chosen body's encryption. A caller that is already relaying a stream supplies the shape of that pipeline, which narrows the same ranked walk to
+ *   the candidates the running relay can absorb.
  * - Media playlists declare segments directly via #EXTINF and #EXT-X-TARGETDURATION. The input URL is itself the media feed; we fetch the body once and
  *   classify its encryption.
  *
@@ -33,7 +34,7 @@ const FETCH_TIMEOUT = 10000;
 // How many variants a master-playlist probe tries before giving up. Fallback covers the observed failure shape - a broken top variant with healthy siblings below
 // it - while capping the tune-time worst case at three sequential fetch timeouts. The bound matters because the probe runs inside the preroll bridge window:
 // capture segments are produced only once the native attempt resolves, so an unbounded crawl could outlast the preroll a client is playing while it waits. The
-// refresh path does not consume this cap; it pins its own attempt count through probeManifest's options.
+// cap governs both moments a stream selects a variant, the tune and every token refresh after it, so one ladder-walking policy serves the system.
 const MAX_VARIANT_FALLBACK_ATTEMPTS = 3;
 
 // The smallest segment count a tune-time probe will admit as a channel. A window holding a single segment has nothing to advance to, so it describes a fixed
@@ -272,6 +273,42 @@ export interface MediaFeed {
 }
 
 /**
+ * The construction-fixed envelope of a running consumer: the container its relay reads, the encryption kind it was built to handle, and whether its audio arrives
+ * as a separate rendition. Selecting under a shape admits only the candidates that consumer can absorb, which is what lets a token refresh reselect freely while
+ * a stream is playing.
+ *
+ * Encryption is compared as a kind, not as a key location: a key URL that rotates within aes128 is ordinary token churn the relay already follows, while a change
+ * of kind describes a pipeline the stream was never built for. "drm" can never be an established kind, since a DRM feed never becomes a running consumer, so a
+ * constrained probe declines every drm outcome by the same comparison.
+ */
+export interface PipelineShape {
+
+  // The container the consumer's relay reads. An "fmp4" source carries a separate initialization segment the relay fetches and re-references; a "ts" source is
+  // self-describing.
+  container: MediaContainer;
+
+  // The encryption kind the consumer was built to handle.
+  encryption: EncryptionType;
+
+  // Whether the consumer's audio arrives as a separate rendition rather than muxed into the video segments.
+  separateAudio: boolean;
+}
+
+/**
+ * Reports whether a pipeline shape admits a candidate feed, comparing the three axes as equals. This is the one home of the compatibility rule: the variant walk
+ * consults it to drop a fetched candidate cheaply, the media-only resolver consults it before paying for codec inference, and probeManifest consults it on the
+ * fully classified feed to make the constrained probe's guarantee.
+ *
+ * @param shape - The running consumer's compatibility envelope.
+ * @param candidate - The candidate's classification: its container (null when nothing has classified it), its encryption kind, and its audio topology.
+ * @returns True when the candidate matches the shape on every axis.
+ */
+function shapeAdmits(shape: PipelineShape, candidate: { container: Nullable<MediaContainer>; encryption: EncryptionType; separateAudio: boolean }): boolean {
+
+  return (candidate.container === shape.container) && (candidate.encryption === shape.encryption) && (candidate.separateAudio === shape.separateAudio);
+}
+
+/**
  * Identity of a probe-cache entry: which channel a classification belongs to, and which channel binding it was derived from. The key is the lookup identity and
  * the stamp is the validity test - a stamp built from different binding values never matches, so a lookup carrying the current binding reads an entry probed
  * under any other binding as absent rather than as a fact about the stream this tune reaches.
@@ -371,25 +408,32 @@ export function clearProbeCache(channelKey: string): void {
 
 /**
  * Probes an HLS playlist URL and returns a fully described MediaFeed. The input may be either a master playlist or a media playlist; classifyHlsPlaylist()
- * decides at runtime and the resolver dispatches accordingly. The probe cache is checked for DRM channels only - if a previous probe classified the channel as
- * DRM, we return the cached result immediately since the caller will bail out regardless of URLs. For viable channels (clear or aes128), we always run the full
- * probe because the variant URL and key URL contain auth tokens that expire between browser sessions.
+ * decides at runtime and the resolver dispatches accordingly. The probe cache is checked for DRM channels only: an unconstrained probe returns the cached
+ * classification immediately, since its caller abandons native streaming without reading any URL, while a probe constrained to a running pipeline declines
+ * instead, because no running pipeline is built around DRM. For viable channels (clear or aes128), we always run the full probe because the variant URL and key
+ * URL contain auth tokens that expire between browser sessions.
+ *
+ * A constrained probe carries one further guarantee: every feed it returns matches the supplied pipeline shape on container, encryption kind, and audio
+ * topology. A master whose candidates all mismatch resolves to null exactly as one whose candidates all fail to fetch does, because a feed the asking pipeline
+ * cannot absorb is not an error - it is a feed for some other pipeline.
  *
  * @param playlistUrl - The HLS playlist URL (master or media; contains auth tokens from the browser's original request).
  * @param identity - The probe-cache identity this stream resolves under: the channel key for lookup, and the binding stamp any entry read or written must carry.
  * @param options - Probe options.
- * @param options.maxVariantAttempts - How many ranked variants a master playlist may try. Tune-time callers omit it and take capped descending-bandwidth
- *                                     fallback. The token-refresh path pins a single attempt: a refresh applies its result to a running proxy as URL swaps
- *                                     against an audio topology the proxy fixed at construction, so refresh must not reselect.
+ * @param options.maxVariantAttempts - How many ranked variants a master playlist may fetch before giving up. Callers omit it and take the capped
+ *                                     descending-bandwidth walk that is the selection policy for both tune and refresh; a caller naming a smaller number takes
+ *                                     a narrower walk.
+ * @param options.pipelineShape - The compatibility envelope of a consumer that is already running, supplied by the token-refresh path. Selection is constrained
+ *                                to the candidates that shape admits. A tune omits it, having no pipeline yet to be compatible with.
  * @param options.rejectStaticPlaylists - Whether a resolved window of at most one segment is refused. The tune path sets it so a session bumper falls back to
  *                                        capture instead of becoming the stream. The refresh path leaves it off: its probe re-describes a feed the proxy is
  *                                        already relaying, so admitting the channel is not its decision to make.
- * @returns The MediaFeed, or null if probing fails.
+ * @returns The MediaFeed, or null when the probe fails or resolves a feed the supplied pipeline shape cannot absorb.
  */
 export async function probeManifest(playlistUrl: string, identity: ProbeCacheIdentity,
-  options: { maxVariantAttempts?: number; rejectStaticPlaylists?: boolean } = {}): Promise<Nullable<MediaFeed>> {
+  options: { maxVariantAttempts?: number; pipelineShape?: PipelineShape; rejectStaticPlaylists?: boolean } = {}): Promise<Nullable<MediaFeed>> {
 
-  const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS, rejectStaticPlaylists = false } = options;
+  const { maxVariantAttempts = MAX_VARIANT_FALLBACK_ATTEMPTS, pipelineShape, rejectStaticPlaylists = false } = options;
 
   // Normalize to a floor of one whole attempt. Array.prototype.slice reads a negative count from the end of the list, so an out-of-range value from a caller
   // would otherwise become a surprising selection rather than a single top-ranked try.
@@ -400,6 +444,17 @@ export async function probeManifest(playlistUrl: string, identity: ProbeCacheIde
   const cached = getCachedEncryption(identity);
 
   if(cached === "drm") {
+
+    /* A constrained probe declines the sentinel instead of returning it. The entry stays where it is - the classification remains a true fact about this channel
+     * for the next tune to read - and this probe simply cannot serve it, since no running pipeline is built around DRM. Handing back the sentinel would give the
+     * caller a feed carrying an empty variant URL, which reads as a successful refresh right up until the relay polls nothing.
+     */
+    if(pipelineShape) {
+
+      LOG.debug("native:probe", "Declining the probe for %s: the cached classification is drm, which no running pipeline can absorb.", identity.key);
+
+      return null;
+    }
 
     LOG.debug("native:probe", "Probe cache hit for %s: drm.", identity.key);
 
@@ -423,8 +478,8 @@ export async function probeManifest(playlistUrl: string, identity: ProbeCacheIde
     }
 
     const kind = classifyHlsPlaylist(body);
-    const resolved = (kind === "master") ? await resolveMasterPlaylist(body, playlistUrl, variantAttempts) :
-      (kind === "media") ? await resolveMediaPlaylist(body, playlistUrl) :
+    const resolved = (kind === "master") ? await resolveMasterPlaylist(body, playlistUrl, variantAttempts, pipelineShape) :
+      (kind === "media") ? await resolveMediaPlaylist(body, playlistUrl, pipelineShape) :
         null;
 
     if(!resolved) {
@@ -467,6 +522,19 @@ export async function probeManifest(playlistUrl: string, identity: ProbeCacheIde
     if(resolved.topRankedVariant) {
 
       probeCache.set(identity.key, { encryption: result.encryption, stamp: identity.stamp, timestamp: Date.now() });
+    }
+
+    /* The constrained probe's guarantee is made here, once, against the finished classification. The walk compares each candidate as it reads the body, which is
+     * ahead of the key fetch that can still turn an AES-128 declaration into drm, so this is the only point at which every axis is settled. A mismatch declines
+     * the probe, after the classification has been recorded: what this pipeline can absorb has no bearing on what the channel is.
+     */
+    if(pipelineShape && !shapeAdmits(pipelineShape, { container: result.container, encryption: result.encryption,
+      separateAudio: result.audioVariantUrl !== null })) {
+
+      LOG.debug("native:probe", "Declining the resolved feed for %s: it serves %s/%s, which the running pipeline cannot absorb.", identity.key, result.container,
+        result.encryption);
+
+      return null;
     }
 
     LOG.debug("native:probe", "Probe completed for %s in %sms: %s (%s).", identity.key, elapsed(), result.encryption, kind);
@@ -527,6 +595,10 @@ interface ResolvedMedia {
   // Human-readable video codec label (e.g., "H264", "HEVC"), or null when neither the master's CODECS attribute nor first-segment inference produced a label.
   codec: Nullable<string>;
 
+  // The container the resolver already classified, carried so the converge site consumes it rather than scanning the body a second time. Null when nothing
+  // classified it, which is every resolution that ran without a pipeline shape to compare against.
+  container: Nullable<MediaContainer>;
+
   // The media playlist body. classifyEncryption() walks this for #EXT-X-KEY tags; for master-derived feeds this is the chosen variant's body, for media-only
   // feeds this is the input playlist itself.
   mediaBody: string;
@@ -544,16 +616,22 @@ interface ResolvedMedia {
 }
 
 /**
- * Resolves a master playlist into a ResolvedMedia. The declared variants are walked in descending-bandwidth order, up to maxVariantAttempts candidates, and the
- * first one whose manifest fetches becomes the feed - so a master whose top variant is broken still yields a native stream through a healthy sibling beneath it.
- * The audio rendition resolves from the chosen variant's own audio group, which keeps the feed's audio bound to the video it accompanies.
+ * Resolves a master playlist into a ResolvedMedia. The declared variants are walked in descending-bandwidth order and the first one that answers usably becomes
+ * the feed - so a master whose top variant is broken still yields a stream through a healthy sibling beneath it. The audio rendition resolves from the chosen
+ * variant's own audio group, which keeps the feed's audio bound to the video it accompanies.
+ *
+ * Under a pipeline shape the same ranked walk runs, narrowed to the candidates a running consumer can absorb. Eligibility is decided lazily, as the descent
+ * reaches each variant, so the cost of the constraint is proportional to how far the walk actually goes. Only a fetch counts against the attempt budget: a
+ * candidate ruled out by pure string work costs nothing and spends nothing.
  *
  * @param masterBody - The master manifest text.
  * @param masterUrl - The master manifest URL for resolving relative variant URLs.
- * @param maxVariantAttempts - How many of the ranked variants to try before giving up.
- * @returns The resolved media feed metadata, or null when the master cannot be resolved.
+ * @param maxVariantAttempts - How many candidate fetches to spend before giving up.
+ * @param pipelineShape - The running consumer's compatibility envelope, or undefined for an unconstrained walk.
+ * @returns The resolved media feed metadata, or null when the master yields no candidate this walk can use.
  */
-async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxVariantAttempts: number): Promise<Nullable<ResolvedMedia>> {
+async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxVariantAttempts: number,
+  pipelineShape?: PipelineShape): Promise<Nullable<ResolvedMedia>> {
 
   const variants = selectVariants(masterBody, masterUrl);
 
@@ -564,14 +642,35 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
     return null;
   }
 
-  const candidates = variants.slice(0, maxVariantAttempts);
+  if(maxVariantAttempts < variants.length) {
 
-  if(candidates.length < variants.length) {
-
-    LOG.debug("native:probe", "Attempting the top %s of %s advertised variant(s).", candidates.length, variants.length);
+    LOG.debug("native:probe", "Attempting at most %s of %s advertised variant(s).", maxVariantAttempts, variants.length);
   }
 
-  for(const [ index, variant ] of candidates.entries()) {
+  let attempts = 0;
+
+  for(const variant of variants) {
+
+    if(attempts >= maxVariantAttempts) {
+
+      break;
+    }
+
+    /* The audio topology axis is settled before the fetch because it can be: the rendition resolves from the master body already in hand, with no network work
+     * at all. A candidate whose topology differs from the running consumer's is therefore dropped without spending an attempt, and the URL this resolution
+     * produces is carried to the feed below so the winner never derives it twice. An unconstrained walk resolves nothing here, keeping that work on the one
+     * candidate it selects.
+     */
+    let audioVariantUrl = pipelineShape ? resolveAudioRendition(masterBody, masterUrl, variant.audioGroupId) : null;
+
+    if(pipelineShape && ((audioVariantUrl !== null) !== pipelineShape.separateAudio)) {
+
+      LOG.debug("native:probe", "Skipping the variant at %s bps: its audio topology differs from the running pipeline's.", variant.bandwidth);
+
+      continue;
+    }
+
+    attempts++;
 
     LOG.debug("native:probe", "Attempting variant at %s bps: %s.", variant.bandwidth, variant.url.slice(0, 120));
 
@@ -589,7 +688,30 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
       continue;
     }
 
-    const audioVariantUrl = resolveAudioRendition(masterBody, masterUrl, variant.audioGroupId);
+    /* The remaining two axes read the body that just arrived: the container tag scan, and the encryption tag scan without the key fetch that settles an aes128
+     * declaration. A candidate that mismatches on either is treated exactly as a failed fetch - it is a feed for some other pipeline - so the walk moves on to
+     * the next one rather than abandoning the master. The container this scan produces travels with the feed, which is what spares the converge site a second
+     * pass over the same body.
+     */
+    let container: Nullable<MediaContainer> = null;
+
+    if(pipelineShape) {
+
+      container = classifyContainer(variantBody);
+
+      const declaredEncryption = scanEncryptionDeclaration(variantBody).kind;
+
+      if(!shapeAdmits(pipelineShape, { container, encryption: declaredEncryption, separateAudio: audioVariantUrl !== null })) {
+
+        LOG.debug("native:probe", "Skipping the variant at %s bps: it serves %s/%s, which the running pipeline cannot absorb.", variant.bandwidth, container,
+          declaredEncryption);
+
+        continue;
+      }
+    } else {
+
+      audioVariantUrl = resolveAudioRendition(masterBody, masterUrl, variant.audioGroupId);
+    }
 
     if(audioVariantUrl) {
 
@@ -601,14 +723,18 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
       audioVariantUrl,
       bandwidth: variant.bandwidth,
       codec: variant.codec,
+      container,
       mediaBody: variantBody,
       mediaUrl: variant.url,
       resolution: variant.resolution,
-      topRankedVariant: index === 0
+
+      // The ranking's own first variant is what the cache write is conditioned on, so a constrained winner reached further down the ladder is measured against
+      // the full ranking rather than against the narrowed walk that selected it.
+      topRankedVariant: variant === variants[0]
     };
   }
 
-  LOG.debug("native:probe", "Every one of the %s attempted variant(s) failed to fetch.", candidates.length);
+  LOG.debug("native:probe", "None of the %s attempted variant(s) produced a usable feed.", attempts);
 
   return null;
 }
@@ -618,11 +744,33 @@ async function resolveMasterPlaylist(masterBody: string, masterUrl: string, maxV
  * URL verbatim, infers the codec from the first segment via codecInference.ts, and returns. Resolution stays null because TS PMT does not carry resolution and
  * SPS-level inference is out of scope.
  *
+ * A media playlist is its own single candidate, so under a pipeline shape this is where it is admitted or declined: its audio is muxed by definition, and its
+ * container and encryption kind read from the body already in hand. The comparison runs ahead of the codec inference because that inference fetches a segment,
+ * and a feed about to be declined must not cost a network round trip.
+ *
  * @param mediaBody - The media playlist text.
  * @param mediaUrl - The media playlist URL (the proxy will poll this).
- * @returns The resolved media feed metadata.
+ * @param pipelineShape - The running consumer's compatibility envelope, or undefined for an unconstrained resolution.
+ * @returns The resolved media feed metadata, or null when the shape cannot absorb this feed.
  */
-async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string): Promise<ResolvedMedia> {
+async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string, pipelineShape?: PipelineShape): Promise<Nullable<ResolvedMedia>> {
+
+  let container: Nullable<MediaContainer> = null;
+
+  if(pipelineShape) {
+
+    container = classifyContainer(mediaBody);
+
+    const declaredEncryption = scanEncryptionDeclaration(mediaBody).kind;
+
+    if(!shapeAdmits(pipelineShape, { container, encryption: declaredEncryption, separateAudio: false })) {
+
+      LOG.debug("native:probe", "Declining the media playlist at %s: it serves %s/%s with muxed audio, which the running pipeline cannot absorb.",
+        mediaUrl.slice(0, 120), container, declaredEncryption);
+
+      return null;
+    }
+  }
 
   // Best-effort codec inference. Returns codec=null on any failure (no segment, fetch error, unrecognized format) so the rest of the pipeline continues unimpaired.
   const inferred = await inferMediaCodec({ baseUrl: mediaUrl, playlistBody: mediaBody });
@@ -632,6 +780,7 @@ async function resolveMediaPlaylist(mediaBody: string, mediaUrl: string): Promis
     audioVariantUrl: null,
     bandwidth: 0,
     codec: inferred.codec,
+    container,
     mediaBody,
     mediaUrl,
     resolution: null,
@@ -767,13 +916,28 @@ function classifyContainer(mediaBody: string): MediaContainer {
   return "ts";
 }
 
-async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): Promise<MediaFeed> {
+/**
+ * What a media playlist's #EXT-X-KEY tags declare, read from the tags alone. The "aes128" arm carries the key URI the tag named, which is what settles the
+ * classification once fetched; the "drm" arm carries the method that produced it along with why, so the two shapes that reach DRM from the tags - a method Node
+ * cannot decrypt, and an AES-128 tag naming no key to fetch - stay tellable apart in the field diagnostics.
+ */
+type EncryptionDeclaration = { keyUri: string; kind: "aes128" } | { kind: "clear" } | { kind: "drm"; method: string; reason: "no-key-uri" | "unsupported-method" };
 
-  const lines = resolved.mediaBody.split("\n");
-  let encryption: EncryptionType = "clear";
-  let keyUrl: Nullable<string> = null;
+/**
+ * Reads a media playlist's #EXT-X-KEY tags and reports what they declare. This is the tag scan alone - it issues no request, so it costs one pass over a body the
+ * caller already holds. A NONE tag does not settle the classification on its own: some manifests interleave a NONE tag with a later, more restrictive key tag
+ * (a clear lead-in segment followed by an AES-128 or DRM-protected one), so the scan keeps reading and the first method that is not NONE settles it, favoring the
+ * strongest encryption signal present over the order in which the tags happen to appear.
+ *
+ * Two callers read this, with different appetites: the encryption classifier settles an "aes128" declaration by fetching the key it names, while the constrained
+ * variant walk compares the declared kind against a running pipeline's and moves on, paying for no fetch it would only discard.
+ *
+ * @param mediaBody - The media playlist body text.
+ * @returns What the key tags declare.
+ */
+function scanEncryptionDeclaration(mediaBody: string): EncryptionDeclaration {
 
-  for(const line of lines) {
+  for(const line of mediaBody.split("\n")) {
 
     const trimmed = line.trim();
 
@@ -785,10 +949,6 @@ async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): 
     // Parse METHOD attribute.
     const method = /METHOD=([A-Za-z0-9-]+)/.exec(trimmed)?.[1]?.toUpperCase() ?? "NONE";
 
-    // A NONE tag does not settle the classification on its own. Some manifests interleave a NONE tag with a later, more
-    // restrictive key tag (for example, a clear lead-in segment followed by an AES-128 or DRM-protected segment), so we keep
-    // scanning rather than stopping here. Every method below this point breaks out of the loop once found, favoring the
-    // strongest encryption signal present in the playlist over the order in which the tags happen to appear.
     if(method === "NONE") {
 
       continue;
@@ -796,26 +956,36 @@ async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): 
 
     if(method === "AES-128") {
 
-      // Parse URI attribute for the key URL.
+      // Parse URI attribute for the key URL. A key that names no location cannot be fetched, so the declaration is no more usable than an unsupported method.
       const uri = uriAttribute(trimmed);
 
-      if(!uri) {
+      return (uri === null) ? { kind: "drm", method, reason: "no-key-uri" } : { keyUri: uri, kind: "aes128" };
+    }
 
-        LOG.debug("native:probe", "AES-128 key tag has no URI for %s.", channelKey);
-        encryption = "drm";
+    // SAMPLE-AES, SAMPLE-AES-CTR, or any other method indicates DRM.
+    return { kind: "drm", method, reason: "unsupported-method" };
+  }
 
-        break;
-      }
+  return { kind: "clear" };
+}
 
-      const rawKeyUrl = resolveUrl(uri, resolved.mediaUrl);
+async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): Promise<MediaFeed> {
 
-      // Test that the key is accessible and is exactly 16 bytes.
-      // eslint-disable-next-line no-await-in-loop
+  const declaration = scanEncryptionDeclaration(resolved.mediaBody);
+  let encryption: EncryptionType = declaration.kind;
+  let keyUrl: Nullable<string> = null;
+
+  switch(declaration.kind) {
+
+    case "aes128": {
+
+      const rawKeyUrl = resolveUrl(declaration.keyUri, resolved.mediaUrl);
+
+      // Test that the key is accessible and is exactly 16 bytes. This is the classification's only request, and a body that named no key never reaches it.
       const keyAccessible = await testKeyAccessibility(rawKeyUrl);
 
       if(keyAccessible) {
 
-        encryption = "aes128";
         keyUrl = rawKeyUrl;
       } else {
 
@@ -826,11 +996,24 @@ async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): 
       break;
     }
 
-    // SAMPLE-AES, SAMPLE-AES-CTR, or any other method indicates DRM.
-    LOG.debug("native:probe", "Unsupported encryption method '%s' for %s.", method, channelKey);
-    encryption = "drm";
+    case "drm": {
 
-    break;
+      if(declaration.reason === "no-key-uri") {
+
+        LOG.debug("native:probe", "AES-128 key tag has no URI for %s.", channelKey);
+      } else {
+
+        LOG.debug("native:probe", "Unsupported encryption method '%s' for %s.", declaration.method, channelKey);
+      }
+
+      break;
+    }
+
+    default: {
+
+      // A clear body names no key, so there is nothing to fetch and nothing to report.
+      break;
+    }
   }
 
   return {
@@ -841,8 +1024,9 @@ async function classifyEncryption(resolved: ResolvedMedia, channelKey: string): 
     codec: resolved.codec,
 
     // Both playlist-kind branches converge here, so this is the one place the container is decided. A DRM feed carries null because the caller abandons native
-    // streaming without reading it, and classifying a body we will never relay would be a fabricated value.
-    container: (encryption === "drm") ? null : classifyContainer(resolved.mediaBody),
+    // streaming without reading it, and classifying a body we will never relay would be a fabricated value. A resolver that already classified the body under a
+    // pipeline shape hands its result across, so no body is scanned twice.
+    container: (encryption === "drm") ? null : (resolved.container ?? classifyContainer(resolved.mediaBody)),
     encryption,
     keyUrl,
     resolution: resolved.resolution
