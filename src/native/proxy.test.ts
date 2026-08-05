@@ -253,6 +253,46 @@ describe("NativeProxy.setTokenRefreshTimer", () => {
   });
 });
 
+describe("NativeProxy refresh coordination state", () => {
+
+  test("holds the in-flight refresh the coordinator stores and releases it on request", async () => {
+
+    // The slot is what makes two refresh triggers converge on one attempt: whoever finds it occupied awaits what is there. A freshly built proxy has no attempt
+    // running, and clearing the slot must leave it that way rather than holding a settled promise a later caller would await forever.
+    const proxy = createNativeProxy(makeProxyOptions());
+
+    assert.equal(proxy.getPendingRefresh(), null, "a new proxy has no refresh in flight");
+
+    const attempt = Promise.resolve(true);
+
+    proxy.setPendingRefresh(attempt);
+
+    assert.equal(proxy.getPendingRefresh(), attempt, "the stored attempt is what a second caller reads back");
+
+    proxy.setPendingRefresh(null);
+
+    assert.equal(proxy.getPendingRefresh(), null, "and releasing the slot empties it");
+    assert.equal(await attempt, true, "the attempt itself is untouched by the slot");
+
+    proxy.stop();
+  });
+
+  test("counts consecutive refresh failures and forgets them on request", () => {
+
+    // The count sizes the retry backoff, so it has to accumulate across a run of failures and start over once the stream refreshes successfully again.
+    const proxy = createNativeProxy(makeProxyOptions());
+
+    assert.equal(proxy.noteRefreshFailure(), 1, "the first failure of a run counts one");
+    assert.equal(proxy.noteRefreshFailure(), 2, "and consecutive failures accumulate");
+
+    proxy.clearRefreshFailures();
+
+    assert.equal(proxy.noteRefreshFailure(), 1, "after a clear, the next failure starts the run over");
+
+    proxy.stop();
+  });
+});
+
 describe("NativeProxy.updateVariantUrl", () => {
 
   test("increments the tokenRefreshes stat counter on each call", () => {

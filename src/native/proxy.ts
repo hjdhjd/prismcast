@@ -163,6 +163,10 @@ export interface NativeProxyOptions {
  */
 export interface NativeProxy {
 
+  // Resets the consecutive-refresh-failure count. The coordinator calls it when a refresh succeeds, so the next failure starts its backoff at the floor delay
+  // rather than inheriting an escalation the stream has already recovered from.
+  clearRefreshFailures: () => void;
+
   // Returns the number of consecutive segment fetch errors.
   getConsecutiveErrors: () => number;
 
@@ -175,6 +179,10 @@ export interface NativeProxy {
 
   // Returns the timestamp of the last successfully stored segment.
   getLastSegmentTime: () => number;
+
+  // Returns the refresh attempt currently in flight, or null when none is. A caller that finds one awaits it rather than starting a second attempt against the
+  // same page, and receives that attempt's own outcome.
+  getPendingRefresh: () => Nullable<Promise<boolean>>;
 
   // Returns the compatibility envelope this proxy was constructed around - the container it relays, the encryption kind it handles, and whether its audio is a
   // separate rendition. A token refresh selects a fresh feed against it, so what the refresh binds is always something this pipeline can serve.
@@ -194,6 +202,12 @@ export interface NativeProxy {
 
   // Returns true if the proxy has been stopped.
   isStopped: () => boolean;
+
+  // Records one failed refresh and returns the new consecutive-failure count, which the coordinator reads to size the retry delay.
+  noteRefreshFailure: () => number;
+
+  // Stores the refresh attempt now in flight, or null to release the slot when it settles.
+  setPendingRefresh: (refresh: Nullable<Promise<boolean>>) => void;
 
   // Sets the token refresh timer handle so it can be cancelled on stop. Called by the coordinator after scheduling a refresh. The proxy holds at most one live
   // refresh timer: arming a successor retires its predecessor.
@@ -343,7 +357,19 @@ interface ProxyLifecycleState {
   errorThresholdReached: boolean;
   firstPollComplete: boolean;
   manifestBackoffMs: number;
+
+  /* The refresh attempt currently in flight, or null when none is. Both refresh triggers - the proactive timer and the monitor's failure recovery - reach the
+   * same proxy, so this is where they meet: the second one to arrive awaits the promise the first one left here instead of starting a rival attempt against the
+   * same page. It is set before the attempt's first suspension point and cleared when the attempt settles, whatever the outcome.
+   */
+  pendingRefresh: Nullable<Promise<boolean>>;
+
   readinessSignaled: boolean;
+
+  // Consecutive failed refreshes since the last successful one. It paces the retry backoff, so a stream whose service is briefly unreachable retries promptly
+  // while one whose tokens are genuinely dead backs off instead of hammering.
+  refreshFailureCount: number;
+
   stopped: boolean;
   tokenRefreshTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -1576,7 +1602,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     errorThresholdReached: false,
     firstPollComplete: false,
     manifestBackoffMs: MANIFEST_BACKOFF_BASE,
+    pendingRefresh: null,
     readinessSignaled: false,
+    refreshFailureCount: 0,
     stopped: false,
     tokenRefreshTimer: null
   };
@@ -2214,12 +2242,19 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   return {
 
+    clearRefreshFailures: (): void => {
+
+      lifecycle.refreshFailureCount = 0;
+    },
+
     getConsecutiveErrors: (): number => video.segmentTracker.consecutiveFailures + video.consecutiveManifestFailures +
       audio.segmentTracker.consecutiveFailures + audio.consecutiveManifestFailures,
 
     getLastSegmentSize: (): Nullable<number> => video.lastSegmentSize,
 
     getLastSegmentTime: (): number => video.lastSegmentTime,
+
+    getPendingRefresh: (): Nullable<Promise<boolean>> => lifecycle.pendingRefresh,
 
     /* The envelope a refresh selects against, assembled from what construction fixed: the container the relay reads, the encryption kind it was built to handle,
      * and whether its audio arrives as a separate rendition. It lives here because the pipeline lives here - the coordinator that runs the refresh holds a proxy
@@ -2241,6 +2276,13 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     hasErrored: (): boolean => lifecycle.errorThresholdReached,
 
     isStopped: (): boolean => lifecycle.stopped,
+
+    noteRefreshFailure: (): number => ++lifecycle.refreshFailureCount,
+
+    setPendingRefresh: (refresh: Nullable<Promise<boolean>>): void => {
+
+      lifecycle.pendingRefresh = refresh;
+    },
 
     /* The proxy holds at most one live refresh timer, and this is the single site that writes the slot. Arming a successor therefore retires its predecessor
      * here, so a reschedule cannot leave an orphaned handle firing against a proxy that a newer schedule already speaks for, and the stop path retires whichever

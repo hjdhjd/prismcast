@@ -35,6 +35,11 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  * A refresh re-runs the same ranked selection a tune runs, narrowed to the candidates the running proxy can absorb, so a stream heals in both directions as the
  * service's ladder changes underneath it. A refreshed manifest offering nothing that pipeline can serve is declined outright rather than half-applied: the
  * refresh reports failure, and the monitor's own escalation owns the one designed transition from relaying back to capture.
+ *
+ * Two triggers reach the refresh - the boundary timer above and the monitor's failure-triggered recovery - and they share one attempt: whichever arrives second
+ * awaits the one in flight and reads its real outcome, because running two against a single browser page races their navigations and the monitor steers on the
+ * boolean it reads back. An attempt that fails on a live proxy warns and re-arms itself, doubling the delay per consecutive failure up to the refresh margin and
+ * riding the proxy's one timer slot, so a stream that stumbles keeps its proactive chain instead of coasting until its tokens die.
  */
 
 // Time in milliseconds before token expiry to trigger a refresh. We refresh 5 minutes early to ensure the new manifest is ready before the old one expires.
@@ -429,7 +434,96 @@ interface ManifestRefreshOptions {
 }
 
 /**
- * Refreshes a native stream's manifest to obtain fresh auth tokens. Two strategies are tried in order:
+ * Refreshes a native stream's manifest to obtain fresh auth tokens, serialized across callers and re-armed when an attempt fails.
+ *
+ * Two triggers reach this function: the proactive timer aimed at the token's expiry boundary, and the monitor's failure-triggered recovery. They can arrive
+ * within the same cycle, and two refreshes running against one browser page race each other's navigation, so an attempt already in flight is the attempt every
+ * caller gets - the later caller awaits it and reads its real settled outcome, which matters because the monitor steers its escalation on the boolean it reads
+ * back here.
+ *
+ * A failed refresh on a live proxy warns and re-arms itself with a doubling delay bounded by the refresh margin, so one transient failure cannot leave a stream
+ * with no proactive refresh for the rest of its life. The retry rides the proxy's single timer slot, the same one the boundary schedule uses.
+ *
+ * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first. probeIdentity is the stream's own, so the probe on
+ *                  either strategy reads and writes the cache under the identity the tune established.
+ * @returns True if the refresh succeeded (proxy updated with new manifest), false otherwise.
+ */
+export async function refreshNativeManifest(options: ManifestRefreshOptions): Promise<boolean> {
+
+  const { channelName, proxy, streamIdStr } = options;
+  const streamLog = LOG.withStreamId(streamIdStr);
+  const pending = proxy.getPendingRefresh();
+
+  if(pending) {
+
+    return pending;
+  }
+
+  /* What goes into the slot is a promise that never rejects: the attempt's own throw is caught and normalized to false here, before the promise is shared, so a
+   * caller awaiting the slot can never be handed a rejection from machinery it did not start. The store below happens before this attempt reaches its first
+   * suspension point, which is what makes the slot visible to a caller arriving in the same tick.
+   */
+  const attempt = (async (): Promise<boolean> => {
+
+    try {
+
+      return await runManifestRefresh(options, streamLog);
+    } catch(error) {
+
+      streamLog.debug("native:token", "Manifest refresh failed for %s: %s.", channelName, formatError(error));
+
+      return false;
+    }
+  })();
+
+  proxy.setPendingRefresh(attempt);
+
+  let succeeded = false;
+
+  try {
+
+    succeeded = await attempt;
+
+    if(succeeded) {
+
+      // The stream is refreshing again, so the backoff retires: whatever fails next starts over at the floor delay.
+      proxy.clearRefreshFailures();
+    } else if(!proxy.isStopped()) {
+
+      /* A failure on a live proxy is the field's early warning that a stream is heading for token death - every refusal inside the attempt reports at debug, so
+       * this is the one line an operator sees - and it re-arms the chain the failure would otherwise have ended. The delay doubles per consecutive failure up to
+       * the refresh margin, read from a count captured once so the warn and the timer cannot disagree. The re-arm rides the proxy's single timer slot: arming
+       * retires whatever is there, and stop() retires whichever is live, so there is never a second timer to leak. Nothing caps the retries because the stream's
+       * own lifecycle already does - a token that stays dead drives segment failures into the proxy's error threshold, and the fallback to capture that follows
+       * stops the proxy and its timer with it.
+       */
+      const failures = proxy.noteRefreshFailure();
+      const retryIn = Math.min(MIN_REFRESH_DELAY * (2 ** (failures - 1)), TOKEN_REFRESH_MARGIN);
+
+      streamLog.warn("The token refresh for %s did not complete. Retrying in %s seconds.", channelName, Math.round(retryIn / 1000));
+
+      proxy.setTokenRefreshTimer(setTimeout(() => {
+
+        void refreshNativeManifest(options);
+      }, retryIn));
+    }
+  } catch(error) {
+
+    /* Only the bookkeeping above can throw here, since the attempt settles rather than rejects. Catching it keeps the outcome the attempt reached intact and,
+     * more to the point, keeps this promise from rejecting: both production callers void or await it without a catch of their own, so an escape would kill the
+     * very re-arm chain this function exists to keep alive.
+     */
+    streamLog.warn("The token refresh bookkeeping for %s did not complete: %s.", channelName, formatError(error));
+  } finally {
+
+    proxy.setPendingRefresh(null);
+  }
+
+  return succeeded;
+}
+
+/**
+ * Runs one manifest refresh attempt. Two strategies are tried in order:
  *
  * 1. **Direct fetch** (if masterUrl is provided): Re-fetches the master manifest URL from Node.js without involving the browser. This avoids the visible page reload
  *    that disrupts the browser tab. The CDN returns the manifest with current token values as long as the URL's own auth token hasn't expired. When the master URL
@@ -440,14 +534,16 @@ interface ManifestRefreshOptions {
  *
  * L2 recovery (failure-triggered) from the monitor omits masterUrl, going straight to page reload since the stream is already failing and needs a full refresh.
  *
- * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first. probeIdentity is the stream's own, so the probe on
- *                  either strategy reads and writes the cache under the identity the tune established.
+ * Every point at which this attempt resumes after an await re-checks whether the proxy stopped meanwhile, because a stream can terminate at any of them and a
+ * stopped proxy must not be written to.
+ *
+ * @param options - Refresh options, as handed to refreshNativeManifest.
+ * @param streamLog - The stream-scoped logger the caller already holds.
  * @returns True if the refresh succeeded (proxy updated with new manifest), false otherwise.
  */
-export async function refreshNativeManifest(options: ManifestRefreshOptions): Promise<boolean> {
+async function runManifestRefresh(options: ManifestRefreshOptions, streamLog: ReturnType<typeof LOG.withStreamId>): Promise<boolean> {
 
-  const { channelName, masterUrl, page, probeIdentity, proxy, streamIdStr, url } = options;
-  const streamLog = LOG.withStreamId(streamIdStr);
+  const { channelName, masterUrl, page, probeIdentity, proxy, url } = options;
 
   if(proxy.isStopped()) {
 

@@ -15,6 +15,7 @@ import type { RefreshedFeedMetadata } from "./index.ts";
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
+import { subscribeToLogs } from "../utils/index.ts";
 
 /* closePuppeteerStreamWssOnIdle() performs its own dynamic import of puppeteer-stream, which starts a WebSocketServer; that server is what keeps the event loop
  * alive after every test resolves, and closePuppeteerStreamWssOnIdle() is also what closes it. We unref every Server handle and timers to drain handles
@@ -75,6 +76,9 @@ interface ProxyStubHooks {
 const MUXED_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "clear", separateAudio: false };
 const SEPARATE_AUDIO_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "clear", separateAudio: true };
 
+// The third shape, used by the fixture whose candidate declares AES-128: a relay that decrypts as it goes, which is a different pipeline from a clear one.
+const AES128_TS_PIPELINE: PipelineShape = { container: "ts", encryption: "aes128", separateAudio: false };
+
 /* scheduledTimerDelays records the delay every setTimeout call was scheduled with, keyed by the timer handle it produced. The spyScheduledTimers helper installs a
  * globalThis.setTimeout spy that populates this map so the proxy stub can recover the delay of the timer handed to setTokenRefreshTimer. A WeakMap keeps the entries
  * garbage-collectable once the handles are cleared, and survives across mock.reset (which only restores the spy, not module state).
@@ -117,17 +121,34 @@ function spyScheduledTimers(): void {
  */
 function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
 
+  /* The single-flight slot and the consecutive-failure count live inside the stub, the way the real proxy holds them, rather than on the hooks: no pin reads
+   * either one directly. What the tests watch is what the coordinator does with them - one master fetch for two concurrent callers, a retry armed at a delay the
+   * count sizes - and those are already visible through the fetch router and the timer spy.
+   */
+  let pendingRefresh: Promise<boolean> | null = null;
+  let refreshFailures = 0;
+
   return {
 
+    clearRefreshFailures: (): void => {
+
+      refreshFailures = 0;
+    },
     getConsecutiveErrors: (): number => 0,
     getLastSegmentSize: (): null => null,
     getLastSegmentTime: (): number => 0,
+    getPendingRefresh: (): Promise<boolean> | null => pendingRefresh,
     getPipelineShape: (): PipelineShape => hooks.pipelineShape,
     getSegmentIndex: (): number => 0,
     getStats: (): { fetchErrors: number; segmentsFetched: number; tokenRefreshes: number } => ({ fetchErrors: 0, segmentsFetched: 0, tokenRefreshes: 0 }),
     getTargetDuration: (): number => 6,
     hasErrored: (): boolean => false,
     isStopped: (): boolean => hooks.isStopped,
+    noteRefreshFailure: (): number => ++refreshFailures,
+    setPendingRefresh: (refresh: Promise<boolean> | null): void => {
+
+      pendingRefresh = refresh;
+    },
     setTokenRefreshTimer: (timer: ReturnType<typeof setTimeout>): void => {
 
       hooks.setTokenRefreshTimerCalls++;
@@ -196,6 +217,33 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
 function refreshIdentity(key: string, url = "https://example.test/channel"): ProbeCacheIdentity {
 
   return { key, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) };
+}
+
+/* Runs an operation while collecting the warn-level lines the logger emits. A refresh failure's warning is deliberately the operator's message rather than the
+ * caller's - nothing is returned to assert on - so the log emitter every subscriber reads is where a test observes whether it was written.
+ *
+ * @param operation - The refresh call to run.
+ * @returns The operation's outcome alongside the warnings emitted while it ran.
+ */
+async function captureWarnings(operation: () => Promise<boolean>): Promise<{ outcome: boolean; warnings: string[] }> {
+
+  const warnings: string[] = [];
+
+  const unsubscribe = subscribeToLogs((entry) => {
+
+    if(entry.level === "warn") {
+
+      warnings.push(entry.message);
+    }
+  });
+
+  try {
+
+    return { outcome: await operation(), warnings };
+  } finally {
+
+    unsubscribe();
+  }
 }
 
 describe("refreshNativeManifest", () => {
@@ -534,6 +582,48 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.lastRefreshDelayMs, MAX_TIMER_DELAY_MS, "the reschedule is clamped to the timer ceiling rather than overflowing it");
   });
 
+  test("holds a boundary that has already passed at the floor delay instead of firing back-to-back", async () => {
+
+    /* A boundary in the past computes a negative distance, and a timer armed with it fires at once: the refresh would re-probe, derive the same past boundary,
+     * and re-arm immediately, spinning as fast as the network answers. The floor is what turns a past-due or imminent boundary into one paced retry instead. Here
+     * the master's token expired a minute ago and the variant carries none, so the boundary is behind us and the schedule must sit exactly on the floor.
+     */
+
+    // Mirrors MIN_REFRESH_DELAY in index.ts, which is module-private.
+    const MIN_REFRESH_DELAY = 30000;
+    const expirySeconds = Math.floor(Date.now() / 1000) - 60;
+    const masterUrl = "https://cdn.test/past-due-master.m3u8?exp=" + String(expirySeconds);
+
+    makeFetchRouter({
+
+      "https://cdn.test/past-due-master.m3u8":
+        () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\npast-due-variant.m3u8\n", { status: 200 }),
+      "https://cdn.test/past-due-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("past-due-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "past-due-channel",
+      masterUrl,
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("past-due-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "past-due-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, true, "the refresh itself succeeds - a spent master token does not stop a direct fetch from answering");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh scheduled");
+    assert.equal(hooks.lastRefreshDelayMs, MIN_REFRESH_DELAY, "and it waits the floor delay rather than the past-due boundary's negative distance");
+  });
+
   test("pins the refresh boundary to the variant expiry when the variant token expires before the master token", async () => {
 
     /* The variant URL the proxy polls rotates independently of the master and can expire first. The boundary must be the earlier of the two so the proxy never holds
@@ -584,8 +674,11 @@ describe("refreshNativeManifest", () => {
     /* The direct-fetch path parses the variant URL's token and rejects a variant that would expire almost immediately (within ~5s), since handing the proxy a
      * variant that dies on the next poll is worse than a page reload that mints a genuinely fresh token. Here the master fetches fine but the variant carries an
      * exp roughly 2 seconds out, inside the MIN_USABLE_TOKEN_LIFETIME floor. tryDirectManifestRefresh returns null, so the refresh falls through to the page-reload
-     * strategy; with the page closed that path returns false and the proxy variant URL is never updated.
+     * strategy; with the page closed that path returns false and the proxy variant URL is never updated. The proxy is still live, so the failure arms the retry
+     * that keeps the proactive chain alive, at the delay a first consecutive failure waits.
      */
+    // Mirrors MIN_REFRESH_DELAY in index.ts, which is module-private. It is the delay a first consecutive failure retries at.
+    const MIN_REFRESH_DELAY = 30000;
     const variantExpirySeconds = Math.floor(Date.now() / 1000) + 2;
     const masterUrl = "https://cdn.test/near-expiry-master.m3u8";
     const variantPath = "near-expiry-variant.m3u8?exp=" + String(variantExpirySeconds);
@@ -607,6 +700,8 @@ describe("refreshNativeManifest", () => {
       }
     });
 
+    spyScheduledTimers();
+
     const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
       setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
@@ -625,10 +720,11 @@ describe("refreshNativeManifest", () => {
 
     assert.equal(result, false, "near-expired variant discarded, closed page yields false");
     assert.equal(hooks.variantUrl, "", "proxy variant URL was NOT updated from the discarded direct fetch");
-    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no refresh scheduled on the discard-then-fail path");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "the failed refresh arms its retry");
+    assert.equal(hooks.lastRefreshDelayMs, MIN_REFRESH_DELAY, "at the floor delay a first consecutive failure waits");
 
     // The candidate was fetched and its feed resolved, so the discard came from the token lifetime the fixture encodes rather than from an eligibility skip that
-    // never reached it - the same three observables would otherwise appear for a stub whose shape disagreed with these fixtures.
+    // never reached it - every observable above would otherwise read the same for a stub whose shape disagreed with these fixtures.
     assert.deepEqual(fetched, [ masterUrl, "https://cdn.test/" + variantPath ], "the master and its one candidate were both fetched");
   });
 
@@ -856,6 +952,63 @@ describe("refreshNativeManifest", () => {
     assert.deepEqual(fetched, [masterUrl], "the ineligible candidate was never fetched - the master body alone ruled it out");
   });
 
+  test("declines a candidate whose declared key turns out to be unreachable, which only the finished classification can see", async () => {
+
+    /* The walk reads a candidate's key tags without fetching the key, which is what keeps passing one over cheap - but it also means an AES-128 declaration
+     * clears the walk on the strength of the tag alone. Whether that key can actually be fetched is settled afterwards, by the classification that ends the
+     * probe, and a key answering 403 leaves a feed no decrypting relay can serve. So the check on the finished classification is what declines here...it is the
+     * one axis the walk had no way to see, and the reason the guarantee is made on the finished feed rather than on the walk's own reading.
+     */
+    const masterUrl = "https://cdn.test/deadkey-master.m3u8";
+    const variantUrl = "https://cdn.test/deadkey-variant.m3u8";
+    const keyUrl = "https://cdn.test/deadkey.bin";
+    const fetched: string[] = [];
+
+    makeFetchRouter({
+
+      [keyUrl]: () => {
+
+        fetched.push(keyUrl);
+
+        return new Response("forbidden", { status: 403 });
+      },
+      [masterUrl]: () => {
+
+        fetched.push(masterUrl);
+
+        return new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\ndeadkey-variant.m3u8\n", { status: 200 });
+      },
+      [variantUrl]: () => {
+
+        fetched.push(variantUrl);
+
+        return new Response("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyUrl + "\"\n#EXTINF:2,\nseg.ts\n", { status: 200 });
+      }
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: AES128_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("deadkey-channel");
+
+    // The page is closed, so the reload strategy short-circuits and the direct-fetch outcome is what the return value reports.
+    const result = await refreshNativeManifest({
+
+      channelName: "deadkey-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("deadkey-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "deadkey-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "a feed whose encryption ends up unserviceable is declined, not applied");
+    assert.equal(hooks.variantUrl, "", "the video URL is untouched");
+    assert.equal(hooks.audioVariantUrl, "", "and so is the audio URL");
+    assert.deepEqual(fetched, [ masterUrl, variantUrl, keyUrl ], "the candidate cleared the walk and its key was fetched - the decline came from that answer");
+  });
+
   test("hands the streaming layer the refreshed feed's quality facts", async () => {
 
     /* A refresh re-runs selection, so the rung of the ladder it lands on can differ from the one the tune bound. The native layer does not write the registry -
@@ -1058,5 +1211,241 @@ describe("refreshNativeManifest", () => {
 
     assert.equal(applied.length, 2, "the fired timer's cycle reports too");
     assert.deepEqual(second, { bandwidth: 2000000, codec: null, resolution: null }, "carrying the second cycle's own feed");
+  });
+
+  test("shares one attempt between concurrent callers and gives both its real outcome", async () => {
+
+    /* The proactive timer and the monitor's recovery both reach the same proxy, and within one cycle they can arrive together. Two attempts running at once
+     * would race the same browser page's navigation, so the second caller joins the attempt already in flight instead of starting a rival. What it joins is the
+     * real attempt, not a stand-in outcome: the monitor decides whether to escalate on the boolean it reads back, so a caller told "someone else is handling it"
+     * would be steering on a fiction. The gate below holds the first attempt's master fetch open until the second caller has arrived.
+     */
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/shared-master.m3u8?exp=" + String(expirySeconds);
+    const gate = Promise.withResolvers<string>();
+    let masterFetches = 0;
+
+    makeFetchRouter({
+
+      "https://cdn.test/shared-master.m3u8": async () => {
+
+        masterFetches++;
+
+        return new Response(await gate.promise, { status: 200 });
+      },
+      "https://cdn.test/shared-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("shared-channel");
+
+    const options = {
+
+      channelName: "shared-channel",
+      masterUrl,
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("shared-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "shared-stream",
+      url: "https://example.test/channel"
+    };
+
+    const first = refreshNativeManifest(options);
+    const second = refreshNativeManifest(options);
+
+    gate.resolve("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nshared-variant.m3u8?exp=" + String(expirySeconds) + "\n");
+
+    const [ firstOutcome, secondOutcome ] = await Promise.all([ first, second ]);
+
+    assert.equal(firstOutcome, true, "the attempt that ran succeeded");
+    assert.equal(secondOutcome, true, "and the caller that joined it reads the same outcome");
+    assert.equal(masterFetches, 1, "one attempt means one master fetch, not two racing the same page");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "and one reschedule, since only one refresh actually happened");
+  });
+
+  test("warns and re-arms with a doubling delay when a refresh fails", async () => {
+
+    /* A refresh that fails takes the proactive chain down with it: the schedule that would have armed the next one is only reached on success. Without a re-arm,
+     * one transient failure leaves a stream with no proactive refresh at all until its tokens die. The retry doubles per consecutive failure so a service that
+     * is briefly unreachable is retried promptly while one that is genuinely gone is not hammered.
+     */
+
+    // Mirrors MIN_REFRESH_DELAY in index.ts, which is module-private, so the pin restates the same floor.
+    const MIN_REFRESH_DELAY = 30000;
+    const masterUrl = "https://cdn.test/rearm-master.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("server error", { status: 500 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("rearm-channel");
+
+    // The page is closed, so the reload strategy short-circuits and the whole refresh reports failure.
+    const options = {
+
+      channelName: "rearm-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("rearm-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "rearm-stream",
+      url: "https://example.test/channel"
+    };
+
+    const firstFailure = await captureWarnings(() => refreshNativeManifest(options));
+
+    assert.equal(firstFailure.outcome, false, "the refresh failed");
+    assert.equal(firstFailure.warnings.length, 1, "and said so once, at a level an operator sees");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one retry is armed");
+    assert.equal(hooks.lastRefreshDelayMs, MIN_REFRESH_DELAY, "the first retry waits the floor delay");
+
+    const secondFailure = await captureWarnings(() => refreshNativeManifest(options));
+
+    assert.equal(secondFailure.outcome, false, "the second attempt fails too");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 2, "and arms its own retry");
+    assert.equal(hooks.lastRefreshDelayMs, MIN_REFRESH_DELAY * 2, "which waits twice as long as the first");
+  });
+
+  test("stays silent and arms nothing when a refresh fails on a stopped proxy", async () => {
+
+    /* An ordinary stream stop interrupts whatever refresh was in flight, and that is not a fault: there is no stream left to warn about and nothing left to
+     * retry for. The failure handling is gated on the proxy still being alive, so a stopped one exits exactly as quietly as it always has.
+     */
+    const masterUrl = "https://cdn.test/stopped-rearm-master.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("server error", { status: 500 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: true, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("stopped-rearm-channel");
+
+    const { outcome, warnings } = await captureWarnings(() => refreshNativeManifest({
+
+      channelName: "stopped-rearm-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("stopped-rearm-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "stopped-rearm-stream",
+      url: "https://example.test/channel"
+    }));
+
+    assert.equal(outcome, false, "a stopped proxy still reports failure to its caller");
+    assert.deepEqual(warnings, [], "but says nothing to the operator about a stream that is gone");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 0, "and arms no retry for it");
+  });
+
+  test("restarts the backoff at the floor after a refresh succeeds", async () => {
+
+    /* The backoff describes a run of consecutive failures, so a success ends the run. Without the reset, a stream that stumbled once early on would carry that
+     * escalation for the rest of its life and answer its next stumble - hours later, unrelated - with an inflated delay.
+     */
+    const MIN_REFRESH_DELAY = 30000;
+    const expirySeconds = Math.floor(Date.now() / 1000) + 600;
+    const masterUrl = "https://cdn.test/reset-master.m3u8?exp=" + String(expirySeconds);
+    let cycle = 0;
+
+    makeFetchRouter({
+
+      // Fail, then succeed, then fail: the third cycle is the one under test, and it must not inherit anything from the first.
+      "https://cdn.test/reset-master.m3u8": () => {
+
+        cycle++;
+
+        return (cycle === 2) ?
+          new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nreset-variant.m3u8?exp=" + String(expirySeconds) + "\n", { status: 200 }) :
+          new Response("server error", { status: 500 });
+      },
+      "https://cdn.test/reset-variant.m3u8": () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    spyScheduledTimers();
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    clearProbeCache("reset-channel");
+
+    const options = {
+
+      channelName: "reset-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("reset-channel"),
+      proxy: makeFakeProxy(hooks),
+      streamIdStr: "reset-stream",
+      url: "https://example.test/channel"
+    };
+
+    // Each cycle's delay is read into its own snapshot before it is asserted on, so the three assertions compare three separate readings rather than re-reading
+    // one mutable field the compiler has already narrowed.
+    assert.equal(await refreshNativeManifest(options), false, "the first cycle fails");
+
+    const firstRetryDelay = hooks.lastRefreshDelayMs;
+
+    assert.equal(await refreshNativeManifest(options), true, "the second cycle succeeds");
+
+    const boundaryDelay = hooks.lastRefreshDelayMs;
+
+    assert.equal(await refreshNativeManifest(options), false, "the third cycle fails again");
+
+    const secondRetryDelay = hooks.lastRefreshDelayMs;
+
+    assert.equal(firstRetryDelay, MIN_REFRESH_DELAY, "the first failure armed its retry at the floor delay");
+    assert.ok((boundaryDelay ?? 0) > MIN_REFRESH_DELAY, "the success replaced that retry with a boundary-aimed schedule");
+    assert.equal(secondRetryDelay, MIN_REFRESH_DELAY, "and the failure after it starts over at the floor, the success having cleared the run");
+  });
+
+  test("resolves rather than rejects when arming the retry itself throws", async () => {
+
+    /* Both production callers hand this promise to void or to a bare await, so a rejection escaping here would be unhandled - and it would take the retry chain
+     * with it, which is the one thing the failure handling exists to protect. The bookkeeping therefore runs inside the same guard as the attempt: a throw in it
+     * is reported and the settled outcome stands.
+     */
+    const masterUrl = "https://cdn.test/throwing-timer-master.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("server error", { status: 500 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+
+    // A proxy whose timer slot refuses the handle the re-arm hands it - the failure branch's last step, and the one furthest from the caller.
+    const proxy: NativeProxy = { ...makeFakeProxy(hooks), setTokenRefreshTimer: (): void => {
+
+      throw new Error("the timer slot refused the handle");
+    } };
+
+    clearProbeCache("throwing-timer-channel");
+
+    const { outcome, warnings } = await captureWarnings(() => refreshNativeManifest({
+
+      channelName: "throwing-timer-channel",
+      masterUrl,
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("throwing-timer-channel"),
+      proxy,
+      streamIdStr: "throwing-timer-stream",
+      url: "https://example.test/channel"
+    }));
+
+    assert.equal(outcome, false, "the promise settles on the outcome the attempt reached");
+    assert.equal(warnings.length, 2, "with the failure warning and the one naming the bookkeeping that threw");
   });
 });
