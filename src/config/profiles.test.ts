@@ -198,6 +198,26 @@ describe("getProfileForChannel", () => {
     assert.equal(result.profileName, "fullscreenApi", "channel-level fallback flipped to the concise-domain profile when the original required a selector");
   });
 
+  test("the explicit-profile fallback reports the displaced choice on its return", () => {
+
+    /* The resolver's half of the override contract: it names the profile the channel asked for and did not get, and leaves the decision to surface that to
+     * whichever caller cares. Same fixture as the flip test above - apiMultiVideo needs a channel selector this channel does not define, so cnbc.com's concise
+     * entry substitutes fullscreenApi for it.
+     */
+    const result = getProfileForChannel({ profile: "apiMultiVideo", url: "https://www.cnbc.com/livestream/" });
+
+    assert.equal(result.overriddenProfile, "apiMultiVideo", "the displaced explicit choice is reported by name");
+  });
+
+  test("an explicit profile that survives resolution reports no override", () => {
+
+    // The key is absent rather than present with an undefined value, so a caller can test the field directly. fullscreenApi needs no channel selector, so the
+    // fallback never fires and nothing displaces the channel's choice.
+    const result = getProfileForChannel({ profile: "fullscreenApi", url: "https://www.c-span.org/live/" });
+
+    assert.equal("overriddenProfile" in result, false, "no override key when the channel's choice survives resolution");
+  });
+
   test("explicit profile + URL re-applies domain properties idempotently (no double-merge surprise)", () => {
 
     /* The comment in mergeDomainProperties' re-application call says "For the URL-based path above, getProfileForUrl() already merges these - the re-application

@@ -1032,6 +1032,17 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       }
     }
 
+    /* A channel that named a profile and did not get it should hear about it once, at the moment it matters. Resolution reports the substitution on its return
+     * rather than logging it, because the playlist render and the channel table call the same resolver and would repeat the message on every fetch and every
+     * draw. Comparing profileName against the resolver's keeps a query-parameter override quiet: when ?profile= replaces the resolution wholesale, the
+     * substitution the resolver reported is not what tunes.
+     */
+    if(profileResult.overriddenProfile && (profileName === profileResult.profileName)) {
+
+      LOG.warn("Channel %s specifies the %s profile, which requires a channel selector the channel does not define; tuning with the %s profile instead.",
+        channel?.name ?? channelName ?? url, profileResult.overriddenProfile, profileName);
+    }
+
     // Apply static capture override if specified.
     if(staticCapture) {
 

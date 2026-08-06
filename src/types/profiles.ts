@@ -244,6 +244,10 @@ export interface ResolvedSiteProfile {
  */
 export interface ProfileResolutionResult {
 
+  // The profile a channel asked for by name and did not get, present only when channel-selection fallback substituted a different one for it. Absent for ordinary
+  // resolution, URL-detected substitutions included, because nothing the channel chose was displaced there. Consumers decide whether that is worth surfacing.
+  readonly overriddenProfile?: string;
+
   // The fully-resolved site profile with all flags having concrete values.
   profile: ResolvedSiteProfile;
 

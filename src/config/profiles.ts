@@ -183,8 +183,13 @@ export function getProfileForChannel(channel: {
     return { profile: { ...DEFAULT_SITE_PROFILE }, profileName: "default" };
   }
 
+  // Whether the channel named its own profile rather than leaving resolution to the URL. Only this case can produce an override: refining a URL-detected profile
+  // is ordinary resolution, with no choice of the channel's to displace.
+  const hasExplicitProfile = Boolean(channel.profile) && (channel.profile !== "auto");
+
   let profile: ResolvedSiteProfile;
   let profileName: string;
+  let overriddenProfile: string | undefined;
 
   // If the channel specifies an explicit profile name, use it directly. This takes precedence over URL-based detection. The value "auto" is treated as unset,
   // falling through to URL-based detection below.
@@ -213,6 +218,14 @@ export function getProfileForChannel(channel: {
     const conciseConfig = DOMAIN_CONFIG[extractDomain(channel.url)];
 
     if(conciseConfig?.profile && (conciseConfig.profile !== profileName)) {
+
+      // Report the displaced choice when the channel named the profile itself, capturing the name before the substitution overwrites it. Resolution only
+      // reports - it does not warn - because this resolver also serves per-request render paths (the playlist and the channel table) that would repeat the
+      // message on every fetch and every draw. The consumer that tunes decides whether the substitution is worth telling the operator about.
+      if(hasExplicitProfile) {
+
+        overriddenProfile = profileName;
+      }
 
       profile = resolveProfile(conciseConfig.profile);
       profileName = conciseConfig.profile;
@@ -256,7 +269,8 @@ export function getProfileForChannel(channel: {
     profile = { ...profile, channelSelection: { ...profile.channelSelection, ...scrollOverrides } };
   }
 
-  return { profile, profileName };
+  // The override key is present only when it carries a name, so a consumer can test the field itself rather than telling an absent key apart from an undefined one.
+  return overriddenProfile ? { overriddenProfile, profile, profileName } : { profile, profileName };
 }
 
 /* Before starting the server, we validate all profile configurations to catch errors early. Invalid configurations would cause runtime failures that are difficult
