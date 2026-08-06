@@ -57,6 +57,19 @@ let currentChromeVersion: Nullable<string> = null;
  */
 const RELAUNCH_COOLDOWN_LADDER_MS: readonly number[] = [ 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000 ];
 
+/* How long Chrome is given to exit after SIGTERM, and then after SIGKILL. The escalation is SIGTERM-first so Chrome can flush its profile databases (LevelDB,
+ * extension state, session storage) instead of having them corrupted by an immediate kill, and the SIGTERM window is generous because containerized environments
+ * with software rendering and shared CPU may need all of it. Every path that signals Chrome - the orderly close of a running instance and the startup sweep of
+ * stale ones - shares this pair, so the escalation behaves identically wherever it runs.
+ */
+const TERM_WAIT_MS = 5000;
+const KILL_WAIT_MS = 2000;
+
+/* The worst case a browser teardown can take before the Chrome process is certainly gone. The supervisor's closing state hands this to requests that arrive
+ * mid-drain as their retry horizon, so it is derived from the waits above rather than restated: the bound cannot drift from what the teardown actually allows.
+ */
+const BROWSER_TEARDOWN_DRAIN_BOUND_MS = TERM_WAIT_MS + KILL_WAIT_MS;
+
 /**
  * Builds the browser relaunch governor's policy from live configuration. The supervisor's policy port is a getter, so this is read fresh at each governor decision -
  * an operator's change to the recovery.relaunch* settings takes effect without reconstructing the supervisor (and a deferred config reload that restarts the server
@@ -540,10 +553,6 @@ export function killStaleChrome(): void {
 
       LOG.debug("browser:lifecycle", "Sent SIGTERM to Chrome process %d.", pid);
 
-      // Wait up to 5 seconds for Chrome to flush its databases and exit after SIGTERM. Containerized environments with software rendering and shared CPU may
-      // need the full window.
-      const TERM_WAIT_MS = 5000;
-
       if(!waitForChromeExit(pid, TERM_WAIT_MS, POLL_INTERVAL_MS)) {
 
         // SIGTERM didn't work. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not respond to SIGTERM.
@@ -556,8 +565,6 @@ export function killStaleChrome(): void {
 
           // ESRCH - Chrome exited between the poll check and the kill call.
         }
-
-        const KILL_WAIT_MS = 2000;
 
         if(!waitForChromeExit(pid, KILL_WAIT_MS, POLL_INTERVAL_MS)) {
 
@@ -1195,7 +1202,13 @@ export async function invalidateBrowser(browser: Browser, reason: string): Promi
 
   relinquishBrowserReadiness("capture system failure");
 
-  await closeBrowserInstance(browser);
+  // Readiness was relinquished first, because that is what supersedes an in-flight launch; publishing the teardown synchronously, before any await, then keeps the
+  // launch window shut for the whole drain so nothing spawns a second Chrome against the profile lock this one still holds.
+  const teardown = closeBrowserInstance(browser);
+
+  supervisor.noteTeardownBegun(teardown, BROWSER_TEARDOWN_DRAIN_BOUND_MS);
+
+  await teardown;
 }
 
 /**
@@ -1473,9 +1486,6 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
 
   if(chromeProcess?.pid && !chromeProcess.killed) {
 
-    const TERM_WAIT_MS = 5000;
-    const KILL_WAIT_MS = 2000;
-
     // Listen for the exit event before sending the signal. The event fires after the OS reaps the process, so there is no zombie window. Resolves to true so
     // Promise.race can distinguish exit from timeout.
     const { promise: exitPromise, resolve: signalExit } = Promise.withResolvers<true>();
@@ -1553,7 +1563,13 @@ export async function closeBrowser(): Promise<void> {
     return;
   }
 
-  await closeBrowserInstance(browser);
+  // Readiness was relinquished first, because that is what supersedes an in-flight launch; publishing the teardown synchronously, before any await, then keeps the
+  // launch window shut for the whole drain so nothing spawns a second Chrome against the profile lock this one still holds.
+  const teardown = closeBrowserInstance(browser);
+
+  supervisor.noteTeardownBegun(teardown, BROWSER_TEARDOWN_DRAIN_BOUND_MS);
+
+  await teardown;
 }
 
 /* Over time, browser pages (tabs) may accumulate if cleanup fails during stream termination. This can happen due to race conditions, errors during cleanup, or
@@ -1836,7 +1852,23 @@ async function executeBrowserRestart(): Promise<void> {
     // The restart swaps the whole Chrome session inside a living process, so the retiring session's page ids must not carry into the fresh one.
     clearPageTracking();
 
-    await closeBrowserInstance(browser);
+    // Readiness was relinquished first, because that is what supersedes an in-flight launch; publishing the teardown synchronously, before any await, then keeps the
+    // launch window shut for the whole drain so nothing spawns a second Chrome against the profile lock this one still holds.
+    const teardown = closeBrowserInstance(browser);
+
+    supervisor.noteTeardownBegun(teardown, BROWSER_TEARDOWN_DRAIN_BOUND_MS);
+
+    await teardown;
+
+    // The preconditions were checked before the teardown, but a shutdown can begin during the seconds it takes, and relaunching then would spawn Chrome into a
+    // dying process. Re-check on the far side of the await, for the same reason the guard above re-checks on the far side of the quiet period.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the shutdown path sets this while the teardown is awaited; TS cannot see that.
+    if(gracefulShutdownInProgress) {
+
+      LOG.debug("browser:lifecycle", "Browser restart relaunch declined because shutdown began while the previous instance was closing.");
+
+      return;
+    }
 
     // Launch a fresh browser instance so it is ready for the next stream request.
     await getCurrentBrowser();

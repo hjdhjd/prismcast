@@ -324,3 +324,153 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
     assert.equal(h.sup.inspect().kind, "absent", "after the reset a lone failure does not trip the governor");
   });
 });
+
+describe("browserSupervisor: the teardown drain", () => {
+
+  test("a teardown holds the lifecycle closed to launches and rejects acquires with the drain's horizon", async () => {
+
+    const h = makeHarness();
+
+    await h.sup.acquire();
+    assert.equal(h.sup.inspect().kind, "ready");
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: teardown } = Promise.withResolvers<void>();
+
+    // The adapter's order: retire the session, then publish the teardown of the Chrome that is still exiting.
+    h.env.clock = 9000;
+    h.sup.noteReadinessLost();
+    h.sup.noteTeardownBegun(teardown, 7000);
+
+    const closing = h.sup.inspect();
+
+    assert.equal(closing.kind, "closing");
+    assert.equal(closing.until, 9000 + 7000, "the horizon is the drain bound measured from the moment the teardown began");
+
+    await assert.rejects(h.sup.acquire(), (error: unknown) => {
+
+      assert.ok(error instanceof BrowserUnavailableError, "a request mid-drain gets the retryable rejection, not a second Chrome");
+      assert.equal(error.retryAfter, 16000, "and carries the drain's horizon as its retry-after");
+
+      return true;
+    });
+
+    assert.equal(h.env.launchCalls, 1, "no launch is attempted while the retiring Chrome still holds the profile lock");
+  });
+
+  test("the settled teardown returns the lifecycle to absent so the next request launches fresh", async () => {
+
+    const h = makeHarness();
+
+    await h.sup.acquire();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: teardown, resolve } = Promise.withResolvers<void>();
+
+    h.sup.noteReadinessLost();
+    h.sup.noteTeardownBegun(teardown, 7000);
+    assert.equal(h.sup.inspect().kind, "closing");
+
+    resolve();
+    await teardown;
+
+    assert.equal(h.sup.inspect().kind, "absent", "the drain is over, so the launch window reopens");
+
+    const browser = await h.sup.acquire();
+
+    assert.equal(browser, stubBrowser);
+    assert.equal(h.env.launchCalls, 2, "the next request launches a fresh browser");
+  });
+
+  test("a teardown that fails still ends the session", async () => {
+
+    // A close that could not confirm the process exited leaves the lifecycle in exactly the same place a clean one does: absent, ready to launch. Any Chrome that
+    // outlived the close is the stale-process sweep's problem at the next launch, not a reason to hold the launch window shut indefinitely.
+    const h = makeHarness();
+
+    await h.sup.acquire();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: teardown, reject } = Promise.withResolvers<void>();
+
+    h.sup.noteReadinessLost();
+    h.sup.noteTeardownBegun(teardown, 7000);
+
+    reject(new Error("chrome would not exit"));
+    await assert.rejects(teardown, /chrome would not exit/);
+
+    assert.equal(h.sup.inspect().kind, "absent");
+    assert.equal(await h.sup.acquire(), stubBrowser);
+    assert.equal(h.env.launchCalls, 2, "a failed close does not strand the lifecycle in closing");
+  });
+
+  test("a teardown begun without a preceding readiness loss still supersedes an in-flight launch", async () => {
+
+    // The adapter always relinquishes readiness first, so this order does not arise in production. The pin exists because the method advances the launch epoch
+    // itself rather than trusting the caller to have done it, and that self-sufficiency is what makes the contract safe to reason about at any call site.
+    const h = makeHarness();
+    const { promise: launch, resolve: completeLaunch } = Promise.withResolvers<Browser>();
+
+    h.env.launchImpl = (): Promise<Browser> => launch;
+
+    const acquired = h.sup.acquire();
+
+    assert.equal(h.sup.inspect().kind, "launching");
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: teardown, resolve: settleTeardown } = Promise.withResolvers<void>();
+
+    h.sup.noteTeardownBegun(teardown, 7000);
+    assert.equal(h.sup.inspect().kind, "closing");
+
+    completeLaunch(stubBrowser);
+
+    await assert.rejects(acquired, BrowserSupersededError, "the launch that was in flight does not publish over the teardown");
+    assert.equal(h.env.closeCalls, 1, "the orphaned browser was closed rather than leaked");
+    assert.equal(h.sup.inspect().kind, "closing", "and the drain is still in progress");
+
+    settleTeardown();
+    await teardown;
+
+    assert.equal(h.sup.inspect().kind, "absent");
+  });
+
+  test("a later teardown episode owns the state, and the earlier one settling cannot end it", async () => {
+
+    // Each episode arms its own exit handler against the exact state it published, so a drain that settles after the lifecycle has moved on finds a state it does
+    // not own and leaves it alone. The adapter never opens a second teardown over an unsettled one; only a direct call at the contract level reaches this.
+    const h = makeHarness();
+
+    await h.sup.acquire();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: firstDrain, resolve: settleFirst } = Promise.withResolvers<void>();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: secondDrain, resolve: settleSecond } = Promise.withResolvers<void>();
+
+    // Distinct bounds so the horizon identifies which episode owns the state.
+    h.env.clock = 9000;
+    h.sup.noteReadinessLost();
+    h.sup.noteTeardownBegun(firstDrain, 7000);
+    h.sup.noteTeardownBegun(secondDrain, 3000);
+
+    const second = h.sup.inspect();
+
+    assert.equal(second.kind, "closing");
+    assert.equal(second.until, 9000 + 3000, "the later episode owns the state");
+
+    settleFirst();
+    await firstDrain;
+
+    const afterFirst = h.sup.inspect();
+
+    assert.equal(afterFirst.kind, "closing", "the earlier episode's settle does not end a drain it no longer owns");
+    assert.equal(afterFirst.until, 9000 + 3000, "and leaves the later episode's horizon untouched");
+
+    settleSecond();
+    await secondDrain;
+
+    assert.equal(h.sup.inspect().kind, "absent", "the owning episode's settle returns the lifecycle to absent");
+  });
+});

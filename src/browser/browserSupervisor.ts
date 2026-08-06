@@ -21,14 +21,16 @@ import type { Nullable } from "../types/index.ts";
 /**
  * The browser lifecycle. The Browser reference lives inside the `ready` variant, so "is it ready" cannot desync from "do we have a browser" the way a separate
  * boolean flag could, and illegal states (ready-and-launching) are unrepresentable. `degraded` is the governor's OPEN state (cooling, not serving); `trialing` is
- * its HALF-OPEN state (one launch in flight after the cooldown elapsed).
+ * its HALF-OPEN state (one launch in flight after the cooldown elapsed). `closing` is a teardown of a still-running Chrome draining to completion, and its `until`
+ * is the conservative bound that requests rejected mid-drain carry as their retry horizon.
  */
 export type BrowserLifecycle =
   { readonly kind: "absent" } |
   { readonly kind: "launching"; readonly promise: Promise<Browser> } |
   { readonly kind: "ready"; readonly browser: Browser; readonly launchTime: number } |
   { readonly kind: "degraded"; readonly reason: string; readonly until: number } |
-  { readonly kind: "trialing"; readonly promise: Promise<Browser> };
+  { readonly kind: "trialing"; readonly promise: Promise<Browser> } |
+  { readonly kind: "closing"; readonly teardown: Promise<void>; readonly until: number };
 
 /**
  * The injected dependencies. `launch` performs the real, gated launch - it must resolve only with a capture-ready browser and reject otherwise (the adapter runs
@@ -74,6 +76,11 @@ export interface BrowserSupervisor {
   // Periodic health tick. Resets the governor to CLOSED once the browser has been continuously ready for the policy's hold. Returns true when this tick performed
   // the reset, so the adapter can log the recovery.
   readonly noteSustainedHealth: () => boolean;
+
+  // Records that the adapter has begun tearing down the retired session's still-running Chrome, after noteReadinessLost. The lifecycle holds in closing - acquire
+  // rejects retryable and nothing launches - until the teardown settles, at which point it returns to absent. The drain bound is the caller's worst-case estimate
+  // of how long the process can take to exit, and becomes the retry horizon the rejections carry.
+  readonly noteTeardownBegun: (teardown: Promise<void>, drainBoundMs: number) => void;
 }
 
 /**
@@ -232,6 +239,13 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
         throw new BrowserUnavailableError(state.until);
       }
 
+      // Draining: the retiring Chrome still holds the profile lock, so launching now would spawn a second one against it. Reject on the same retryable class the
+      // cooldown uses, carrying the drain's bound as the retry horizon, and let the caller come back once the process is gone.
+      case "closing": {
+
+        throw new BrowserUnavailableError(state.until);
+      }
+
       case "absent": {
 
         // canAttemptLaunch is true from absent (no cooldown is set), but we consult it for symmetry and future-proofing.
@@ -267,11 +281,44 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
 
     noteReadinessLost(governor);
 
-    // Only meaningful from ready/launching/trialing; from absent/degraded it is a harmless no-op that keeps the call site simple.
+    // Only meaningful from ready/launching/trialing; from absent/degraded/closing it is a harmless no-op that keeps the call site simple. Excluding closing is what
+    // keeps a drain intact: that state ends when its teardown settles, not when a caller reports the readiness it has already given up.
     if((state.kind === "ready") || (state.kind === "launching") || (state.kind === "trialing")) {
 
       transition({ kind: "absent" });
     }
+  }
+
+  /* Enters the closing state for a teardown the adapter has begun on the retired session's still-running Chrome, and holds there for the whole drain: acquire
+   * rejects retryable rather than launching a second Chrome against the profile lock the exiting one still holds.
+   *
+   * The method is self-sufficient rather than order-dependent - it advances the epoch and clears the governor's readiness anchor itself - so a teardown published
+   * without a preceding readiness-loss still supersedes an in-flight launch. In the adapter's real order readiness is relinquished first, which makes both
+   * operations redundant repeats here; that is harmless, and cheaper than a contract that only holds when the calls arrive in one particular order.
+   */
+  function handleTeardownBegun(teardown: Promise<void>, drainBoundMs: number): void {
+
+    generation++;
+
+    noteReadinessLost(governor);
+
+    const closing: BrowserLifecycle = { kind: "closing", teardown, until: ports.now() + drainBoundMs };
+
+    transition(closing);
+
+    /* Leave closing when this teardown settles, and only while this exact episode is still the current state. Comparing by identity rather than by kind means a
+     * state reached after the drain - including a second closing episode - cannot be knocked back to absent by an earlier drain settling late. A rejected teardown
+     * exits the same way: a failed close still ends the session, and any Chrome that survived it is reaped by the stale-process sweep at the next launch.
+     */
+    const exit = (): void => {
+
+      if(state === closing) {
+
+        transition({ kind: "absent" });
+      }
+    };
+
+    void teardown.then(exit, exit);
   }
 
   function noteSustainedHealthTick(): boolean {
@@ -284,7 +331,8 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
     return noteSustainedHealth(governor, ports.now(), ports.policy());
   }
 
-  return { acquire, current, currentLaunchTime, inspect: () => state, noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick };
+  return { acquire, current, currentLaunchTime, inspect: () => state, noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick,
+    noteTeardownBegun: handleTeardownBegun };
 }
 
 /**
