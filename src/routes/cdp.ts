@@ -117,9 +117,9 @@ const discoverySessions = new WeakMap<Browser, Promise<CDPSession>>();
 
 /**
  * Returns a working browser-level CDPSession for discovery, lazily creating one per Browser identity and re-creating it once a previously created session later
- * reports itself detached (e.g., after a transient CDP error surfaces post-creation). A creation attempt that itself rejects is not retried - the rejected
- * Promise stays cached for that Browser and every subsequent call rejects the same way. Concurrent callers against the same browser share the same in-flight
- * Promise; callers against a different browser get their own.
+ * reports itself detached (e.g., after a transient CDP error surfaces post-creation). A creation attempt that itself rejects evicts itself from the cache, so the
+ * next call attempts a fresh session while every caller already awaiting the failed attempt still receives its failure. Concurrent callers against the same
+ * browser share the same in-flight Promise; callers against a different browser get their own.
  * @param browser - The active Puppeteer Browser.
  * @returns A CDPSession attached to the browser target.
  */
@@ -140,6 +140,17 @@ async function getDiscoverySession(browser: Browser): Promise<CDPSession> {
   const session = browser.target().createCDPSession();
 
   discoverySessions.set(browser, session);
+
+  /* Evict a failed creation so the next call gets a fresh attempt instead of replaying a cached rejection forever. The delete is unconditional rather than
+   * guarded on the slot still holding this promise, and that is sound rather than careless: this function is the map's only writer (the one get above and the
+   * one set on the line above), a browser rotation keys an entirely different WeakMap slot, and this handler is armed at creation so it runs ahead of any
+   * later awaiter of the same settlement - nothing can interpose a newer entry between this promise's rejection and its eviction. Observing the rejection here
+   * does not swallow it: a caller already awaiting this promise still receives the failure.
+   */
+  void session.then(undefined, (): void => {
+
+    discoverySessions.delete(browser);
+  });
 
   return session;
 }
