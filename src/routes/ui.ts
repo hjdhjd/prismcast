@@ -298,9 +298,10 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "    if(updateUrl !== false) {",
     "      var parsed = parseHash();",
 
-    // Config and Channels are the only tabs with subtabs today. Adding a new subtabbed tab requires updating this branch, the equivalent
-    // hashchange-handler checks below, and the matching window.switch*Subtab wiring for the new tab.
-    "      var subtab = ((category === 'config') || (category === 'channels')) ? parsed.subtab : null;",
+    // A subtab id belongs to the tab it was parsed from, so it carries only when the switch stays on that tab. A cross-tab switch writes a bare tab hash and
+    // the destination's own subtab controller keeps whatever state it already had - no restore mechanism runs or needs to. Adding a new subtabbed tab needs
+    // no change here; the tab-specific wiring lives in the hashchange handler below and in the matching window.switch*Subtab registrations.
+    "      var subtab = (category === parsed.tab) ? parsed.subtab : null;",
     "      updateHash(category, subtab);",
     "    }",
 
