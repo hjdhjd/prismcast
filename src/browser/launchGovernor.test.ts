@@ -15,6 +15,9 @@ const POLICY: LaunchGovernorPolicy = { cooldownLadderMs: [ 1000, 5000, 20000 ], 
 // Cap policy: every failure trips (threshold 1) within a wide window, so the escalation ladder and its cap are easy to drive in isolation.
 const CAP_POLICY: LaunchGovernorPolicy = { cooldownLadderMs: [ 1000, 2000, 3000 ], failureThreshold: 1, failureWindowMs: 1000000, healthHoldMs: 30000 };
 
+// Trial policy: production's ratio, where the shortest cooldown rung is at least as long as the failure window, so the failure window always lapses while cooling.
+const TRIAL_POLICY: LaunchGovernorPolicy = { cooldownLadderMs: [ 300000, 900000 ], failureThreshold: 3, failureWindowMs: 300000, healthHoldMs: 120000 };
+
 describe("launchGovernor: CLOSED state", () => {
 
   test("a fresh governor permits a launch and is not cooling", () => {
@@ -198,5 +201,46 @@ describe("launchGovernor: full HALF-OPEN trial cycle", () => {
     noteLaunchSuccess(state, trialAt);
     assert.equal(noteSustainedHealth(state, trialAt + 30000, POLICY), true);
     assert.equal(state.cooldownLevel, 0, "recovered to CLOSED after a sustained, verified trial");
+  });
+});
+
+describe("launchGovernor: a failed HALF-OPEN trial", () => {
+
+  test("a trial failure trips and escalates even though the cooldown outlasted the failure window", () => {
+
+    const state = createLaunchGovernorState();
+
+    noteLaunchFailure(state, 0, TRIAL_POLICY);
+    noteLaunchFailure(state, 100, TRIAL_POLICY);
+    noteLaunchFailure(state, 200, TRIAL_POLICY);
+    assert.equal(state.cooldownLevel, 1, "the third failure trips to the first rung");
+
+    // The cooldown elapsed and the trial that followed it failed. The failure window lapsed while cooling, so the trial flag is the only thing separating this
+    // failure from a forgiven transient.
+    const trial = noteLaunchFailure(state, 500300, TRIAL_POLICY, true);
+
+    assert.equal(trial.tripped, true, "a failed trial trips whatever the failure window says");
+    assert.equal(state.cooldownLevel, 2, "and escalates one rung along the ladder");
+    assert.equal(trial.cooldownUntil, 500300 + 900000, "cooling for the second rung, measured from the trial's failure");
+  });
+
+  test("an ordinary failure after the window lapses is still forgiven and leaves the ladder and cooldown untouched", () => {
+
+    // The counterpart pin: the same lapsed-window arithmetic without the trial flag must keep today's forgiveness, so the trial rule cannot be mistaken for a
+    // blanket "any failure after a trip re-trips". Like every sibling here this drives the functions on literal inputs; production reaches this state when a trial
+    // succeeds, readiness is lost before the health hold elapses, and the fresh launch that follows fails.
+    const state = createLaunchGovernorState();
+
+    noteLaunchFailure(state, 0, TRIAL_POLICY);
+    noteLaunchFailure(state, 100, TRIAL_POLICY);
+
+    const trip = noteLaunchFailure(state, 200, TRIAL_POLICY);
+    const lapsed = noteLaunchFailure(state, 500300, TRIAL_POLICY);
+
+    assert.equal(lapsed.tripped, false, "a lapsed window forgives an ordinary failure");
+    assert.equal(lapsed.cooldownUntil, null, "and reports no new cooldown");
+    assert.equal(state.failure.totalFailureCount, 1, "the window restarted from this failure");
+    assert.equal(state.cooldownUntil, trip.cooldownUntil, "the cooldown set by the earlier trip is untouched");
+    assert.equal(state.cooldownLevel, 1, "and the ladder does not move");
   });
 });

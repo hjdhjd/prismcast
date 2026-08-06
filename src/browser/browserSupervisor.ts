@@ -136,8 +136,10 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
   }
 
   // Drives one launch attempt to completion, transitioning to ready on success or to degraded/absent on failure, and feeding the governor either way. Returns the
-  // browser on success and rejects with the underlying error on failure. The state is moved to launching/trialing by the caller before this resolves.
-  async function runLaunch(launchGeneration: number): Promise<Browser> {
+  // browser on success and rejects with the underlying error on failure. The state is moved to launching/trialing by the caller before this resolves. Whether the
+  // attempt is the post-cooldown trial arrives as a parameter rather than being read back from the state at settle time: the lifecycle may have moved on by then,
+  // and being a trial is a fact about the attempt itself.
+  async function runLaunch(launchGeneration: number, isTrial: boolean): Promise<Browser> {
 
     let browser: Browser;
 
@@ -150,7 +152,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
       // the state), and a superseded launch must not count a governor failure or move the state - the caller's request will retry.
       if(launchGeneration === generation) {
 
-        const outcome = noteLaunchFailure(governor, ports.now(), ports.policy());
+        const outcome = noteLaunchFailure(governor, ports.now(), ports.policy(), isTrial);
 
         // A trip moves us to degraded (cooling, no launches until the cooldown elapses); below the threshold we return to absent so the next request relaunches
         // immediately - the common transient costs no cooldown.
@@ -190,11 +192,12 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
   /* Begins a launch in the given phase (launching for a normal acquire, trialing for a post-cooldown trial) and publishes the in-flight promise into the state so
    * concurrent acquire() callers join it rather than starting a second Chrome. The body deliberately has no await: it starts runLaunch (which suspends at the
    * launch port) and publishes the launching/trialing state synchronously, before returning, so single-flight holds. It is async only to satisfy the
-   * promise-returning-function convention; the synchronous publish is what matters for correctness.
+   * promise-returning-function convention; the synchronous publish is what matters for correctness. The phase this begins in is also what tells the attempt
+   * whether it is the trial, so the governor can judge its failure accordingly.
    */
   async function beginLaunch(kind: "launching" | "trialing"): Promise<Browser> {
 
-    const promise = runLaunch(generation);
+    const promise = runLaunch(generation, kind === "trialing");
 
     transition({ kind, promise });
 

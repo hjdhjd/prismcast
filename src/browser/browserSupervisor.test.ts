@@ -20,8 +20,9 @@ const stubBrowser = {} as unknown as Browser;
 
 /* Test harness: a controllable launch port and clock. `env.launchImpl` is the per-test launch behavior (resolve a stub, reject, or return a deferred promise for
  * single-flight); `env.launchCalls` counts how many times the port was actually invoked - the assertion that proves the loop bound; `env.clock` is the injected now.
+ * The governor policy defaults to the fixture above; a test that needs different bounds passes its own rather than building its own ports.
  */
-function makeHarness(): {
+function makeHarness(policy: LaunchGovernorPolicy = POLICY): {
   env: { clock: number; closeCalls: number; launchCalls: number; launchImpl: () => Promise<Browser> };
   sup: ReturnType<typeof createBrowserSupervisor>;
   transitions: string[];
@@ -41,7 +42,7 @@ function makeHarness(): {
     },
     now: (): number => env.clock,
     onStateChange: (next): void => { transitions.push(next.kind); },
-    policy: (): LaunchGovernorPolicy => POLICY
+    policy: (): LaunchGovernorPolicy => policy
   };
 
   return { env, sup: createBrowserSupervisor(ports), transitions };
@@ -200,6 +201,47 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
 
     assert.equal(second.kind, "degraded");
     assert.equal(second.until, firstUntil + 5000, "the failed trial escalates to the next rung");
+  });
+});
+
+/* A production-ratio fixture: every cooldown rung is at least as long as the failure window, which is the regime production runs in. The trial that follows such a
+ * cooldown therefore fails outside the window, where the window's own lapse-restart would otherwise read the trial as a forgiven first failure.
+ */
+const TRIAL_POLICY: LaunchGovernorPolicy = { cooldownLadderMs: [ 2000, 8000 ], failureThreshold: 2, failureWindowMs: 1000, healthHoldMs: 30000 };
+
+describe("browserSupervisor: HALF-OPEN trial with a cooldown longer than the failure window", () => {
+
+  test("a failed trial re-trips and escalates even though the failure window lapsed during the cooldown", async () => {
+
+    const h = makeHarness(TRIAL_POLICY);
+
+    h.env.launchImpl = failLaunch;
+    await assert.rejects(h.sup.acquire(), /extension dead/);
+
+    h.env.clock = 100;
+    await assert.rejects(h.sup.acquire(), /extension dead/);
+
+    const first = h.sup.inspect();
+
+    assert.equal(first.kind, "degraded");
+
+    const firstUntil = first.until;
+
+    assert.equal(firstUntil, 100 + 2000, "the second failure trips to the first rung");
+
+    // The cooldown outlasts the failure window, so the trial's failure arrives after the window has lapsed - the case the trial rule exists for.
+    h.env.clock = firstUntil;
+    await assert.rejects(h.sup.acquire(), /extension dead/);
+
+    const second = h.sup.inspect();
+
+    assert.equal(second.kind, "degraded", "a failed trial cools down again rather than returning to absent");
+    assert.equal(second.until, firstUntil + 8000, "the failed trial escalates to the next rung");
+    assert.equal(h.env.launchCalls, 3, "two initial launches plus the one trial");
+
+    // Still cooling: a request arriving before the escalated horizon is rejected without spawning Chrome.
+    await assert.rejects(h.sup.acquire(), BrowserUnavailableError);
+    assert.equal(h.env.launchCalls, 3, "no launch is attempted while the escalated cooldown holds");
   });
 });
 

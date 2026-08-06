@@ -101,24 +101,31 @@ export function canAttemptLaunch(state: LaunchGovernorState, now: number): boole
  * Records a failed launch attempt and reports the resulting throttle. Every failure clears the readiness anchor (the browser is not ready). When the failure
  * trips the window, the governor additionally enters a cooldown whose duration is the next rung of the escalating ladder (capped at the final rung); below
  * the threshold it stays CLOSED and the first failures relaunch immediately.
+ *
+ * A failed HALF-OPEN trial is the one failure that always trips, whatever the window says. A cooldown rung can be longer than the failure window, so a trial
+ * that fails after serving one arrives with the window already lapsed, and a lapsed window restarts from the failure it lapsed on - forgiveness meant for an
+ * isolated transient, which a trial is not: the cooldown it just served is the record of repeated failures that earned it. The accrual left behind by a forced
+ * trip is deliberately loose - the window reads as one fresh failure while the ladder holds its escalated level and the new cooldown. Nothing can act on that
+ * gap: no launch is permitted until the cooldown elapses, the launch that follows one is itself a trial, and the sustained-health reset clears both together.
  * @param state - The governor state to update.
  * @param now - The current timestamp in milliseconds.
  * @param policy - The policy bounds.
+ * @param isTrial - Whether this attempt was the HALF-OPEN trial permitted once a cooldown elapsed.
  * @returns Whether the governor tripped into a cooldown and until when.
  */
-export function noteLaunchFailure(state: LaunchGovernorState, now: number, policy: LaunchGovernorPolicy): LaunchFailureOutcome {
+export function noteLaunchFailure(state: LaunchGovernorState, now: number, policy: LaunchGovernorPolicy, isTrial = false): LaunchFailureOutcome {
 
   // A failed launch means the browser is not ready; drop the readiness anchor so a prior ready period cannot satisfy a later health-gated reset.
   state.readySince = null;
 
   const result: FailureWindowResult = recordFailure(state.failure, now, { threshold: policy.failureThreshold, windowMs: policy.failureWindowMs });
 
-  if(!result.tripped) {
+  if(!result.tripped && !isTrial) {
 
     return { cooldownUntil: null, tripped: false };
   }
 
-  // The window tripped: escalate one rung along the cooldown ladder (capped at its length) and cool down for that duration.
+  // Cooling down: escalate one rung along the cooldown ladder (capped at its length) and cool down for that duration.
   state.cooldownLevel = Math.min(state.cooldownLevel + 1, policy.cooldownLadderMs.length);
 
   const rung = policy.cooldownLadderMs[state.cooldownLevel - 1] ?? 0;
