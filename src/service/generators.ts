@@ -364,6 +364,126 @@ function createLaunchdGenerator(io: GeneratorIO): ServiceGenerator {
  * --user -u prismcast).
  */
 
+/* The ExecStart codec: quoteUnitValue writes a field and parseExecStartFields reads it back, and they live side by side because they are exact inverses. ExecStart
+ * is a space-separated command line, so an installation path containing a space would otherwise split into extra arguments with no way to tell which boundary was
+ * real. Quoting both fields removes that ambiguity. The reader accepts the bare, unquoted grammar as well, because unit files sitting on disk carry it and an
+ * upgrade has to read the unit it is about to replace.
+ */
+
+/**
+ * Quotes a single ExecStart field per systemd's unit-file escaping rules.
+ * @param value - The path to write into the ExecStart line.
+ * @returns The value wrapped in double quotes with every character systemd gives meaning to escaped.
+ */
+function quoteUnitValue(value: string): string {
+
+  /* One pass over the four characters that carry meaning inside a quoted field. A backslash and a double quote are escaped with a backslash; a percent (a
+   * specifier such as %n) and a dollar (a variable such as $FOO) are escaped by doubling, because systemd expands both inside double quotes exactly as it does
+   * outside them. A single pass avoids the ordering trap of chained replacements, where a later pass re-escapes the backslashes an earlier one introduced.
+   */
+  const escaped = value.replaceAll(/[\\"%$]/g, (character) => ((character === "%") || (character === "$")) ? (character + character) : ("\\" + character));
+
+  return "\"" + escaped + "\"";
+}
+
+/**
+ * Reads an ExecStart value into the two paths it carries, accepting both the quoted grammar quoteUnitValue writes and the bare grammar of units already on disk.
+ * @param execStart - The ExecStart value with its "ExecStart=" prefix already stripped.
+ * @returns The node path and entry point, or null when the value does not hold exactly two non-empty fields.
+ */
+function parseExecStartFields(execStart: string): Nullable<ServicePaths> {
+
+  const fields: string[] = [];
+  let index = 0;
+
+  while(index < execStart.length) {
+
+    // Runs of spaces separate fields and carry no content of their own.
+    if(execStart.charAt(index) === " ") {
+
+      index++;
+
+      continue;
+    }
+
+    let field = "";
+
+    if(execStart.charAt(index) === "\"") {
+
+      index++;
+
+      /* A quoted field runs to the next unescaped quote, decoding as it scans. Decoding during the scan rather than afterwards is what keeps a path ending in a
+       * backslash unambiguous: the escaped backslash is consumed as one unit, so the quote that follows it closes the field instead of being read as the
+       * character it escapes.
+       */
+      let closed = false;
+
+      while(index < execStart.length) {
+
+        const character = execStart.charAt(index);
+
+        if(character === "\"") {
+
+          closed = true;
+          index++;
+
+          break;
+        }
+
+        const next = execStart.charAt(index + 1);
+
+        if((character === "\\") && ((next === "\\") || (next === "\""))) {
+
+          field += next;
+          index += 2;
+
+          continue;
+        }
+
+        if((next === character) && ((character === "%") || (character === "$"))) {
+
+          field += character;
+          index += 2;
+
+          continue;
+        }
+
+        field += character;
+        index++;
+      }
+
+      // An unterminated quote leaves everything after it ambiguous, so the whole value is malformed.
+      if(!closed) {
+
+        return null;
+      }
+    } else {
+
+      // A bare field runs to the first space.
+      while((index < execStart.length) && (execStart.charAt(index) !== " ")) {
+
+        field += execStart.charAt(index);
+        index++;
+      }
+    }
+
+    fields.push(field);
+  }
+
+  const [ nodePath, entryPoint ] = fields;
+
+  /* ExecStart carries exactly the node binary and the entry point. Any other count is ambiguous - a bare path holding a space yields a third token, and nothing
+   * in the line says where the real boundary was - so we answer null rather than a guess. Both callers already handle null: the restart path regenerates the
+   * unit, and the status path stays quiet instead of printing a stale-path warning built from paths it cannot trust.
+   */
+  if((fields.length !== 2) || !nodePath || !entryPoint) {
+
+    return null;
+  }
+
+  return { entryPoint, nodePath };
+}
+
 /**
  * Creates a systemd service generator for Linux.
  * @param io - The generator I/O context.
@@ -390,7 +510,7 @@ function createSystemdGenerator(io: GeneratorIO): ServiceGenerator {
       "",
       "[Service]",
       "Type=simple",
-      "ExecStart=" + definition.nodePath + " " + definition.entryPoint,
+      "ExecStart=" + quoteUnitValue(definition.nodePath) + " " + quoteUnitValue(definition.entryPoint),
       "WorkingDirectory=" + definition.workingDir,
       "Restart=always",
       "RestartSec=5",
@@ -910,7 +1030,8 @@ export function getServicePaths(io: GeneratorIO = createDefaultGeneratorIO()): N
       return { entryPoint, nodePath };
     }
 
-    // Systemd unit: ExecStart=<node> <entrypoint> on one line.
+    // Systemd unit: ExecStart=<node> <entrypoint> on one line. parseExecStartFields owns the field grammar and answers null for anything it cannot read as
+    // exactly two paths.
     case "linux": {
 
       const execStart = /^ExecStart=(.+)$/m.exec(content)?.[1];
@@ -920,14 +1041,7 @@ export function getServicePaths(io: GeneratorIO = createDefaultGeneratorIO()): N
         return null;
       }
 
-      const [ nodePath, entryPoint ] = execStart.split(" ");
-
-      if(!nodePath || !entryPoint) {
-
-        return null;
-      }
-
-      return { entryPoint, nodePath };
+      return parseExecStartFields(execStart);
     }
 
     // Windows: paths are stored as "# node: <path>" and "# entry: <path>" metadata comments near the top of the PowerShell launcher. The .trim() strips the

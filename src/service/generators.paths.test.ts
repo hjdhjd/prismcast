@@ -124,6 +124,26 @@ describe("getServicePaths happy paths (per platform)", () => {
     assert.equal(result.entryPoint, "/opt/prismcast/dist/index.js");
   });
 
+  test("linux: extracts both paths from a quoted ExecStart whose node path contains a space", () => {
+
+    // The other half of the two-grammar contract the test above pins: a quoted line is what the unit writer emits, and quoting is what lets a path containing a
+    // space survive a field grammar that otherwise splits on spaces.
+    setPlatform("linux");
+
+    const quotedUnit = [
+      "[Unit]",
+      "Description=PrismCast Streaming Server",
+      "[Service]",
+      "ExecStart=\"/opt/My Apps/node\" \"/opt/prismcast/dist/index.js\"",
+      "Restart=always"
+    ].join("\n");
+    const result = withParserStubs(quotedUnit, () => getServicePaths());
+
+    assert.ok(result, "parser should produce a non-null result");
+    assert.equal(result.nodePath, "/opt/My Apps/node");
+    assert.equal(result.entryPoint, "/opt/prismcast/dist/index.js");
+  });
+
   test("windows: extracts node and entry from the # node: and # entry: comment metadata", () => {
 
     setPlatform("win32");
@@ -153,6 +173,23 @@ describe("getServicePaths null/error branches (per platform)", () => {
 
     setPlatform("linux");
     assert.equal(withParserStubs("[Unit]\nDescription=Broken\n", () => getServicePaths()), null);
+  });
+
+  test("linux: returns null when a bare ExecStart carries more than two fields", () => {
+
+    /* A bare line holding three tokens is a spaced path written without quotes, and nothing in the line says where the real boundary was: "/opt/My" and
+     * "Apps/node" are just as plausible a pair as "/opt/My Apps/node" and the entry point. Answering null hands both callers an outcome they already handle -
+     * the restart path regenerates the unit, and the status path stays quiet rather than warning about paths it read wrong.
+     */
+    setPlatform("linux");
+    assert.equal(withParserStubs("ExecStart=/opt/My Apps/node /opt/prismcast/dist/index.js\n", () => getServicePaths()), null);
+  });
+
+  test("linux: returns null when a quoted ExecStart field is never closed", () => {
+
+    // An unterminated quote leaves every character after it ambiguous, so the value is malformed rather than partially readable.
+    setPlatform("linux");
+    assert.equal(withParserStubs("ExecStart=\"/opt/My Apps/node /opt/prismcast/dist/index.js\n", () => getServicePaths()), null);
   });
 
   test("windows: returns null when both metadata comments are absent", () => {

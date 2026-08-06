@@ -7,8 +7,8 @@
 import { definitionFixture, makeFakeIO } from "./generators.helpers.ts";
 import { describe, test } from "node:test";
 import { execFileFromMap, firstOf, makeExecFileError, nthOf } from "../testing.helpers.ts";
+import { getServiceGenerator, getServicePaths } from "./generators.ts";
 import assert from "node:assert/strict";
-import { getServiceGenerator } from "./generators.ts";
 
 describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
 
@@ -41,7 +41,7 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
 
     assert.equal(unitWrite.path, installPath);
     assert.match(unitWrite.content, /^\[Unit\]/m);
-    assert.match(unitWrite.content, /^ExecStart=\/usr\/local\/bin\/node \/usr\/local\/lib\/prismcast\/dist\/index\.js$/m);
+    assert.match(unitWrite.content, /^ExecStart="\/usr\/local\/bin\/node" "\/usr\/local\/lib\/prismcast\/dist\/index\.js"$/m);
     assert.match(unitWrite.content, /^Restart=always$/m);
     assert.match(unitWrite.content, /^Environment="PRISMCAST_SERVICE=1"$/m);
     assert.match(unitWrite.content, /^WantedBy=default\.target$/m);
@@ -54,6 +54,80 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
       "--user restart prismcast.service"
     ]);
   });
+
+  test("install: percent specifiers and dollar variables are doubled in the emitted ExecStart line", async () => {
+
+    /* The doubling is invisible to a write-then-parse round trip: the reader collapses %% and $$ back to single characters and passes a lone % or $ through
+     * unchanged, so identity holds whether or not the writer doubles at all. Only systemd itself observes the difference, expanding %n as a specifier and
+     * $PATH as a variable inside a quoted field. That makes the emitted text the only place this half of the grammar can be pinned.
+     */
+    const installPath = "/Users/test/.config/systemd/user/prismcast.service";
+    const { io, writes } = makeFakeIO({
+
+      execFile: execFileFromMap({
+
+        "systemctl --user daemon-reload": { stdout: "" },
+        "systemctl --user enable prismcast.service": { stdout: "" },
+        "systemctl --user restart prismcast.service": { stdout: "" }
+      }),
+      platform: "linux",
+      serviceFileDirectory: "/Users/test/.config/systemd/user",
+      serviceFilePath: installPath
+    });
+
+    await getServiceGenerator(io)?.install(definitionFixture({ entryPoint: "/opt/$HOME/100%/index.js", nodePath: "/opt/%n/$PATH/node" }));
+
+    assert.match(firstOf(writes, "unit write").content, /^ExecStart="\/opt\/%%n\/\$\$PATH\/node" "\/opt\/\$\$HOME\/100%%\/index\.js"$/m,
+      "both specifiers and both variables are doubled inside the quoted fields");
+  });
+
+  /* The unit writer and the stale-path reader are inverses, so every case below must come back out of getServicePaths exactly as it went in. The corpus covers
+   * each character the quoting grammar treats specially: the space that motivates quoting at all, the backslash and the double quote that escape with a
+   * backslash, and the percent specifier and dollar variable that escape by doubling. The last case is the corner where a path ends in a backslash - a reader
+   * that unescaped after scanning rather than during it would mistake the closing quote for an escaped one and swallow the rest of the line. One test per case
+   * so a grammar hole names the character class it belongs to instead of hiding behind whichever fixture happened to run first.
+   */
+  const roundTripCases = [
+    { label: "a space in both paths", paths: { entryPoint: "/opt/My Apps/prismcast/dist/index.js", nodePath: "/opt/My Apps/node" } },
+    { label: "backslash separators", paths: { entryPoint: "C:\\prismcast\\dist\\index.js", nodePath: "C:\\Program Files\\nodejs\\node.exe" } },
+    { label: "an embedded double quote", paths: { entryPoint: "/opt/pris\"mcast/dist/index.js", nodePath: "/opt/no\"de/node" } },
+    { label: "a percent specifier", paths: { entryPoint: "/opt/100%/dist/index.js", nodePath: "/opt/%n/node" } },
+    { label: "a dollar variable", paths: { entryPoint: "/opt/$HOME/dist/index.js", nodePath: "/opt/$PATH/node" } },
+    { label: "a trailing backslash against the closing quote", paths: { entryPoint: "/opt/prismcast/dist/index.js", nodePath: "/opt/ends in a backslash\\" } },
+    { label: "a backslash immediately followed by a quote", paths: { entryPoint: "/opt/prismcast/dist/index.js", nodePath: "/opt/a\\\"b/node" } }
+  ];
+
+  for(const item of roundTripCases) {
+
+    test("install: the ExecStart line round-trips through getServicePaths with " + item.label, async () => {
+
+      const installPath = "/Users/test/.config/systemd/user/prismcast.service";
+      const { io, writes } = makeFakeIO({
+
+        execFile: execFileFromMap({
+
+          "systemctl --user daemon-reload": { stdout: "" },
+          "systemctl --user enable prismcast.service": { stdout: "" },
+          "systemctl --user restart prismcast.service": { stdout: "" }
+        }),
+        platform: "linux",
+        serviceFileDirectory: "/Users/test/.config/systemd/user",
+        serviceFilePath: installPath
+      });
+
+      await getServiceGenerator(io)?.install(definitionFixture(item.paths));
+
+      const { io: readerIo } = makeFakeIO({
+
+        existing: { [installPath]: true },
+        files: { [installPath]: firstOf(writes, "unit write").content },
+        platform: "linux",
+        serviceFilePath: installPath
+      });
+
+      assert.deepEqual(getServicePaths(readerIo), item.paths, "write-then-parse identity");
+    });
+  }
 
   test("isRunning: returns true when systemctl is-active reports 'active'", async () => {
 
