@@ -1262,8 +1262,9 @@ export function monitorPlaybackHealth(
     // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
     markStreamDiscontinuity();
 
-    // Set grace period to give page navigation time to take effect (L3 = 10 seconds).
-    recoveryState.graceUntil = now + recoveryGracePeriods[3];
+    // Open the grace window that gives page navigation time to take effect (L3 = 10 seconds). The helper reads the clock here, so the window is measured from
+    // the completed recovery action rather than from the tick that began it.
+    setRecoveryGracePeriod(3);
 
     if(recoveryResult.success && recoveryResult.newContext) {
 
@@ -1766,7 +1767,7 @@ export function monitorPlaybackHealth(
           markStreamDiscontinuity();
         }
 
-        recoveryState.graceUntil = now + (recoveryGracePeriods[recoveryState.escalationLevel] ?? 0);
+        setRecoveryGracePeriod(recoveryState.escalationLevel);
         resetResolutionState();
       } else {
 
@@ -1798,7 +1799,7 @@ export function monitorPlaybackHealth(
 
             markStreamDiscontinuity();
 
-            recoveryState.graceUntil = now + recoveryGracePeriods[3];
+            setRecoveryGracePeriod(3);
 
             if(recoveryResult.success && recoveryResult.newContext) {
 
