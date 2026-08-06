@@ -412,4 +412,20 @@ describe("suppressPageAudio", () => {
     await assert.doesNotReject(() => suppressPageAudio(page), "errors must not escape");
     assert.equal(stub.evaluateOnNewDocumentCalls, 1, "registration still completed");
   });
+
+  test("absorbs an evaluateOnNewDocument failure (best-effort prototype override)", async () => {
+
+    // Negative test for the other half of the best-effort contract: the prototype-override registration is guarded too, so an injection failure - a page
+    // mid-navigation or tearing down as the stream switches to native delivery - must not abort suppression or the switch that called it. makePageStub
+    // hardcodes a resolving evaluateOnNewDocument, so we replace it on this instance to drive the rejecting branch.
+    const { page, stub } = makePageStub();
+
+    (page as unknown as { evaluateOnNewDocument: () => Promise<never> }).evaluateOnNewDocument = async (): Promise<never> => {
+
+      throw new Error("synthetic injection failure");
+    };
+
+    await assert.doesNotReject(() => suppressPageAudio(page), "injection errors must not escape");
+    assert.equal(stub.evaluateCalls, 1, "the immediate mute still runs after a failed registration");
+  });
 });

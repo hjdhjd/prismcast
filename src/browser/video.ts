@@ -221,18 +221,26 @@ export async function suppressPageAudio(page: Page): Promise<void> {
   // Override HTMLMediaElement.prototype.play to mute before playback. This runs before site JavaScript on all future navigations (including token refresh via
   // page.goto), matching the pattern established in precaching.ts. The override persists on the same page instance - a new page created by tab replacement won't
   // inherit it.
-  await page.evaluateOnNewDocument((): void => {
+  try {
 
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- Prototype interception: originalPlay is captured here and invoked with .call(this) below.
-    const originalPlay = HTMLMediaElement.prototype.play;
+    await page.evaluateOnNewDocument((): void => {
 
-    HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- Prototype interception: originalPlay is captured here and invoked with .call(this) below.
+      const originalPlay = HTMLMediaElement.prototype.play;
 
-      this.muted = true;
+      HTMLMediaElement.prototype.play = async function(this: HTMLMediaElement): Promise<void> {
 
-      return originalPlay.call(this);
-    };
-  });
+        this.muted = true;
+
+        return originalPlay.call(this);
+      };
+    });
+  } catch {
+
+    // Best-effort, exactly like the immediate mute below. The page may be mid-navigation or tearing down as the stream switches to native delivery, and a failed
+    // override must not abort the switch it rides along with. Future navigations on this page then play unmuted until the next suppression pass runs, which is
+    // the cost the best-effort contract accepts.
+  }
 
   // Mute any videos that are already playing. The prototype override only affects future play() calls, so existing playback needs a direct mute.
   try {
