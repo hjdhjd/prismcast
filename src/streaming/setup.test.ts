@@ -1,18 +1,22 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module - StreamSetupError, generateStreamId, shouldReverifyCapture,
- * validateStreamUrl, and withSignInGuidance - all of which earn full coverage here. The async exports (createPageWithCapture, setupStream, verifyCaptureSystem)
- * drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are deferred to e2e. We cover every throw
- * reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
+ * validateStreamUrl, and withSignInGuidance - all of which earn full coverage here, plus verifyManifestSelection, which is async only because its one await is a
+ * caller-supplied promise: it touches no browser, so it is covered here rather than deferred. The Chrome-entangled async exports (createPageWithCapture,
+ * setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are
+ * deferred to e2e. We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
-import { StreamSetupError, generateStreamId, shouldReverifyCapture, validateStreamUrl, withSignInGuidance } from "./setup.ts";
+import { StreamSetupError, generateStreamId, shouldReverifyCapture, validateStreamUrl, verifyManifestSelection, withSignInGuidance } from "./setup.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
+import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { initializeDataDir } from "../config/paths.ts";
 import { initializeUserChannels } from "../config/userChannels.ts";
+import { makeProfile } from "../config/profiles.helpers.ts";
 import os from "node:os";
 import path from "node:path";
 
@@ -306,5 +310,104 @@ describe("shouldReverifyCapture", () => {
     // Traced path: this is the PARITY-critical assertion pinned separately from the general happy-path test above - an empty registry must not regress to
     // false, since this is the ordinary shape of a capture-infrastructure failure (it fails during setup, before getNextStreamId's entry is registered).
     assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 42, hasBrowser: true, reverificationInProgress: false }), true);
+  });
+});
+
+/* The Fox CDN master URL shape the live verifier decodes: the second-to-last path segment carries the call sign and region, so this URL reads as "fnc". Every
+ * row below that reaches the verifier is checked against these two fixtures rather than a hand-written expectation, so the rows travel with the extractor.
+ */
+const FOX_MASTER_URL = "https://cdn.example.test/abc123/prod/fnc-ue2/index.m3u8";
+
+/* A chunklist URL for a different call sign, "fs1". The kind gate is what keeps this away from the verifier, and a URL the verifier WOULD reject is what makes
+ * the media-kind row prove the gate: a row carrying a URL the verifier accepts anyway would pass whether or not the gate exists.
+ */
+const FOX_MEDIA_URL = "https://cdn.example.test/abc123/prod/fs1-ue2/chunklist.m3u8";
+
+/* A thenable that records whether anything consumed it. The pre-await gating rows assert that a profile with nothing to verify returns without touching the
+ * interception at all, which is the latency half of the contract - a helper that awaited first and gated second would return the same value while making every
+ * unverifiable stream wait out the interceptor's settle. Awaiting invokes then(), so the flag is the observation.
+ */
+function makeWatchedInterception(value: Nullable<ManifestInterceptionResult>): { promise: Promise<Nullable<ManifestInterceptionResult>>; wasConsumed: () => boolean } {
+
+  const settled = Promise.resolve(value);
+  let consumed = false;
+
+  const promise = {
+
+    then: (onFulfilled?: ((v: Nullable<ManifestInterceptionResult>) => unknown) | null,
+      onRejected?: ((reason: unknown) => unknown) | null): Promise<unknown> => {
+
+      consumed = true;
+
+      return settled.then(onFulfilled, onRejected);
+    }
+  } as Promise<Nullable<ManifestInterceptionResult>>;
+
+  return { promise, wasConsumed: (): boolean => consumed };
+}
+
+describe("verifyManifestSelection", () => {
+
+  test("resolves null when the interception is null, without reading a kind off nothing", async () => {
+
+    // Traced path: a verifier-bearing profile with a selector passes the pre-await gate, so the null interception is what the kind gate has to survive. A
+    // regression that dropped the null-safe access would throw a TypeError here rather than resolving.
+    const result = await verifyManifestSelection(Promise.resolve(null), makeProfile({ channelSelection: { strategy: "foxGrid" }, channelSelector: "FNC" }));
+
+    assert.equal(result, null);
+  });
+
+  test("resolves null for a media-kind selection, so a chunklist URL never reaches a master-calibrated verifier", async () => {
+
+    /* Traced path: the fixture URL decodes to a different call sign than the selector, so the live Fox verifier would return a mismatch reason if the kind gate
+     * let it through. A regression that inverted the kind comparison therefore fails this row with a reason instead of null.
+     */
+    const interception: ManifestInterceptionResult = { manifestUrl: FOX_MEDIA_URL, selectedKind: "media" };
+    const result = await verifyManifestSelection(Promise.resolve(interception),
+      makeProfile({ channelSelection: { strategy: "foxGrid" }, channelSelector: "FNC" }));
+
+    assert.equal(result, null);
+  });
+
+  test("resolves null without consulting the interception when the provider has no verifier", async () => {
+
+    // Traced path: guideGrid is a registered provider that implements no verifier, so the gate is the missing hook rather than a missing provider.
+    const watched = makeWatchedInterception({ manifestUrl: FOX_MASTER_URL, selectedKind: "master" });
+    const result = await verifyManifestSelection(watched.promise, makeProfile({ channelSelection: { strategy: "guideGrid" }, channelSelector: "FNC" }));
+
+    assert.equal(result, null);
+    assert.equal(watched.wasConsumed(), false, "a stream with no verifier must not wait on the interception");
+  });
+
+  test("resolves null without consulting the interception when the profile carries no channel selector", async () => {
+
+    // Traced path: the verifier exists but has no expected channel to compare against, so there is nothing to verify and nothing to wait for.
+    const watched = makeWatchedInterception({ manifestUrl: FOX_MASTER_URL, selectedKind: "master" });
+    const result = await verifyManifestSelection(watched.promise, makeProfile({ channelSelection: { strategy: "foxGrid" }, channelSelector: null }));
+
+    assert.equal(result, null);
+    assert.equal(watched.wasConsumed(), false, "a profile with no selector must not wait on the interception");
+  });
+
+  test("resolves null when the live Fox verifier accepts a master URL for the requested call sign", async () => {
+
+    // Traced path: the full pass-through - gates admit, kind admits, and the provider's own verifier decodes "fnc" from the URL and matches the selector.
+    const interception: ManifestInterceptionResult = { manifestUrl: FOX_MASTER_URL, selectedKind: "master" };
+    const result = await verifyManifestSelection(Promise.resolve(interception),
+      makeProfile({ channelSelection: { strategy: "foxGrid" }, channelSelector: "FNC" }));
+
+    assert.equal(result, null);
+  });
+
+  test("returns the live Fox verifier's reason when the master URL belongs to a different call sign", async () => {
+
+    /* Traced path: the same URL against a different selector. The reason string is the provider's, returned through the helper unchanged, which is what makes
+     * this the pass-through half of the pair rather than a second acceptance row.
+     */
+    const interception: ManifestInterceptionResult = { manifestUrl: FOX_MASTER_URL, selectedKind: "master" };
+    const result = await verifyManifestSelection(Promise.resolve(interception),
+      makeProfile({ channelSelection: { strategy: "foxGrid" }, channelSelector: "FS1" }));
+
+    assert.equal(result, "Manifest URL is for channel \"fnc\", but \"FS1\" was requested.");
   });
 });

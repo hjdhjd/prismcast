@@ -10,6 +10,7 @@ import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { LOG, delay, extractDomain, formatError, isStaleCaptureMutexError, maxRetryDuration, raceWithTimeout, realClock, registerAbortController, resolveFFmpegPath,
   retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
+import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
 import { getAllStreams, getNextStreamId } from "./registry.ts";
@@ -19,7 +20,6 @@ import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "..
 import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
-import type { ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { Readable } from "node:stream";
@@ -954,6 +954,37 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
   };
 }
 
+/* Decides whether the manifest a tune's interception selected belongs to the channel the profile selects, using the provider's own verifier when one exists. The
+ * provider and channelSelector gates run before the interception promise is awaited, so a stream with nothing to verify never waits on the interception
+ * here...the promise's settle time belongs only to the paths that consume it. Verification is gated to master-kind selections because a provider verifier like
+ * Fox's reads the channel call sign from a fixed segment of the master CDN URL, and a media (chunklist) URL has a different path shape the verifier was never
+ * calibrated for - a false tune-failure on a correct stream. Providers without a verifier, profiles without a channelSelector, non-master selections, and a null
+ * interception all verify vacuously: the gates upstream are the only identity signal we have there, so the honest answer is no objection rather than a guess.
+ *
+ * @param interceptionPromise - The interception promise from the handle the tune finalized, awaited only once the gates above admit a verifier.
+ * @param profile - The resolved site profile whose strategy names the provider and whose channelSelector names the expected channel.
+ * @returns A human-readable failure reason when the manifest belongs to a different channel, or null when it verifies (including every vacuous case).
+ */
+export async function verifyManifestSelection(interceptionPromise: Promise<Nullable<ManifestInterceptionResult>>,
+  profile: ResolvedSiteProfile): Promise<Nullable<string>> {
+
+  const provider = getProviderByStrategy(profile.channelSelection.strategy);
+
+  if(!provider?.verifyManifestForChannel || !profile.channelSelector) {
+
+    return null;
+  }
+
+  const interception = await interceptionPromise;
+
+  if(interception?.selectedKind !== "master") {
+
+    return null;
+  }
+
+  return provider.verifyManifestForChannel(interception.manifestUrl, profile.channelSelector);
+}
+
 /**
  * Sets up a stream: validates input, creates browser page, initializes capture, navigates to URL, and starts health monitoring.
  *
@@ -1183,42 +1214,24 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     // Tune verification. Finalize the manifest interceptor and confirm the captured master manifest URL belongs to the channel that was just tuned. This step
     // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
-    // a stream guaranteed to be on the requested channel without having to opt in or coordinate.
-    //
-    // The verifier is a per-provider hook on ProviderModule.verifyManifestForChannel; not every provider implements one (Fox's CDN URL, for example, encodes the
-    // channel call sign in the path, which supports this kind of check). Verification is opportunistic: providers without a verifier and streams without a
-    // manifest interception (e.g., DRM-cached channels, tab replacements) skip the check. When a verifier returns a failure reason, we throw StreamSetupError so
-    // the existing failure path marks channel health, terminates
-    // the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor,
-    // and page as the throw unwinds.
+    // a stream guaranteed to be on the requested channel without having to opt in or coordinate. Streams with no manifest interception at all (DRM-cached
+    // channels, tab replacements) have nothing to finalize and skip the step entirely; verifyManifestSelection owns which of the remaining ones it can speak to.
+    // A failure reason throws StreamSetupError so the existing failure path marks channel health, terminates the pending registry entry, and surfaces a clear
+    // error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor, and page as the throw unwinds.
     if(manifestInterception) {
 
       manifestInterception.finalize(directTune);
 
-      const provider = getProviderByStrategy(profile.channelSelection.strategy);
+      const verifyError = await verifyManifestSelection(manifestInterception.promise, profile);
 
-      if(provider?.verifyManifestForChannel && profile.channelSelector) {
+      if(verifyError) {
 
-        const interception = await manifestInterception.promise;
+        await minimizeBrowserWindow();
 
-        // Gate verification to master-kind selections. A provider verifier like Fox's reads the channel call sign from a fixed segment of the master CDN URL and
-        // fails open only on shapes it does not recognize; a media (chunklist) URL, which the override path can legitimately select, has a different path shape the
-        // verifier was never calibrated for and could misread as a mismatch - a false tune-failure on a correct stream. An unverifiable kind skips verification
-        // rather than risk that. If a captured chunklist URL ever proves to carry the same call-sign shape, widening this gate is a one-line change.
-        if(interception?.selectedKind === "master") {
+        const failureLabel = channel?.name ?? channelName ?? url;
 
-          const verifyError = provider.verifyManifestForChannel(interception.manifestUrl, profile.channelSelector);
-
-          if(verifyError) {
-
-            await minimizeBrowserWindow();
-
-            const failureLabel = channel?.name ?? channelName ?? url;
-
-            throw new StreamSetupError("Tune verification failed: " + verifyError, 502,
-              withSignInGuidance("Tune verification failed for " + failureLabel + ". " + verifyError, channelName, serviceName));
-          }
-        }
+        throw new StreamSetupError("Tune verification failed: " + verifyError, 502,
+          withSignInGuidance("Tune verification failed for " + failureLabel + ". " + verifyError, channelName, serviceName));
       }
     }
 
