@@ -6,7 +6,7 @@ import type { HLSState, StreamRegistryEntry } from "./registry.ts";
 import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
-import { StreamSetupError, createPageWithCapture, generateStreamId, setupStream, validateStreamUrl } from "./setup.ts";
+import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
@@ -22,6 +22,8 @@ import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.
 import { markChannelFailure, markChannelSuccess } from "../config/health.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
+import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { StreamSetupResult } from "./setup.ts";
 import type { TabReplacementHandlerFactory } from "./setup.ts";
@@ -1111,6 +1113,7 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     preTuned: options.preTuned ?? false,
     probeIdentity: null,
     profile: null,
+    reestablishManifest: null,
     startTime: options.streamStartTime ?? new Date(),
     streamIdStr,
     streamingMode: "capture",
@@ -1196,6 +1199,14 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   const pendingForNative = getStream(numericStreamId);
   const nativePrerollSegmentCount = pendingForNative?.hls.prerollSegmentCount ?? 0;
 
+  // The re-establishment capability closes over the stream's own tune facts here, in the layer that owns them: a token-refresh reload re-acquires its
+  // manifest through the stream's real tune rather than a bare navigation. The page stays a parameter rather than a captured value because the callers
+  // own the page reference - the monitor hands its own current page to every recovery action it drives.
+  const reestablishManifest = (page: Page): Promise<Nullable<ManifestInterceptionResult>> => {
+
+    return reestablishChannelManifest({ channelName: setup.channelName, page, profile: setup.profile, streamIdStr: setup.streamId, url });
+  };
+
   const nativeResult = await attemptNativeStreaming({
 
     channelName,
@@ -1234,6 +1245,7 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
     prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
     prerollSegmentCount: nativePrerollSegmentCount,
     probeIdentity: setup.probeIdentity,
+    reestablishManifest,
     streamId: numericStreamId,
     streamIdStr: setup.streamId,
     url
@@ -1287,6 +1299,7 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   currentStream.nativeContainer = nativeResult.container;
   currentStream.nativeProxy = nativeResult.proxy;
   currentStream.nativeResolution = nativeResult.resolution;
+  currentStream.reestablishManifest = reestablishManifest;
   currentStream.streamingMode = "native";
 
   // Start the native proxy. Init readiness is conditional on the container. An MPEG-TS source carries its own PAT/PMT codec configuration in every segment and

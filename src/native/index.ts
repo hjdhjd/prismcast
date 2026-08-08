@@ -12,7 +12,6 @@ import type { NativeProxy } from "./proxy.ts";
 import type { Page } from "puppeteer-core";
 import { createNativeProxy } from "./proxy.ts";
 import { fetchDecryptionKey } from "./decrypt.ts";
-import { installManifestInterceptor } from "../browser/manifestInterceptor.ts";
 import { parseTokenExpiry } from "./tokenExpiry.ts";
 
 /* This module orchestrates the native streaming decision. After the browser navigates to a channel and video playback begins, we check whether the service's HLS
@@ -101,6 +100,11 @@ export interface AttemptNativeStreamingOptions {
   // stream - the tune-time one here and each token refresh after it - reads and writes the cache under this one identity.
   probeIdentity: ProbeCacheIdentity;
 
+  // Re-establishes the stream's channel on the supplied page and returns the resulting manifest interception. The streaming layer supplies it, closed over the
+  // stream's own tune facts; it re-runs that tune under the stream's log context, so the interception handed back was adjudicated and verified by exactly the
+  // semantics the original tune used. Null means the channel could not be re-established, whatever the cause.
+  reestablishManifest: (page: Page) => Promise<Nullable<ManifestInterceptionResult>>;
+
   // Numeric stream ID for segment storage.
   streamId: number;
 
@@ -162,7 +166,8 @@ export interface RefreshedFeedMetadata {
  */
 export async function attemptNativeStreaming(options: AttemptNativeStreamingOptions): Promise<Nullable<NativeStreamResult>> {
 
-  const { channelName, interceptionPromise, mpegTsClient, onError, onFeedApplied, page, probeIdentity, streamId, streamIdStr, url } = options;
+  const { channelName, interceptionPromise, mpegTsClient, onError, onFeedApplied, page, probeIdentity, reestablishManifest, streamId, streamIdStr,
+    url } = options;
 
   const elapsed = startTimer();
 
@@ -292,6 +297,7 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
     page,
     probeIdentity,
     proxy,
+    reestablishManifest,
     streamIdStr,
     url,
     variantUrl: mediaFeed.bestVariantUrl
@@ -324,6 +330,12 @@ interface TokenRefreshOptions {
   probeIdentity: ProbeCacheIdentity;
 
   proxy: NativeProxy;
+
+  // Re-establishes the stream's channel on the supplied page and returns the resulting manifest interception. The streaming layer supplies it, closed over the
+  // stream's own tune facts; it re-runs that tune under the stream's log context, so the interception handed back was adjudicated and verified by exactly the
+  // semantics the original tune used. Null means the channel could not be re-established, whatever the cause.
+  reestablishManifest: (page: Page) => Promise<Nullable<ManifestInterceptionResult>>;
+
   streamIdStr: string;
   url: string;
 
@@ -376,7 +388,7 @@ function computeRefreshBoundary(masterUrl: string, variantUrl: string): Nullable
  */
 function scheduleTokenRefresh(options: TokenRefreshOptions): void {
 
-  const { channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url, variantUrl } = options;
+  const { channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, reestablishManifest, streamIdStr, url, variantUrl } = options;
 
   const boundary = computeRefreshBoundary(masterUrl, variantUrl);
 
@@ -402,7 +414,7 @@ function scheduleTokenRefresh(options: TokenRefreshOptions): void {
   // direct fetch before falling back to a page reload.
   const timer = setTimeout(() => {
 
-    void refreshNativeManifest({ channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url });
+    void refreshNativeManifest({ channelName, masterUrl, onFeedApplied, page, probeIdentity, proxy, reestablishManifest, streamIdStr, url });
   }, refreshIn);
 
   proxy.setTokenRefreshTimer(timer);
@@ -429,6 +441,12 @@ interface ManifestRefreshOptions {
   probeIdentity: ProbeCacheIdentity;
 
   proxy: NativeProxy;
+
+  // Re-establishes the stream's channel on the supplied page and returns the resulting manifest interception. The streaming layer supplies it, closed over the
+  // stream's own tune facts; it re-runs that tune under the stream's log context, so the interception handed back was adjudicated and verified by exactly the
+  // semantics the original tune used. Null means the channel could not be re-established, whatever the cause.
+  reestablishManifest: (page: Page) => Promise<Nullable<ManifestInterceptionResult>>;
+
   streamIdStr: string;
   url: string;
 }
@@ -529,8 +547,9 @@ export async function refreshNativeManifest(options: ManifestRefreshOptions): Pr
  *    that disrupts the browser tab. The CDN returns the manifest with current token values as long as the URL's own auth token hasn't expired. When the master URL
  *    expires, the direct fetch returns 403 and we fall through to strategy 2.
  *
- * 2. **Page reload**: Navigates the browser page back to the channel URL, triggering fresh authentication via cookies. A CDP interceptor captures the new master
- *    manifest URL with fresh tokens. This is the only path that generates genuinely new tokens and is required when the master URL itself has expired.
+ * 2. **Channel re-establishment**: Runs the stream's own tune again on the page through the capability the streaming layer supplied, so fresh authentication and a
+ *    fresh master manifest arrive by exactly the semantics that established the stream - which is what keeps a guide-tuned stream on its own channel across the
+ *    reload. This is the only path that generates genuinely new tokens and is required when the master URL itself has expired.
  *
  * L2 recovery (failure-triggered) from the monitor omits masterUrl, going straight to page reload since the stream is already failing and needs a full refresh.
  *
@@ -543,7 +562,7 @@ export async function refreshNativeManifest(options: ManifestRefreshOptions): Pr
  */
 async function runManifestRefresh(options: ManifestRefreshOptions, streamLog: ReturnType<typeof LOG.withStreamId>): Promise<boolean> {
 
-  const { channelName, masterUrl, page, probeIdentity, proxy, url } = options;
+  const { channelName, masterUrl, page, probeIdentity, proxy, reestablishManifest } = options;
 
   if(proxy.isStopped()) {
 
@@ -589,7 +608,7 @@ async function runManifestRefresh(options: ManifestRefreshOptions, streamLog: Re
     streamLog.debug("native:token", "Direct manifest fetch failed for %s. Falling back to page reload.", channelName);
   }
 
-  // Strategy 2: Page reload. Navigate the browser page to trigger fresh authentication and intercept a new master manifest via CDP.
+  // Strategy 2: Channel re-establishment. Reload the page through the stream's own tune to trigger fresh authentication and intercept a new master manifest.
   if(page.isClosed()) {
 
     streamLog.debug("native:token", "Manifest refresh failed for %s: page is closed.", channelName);
@@ -599,40 +618,14 @@ async function runManifestRefresh(options: ManifestRefreshOptions, streamLog: Re
 
   try {
 
-    // Install a fresh interceptor on the page, scope-bound with "using" so its CDP observer is disposed on every exit from this block. The proxy.isStopped early
-    // return after navigation, and any throw from page.goto, would otherwise leave the observer (and its 20s timeout) running with no consumer until the timeout
-    // fires. The handle self-disposes when its promise resolves, after which this scope-bound disposal is a no-op on repeat. For token refresh the page
-    // navigates directly to the channel URL (no guide grid), so the first manifest captured is the correct one; we call finalize() after navigation to resolve
-    // immediately with whatever was captured.
-    using handle = await installManifestInterceptor(page, 20000);
-
-    if(!handle) {
-
-      streamLog.debug("native:token", "Manifest refresh failed for %s: could not install interceptor.", channelName);
-
-      return false;
-    }
-
-    // Navigate the page back to the channel URL to trigger fresh authentication. The interceptor captures .m3u8 requests generated by this navigation. Note: this
-    // uses a bare page.goto without the service's site profile (no waitForNetworkIdle, scroll options, etc.). This is acceptable because native streaming only
-    // activates for services whose video players load the HLS manifest during basic page load. Services requiring profile-aware navigation for manifest delivery
-    // would have failed the initial interception and would not be in native mode.
-    await page.goto(url, { timeout: 30000, waitUntil: "domcontentloaded" });
-
-    // Check if the proxy was stopped while we were navigating (e.g., stream terminated during the page load).
-    if(proxy.isStopped()) {
-
-      return false;
-    }
-
-    // Signal finalize and await the interception result. Token refresh always navigates directly (no guide grid), so the first manifest is correct.
-    handle.finalize(true);
-
-    const newInterception = await handle.promise;
+    // Re-establish the channel through the streaming layer's capability: the same tune machinery that established this stream navigates, selects, and
+    // adjudicates, so the interception below carries the tuned channel's manifest rather than whatever the reloaded page produced first. A null means the
+    // re-establishment failed or was rejected by the provider verifier; the refresh fails with it and the monitor's ladder owns the escalation.
+    const newInterception = await reestablishManifest(page);
 
     if(!newInterception) {
 
-      streamLog.debug("native:token", "Manifest refresh failed for %s: no manifest intercepted after reload.", channelName);
+      streamLog.debug("native:token", "Manifest refresh failed for %s: the channel could not be re-established.", channelName);
 
       return false;
     }
@@ -698,7 +691,7 @@ async function runManifestRefresh(options: ManifestRefreshOptions, streamLog: Re
 function applyRefreshedFeed(feed: MediaFeed, masterUrl: string, options: ManifestRefreshOptions,
   streamLog: ReturnType<typeof LOG.withStreamId>): boolean {
 
-  const { channelName, onFeedApplied, page, probeIdentity, proxy, streamIdStr, url } = options;
+  const { channelName, onFeedApplied, page, probeIdentity, proxy, reestablishManifest, streamIdStr, url } = options;
 
   /* A separate-audio pipeline polls two manifests, so it must be handed both URLs or neither: a video URL swapped without its audio would leave the two tracks
    * on different CDN sessions. Selection admits only candidates whose audio topology matches this pipeline's, so an accepted feed arriving here without a
@@ -746,6 +739,7 @@ function applyRefreshedFeed(feed: MediaFeed, masterUrl: string, options: Manifes
     page,
     probeIdentity,
     proxy,
+    reestablishManifest,
     streamIdStr,
     url,
     variantUrl: feed.bestVariantUrl

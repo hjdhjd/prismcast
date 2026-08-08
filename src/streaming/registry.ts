@@ -6,6 +6,7 @@ import type { MediaContainer, Nullable, ResolvedSiteProfile, StreamingMode } fro
 import type { CaptureCodec } from "./codec.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import { EventEmitter } from "node:events";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle } from "./recovery.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
@@ -235,6 +236,13 @@ export interface StreamRegistryEntry {
   // The resolved site profile used for this stream. Needed for tab replacement recovery to recreate the capture with the same profile. Null for pending stream entries
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
+
+  // Re-establishes this stream's channel on a page and returns the resulting manifest interception: the streaming layer builds this at native upgrade by
+  // closing over the stream's own profile and url, so a token-refresh page reload acquires its manifest through the same tune machinery - navigation,
+  // overlay handling, channel selection, adjudication, and verification - that established the stream. Null until the native upgrade installs it; after a
+  // capture fallback the mode flip is what retires it, exactly as with the other native-only fields - every consumer reads it behind the streaming-mode
+  // check, so no reset is performed on that transition.
+  reestablishManifest: Nullable<(page: Page) => Promise<Nullable<ManifestInterceptionResult>>>;
 
   // Set when the stream entry is created; the basis for uptime and duration calculations reported by status and logging.
   startTime: Date;

@@ -561,6 +561,19 @@ export function monitorPlaybackHealth(
       return;
     }
 
+    /* The refresh's page-reload strategy re-establishes the channel through the capability the stream's setup built. A pending entry that never completed
+     * setup has none, and a recovery frame cannot assemble one - the profile closure belongs to the setup path - so the honest response is the same
+     * decline the missing probe identity takes: skip L2 and let the stall escalate on the existing ladder.
+     */
+    const reestablishManifest = entry.reestablishManifest;
+
+    if(!reestablishManifest) {
+
+      LOG.debug("native:monitor", "Skipping L2 recovery for %s: the stream has no re-establishment capability.", entry.info.storeKey);
+
+      return;
+    }
+
     recoveryState.inProgress = true;
 
     LOG.debug("native:monitor", "Starting L2 recovery (page reload) for %s.", entry.info.storeKey);
@@ -581,6 +594,7 @@ export function monitorPlaybackHealth(
         page: currentPage,
         probeIdentity,
         proxy,
+        reestablishManifest,
         streamIdStr: streamId,
         url
       });

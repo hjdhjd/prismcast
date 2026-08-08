@@ -196,7 +196,8 @@ export interface ProviderModule {
   // any successful tune proves auth. Used by Sling where free-tier (Freestream) channels succeed without a paid subscription.
   validateTune?: (channelSelector: string) => boolean;
 
-  // Optional failsafe called after manifest interception finalizes. Inspects the captured master manifest URL to confirm it belongs to the channel identified by
+  // Optional failsafe called after a manifest interception finalizes, in both contexts that establish a channel: a tune's interception and a token-refresh
+  // re-establishment's, each only for master-kind selections. Inspects the captured master manifest URL to confirm it belongs to the channel identified by
   // channelSelector. Returns null when the URL is acceptable (either it matches the selector, or its shape is unrecognizable - we fail open in that case so a
   // CDN-side path change does not break tuning). Returns a human-readable failure reason when the URL clearly belongs to a different channel - which is the
   // signature of a click that did not switch the player. Currently implemented by foxProvider; other providers can opt in if they have similar risk.

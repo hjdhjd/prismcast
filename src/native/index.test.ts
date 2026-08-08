@@ -118,6 +118,11 @@ function makeAttemptOptions(overrides: Partial<AttemptNativeStreamingOptions> = 
     },
     page: makeFakePage(),
     probeIdentity: { key: channelName, stamp: buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url }) },
+
+    // None of the orchestration tests reach the token-refresh reload strategy, so the capability declines: a stub resolving an interception would describe a
+    // path they do not take.
+    reestablishManifest: async (): Promise<null> => null,
+
     streamId: 1,
     streamIdStr: "test-stream",
     url,

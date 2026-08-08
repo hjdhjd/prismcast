@@ -9,7 +9,9 @@ import type { PipelineShape, ProbeCacheIdentity } from "./probe.ts";
 import { afterEach, describe, test } from "node:test";
 import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
+import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { NativeProxy } from "./proxy.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import type { RefreshedFeedMetadata } from "./index.ts";
 import assert from "node:assert/strict";
@@ -206,6 +208,41 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
+/* The re-establishment capability every row that never reaches the reload strategy carries. Declining is the honest default for them: they either short-circuit
+ * ahead of the strategy or settle on the direct fetch, so a capability resolving an interception would describe a path they do not take.
+ */
+const declineReestablishment = async (): Promise<Nullable<ManifestInterceptionResult>> => null;
+
+/* A re-establishment capability paired with the count of times the orchestrator invoked it. The counter is what separates "the refresh reached the same outcome"
+ * from "the refresh reached it through the capability", which is the whole point of the reload strategy now delegating instead of navigating itself.
+ */
+interface ReestablishStub {
+
+  calls: number;
+  reestablishManifest: () => Promise<Nullable<ManifestInterceptionResult>>;
+}
+
+/* Builds a counting capability stub that resolves whatever interception a test wants the reload strategy to receive.
+ *
+ * @param result - The interception the capability hands back, or null for a re-establishment that failed.
+ * @returns The stub, whose calls field the test reads after the refresh settles.
+ */
+function makeReestablishStub(result: Nullable<ManifestInterceptionResult> = null): ReestablishStub {
+
+  const stub: ReestablishStub = {
+
+    calls: 0,
+    reestablishManifest: async (): Promise<Nullable<ManifestInterceptionResult>> => {
+
+      stub.calls++;
+
+      return result;
+    }
+  };
+
+  return stub;
+}
+
 /* Builds the probe-cache identity for a refresh test. Each test keeps its own channel key - the same key its clearProbeCache call addresses - because the cache
  * is addressed by identity, so a single shared identity would put every test in one slot and let one test's classification answer another's probe. The stamp
  * comes from the production builder over the configured channel URL these tests refresh against, never the master URL, whose token rotates per refresh.
@@ -275,6 +312,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("stopped-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "stopped-stream",
       url: "https://example.test/channel"
     });
@@ -295,6 +333,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("closed-page-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "closed-page-stream",
       url: "https://example.test/channel"
     });
@@ -329,6 +368,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("refresh-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "refresh-stream",
       url: "https://example.test/channel"
     });
@@ -374,6 +414,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("flip-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "flip-stream",
       url: "https://example.test/channel"
     });
@@ -407,6 +448,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("refresh-fail-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "refresh-fail-stream",
       url: "https://example.test/channel"
     });
@@ -446,6 +488,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("refresh-dai-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "refresh-dai-stream",
       url: "https://example.test/channel"
     });
@@ -485,6 +528,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("inside-margin-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "inside-margin-stream",
       url: "https://example.test/channel"
     });
@@ -529,6 +573,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("comfortable-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "comfortable-stream",
       url: "https://example.test/channel"
     });
@@ -573,6 +618,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("far-future-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "far-future-stream",
       url: "https://example.test/channel"
     });
@@ -615,6 +661,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("past-due-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "past-due-stream",
       url: "https://example.test/channel"
     });
@@ -657,6 +704,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("variant-bound-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "variant-bound-stream",
       url: "https://example.test/channel"
     });
@@ -714,6 +762,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("near-expiry-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "near-expiry-stream",
       url: "https://example.test/channel"
     });
@@ -763,6 +812,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("stop-midprobe-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "stop-midprobe-stream",
       url: "https://example.test/channel"
     });
@@ -809,6 +859,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("pin-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "pin-stream",
       url: "https://example.test/channel"
     });
@@ -852,6 +903,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("thin-window-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "thin-window-stream",
       url: "https://example.test/channel"
     });
@@ -892,6 +944,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: identity,
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "stamp-stream",
       url: configuredUrl
     });
@@ -942,6 +995,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("topology-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "topology-stream",
       url: "https://example.test/channel"
     });
@@ -999,6 +1053,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("deadkey-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "deadkey-stream",
       url: "https://example.test/channel"
     });
@@ -1046,6 +1101,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("quality-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "quality-stream",
       url: "https://example.test/channel"
     });
@@ -1088,6 +1144,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("throwing-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "throwing-stream",
       url: "https://example.test/channel"
     });
@@ -1136,6 +1193,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: identity,
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "cached-drm-stream",
       url: "https://example.test/channel"
     });
@@ -1195,6 +1253,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("chained-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "chained-stream",
       url: "https://example.test/channel"
     });
@@ -1248,6 +1307,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(),
       probeIdentity: refreshIdentity("shared-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "shared-stream",
       url: "https://example.test/channel"
     };
@@ -1296,6 +1356,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("rearm-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "rearm-stream",
       url: "https://example.test/channel"
     };
@@ -1340,6 +1401,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("stopped-rearm-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "stopped-rearm-stream",
       url: "https://example.test/channel"
     }));
@@ -1387,6 +1449,7 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("reset-channel"),
       proxy: makeFakeProxy(hooks),
+      reestablishManifest: declineReestablishment,
       streamIdStr: "reset-stream",
       url: "https://example.test/channel"
     };
@@ -1441,11 +1504,108 @@ describe("refreshNativeManifest", () => {
       page: makeFakePage(true),
       probeIdentity: refreshIdentity("throwing-timer-channel"),
       proxy,
+      reestablishManifest: declineReestablishment,
       streamIdStr: "throwing-timer-stream",
       url: "https://example.test/channel"
     }));
 
     assert.equal(outcome, false, "the promise settles on the outcome the attempt reached");
     assert.equal(warnings.length, 2, "with the failure warning and the one naming the bookkeeping that threw");
+  });
+
+  test("re-establishes the channel through the injected capability and applies the manifest it returns", async () => {
+
+    /* The reload strategy's whole contract: it must acquire its manifest by re-running the stream's own tune, not by navigating the page itself. Omitting
+     * masterUrl sends the refresh straight past the direct fetch, so the capability is the only thing that can produce the URL the probe then reads. The call
+     * counter is what distinguishes this from a refresh that reached the same outcome some other way.
+     */
+    const masterUrl = "https://cdn.test/reestablish-master.m3u8";
+    const variantUrl = "https://cdn.test/reestablish-variant.m3u8";
+
+    makeFetchRouter({
+
+      [masterUrl]: () => new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nreestablish-variant.m3u8\n", { status: 200 }),
+      [variantUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 })
+    });
+
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const capability = makeReestablishStub({ manifestUrl: masterUrl, selectedKind: "master" });
+
+    clearProbeCache("reestablish-channel");
+
+    const result = await refreshNativeManifest({
+
+      channelName: "reestablish-channel",
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("reestablish-channel"),
+      proxy: makeFakeProxy(hooks),
+      reestablishManifest: capability.reestablishManifest,
+      streamIdStr: "reestablish-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(capability.calls, 1, "the reload strategy went through the capability");
+    assert.equal(result, true, "and the refresh succeeded on what it returned");
+    assert.equal(hooks.variantUrl, variantUrl, "the proxy was rebound to the variant the re-established manifest declares");
+  });
+
+  test("fails the refresh without touching the proxy when the re-establishment declines", async () => {
+
+    // A null from the capability covers every way the channel could not be re-established - navigation, initialization, or a verifier rejection - and each of
+    // them must leave the running proxy exactly as it was rather than half-applying anything.
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const capability = makeReestablishStub();
+
+    let fetchCalls = 0;
+
+    mock.method(globalThis, "fetch", async () => {
+
+      fetchCalls++;
+
+      return new Response("should not be reached", { status: 500 });
+    });
+
+    const result = await refreshNativeManifest({
+
+      channelName: "declined-channel",
+      page: makeFakePage(),
+      probeIdentity: refreshIdentity("declined-channel"),
+      proxy: makeFakeProxy(hooks),
+      reestablishManifest: capability.reestablishManifest,
+      streamIdStr: "declined-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "a declined re-establishment fails the refresh");
+    assert.equal(capability.calls, 1, "the capability is invoked exactly once per attempt");
+    assert.equal(hooks.variantUrl, "", "the proxy's variant URL is untouched");
+    assert.equal(hooks.audioVariantUrl, "", "and so is its audio variant URL");
+    assert.equal(hooks.setTokenRefreshTimerCalls, 1, "with only the failure re-arm's timer armed");
+    assert.equal(fetchCalls, 0, "nothing was probed, because there was no manifest to probe");
+  });
+
+  test("declines a closed page before invoking the capability, so no tune runs against a dead page", async () => {
+
+    // The page-closed guard sits ahead of the re-establishment for a reason: every primitive the capability composes would throw on a closed page, and the
+    // counter is what pins the ordering rather than merely the outcome.
+    const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
+      setTokenRefreshTimerCalls: 0, variantUrl: "" };
+    const capability = makeReestablishStub({ manifestUrl: "https://cdn.test/never-read.m3u8", selectedKind: "master" });
+
+    const result = await refreshNativeManifest({
+
+      channelName: "closed-before-capability-channel",
+      page: makeFakePage(true),
+      probeIdentity: refreshIdentity("closed-before-capability-channel"),
+      proxy: makeFakeProxy(hooks),
+      reestablishManifest: capability.reestablishManifest,
+      streamIdStr: "closed-before-capability-stream",
+      url: "https://example.test/channel"
+    });
+
+    assert.equal(result, false, "a closed page fails the refresh");
+    assert.equal(capability.calls, 0, "and the capability was never invoked");
   });
 });

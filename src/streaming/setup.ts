@@ -8,8 +8,8 @@ import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, ge
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
-import { LOG, delay, extractDomain, formatError, isStaleCaptureMutexError, maxRetryDuration, raceWithTimeout, realClock, registerAbortController, resolveFFmpegPath,
-  retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
+import { LOG, delay, extractDomain, formatError, getStreamContext, isStaleCaptureMutexError, maxRetryDuration, raceWithTimeout, realClock,
+  registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
@@ -17,7 +17,7 @@ import { getAllStreams, getNextStreamId } from "./registry.ts";
 import { getAuthDomainForChannel, getServiceDisplayName, resolveServiceKey } from "../config/services.ts";
 import { getBuiltinProfile, getProfileForChannel, getProfileForUrl, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
-import { initializePlayback, injectVideoSelector, navigateToPage } from "../browser/video.ts";
+import { initializePlayback, injectVideoSelector, muteExistingVideos, navigateToPage } from "../browser/video.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
@@ -1295,6 +1295,136 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       url
     };
   });
+}
+
+// Channel Re-establishment.
+
+/**
+ * Options for re-establishing a stream's channel on its page.
+ */
+export interface ReestablishChannelManifestOptions {
+
+  // The channel display name, used only to enrich the log context; null for an ad-hoc URL stream.
+  channelName: Nullable<string>;
+
+  // The live browser page to re-establish on. Supplied by the caller rather than captured, so a caller holding a page this stream has moved to drives the
+  // re-establishment against the page it actually owns.
+  page: Page;
+
+  // The stream's resolved site profile, which decides the navigation wait strategy, the overlay policy, and the channel-selection strategy.
+  profile: ResolvedSiteProfile;
+
+  // The stream's string ID, which establishes the log context when the caller supplies none.
+  streamIdStr: string;
+
+  // The stream's configured channel URL. The re-establishment always navigates here and always runs channel selection.
+  url: string;
+}
+
+/* Re-establishes a stream's channel on its page and returns the fresh manifest interception, for the native token-refresh path. This is the same establishment
+ * sequence the tune runs - profile-aware navigation, the epoch stamp, playback initialization with its overlay guard and channel selection, an honest finalize,
+ * and the provider verifier - composed from the same primitives, so there is exactly one set of establishment semantics in this system. Three deliberate
+ * divergences from the tune path, each owned here. Navigation is single-attempt: both callers of the refresh chain bring their own retry ladders (the proactive
+ * timer re-arms failures with bounded backoff, and the monitor escalates a persisting stall to capture fallback), so retrying inside would stack ladders and
+ * stretch a recovery the project wants fast. The route is always the configured channel url with full channel selection: a cached direct URL and a skipped
+ * selection belong to the tune's own optimization, and the re-establishment takes the click-verified route instead, so the finalize kind's formula carries no
+ * cached-direct-URL term. And a category selector's re-resolved call sign is not persisted here: persistence belongs to the tune lifecycle, and the recovery
+ * paths already re-tune without it. Playback initialization is bounded by the same race the tune uses, with the same abandon-on-timeout semantics; the remnant
+ * is bounded and act-limited - its phases expire on their own internal timeouts, its consent poll can only reject cookie banners and dismiss per-site modals
+ * within its fixed window, and a later navigation on the page force-settles whatever remains - so a subsequent refresh attempt starting on this page meets at
+ * worst a dying consent poll, never a competing channel click. Failures normalize to null with a warning rather than throwing - the caller is a background
+ * refresh cycle whose ladder already owns the endgame. The body runs under the stream's log context so the composed primitives' own lines carry the stream
+ * prefix: the ambient context is kept when a caller already established one (the monitor's recovery path carries a richer context, show-name resolution
+ * included, that a nested run would replace rather than merge), and is supplied only on the proactive timer's path, which has none. The page's audio is
+ * re-muted on the initialization's own settlement rather than at any fixed step: playback establishment unmutes by direct property write, so an already-playing
+ * element stays audible until re-muted, and attaching the re-mute to the initialization promise covers every outcome - success, failure, and a timed-out attempt
+ * whose establishment completes late - while the play-override the native upgrade registered keeps future play() calls muted without re-registration.
+ *
+ * @param options - The stream facts the re-establishment closes over. See ReestablishChannelManifestOptions.
+ * @returns The verified manifest interception, or null when the channel could not be re-established.
+ */
+export async function reestablishChannelManifest(options: ReestablishChannelManifestOptions): Promise<Nullable<ManifestInterceptionResult>> {
+
+  const { channelName, page, profile, streamIdStr, url } = options;
+
+  const establish = async (): Promise<Nullable<ManifestInterceptionResult>> => {
+
+    try {
+
+      // Size the observer to outlive every step that can feed it: one navigation attempt, one bounded playback initialization, the settle the finalize waits
+      // out, and slack. A window that expired mid-establishment would resolve with whatever the page load captured, which is the outcome this path exists to
+      // avoid.
+      const budgetMs = CONFIG.streaming.navigationTimeout + PLAYBACK_INIT_TIMEOUT + FINALIZE_SETTLE_DELAY + INTERCEPTION_BUDGET_MARGIN_MS;
+
+      // Scope-bind the interceptor with "using" so its CDP observer is disposed on every exit from this function, including the early returns below.
+      using handle = await installManifestInterceptor(page, budgetMs);
+
+      if(!handle) {
+
+        LOG.warn("The channel for %s could not be re-established: the manifest interceptor did not install.", channelName ?? url);
+
+        return null;
+      }
+
+      // Navigate through the profile's own wait strategy, single-attempt by design. A navigation failure throws to the catch below and normalizes to null.
+      await navigateToPage(page, url, profile);
+
+      // Channel selection begins here, so anything the reloaded page auto-played is fenced behind the epoch and cannot win adjudication over the channel the
+      // selection lands on.
+      handle.markChannelSelectionStart();
+
+      /* Establish playback, with the re-mute riding the initialization's own settlement rather than a fixed step after the race. Playback establishment unmutes
+       * by direct property write, so success, failure, and a timed-out attempt that completes late all need the mute restored, and only the promise itself
+       * knows when each of those happened. The race carries the tune path's abandon-on-timeout semantics: a losing initialization is not cancelled, it winds
+       * down on its own bounded phases.
+       */
+      const initPromise = initializePlayback(page, profile, { requestedUrl: url });
+
+      void initPromise.finally(() => void muteExistingVideos(page)).catch(() => { /* The race below owns the initialization's failure. */ });
+
+      const tuneResult = await raceWithTimeout(initPromise, PLAYBACK_INIT_TIMEOUT,
+        new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
+
+      // Finalize honestly: this is a direct tune only where the strategy itself resolved one or the profile has no DOM-based selection step at all. There is no
+      // cached-direct-URL term because the route above never takes one.
+      handle.finalize((tuneResult.directTune ?? false) || !isChannelSelectionProfile(profile));
+
+      const interception = await handle.promise;
+
+      if(!interception) {
+
+        LOG.warn("The channel for %s could not be re-established: no manifest was intercepted.", channelName ?? url);
+
+        return null;
+      }
+
+      // The promise above has already settled, so this reads the adjudicated result through the same gates a tune's verification uses.
+      const verifyError = await verifyManifestSelection(handle.promise, profile);
+
+      if(verifyError) {
+
+        LOG.warn("The re-established channel for %s did not verify: %s", channelName ?? url, verifyError);
+
+        return null;
+      }
+
+      return interception;
+    } catch(error) {
+
+      LOG.warn("The channel for %s could not be re-established: %s.", channelName ?? url, formatError(error));
+
+      return null;
+    }
+  };
+
+  // Keep a caller's own context rather than nesting a thinner one inside it - the monitor's recovery context carries show-name resolution this frame cannot
+  // rebuild - and establish one only where none exists, which is the proactive refresh timer's bare callback.
+  if(getStreamContext()) {
+
+    return establish();
+  }
+
+  return runWithStreamContext({ channelName: channelName ?? undefined, streamId: streamIdStr, url }, establish);
 }
 
 // Capture Readiness Verification.

@@ -3,8 +3,10 @@
  * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module - StreamSetupError, generateStreamId, shouldReverifyCapture,
  * validateStreamUrl, and withSignInGuidance - all of which earn full coverage here, plus verifyManifestSelection, which is async only because its one await is a
  * caller-supplied promise: it touches no browser, so it is covered here rather than deferred. The Chrome-entangled async exports (createPageWithCapture,
- * setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require integration fixtures and are
- * deferred to e2e. We cover every throw reachable from the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
+ * reestablishChannelManifest, setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require
+ * integration fixtures and are deferred to e2e - for the re-establishment that means its step bounds, its conditional log-context wrap, and its settlement-
+ * attached re-mute are diff-read facts, with the consequences a caller can observe pinned in native/index.refresh.test.ts. We cover every throw reachable from
+ * the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
 import { StreamSetupError, generateStreamId, shouldReverifyCapture, validateStreamUrl, verifyManifestSelection, withSignInGuidance } from "./setup.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";

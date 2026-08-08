@@ -182,13 +182,17 @@ export async function enforceVideoVolume(context: Frame | Page, selectorType: Vi
 }
 
 /**
- * Mutes all video elements on the page to suppress wrong-channel audio during tuning. When a page loads (e.g. Hulu's /live), a default livestream auto-plays before
- * channel selection can switch to the target channel. Since the capture pipeline is already running, this audio bleeds into the stream. Muting preemptively silences it.
- * This is best-effort: if no video elements exist yet, or the page is in a transitional state, the error is silently ignored. The unmute happens naturally when
- * ensurePlayback() calls startVideoPlayback() after tuning completes.
+ * Mutes every video element currently on the page, silencing audio that does not belong to the channel being established. A multi-channel page auto-plays a
+ * default livestream on load (Hulu's /live, for example), and with a capture pipeline already running that audio bleeds into the stream until channel selection
+ * reaches the requested channel; a page reloaded to re-establish a channel meets the same default again. Two moments call for it: where a tune begins, and where
+ * a re-establishment's playback initialization settles - the latter because playback establishment unmutes by a direct property write that an already-playing
+ * element keeps until something mutes it again.
+ *
+ * Best-effort: a page with no video elements yet, or one in a transitional state, swallows the failure rather than failing the caller. The unmute that matters
+ * happens naturally when startVideoPlayback() runs on the tuned channel.
  * @param page - The Puppeteer page object.
  */
-async function muteExistingVideos(page: Page): Promise<void> {
+export async function muteExistingVideos(page: Page): Promise<void> {
 
   try {
 
