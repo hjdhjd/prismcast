@@ -4,10 +4,10 @@
  * propagated, and the directory is removed regardless of resolve/reject. Coverage pins each leg of that contract plus a "different dir per call" check so
  * tests don't accidentally share state via a shared path.
  */
+import { TMPDIR_PREFIX, withTempDir } from "./fs.helpers.ts";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { withTempDir } from "./fs.helpers.ts";
 
 describe("withTempDir", () => {
 
@@ -20,7 +20,7 @@ describe("withTempDir", () => {
       return dir;
     });
 
-    assert.match(observed, /prismcast-test-/, "temp dir name should include the prismcast-test- prefix");
+    assert.ok(observed.includes(TMPDIR_PREFIX), "temp dir name should include the configured TMPDIR_PREFIX");
   });
 
   test("removes the directory after the callback resolves", async () => {

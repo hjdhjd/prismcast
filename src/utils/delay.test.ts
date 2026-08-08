@@ -35,7 +35,7 @@ describe("cancellableTimeout", () => {
   test("cancel() is idempotent and safe to call multiple times", () => {
 
     // Negative test: calling cancel twice (or after the timer has already fired) must not throw. clearTimeout silently no-ops on already-cleared/fired timers.
-    const { cancel } = cancellableTimeout(1_000);
+    const { cancel } = cancellableTimeout(1000);
 
     assert.doesNotThrow(() => {
 
@@ -47,12 +47,21 @@ describe("cancellableTimeout", () => {
 
   test("returns an object with both promise and cancel keys", () => {
 
-    const result = cancellableTimeout(1_000);
+    const result = cancellableTimeout(1000);
 
     assert.equal(typeof result.cancel, "function", "cancel is callable");
     assert.ok(result.promise instanceof Promise, "promise is a Promise instance");
 
     result.cancel();
+  });
+
+  test("returned promise type is Promise<false>", async () => {
+
+    // The literal-type assertion is at compile-time; runtime evidence is the resolved value being strictly false.
+    const { promise } = cancellableTimeout(1);
+    const result: false = await promise;
+
+    assert.equal(result, false, "the promise should resolve to exactly false");
   });
 });
 
@@ -63,13 +72,13 @@ describe("raceWithTimeout", () => {
     const fast = Promise.resolve("fast-value");
     const result = await raceWithTimeout(fast, 100);
 
-    assert.equal(result, "fast-value");
+    assert.equal(result, "fast-value", "the resolved value should come from the inner promise");
   });
 
   test("rejects with the default timeout error when the timer wins", async () => {
 
     // Negative test: a never-resolving inner promise must surface as a timeout rejection.
-    const never = new Promise<string>(() => { /* never resolves */ });
+    const { promise: never } = Promise.withResolvers<string>();
 
     await assert.rejects(() => raceWithTimeout(never, 5), /Operation timed out after 5ms/, "default error message includes the timeout duration");
   });
@@ -80,11 +89,12 @@ describe("raceWithTimeout", () => {
 
       constructor() {
 
-        super("custom timeout"); this.name = "CustomTimeoutError";
+        super("custom timeout");
+        this.name = "CustomTimeoutError";
       }
     }
 
-    const never = new Promise<string>(() => { /* never resolves */ });
+    const { promise: never } = Promise.withResolvers<string>();
 
     await assert.rejects(() => raceWithTimeout(never, 5, new CustomTimeoutError()), /custom timeout/, "the supplied error is thrown rather than the default");
   });
@@ -101,15 +111,29 @@ describe("raceWithTimeout", () => {
 
     // The .finally cleanup is the key contract. We can't directly observe that clearTimeout fired, but we can verify the function returns and resolves
     // synchronously after the inner promise: the test just running to completion within the per-test budget proves there's no orphan timer keeping the loop alive.
-    const result = await raceWithTimeout(Promise.resolve("ok"), 50_000);
+    const result = await raceWithTimeout(Promise.resolve("ok"), 50000);
 
-    assert.equal(result, "ok");
+    assert.equal(result, "ok", "the inner promise's value should come back unchanged");
+  });
+
+  test("cleans up the timer when many races run back-to-back (no leaked handles)", async () => {
+
+    // We can't directly observe the cleared timer, but the .finally(clearTimeout) guarantees no event-loop reference outlives the race. Indirect verification:
+    // running many races back-to-back must not leak handles - if the timer were leaked, Node's test runner would hang at exit. The fast pass here plus the
+    // --test-force-exit safety net in the test scripts provide the cleanup signal.
+    const promises = Array.from({ length: 50 }, async (_, i) => raceWithTimeout(Promise.resolve(i), 10000));
+
+    const results = await Promise.all(promises);
+
+    assert.equal(results.length, 50, "every race should settle");
+    assert.equal(results[0], 0, "the first race should carry its own value");
+    assert.equal(results[49], 49, "the last race should carry its own value");
   });
 
   test("respects a 0ms timeout (effectively yielding to the event loop)", async () => {
 
     // Boundary: timeoutMs of 0 still schedules the timer; a never-resolving inner promise will lose to the immediate timeout fire.
-    const never = new Promise<string>(() => { /* never resolves */ });
+    const { promise: never } = Promise.withResolvers<string>();
 
     await assert.rejects(() => raceWithTimeout(never, 0), /timed out after 0ms/, "0ms timeout still fires");
   });

@@ -6,8 +6,8 @@
  */
 import { capturingLog, silentLog } from "./loggers.helpers.ts";
 import { describe, test } from "node:test";
+import { firstOf, nthOf } from "./narrowing.helpers.ts";
 import assert from "node:assert/strict";
-import { firstOf } from "./narrowing.helpers.ts";
 
 describe("silentLog", () => {
 
@@ -60,7 +60,7 @@ describe("silentLog", () => {
 
     assert.doesNotThrow(() => {
 
-      log.debug("cat:sub", "msg with %s", "x");
+      log.debug("category:subcategory", "msg with %s", "x");
     }, "debug should accept a category plus format args");
   });
 
@@ -130,8 +130,8 @@ describe("capturingLog", () => {
     const lines = cap.lines();
 
     assert.equal(lines.length, 2, "should have two captured lines");
-    assert.equal(lines[0]!.level, "error", "first should be error");
-    assert.equal(lines[1]!.level, "warn", "second should be warn");
+    assert.equal(firstOf(lines, "captured log line").level, "error", "first should be error");
+    assert.equal(nthOf(lines, 1, "captured log line").level, "warn", "second should be warn");
   });
 
   test("records debug calls with the category extracted from the first argument", () => {
@@ -203,7 +203,7 @@ describe("capturingLog", () => {
     const fresh = cap.lines();
 
     assert.equal(fresh.length, 2, "fresh snapshot should reflect only real captures");
-    assert.equal(fresh[1]!.message, "second", "fresh snapshot's last entry should be the second real call");
+    assert.equal(nthOf(fresh, 1, "fresh capture").message, "second", "fresh snapshot's last entry should be the second real call");
   });
 
   test("starts with no captured lines on a fresh instance", () => {

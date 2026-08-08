@@ -7,7 +7,7 @@
  *   - cleanup.helpers.ts      closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle
  *   - exec.helpers.ts         FakeExecFileResult, FakeExecFile, bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds
  *   - fn.helpers.ts           noop
- *   - fs.helpers.ts           withTempDir
+ *   - fs.helpers.ts           TMPDIR_PREFIX, withTempDir
  *   - loggers.helpers.ts      TestLogger, CapturedLogLine, silentLog, capturingLog
  *   - narrowing.helpers.ts    firstOf, nthOf
  *   - parity.helpers.ts       assertSameShape, declareKeysOf (factory parity checks)
@@ -20,6 +20,7 @@ export type { CapturedCdpCommand, CdpSessionListenerOp } from "./testing/cdp.hel
 export type { CapturedLogLine, TestLogger } from "./testing/loggers.helpers.ts";
 export type { FakeExecFile, FakeExecFileResult } from "./testing/exec.helpers.ts";
 export { FakeCdpSession, FakeConnection } from "./testing/cdp.helpers.ts";
+export { TMPDIR_PREFIX, withTempDir } from "./testing/fs.helpers.ts";
 export { assertNoUnhandledRejections, expectAt } from "./testing/process.helpers.ts";
 export { assertSameShape, declareKeysOf } from "./testing/parity.helpers.ts";
 export { bufferOrStringToString, execFileAlwaysSucceeds, execFileFromMap, makeExecFileError } from "./testing/exec.helpers.ts";
@@ -28,4 +29,3 @@ export { closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle } from "./testin
 export { firstOf, nthOf } from "./testing/narrowing.helpers.ts";
 export { makeFakeCdpPage } from "./testing/cdp.helpers.ts";
 export { noop } from "./testing/fn.helpers.ts";
-export { withTempDir } from "./testing/fs.helpers.ts";

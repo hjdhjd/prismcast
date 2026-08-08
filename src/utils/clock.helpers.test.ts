@@ -14,11 +14,11 @@ describe("makeFakeClock", () => {
     // Locks the structural shape of the handle. A future change that drops `sleeps` or renames it fails here before any consumer breaks.
     const handle = makeFakeClock();
 
-    assert.equal(typeof handle.clock, "object");
-    assert.equal(typeof handle.clock.now, "function");
-    assert.equal(typeof handle.clock.raceWithTimeout, "function");
-    assert.equal(typeof handle.clock.sleep, "function");
-    assert.ok(Array.isArray(handle.sleeps));
+    assert.equal(typeof handle.clock, "object", "the handle should carry a clock object");
+    assert.equal(typeof handle.clock.now, "function", "the clock should expose now()");
+    assert.equal(typeof handle.clock.raceWithTimeout, "function", "the clock should expose raceWithTimeout()");
+    assert.equal(typeof handle.clock.sleep, "function", "the clock should expose sleep()");
+    assert.ok(Array.isArray(handle.sleeps), "the handle should carry a sleeps array");
     assert.equal(handle.sleeps.length, 0, "sleeps starts empty");
   });
 
@@ -28,7 +28,7 @@ describe("makeFakeClock", () => {
 
     await clock.sleep(150);
 
-    assert.deepEqual(sleeps, [150]);
+    assert.deepEqual(sleeps, [150], "the requested duration should be recorded");
   });
 
   test("default sleep records multiple invocations in call order", async () => {
@@ -40,7 +40,7 @@ describe("makeFakeClock", () => {
     await clock.sleep(200);
     await clock.sleep(50);
 
-    assert.deepEqual(sleeps, [ 100, 200, 50 ]);
+    assert.deepEqual(sleeps, [ 100, 200, 50 ], "every requested duration should be recorded in call order");
   });
 
   test("default sleep yields at least one microtask before resolving", async () => {
@@ -64,16 +64,16 @@ describe("makeFakeClock", () => {
     await sleepPromise;
 
     // The microtask scheduled after sleep ran before sleep's continuation - confirming sleep yields rather than resolving synchronously.
-    assert.deepEqual(ordering, [ "microtask", "after-sleep" ]);
+    assert.deepEqual(ordering, [ "microtask", "after-sleep" ], "the interleaved microtask should run before sleep's continuation");
   });
 
   test("default raceWithTimeout forwards the inner promise's resolved value", async () => {
 
     const { clock } = makeFakeClock();
 
-    const value = await clock.raceWithTimeout(Promise.resolve("forwarded"), 1_000);
+    const value = await clock.raceWithTimeout(Promise.resolve("forwarded"), 1000);
 
-    assert.equal(value, "forwarded");
+    assert.equal(value, "forwarded", "the default race should hand back the inner promise unchanged");
   });
 
   test("default raceWithTimeout propagates the inner promise's rejection unchanged", async () => {
@@ -84,7 +84,7 @@ describe("makeFakeClock", () => {
 
     await assert.rejects(
 
-      () => clock.raceWithTimeout(Promise.reject(new Error("inner failure")), 1_000),
+      () => clock.raceWithTimeout(Promise.reject(new Error("inner failure")), 1000),
       /inner failure/
     );
   });
@@ -94,7 +94,7 @@ describe("makeFakeClock", () => {
     // Locked at 0 (rather than left undefined) so consumers that read now() get a deterministic value without needing to override.
     const { clock } = makeFakeClock();
 
-    assert.equal(clock.now(), 0);
+    assert.equal(clock.now(), 0, "a fake clock reads zero until the test says otherwise");
   });
 
   test("sleep override replaces the default and skips the sleeps recorder", async () => {
@@ -126,18 +126,20 @@ describe("makeFakeClock", () => {
       }
     });
 
+    const { promise: never } = Promise.withResolvers<string>();
+
     await assert.rejects(
 
-      () => clock.raceWithTimeout(new Promise<string>(() => { /* never resolves */ }), 750),
+      () => clock.raceWithTimeout(never, 750),
       /timed out after 750ms/
     );
   });
 
   test("now override replaces the default - common case is locking a deterministic timestamp", () => {
 
-    const { clock } = makeFakeClock({ now: () => 12_345 });
+    const { clock } = makeFakeClock({ now: () => 12345 });
 
-    assert.equal(clock.now(), 12_345);
+    assert.equal(clock.now(), 12345, "the override's timestamp should be the one read");
   });
 
   test("overriding one method leaves the other defaults intact", async () => {
@@ -168,6 +170,18 @@ describe("makeFakeClock", () => {
     await clock.sleep(20);
 
     assert.equal(captured, sleeps, "the captured reference still points at the live array");
-    assert.deepEqual(captured, [ 10, 20 ]);
+    assert.deepEqual(captured, [ 10, 20 ], "the captured reference should see every recorded sleep");
+  });
+
+  test("two independent clocks have independent sleeps arrays", async () => {
+
+    const a = makeFakeClock();
+    const b = makeFakeClock();
+
+    await a.clock.sleep(11);
+    await b.clock.sleep(22);
+
+    assert.deepEqual(a.sleeps, [11], "the first clock should record only its own sleep");
+    assert.deepEqual(b.sleeps, [22], "the second clock should record only its own sleep");
   });
 });

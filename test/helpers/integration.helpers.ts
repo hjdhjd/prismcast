@@ -47,6 +47,12 @@ import path from "node:path";
 import { setupRoutes } from "../../src/routes/index.ts";
 
 /**
+ * Prefix for integration-tier temp directory names. Distinct from the unit-tier `TMPDIR_PREFIX` in src/testing/fs.helpers.ts so orphaned temp dirs reveal
+ * which tier created them. Customize once per project.
+ */
+const TMPDIR_PREFIX = "prismcast-integ-";
+
+/**
  * Per-test execution context. Tests interact with the integration tier exclusively through this surface so the harness owns isolation and cleanup. Direct
  * filesystem access against ctx.dataDir is permitted and expected; the harness only wraps the operations that have meaningful failure modes (json shape
  * narrowing, missing-file handling).
@@ -100,7 +106,7 @@ export type DisposableIntegrationContext = IntegrationContext & AsyncDisposable;
  */
 export async function createIntegrationContext(): Promise<DisposableIntegrationContext> {
 
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-integ-"));
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), TMPDIR_PREFIX));
   const cleanups: (() => Promise<void> | void)[] = [];
 
   // Point production resolvers at the temp dir before any test code runs. This is structurally necessary for safety - a production module that imports the

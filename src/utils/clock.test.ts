@@ -9,6 +9,11 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { realClock } from "./clock.ts";
 
+// The sleep the advancing check brackets, and the floor the elapsed reading is held to. The floor sits below the requested duration because a timer may fire a
+// fraction early, and well above zero because a clock that did not move at all is the failure this check exists to catch.
+const ADVANCE_FLOOR_MS = 8;
+const ADVANCE_SLEEP_MS = 10;
+
 describe("realClock", () => {
 
   test("exposes the documented Clock surface", () => {
@@ -25,19 +30,24 @@ describe("realClock", () => {
     // increasing on every call), but we verify the shape - a finite non-negative number suitable for elapsed-time calculations.
     const value = realClock.now();
 
-    assert.equal(typeof value, "number");
+    assert.equal(typeof value, "number", "now() should return a number");
     assert.ok(Number.isFinite(value), "performance.now produces a finite number");
     assert.ok(value >= 0, "performance.now is non-negative");
   });
 
-  test("now() is monotonically non-decreasing across consecutive reads", () => {
+  test("now() reads real time - finite, never backwards, and advancing across a sleep", async () => {
 
-    // Two reads of performance.now back-to-back produce values where the second is >= the first. This is the contract the rest of the codebase (e.g. timing.ts's
-    // startTimer) relies on.
-    const a = realClock.now();
-    const b = realClock.now();
+    const before = realClock.now();
 
-    assert.ok(b >= a, "second read is at or after the first: " + String(b) + " >= " + String(a));
+    assert.ok(Number.isFinite(before), "the first reading should be a finite timestamp");
+
+    await realClock.sleep(ADVANCE_SLEEP_MS);
+
+    const after = realClock.now();
+
+    assert.ok(Number.isFinite(after), "the second reading should be finite too");
+    assert.ok(after >= before, "the clock should never run backwards");
+    assert.ok((after - before) >= ADVANCE_FLOOR_MS, "the clock should advance by roughly the slept duration");
   });
 
   test("sleep() resolves after the requested delay", async () => {
@@ -50,19 +60,18 @@ describe("realClock", () => {
 
   test("raceWithTimeout() returns the inner promise's value when it resolves before the timeout", async () => {
 
-    const value = await realClock.raceWithTimeout(Promise.resolve("won"), 1_000);
+    const value = await realClock.raceWithTimeout(Promise.resolve("won"), 1000);
 
-    assert.equal(value, "won");
+    assert.equal(value, "won", "the winning promise's value should come back unchanged");
   });
 
   test("raceWithTimeout() throws when the timeout fires before the inner promise resolves", async () => {
 
-    // The inner promise never resolves; the 1ms timer wins the race. The thrown error matches the documented default message format.
-    await assert.rejects(
+    // The inner promise is structured never to settle, so the 1ms timer is the only branch that can win. The thrown error matches the documented default
+    // message format.
+    const { promise: never } = Promise.withResolvers<string>();
 
-      () => realClock.raceWithTimeout(new Promise<string>(() => { /* never resolves */ }), 1),
-      /timed out after 1ms/
-    );
+    await assert.rejects(() => realClock.raceWithTimeout(never, 1), /timed out after 1ms/);
   });
 
   test("realClock.raceWithTimeout is the same reference as raceWithTimeout from delay.ts (SSOT delegation)", () => {
@@ -89,11 +98,9 @@ describe("realClock", () => {
       }
     }
 
-    // The inner promise never resolves; the supplied error must be the one the timeout race surfaces.
-    await assert.rejects(
+    // The inner promise is structured never to settle, so the supplied error must be the one the timeout race surfaces.
+    const { promise: never } = Promise.withResolvers<string>();
 
-      () => realClock.raceWithTimeout(new Promise<string>(() => { /* never resolves */ }), 1, new CustomTimeoutError()),
-      (err: unknown) => err instanceof CustomTimeoutError
-    );
+    await assert.rejects(() => realClock.raceWithTimeout(never, 1, new CustomTimeoutError()), (err: unknown) => err instanceof CustomTimeoutError);
   });
 });

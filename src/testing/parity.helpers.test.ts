@@ -16,7 +16,7 @@ describe("assertSameShape", () => {
     assert.doesNotThrow(() => {
 
       assertSameShape({ a: 1, b: 2 }, { a: "x", b: "y" }, "matching shapes");
-    });
+    }, "identical key sets should pass silently");
   });
 
   test("does not throw on two empty objects", () => {
@@ -25,7 +25,7 @@ describe("assertSameShape", () => {
     assert.doesNotThrow(() => {
 
       assertSameShape({}, {}, "empty shapes");
-    });
+    }, "two empty objects should pass silently");
   });
 
   test("throws when the actual object has a key the expected object lacks", () => {
@@ -33,7 +33,8 @@ describe("assertSameShape", () => {
     assert.throws(
 
       () => { assertSameShape({ a: 1, extra: 2 }, { a: 1 }, "factory vs reference"); },
-      /factory vs reference: key sets differ\. only in actual: extra\./
+      /factory vs reference: key sets differ\. only in actual: extra\./,
+      "a key only the actual object carries should be reported"
     );
   });
 
@@ -42,7 +43,8 @@ describe("assertSameShape", () => {
     assert.throws(
 
       () => { assertSameShape({ a: 1 }, { a: 1, missing: 2 }, "factory vs reference"); },
-      /factory vs reference: key sets differ\. only in expected: missing\./
+      /factory vs reference: key sets differ\. only in expected: missing\./,
+      "a key only the expected object carries should be reported"
     );
   });
 
@@ -60,8 +62,8 @@ describe("assertSameShape", () => {
     }
 
     assert.ok(captured, "should have thrown");
-    assert.match(captured.message, /only in actual: extraA/);
-    assert.match(captured.message, /only in expected: extraB/);
+    assert.match(captured.message, /only in actual: extraA/, "the actual-only key should be named");
+    assert.match(captured.message, /only in expected: extraB/, "the expected-only key should be named too");
   });
 
   test("sorts the reported keys alphabetically for deterministic error messages", () => {
@@ -80,7 +82,7 @@ describe("assertSameShape", () => {
     }
 
     assert.ok(captured, "should have thrown");
-    assert.match(captured.message, /only in actual: a, m, z/);
+    assert.match(captured.message, /only in actual: a, m, z/, "drifted keys should be listed in sorted order");
   });
 
   test("treats objects with the same keys but different values as equal in shape (values are not compared)", () => {
@@ -89,7 +91,7 @@ describe("assertSameShape", () => {
     assert.doesNotThrow(() => {
 
       assertSameShape({ a: 1, b: 2 }, { a: "string", b: { nested: true } }, "values differ but keys match");
-    });
+    }, "differing values should not register as a shape difference");
   });
 });
 
@@ -107,7 +109,7 @@ describe("declareKeysOf", () => {
 
     const keys = declareKeysOf<Sample>()([ "a", "b", "c" ] as const);
 
-    assert.deepEqual([...keys], [ "a", "b", "c" ]);
+    assert.deepEqual([...keys], [ "a", "b", "c" ], "the declared keys should come back in order");
   });
 
   test("preserves the const-array literal type so callers can use the array as a tuple type source", () => {
@@ -116,10 +118,10 @@ describe("declareKeysOf", () => {
     // shape by reading individual indices and verifying the values match the source array.
     const keys = declareKeysOf<Sample>()([ "a", "b", "c" ] as const);
 
-    assert.equal(keys[0], "a");
-    assert.equal(keys[1], "b");
-    assert.equal(keys[2], "c");
-    assert.equal(keys.length, 3);
+    assert.equal(keys[0], "a", "the first key should survive the pass-through");
+    assert.equal(keys[1], "b", "the second key should survive the pass-through");
+    assert.equal(keys[2], "c", "the third key should survive the pass-through");
+    assert.equal(keys.length, 3, "no key should be added or dropped");
   });
 
   test("supports the empty-key case for a type with no keys", () => {
@@ -128,7 +130,7 @@ describe("declareKeysOf", () => {
     // is the canonical "no keys" type - Record<string, never> has an index signature so keyof resolves to string, not never.
     const keys = declareKeysOf<Record<never, never>>()([] as const);
 
-    assert.equal(keys.length, 0);
+    assert.equal(keys.length, 0, "a keyless type should declare an empty array");
   });
 
   test("array reference is the same as the input (no copy)", () => {

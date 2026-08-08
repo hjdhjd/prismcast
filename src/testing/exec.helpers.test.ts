@@ -12,22 +12,22 @@ describe("bufferOrStringToString", () => {
 
   test("returns the string as-is when given a string", () => {
 
-    assert.equal(bufferOrStringToString("hello"), "hello");
+    assert.equal(bufferOrStringToString("hello"), "hello", "a string should pass through untouched");
   });
 
   test("decodes a Buffer to utf8 when given a Buffer", () => {
 
-    assert.equal(bufferOrStringToString(Buffer.from("hello", "utf8")), "hello");
+    assert.equal(bufferOrStringToString(Buffer.from("hello", "utf8")), "hello", "a Buffer should decode to its utf8 text");
   });
 
   test("returns an empty string when given undefined", () => {
 
-    assert.equal(bufferOrStringToString(undefined), "");
+    assert.equal(bufferOrStringToString(undefined), "", "undefined should read as the empty string");
   });
 
   test("returns an empty string when given an empty Buffer", () => {
 
-    assert.equal(bufferOrStringToString(Buffer.alloc(0)), "");
+    assert.equal(bufferOrStringToString(Buffer.alloc(0)), "", "an empty Buffer should read as the empty string");
   });
 
   test("preserves multi-byte utf8 sequences when decoding a Buffer", () => {
@@ -35,7 +35,7 @@ describe("bufferOrStringToString", () => {
     // The Buffer.toString('utf8') path must handle non-ASCII content correctly. A character outside the BMP exercises the multi-byte sequence handling.
     const text = "Hello, éü中文\u{1F600}";
 
-    assert.equal(bufferOrStringToString(Buffer.from(text, "utf8")), text);
+    assert.equal(bufferOrStringToString(Buffer.from(text, "utf8")), text, "multi-byte sequences should survive the decode");
   });
 });
 
@@ -45,15 +45,15 @@ describe("makeExecFileError", () => {
 
     const error = makeExecFileError("Command failed", "", "");
 
-    assert.equal(error.message, "Command failed");
+    assert.equal(error.message, "Command failed", "the supplied text should become the error message");
   });
 
   test("attaches stderr and stdout as own properties on the Error", () => {
 
     const error = makeExecFileError("boom", "the stderr", "the stdout") as Error & { stderr: string; stdout: string };
 
-    assert.equal(error.stderr, "the stderr");
-    assert.equal(error.stdout, "the stdout");
+    assert.equal(error.stderr, "the stderr", "stderr should be attached to the error");
+    assert.equal(error.stdout, "the stdout", "stdout should be attached to the error");
   });
 
   test("preserves Buffer-shaped stderr without converting it (matches encoding: 'buffer' real shape)", () => {
@@ -64,15 +64,15 @@ describe("makeExecFileError", () => {
     const error = makeExecFileError("boom", stderr, "") as Error & { stderr: Buffer | string };
 
     assert.ok(Buffer.isBuffer(error.stderr), "stderr is a Buffer");
-    assert.equal(error.stderr.toString("utf8"), "Buffer-shaped stderr");
+    assert.equal(error.stderr.toString("utf8"), "Buffer-shaped stderr", "the Buffer contents should be intact");
   });
 
   test("returned object is structurally an Error (instanceof Error, has stack)", () => {
 
     const error = makeExecFileError("boom", "", "");
 
-    assert.ok(error instanceof Error);
-    assert.equal(typeof error.stack, "string");
+    assert.ok(error instanceof Error, "the fake should be a real Error");
+    assert.equal(typeof error.stack, "string", "a real Error carries a stack");
   });
 });
 
@@ -84,7 +84,7 @@ describe("execFileFromMap", () => {
 
     const result = await execFile("ls", ["-la"]);
 
-    assert.deepEqual(result, { stderr: "warning text", stdout: "file listing" });
+    assert.deepEqual(result, { stderr: "warning text", stdout: "file listing" }, "a keyed command should return its configured result");
   });
 
   test("normalizes Buffer-shaped stdout/stderr to utf8 strings on the success path", async () => {
@@ -101,9 +101,9 @@ describe("execFileFromMap", () => {
 
     const result = await execFile("echo", ["hi"]);
 
-    assert.equal(typeof result.stdout, "string");
-    assert.equal(typeof result.stderr, "string");
-    assert.deepEqual(result, { stderr: "warning", stdout: "output" });
+    assert.equal(typeof result.stdout, "string", "Buffer stdout should be normalized to a string");
+    assert.equal(typeof result.stderr, "string", "Buffer stderr should be normalized to a string");
+    assert.deepEqual(result, { stderr: "warning", stdout: "output" }, "the normalized text should match the Buffer contents");
   });
 
   test("throws fake-exec-fail with empty stderr/stdout when no map entry matches the command", async () => {
@@ -115,12 +115,13 @@ describe("execFileFromMap", () => {
       () => execFile("missing", ["arg"]),
       (error: Error & { stderr: Buffer | string; stdout: Buffer | string }): boolean => {
 
-        assert.match(error.message, /fake-exec-fail: no result configured for missing arg/);
-        assert.equal(error.stderr, "");
-        assert.equal(error.stdout, "");
+        assert.match(error.message, /fake-exec-fail: no result configured for missing arg/, "the message should name the unmapped command");
+        assert.equal(error.stderr, "", "an unmapped command reports empty stderr");
+        assert.equal(error.stdout, "", "an unmapped command reports empty stdout");
 
         return true;
-      }
+      },
+      "an unmapped command should reject rather than pass"
     );
   });
 
@@ -140,12 +141,13 @@ describe("execFileFromMap", () => {
       () => execFile("ls", ["-la"]),
       (error: Error & { stderr: Buffer | string; stdout: Buffer | string }): boolean => {
 
-        assert.match(error.message, /fake-exec-fail: ls -la/);
-        assert.equal(error.stderr, "permission denied");
-        assert.equal(error.stdout, "partial output before failure");
+        assert.match(error.message, /fake-exec-fail: ls -la/, "the message should name the failing command");
+        assert.equal(error.stderr, "permission denied", "the configured stderr should reach the caller");
+        assert.equal(error.stdout, "partial output before failure", "the configured stdout should reach the caller");
 
         return true;
-      }
+      },
+      "a shouldThrow entry should reject"
     );
   });
 
@@ -161,7 +163,8 @@ describe("execFileFromMap", () => {
         assert.ok(Buffer.isBuffer(error.stderr), "stderr is preserved as Buffer on the throw path");
 
         return true;
-      }
+      },
+      "a Buffer-stderr entry should reject"
     );
   });
 
@@ -170,7 +173,7 @@ describe("execFileFromMap", () => {
     // The key construction is documented; this test pins it so future refactors don't accidentally change the join character or quoting.
     const execFile = execFileFromMap({ "git --git-dir=/x status --porcelain": { stdout: "" } });
 
-    await assert.doesNotReject(() => execFile("git", [ "--git-dir=/x", "status", "--porcelain" ]));
+    await assert.doesNotReject(() => execFile("git", [ "--git-dir=/x", "status", "--porcelain" ]), "a space-joined multi-arg key should match");
   });
 
   test("an empty args array yields a key with a trailing space (file + ' ')", async () => {
@@ -181,7 +184,7 @@ describe("execFileFromMap", () => {
 
     const result = await execFile("ls", []);
 
-    assert.equal(result.stdout, "current dir");
+    assert.equal(result.stdout, "current dir", "a zero-arg command should match its trailing-space key");
   });
 });
 
@@ -194,8 +197,8 @@ describe("execFileAlwaysSucceeds", () => {
     const a = await execFile("any", ["thing"]);
     const b = await execFile("totally", [ "different", "command" ]);
 
-    assert.deepEqual(a, { stderr: "", stdout: "" });
-    assert.deepEqual(b, { stderr: "", stdout: "" });
+    assert.deepEqual(a, { stderr: "", stdout: "" }, "the first invocation should succeed with empty output");
+    assert.deepEqual(b, { stderr: "", stdout: "" }, "a different command should succeed the same way");
   });
 
   test("uses the supplied stdout and stderr defaults", async () => {
@@ -204,7 +207,7 @@ describe("execFileAlwaysSucceeds", () => {
 
     const result = await execFile("any", []);
 
-    assert.deepEqual(result, { stderr: "warning", stdout: "hello" });
+    assert.deepEqual(result, { stderr: "warning", stdout: "hello" }, "the supplied defaults should be returned");
   });
 
   test("normalizes Buffer-shaped defaults to utf8 strings", async () => {
@@ -213,14 +216,14 @@ describe("execFileAlwaysSucceeds", () => {
 
     const result = await execFile("any", []);
 
-    assert.deepEqual(result, { stderr: "warning", stdout: "output" });
+    assert.deepEqual(result, { stderr: "warning", stdout: "output" }, "Buffer defaults should be normalized to strings");
   });
 
   test("never throws regardless of file/args", async () => {
 
     const execFile = execFileAlwaysSucceeds();
 
-    await assert.doesNotReject(() => execFile("", []));
-    await assert.doesNotReject(() => execFile("malformed", [ "very", "weird", "args" ]));
+    await assert.doesNotReject(() => execFile("", []), "an empty command should still resolve");
+    await assert.doesNotReject(() => execFile("malformed", [ "very", "weird", "args" ]), "an unmapped command should still resolve");
   });
 });

@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * process.helpers.ts: Process-level test helpers. Currently exposes assertNoUnhandledRejections and expectAt. Both bridge between the test body and the
- * surrounding Node process surface - one captures unhandled rejections via the process's emitter, the other yields to the microtask queue while waiting for a
- * predicate to become true.
+ * process.helpers.ts: Process-level test helpers. Exposes assertNoUnhandledRejections and expectAt. Both bridge between the test body and the surrounding Node
+ * process surface - one captures unhandled rejections via the process's emitter, the other yields to the microtask queue while waiting for a predicate to
+ * become true.
  */
 import type { EventEmitter } from "node:events";
 
@@ -15,7 +15,7 @@ import type { EventEmitter } from "node:events";
  * unhandledRejection guard. Production callers omit it and the helper attaches to process.
  *
  * @param emitter - The emitter to listen on. Defaults to process. Tests pass a controlled emitter to avoid runner conflicts.
- * @returns A cleanup function that detaches the handler and throws if any rejection was captured.
+ * @returns A cleanup function that detaches the handler and throws an AggregateError if any rejection was captured.
  */
 export function assertNoUnhandledRejections(emitter: EventEmitter = process): () => void {
 
@@ -49,7 +49,6 @@ export function assertNoUnhandledRejections(emitter: EventEmitter = process): ()
  * Use this when a test needs to wait for a value that becomes available across promise chains (e.g., async event listeners that update shared state) without
  * introducing real-time delays. The default budget is 100 iterations, which is more than enough for any code path that resolves within a finite microtask
  * chain. Tests that need to wait on real timers should use mock.timers.tick() (after enabling timer mocking via mock.timers.enable()), not this helper.
- *
  * @param predicate - Function returning the awaited value, or undefined when not yet available.
  * @param options - Optional iteration budget override.
  * @returns The first non-undefined value the predicate returns.
