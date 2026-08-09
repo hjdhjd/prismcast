@@ -3,9 +3,10 @@
  * shared.ts: Shared utilities for channel selection tuning strategies.
  */
 import type { ChannelSelectionProfile, ClickTarget } from "../../types/index.ts";
-import { LOG, delay } from "../../utils/index.ts";
+import { LOG, delay, formatError } from "../../utils/index.ts";
 import type { NewDocumentScriptEvaluation, Page } from "puppeteer-core";
 import { CHANNELS } from "../../channels/index.ts";
+import { CONFIG } from "../../config/index.ts";
 
 /* These utility functions are used by multiple tuning strategy files (hulu, sling, fox, etc.) and the channel selection coordinator. They live in this shared module
  * to avoid circular imports - the coordinator imports tuning strategy modules, and those modules need these utilities. Placing the utilities in the coordinator would
@@ -229,4 +230,131 @@ export function logAvailableChannels(options: {
 
   LOG.warn("Channel \"%s\" not found in %s guide. Create a user-defined channel with one of the names below as the Channel Selector and %s as the URL. " +
     "Available channels (%s): %s.", channelName, providerName, guideUrl, countLabel, filteredChannels.join(", "));
+}
+
+// Number of consecutive empty discoveries before attempting site data recovery via CDP.
+const EMPTY_DISCOVERY_RECOVERY_THRESHOLD = 3;
+
+/**
+ * Tracks consecutive guide page loads that discover zero channels for one provider, and reports when that streak warrants recovery. Each strategy holds its own
+ * instance, so one provider's degradation never reads as another's.
+ */
+export interface EmptyDiscoveryGuard {
+
+  // Records one guide load that discovered zero channels and warns with the running streak length. Returns true once the streak has reached the recovery
+  // threshold, which is the caller's signal to attempt recovery. It keeps returning true for every further consecutive empty load, so a guide that stays
+  // degraded is retried rather than being abandoned after a single attempt.
+  readonly recordEmpty: () => boolean;
+
+  // Clears the streak. Called on any successful discovery and on browser restart, both of which resolve the degraded state the streak stands for.
+  readonly reset: () => void;
+}
+
+/**
+ * Creates a recovery guard that tracks consecutive guide page loads that discover zero channels for one provider. The count lives in the returned guard's
+ * closure rather than in module state, so every strategy that needs one holds an independent instance and no provider's streak can be advanced or cleared by
+ * another's.
+ * @param providerName - Human-readable provider name for the warning message (e.g., "Spectrum TV", "YouTube TV").
+ * @returns A guard exposing recordEmpty and reset.
+ */
+export function createEmptyDiscoveryGuard(providerName: string): EmptyDiscoveryGuard {
+
+  let consecutiveEmptyDiscoveries = 0;
+
+  const recordEmpty = (): boolean => {
+
+    consecutiveEmptyDiscoveries++;
+
+    LOG.warn("%s guide loaded but no channels were discovered (%s consecutive). The guide may be in a degraded state.", providerName,
+      consecutiveEmptyDiscoveries);
+
+    return consecutiveEmptyDiscoveries >= EMPTY_DISCOVERY_RECOVERY_THRESHOLD;
+  };
+
+  const reset = (): void => {
+
+    consecutiveEmptyDiscoveries = 0;
+  };
+
+  return { recordEmpty, reset };
+}
+
+/**
+ * Recovers a degraded provider guide by clearing its cached site data via CDP, reloading the guide page, and re-running the provider's own discovery. This
+ * targets the failure mode where the guide grid container renders but channel entries are never populated, which stale caching layers produce. Cookies and
+ * login session state survive: only the storage types the caller names are cleared, so recovery never forces re-authentication. Every failure along the way is
+ * logged and yields an empty array, leaving the caller's existing empty-guide handling to decide what happens next. The type parameter is the caller's own raw
+ * channel shape - the routine counts the discovered entries but never inspects them, so each provider keeps its discovery type end to end.
+ * @param page - The Puppeteer page object positioned on the provider's guide.
+ * @param options - Provider-specific recovery parameters.
+ * @param options.discover - The provider's guide discovery function, re-run on the reloaded page.
+ * @param options.origin - Origin whose cached site data is cleared (e.g., "https://tv.youtube.com").
+ * @param options.providerName - Human-readable provider name for the log messages (e.g., "Spectrum TV", "YouTube TV").
+ * @param options.reloadUrl - Guide URL to reload once the clear succeeds.
+ * @param options.storageTypes - Storage.clearDataForOrigin storage types to clear (e.g., "cache_storage,service_workers").
+ * @param options.waitSelector - Selector whose appearance confirms the guide grid rendered after the reload.
+ * @returns Discovered channels after recovery, or an empty array if recovery failed.
+ */
+export async function attemptGuideRecovery<T>(page: Page, options: {
+  discover: (page: Page) => Promise<T[]>;
+  origin: string;
+  providerName: string;
+  reloadUrl: string;
+  storageTypes: string;
+  waitSelector: string;
+}): Promise<T[]> {
+
+  const { discover, origin, providerName, reloadUrl, storageTypes, waitSelector } = options;
+
+  LOG.warn("Clearing %s cached site data to recover from empty guide.", providerName);
+
+  // Clear the caching layers the caller named for this origin. Those layers repopulate on reload - cookies and login session state are deliberately preserved to
+  // avoid forcing re-authentication.
+  try {
+
+    const client = await page.createCDPSession();
+
+    await client.send("Storage.clearDataForOrigin", { origin, storageTypes });
+    await client.detach();
+  } catch(error) {
+
+    LOG.warn("Failed to clear %s site data: %s.", providerName, formatError(error));
+
+    return [];
+  }
+
+  // Reload the guide page with fresh state.
+  try {
+
+    await page.goto(reloadUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+  } catch(error) {
+
+    LOG.warn("Failed to reload %s guide after clearing site data: %s.", providerName, formatError(error));
+
+    return [];
+  }
+
+  // Wait for the guide grid to render after reload.
+  try {
+
+    await page.waitForSelector(waitSelector, { timeout: CONFIG.streaming.videoTimeout });
+  } catch {
+
+    LOG.warn("%s guide grid did not load after clearing site data.", providerName);
+
+    return [];
+  }
+
+  // Re-attempt channel discovery on the reloaded page.
+  const channels = await discover(page);
+
+  if(channels.length > 0) {
+
+    LOG.info("%s guide recovery succeeded - discovered %s channels after clearing site data.", providerName, channels.length);
+  } else {
+
+    LOG.warn("%s guide still empty after clearing site data.", providerName);
+  }
+
+  return channels;
 }

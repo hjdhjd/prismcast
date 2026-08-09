@@ -4,9 +4,9 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for YouTube TV watch page navigation.
 const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
@@ -25,13 +25,10 @@ interface YttvChannelEntry {
 // discovery (via getCachedChannels / discoverYttvChannels) read from this single cache. Cleared on browser disconnect via clearYttvCache().
 const yttvChannelCache = new Map<string, YttvChannelEntry>();
 
-// Tracks consecutive guide page loads that discover zero channels. When this reaches the recovery threshold, the strategy clears YTTV site data (service workers
-// and cache storage) via CDP and reloads the guide to break out of a degraded state where the guide grid container renders but channel entries are not populated.
-// Reset to zero on any successful discovery (> 0 channels found) or on browser restart (via clearYttvCache).
-let consecutiveEmptyDiscoveries = 0;
-
-// Number of consecutive empty discoveries before attempting site data recovery via CDP.
-const EMPTY_DISCOVERY_RECOVERY_THRESHOLD = 3;
+// Recovery guard for the degraded guide state where the grid container renders but channel entries are not populated, which stale browser session state -
+// service workers and cached SPA code after a Chrome update - produces. The guard counts the empty loads and signals when clearing YTTV site data (service
+// workers and cache storage) via CDP is warranted. Reset on any successful discovery (> 0 channels found) and on browser restart (via clearYttvCache).
+const emptyDiscoveryGuard = createEmptyDiscoveryGuard("YouTube TV");
 
 // Known alternate channel names for affiliates that vary by market. CW appears as "WGN" in some markets. PBS affiliates appear under local call letters (e.g.,
 // WTTW, KQED) or branded names (e.g., "Cascade PBS", "Lakeshore PBS") rather than "PBS", so we list the major market call letters and branded names to cover most
@@ -132,7 +129,7 @@ function invalidateYttvDirectUrl(channelSelector: string): void {
  */
 function clearYttvCache(): void {
 
-  consecutiveEmptyDiscoveries = 0;
+  emptyDiscoveryGuard.reset();
   yttvChannelCache.clear();
 }
 
@@ -170,68 +167,6 @@ async function discoverGuideChannels(page: Page): Promise<{ name: string; watchP
 
     return results;
   }, []);
-}
-
-/**
- * Attempts to recover from a degraded YouTube TV guide state by clearing cached site data (service workers and cache storage) via CDP and reloading the guide page.
- * This targets the specific failure mode where the guide grid container renders but channel entries are not populated, typically caused by stale browser session
- * state after a Chrome update. Cookies and login session are preserved - only caching layers are cleared.
- * @param page - The Puppeteer page object.
- * @returns Discovered channels after recovery, or an empty array if recovery failed.
- */
-async function attemptGuideRecovery(page: Page): Promise<{ name: string; watchPath: string }[]> {
-
-  LOG.warn("Clearing YouTube TV cached site data to recover from empty guide.");
-
-  // Clear service workers and cache storage for the YouTube TV origin. These are caching layers that will be repopulated on reload - cookies and login session
-  // state are deliberately preserved to avoid forcing re-authentication.
-  try {
-
-    const client = await page.createCDPSession();
-
-    await client.send("Storage.clearDataForOrigin", { origin: YOUTUBE_TV_BASE_URL, storageTypes: "cache_storage,service_workers" });
-    await client.detach();
-  } catch(error) {
-
-    LOG.warn("Failed to clear YouTube TV site data: %s.", formatError(error));
-
-    return [];
-  }
-
-  // Reload the guide page with fresh state.
-  try {
-
-    await page.goto(YOUTUBE_TV_BASE_URL + "/live", { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
-  } catch(error) {
-
-    LOG.warn("Failed to reload YouTube TV guide after clearing site data: %s.", formatError(error));
-
-    return [];
-  }
-
-  // Wait for the EPG grid to render after reload.
-  try {
-
-    await page.waitForSelector("ytu-epg-row", { timeout: CONFIG.streaming.videoTimeout });
-  } catch {
-
-    LOG.warn("YouTube TV guide grid did not load after clearing site data.");
-
-    return [];
-  }
-
-  // Re-attempt channel discovery on the reloaded page.
-  const channels = await discoverGuideChannels(page);
-
-  if(channels.length > 0) {
-
-    LOG.info("YouTube TV guide recovery succeeded - discovered %s channels after clearing site data.", channels.length);
-  } else {
-
-    LOG.warn("YouTube TV guide still empty after clearing site data.");
-  }
-
-  return channels;
 }
 
 // Broadcast network names that have local affiliates displayed as "{Network} {Number}" (e.g., "NBC 5", "ABC 7") in the YouTube TV guide. Used to constrain
@@ -355,14 +290,17 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
   // and attempt recovery by clearing cached site data once the threshold is reached.
   if(allChannels.length === 0) {
 
-    consecutiveEmptyDiscoveries++;
+    if(emptyDiscoveryGuard.recordEmpty()) {
 
-    LOG.warn("YouTube TV guide loaded but no channels were discovered (%s consecutive). The guide may be in a degraded state.",
-      consecutiveEmptyDiscoveries);
+      allChannels = await attemptGuideRecovery(page, {
 
-    if(consecutiveEmptyDiscoveries >= EMPTY_DISCOVERY_RECOVERY_THRESHOLD) {
-
-      allChannels = await attemptGuideRecovery(page);
+        discover: discoverGuideChannels,
+        origin: YOUTUBE_TV_BASE_URL,
+        providerName: "YouTube TV",
+        reloadUrl: YOUTUBE_TV_BASE_URL + "/live",
+        storageTypes: "cache_storage,service_workers",
+        waitSelector: "ytu-epg-row"
+      });
     }
   }
 
@@ -375,7 +313,7 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
 
   // Successful discovery - reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache has
   // entries, because invalidated entries (deleted by invalidateYttvDirectUrl) need to be restored with fresh watch URLs from the guide.
-  consecutiveEmptyDiscoveries = 0;
+  emptyDiscoveryGuard.reset();
   populateYttvChannelCache(allChannels);
 
   LOG.debug("tuning:yttv", "Discovered %s YouTube TV channels.", allChannels.length);

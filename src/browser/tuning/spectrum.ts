@@ -4,9 +4,9 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for Spectrum TV watch page navigation.
 const SPECTRUM_BASE_URL = "https://watch.spectrum.net";
@@ -26,13 +26,10 @@ interface SpectrumChannelEntry {
 // getCachedChannels / discoverSpectrumChannels) read from this single cache. Cleared on browser disconnect via clearSpectrumCache().
 const spectrumChannelCache = new Map<string, SpectrumChannelEntry>();
 
-// Tracks consecutive guide page loads that discover zero channels. When this reaches the recovery threshold, the strategy clears Spectrum site data (cache
-// storage) via CDP and reloads the guide to break out of a degraded state where the guide grid container renders but channel entries are not populated. Reset
-// to zero on any successful discovery (> 0 channels found) or on browser restart (via clearSpectrumCache).
-let consecutiveEmptyDiscoveries = 0;
-
-// Number of consecutive empty discoveries before attempting site data recovery via CDP.
-const EMPTY_DISCOVERY_RECOVERY_THRESHOLD = 3;
+// Recovery guard for the degraded guide state where the grid container renders but channel entries are not populated, which stale AngularJS template or API
+// response caches produce. The guard counts the empty loads and signals when clearing Spectrum site data (cache storage) via CDP is warranted. Reset on any
+// successful discovery (> 0 channels found) and on browser restart (via clearSpectrumCache).
+const emptyDiscoveryGuard = createEmptyDiscoveryGuard("Spectrum TV");
 
 // Regex pattern for detecting local affiliates and subchannels. Matches "{Name} ({CallSign})" with optional trailing " HD"/" DT" suffix and optional
 // "East"/"West" direction.
@@ -142,67 +139,6 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
 
     return results;
   }, []);
-}
-
-/**
- * Attempts to recover from a degraded Spectrum guide state by clearing cached site data via CDP and reloading the guide page. This targets a failure mode where
- * the guide grid container renders but channel entries are not populated, which can be caused by stale AngularJS template or API response caches. Cookies and
- * login session state are preserved - only caching layers are cleared.
- * @param page - The Puppeteer page object.
- * @returns Discovered channels after recovery, or an empty array if recovery failed.
- */
-async function attemptGuideRecovery(page: Page): Promise<RawSpectrumChannel[]> {
-
-  LOG.warn("Clearing Spectrum TV cached site data to recover from empty guide.");
-
-  // Clear cache storage for the Spectrum origin. Cookies and login session state are deliberately preserved to avoid forcing re-authentication.
-  try {
-
-    const client = await page.createCDPSession();
-
-    await client.send("Storage.clearDataForOrigin", { origin: SPECTRUM_BASE_URL, storageTypes: "cache_storage" });
-    await client.detach();
-  } catch(error) {
-
-    LOG.warn("Failed to clear Spectrum TV site data: %s.", formatError(error));
-
-    return [];
-  }
-
-  // Reload the guide page with fresh state.
-  try {
-
-    await page.goto(SPECTRUM_BASE_URL + "/guide", { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
-  } catch(error) {
-
-    LOG.warn("Failed to reload Spectrum TV guide after clearing site data: %s.", formatError(error));
-
-    return [];
-  }
-
-  // Wait for the guide grid to render after reload.
-  try {
-
-    await page.waitForSelector("li.channel-header-row", { timeout: CONFIG.streaming.videoTimeout });
-  } catch {
-
-    LOG.warn("Spectrum TV guide grid did not load after clearing site data.");
-
-    return [];
-  }
-
-  // Re-attempt channel discovery on the reloaded page.
-  const channels = await discoverGuideChannels(page);
-
-  if(channels.length > 0) {
-
-    LOG.info("Spectrum TV guide recovery succeeded - discovered %s channels after clearing site data.", channels.length);
-  } else {
-
-    LOG.warn("Spectrum TV guide still empty after clearing site data.");
-  }
-
-  return channels;
 }
 
 /**
@@ -370,7 +306,7 @@ function invalidateSpectrumDirectUrl(channelSelector: string): void {
 function clearSpectrumCache(): void {
 
   spectrumChannelCache.clear();
-  consecutiveEmptyDiscoveries = 0;
+  emptyDiscoveryGuard.reset();
 }
 
 /**
@@ -439,14 +375,17 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
   // cached site data once the threshold is reached.
   if(allChannels.length === 0) {
 
-    consecutiveEmptyDiscoveries++;
+    if(emptyDiscoveryGuard.recordEmpty()) {
 
-    LOG.warn("Spectrum TV guide loaded but no channels were discovered (%s consecutive). The guide may be in a degraded state.",
-      consecutiveEmptyDiscoveries);
+      allChannels = await attemptGuideRecovery(page, {
 
-    if(consecutiveEmptyDiscoveries >= EMPTY_DISCOVERY_RECOVERY_THRESHOLD) {
-
-      allChannels = await attemptGuideRecovery(page);
+        discover: discoverGuideChannels,
+        origin: SPECTRUM_BASE_URL,
+        providerName: "Spectrum TV",
+        reloadUrl: SPECTRUM_BASE_URL + "/guide",
+        storageTypes: "cache_storage",
+        waitSelector: "li.channel-header-row"
+      });
     }
   }
 
@@ -458,7 +397,7 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
 
   // Successful discovery - reset the consecutive empty counter and repopulate the unified channel cache. Always repopulate rather than skipping when the cache
   // has entries, because invalidated entries need to be restored with fresh data from the guide.
-  consecutiveEmptyDiscoveries = 0;
+  emptyDiscoveryGuard.reset();
   populateSpectrumChannelCache(allChannels);
 
   LOG.debug("tuning:spectrum", "Discovered %s Spectrum channels.", allChannels.length);

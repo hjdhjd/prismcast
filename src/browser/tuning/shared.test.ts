@@ -11,10 +11,18 @@
  * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are pinned directly below. The remaining export,
  * scrollAndClick, drives Puppeteer through page.mouse and page.evaluate and is deferred to the e2e tier; the locate-style helpers that call it live in the
  * individual provider modules.
+ *
+ * createEmptyDiscoveryGuard and attemptGuideRecovery are the shared guide-recovery chassis that the virtualized-guide providers (Spectrum, YouTube TV) drive: the
+ * guard counts a provider's consecutive zero-channel guide loads and reports when that streak warrants recovery, and the recovery routine clears the provider's
+ * cached site data via CDP, reloads the guide, and re-runs the provider's own discovery. Both are exercised here against page and CDP-session stubs, which pins
+ * the choreography, the counter semantics, and every failure-path return. What no test tier can reach is a genuinely degraded provider guide, so whether clearing
+ * site data actually revives one remains a field observation rather than something asserted here.
  */
-import type { NewDocumentScriptEvaluation, Page } from "puppeteer-core";
+import type { CDPSession, NewDocumentScriptEvaluation, Page } from "puppeteer-core";
+import { FakeCdpSession, firstOf, nthOf } from "../../testing.helpers.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { installOncePerPage, installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, resolveMatchSelector } from "./shared.ts";
+import { attemptGuideRecovery, createEmptyDiscoveryGuard, installOncePerPage, installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName,
+  resolveMatchSelector } from "./shared.ts";
 import { CHANNELS } from "../../channels/index.ts";
 import type { ChannelSelectionProfile } from "../../types/index.ts";
 import type { LogEntry } from "../../utils/logEmitter.ts";
@@ -375,5 +383,309 @@ describe("logAvailableChannels", () => {
       presetSuffix: suffix, providerName: "Covered Provider" });
 
     assert.equal(captured.filter((line) => line.message.includes("Covered Provider")).length, 0, "a fully-covered channel list produces no diagnostic");
+  });
+});
+
+describe("createEmptyDiscoveryGuard", () => {
+
+  // The guard's warning is emitted through the module-singleton LOG, so the streak length it reports is read back off the log emitter the same way the
+  // logAvailableChannels tests read theirs. The subscription is installed per test and torn down after so one test's output cannot leak into another's counts.
+  let captured: LogEntry[];
+
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+  });
+
+  afterEach(() => {
+
+    unsubscribe();
+  });
+
+  test("withholds the recovery signal until the streak reaches the threshold", () => {
+
+    // Recovery discards the provider's caches and reloads the page, so a single empty discovery - which an unusually slow guide render can produce on its own -
+    // must not trigger it. The guard reports true only once the streak is long enough that a slow render stops being a plausible explanation.
+    const guard = createEmptyDiscoveryGuard("Test Provider");
+
+    assert.equal(guard.recordEmpty(), false, "the first empty discovery does not call for recovery");
+    assert.equal(guard.recordEmpty(), false, "the second empty discovery does not call for recovery");
+    assert.equal(guard.recordEmpty(), true, "the third consecutive empty discovery calls for recovery");
+  });
+
+  test("keeps calling for recovery on every consecutive empty discovery past the threshold", () => {
+
+    // The signal is "at or past the threshold", never "exactly at it". A guide that stays degraded has to be retried on each subsequent empty load rather than
+    // getting a single attempt and then being left alone forever, which is what an equality check against the threshold would produce.
+    const guard = createEmptyDiscoveryGuard("Test Provider");
+
+    guard.recordEmpty();
+    guard.recordEmpty();
+    guard.recordEmpty();
+
+    assert.equal(guard.recordEmpty(), true, "the fourth consecutive empty discovery still calls for recovery");
+    assert.equal(guard.recordEmpty(), true, "the fifth consecutive empty discovery still calls for recovery");
+  });
+
+  test("restarts the streak on reset so the next recovery needs a fresh run of empty discoveries", () => {
+
+    // A successful discovery and a browser restart both resolve the degraded state the streak stands for, so the count has to start over. Without that, a
+    // provider that fails occasionally would accumulate its way into recovering on every single empty load.
+    const guard = createEmptyDiscoveryGuard("Test Provider");
+
+    guard.recordEmpty();
+    guard.recordEmpty();
+    guard.reset();
+
+    assert.equal(guard.recordEmpty(), false, "the first empty discovery after a reset starts a new streak");
+    assert.equal(guard.recordEmpty(), false, "the second empty discovery after a reset is still below the threshold");
+    assert.equal(guard.recordEmpty(), true, "the threshold is reached again only after a full fresh streak");
+  });
+
+  test("counts each provider independently", () => {
+
+    // Every strategy holds its own guard. Spectrum sliding into a degraded guide must not push YouTube TV toward a recovery it has no reason to run, which a
+    // single shared counter would do.
+    const spectrum = createEmptyDiscoveryGuard("Spectrum TV");
+    const youtubeTv = createEmptyDiscoveryGuard("YouTube TV");
+
+    spectrum.recordEmpty();
+    spectrum.recordEmpty();
+
+    assert.equal(youtubeTv.recordEmpty(), false, "the second guard starts its own streak rather than inheriting the first guard's count");
+    assert.equal(spectrum.recordEmpty(), true, "the first guard reaches the threshold on its own third empty discovery");
+  });
+
+  test("warns with the provider name and the running streak length on every empty discovery", () => {
+
+    // This warning is the operator's only view of a guide sliding into a degraded state, so it has to name the provider and say how deep the streak already is.
+    const guard = createEmptyDiscoveryGuard("Test Provider");
+
+    guard.recordEmpty();
+    guard.recordEmpty();
+
+    const warnings = captured.filter((line) => (line.level === "warn") && line.message.includes("Test Provider"));
+
+    assert.equal(warnings.length, 2, "one warning is emitted per empty discovery");
+    assert.match(firstOf(warnings, "warning").message, /\(1 consecutive\)/, "the first warning reports a streak of one");
+    assert.match(nthOf(warnings, 1, "warning").message, /\(2 consecutive\)/, "the second warning reports a streak of two");
+  });
+});
+
+describe("attemptGuideRecovery", () => {
+
+  // Stand-in for a provider's own raw channel shape. The routine counts the discovered entries but never reads inside them, so any object shape serves.
+  const twoChannels = [ { name: "Alpha" }, { name: "Beta" } ];
+
+  /* RejectingSendSession is the canonical CDP session fake with a Storage.clearDataForOrigin that the browser refuses. Subclassing rather than hand-rolling a
+   * session keeps detachCalls and the sent record behaving exactly as every other CDP test sees them, which is what the release assertions read.
+   */
+  class RejectingSendSession extends FakeCdpSession {
+
+    public override async send(): Promise<unknown> {
+
+      await Promise.resolve();
+
+      throw new Error("clear rejected");
+    }
+  }
+
+  /* makeRecoveryPage returns a Page-shaped stub carrying the surfaces the recovery routine touches, plus a record of what it did with them: the CDP session it
+   * was handed, the URLs it navigated to, and the selectors it waited on. Any stage can be made to reject so a test can fail exactly one step of the
+   * choreography and assert the routine's response to it.
+   */
+  interface RecoveryPageOptions {
+
+    // Makes page.createCDPSession reject, standing in for a browser that will not open an auxiliary session.
+    readonly createFails?: boolean;
+
+    // Makes page.goto reject, standing in for a guide reload that never lands.
+    readonly gotoFails?: boolean;
+
+    // Makes page.waitForSelector reject, standing in for a grid that never renders within the timeout.
+    readonly selectorFails?: boolean;
+
+    // The CDP session page.createCDPSession hands out. Defaults to a plain canonical fake; tests that need a failing command supply a subclass.
+    readonly session?: FakeCdpSession;
+  }
+
+  interface RecoveryPage {
+
+    // Every URL the routine navigated to, in order.
+    readonly navigations: string[];
+
+    // The Page-shaped stub to hand the routine.
+    readonly page: Page;
+
+    // Every selector the routine waited on, in order.
+    readonly selectors: string[];
+
+    // The CDP session the stub hands out, carrying the sent record and the detach counter.
+    readonly session: FakeCdpSession;
+  }
+
+  function makeRecoveryPage(options: RecoveryPageOptions = {}): RecoveryPage {
+
+    const navigations: string[] = [];
+    const selectors: string[] = [];
+    const session = options.session ?? new FakeCdpSession(null);
+
+    const page = {
+
+      createCDPSession: async (): Promise<CDPSession> => {
+
+        await Promise.resolve();
+
+        if(options.createFails) {
+
+          throw new Error("session creation rejected");
+        }
+
+        return session as unknown as CDPSession;
+      },
+      goto: async (url: string): Promise<null> => {
+
+        navigations.push(url);
+
+        await Promise.resolve();
+
+        if(options.gotoFails) {
+
+          throw new Error("navigation rejected");
+        }
+
+        return null;
+      },
+      waitForSelector: async (selector: string): Promise<null> => {
+
+        selectors.push(selector);
+
+        await Promise.resolve();
+
+        if(options.selectorFails) {
+
+          throw new Error("selector wait timed out");
+        }
+
+        return null;
+      }
+    } as unknown as Page;
+
+    return { navigations, page, selectors, session };
+  }
+
+  // makeDiscover returns a discovery stub that records the pages it was called with, so a test can prove re-discovery ran against the page that was reloaded
+  // rather than inferring it from the return value alone.
+  function makeDiscover(result: { name: string }[]): { calls: Page[]; discover: (page: Page) => Promise<{ name: string }[]> } {
+
+    const calls: Page[] = [];
+
+    const discover = async (page: Page): Promise<{ name: string }[]> => {
+
+      calls.push(page);
+
+      return result;
+    };
+
+    return { calls, discover };
+  }
+
+  // runRecovery drives the routine with one fixed set of provider options so each test reads as the single thing it is pinning rather than repeating the
+  // options object six times.
+  async function runRecovery(page: Page, discover: (page: Page) => Promise<{ name: string }[]>): Promise<{ name: string }[]> {
+
+    return await attemptGuideRecovery(page, {
+
+      discover,
+      origin: "https://guide.example",
+      providerName: "Test Provider",
+      reloadUrl: "https://guide.example/guide",
+      storageTypes: "cache_storage",
+      waitSelector: "li.channel-row"
+    });
+  }
+
+  test("clears the caller's origin, reloads the guide, waits for the grid, and returns the re-discovered channels", async () => {
+
+    // The full choreography in order. The CDP command is asserted with the caller's own origin and storage types because those are the provider policy the
+    // chassis exists to carry: a chassis that cleared a hardcoded origin would silently clear the wrong site for every provider but the first.
+    const { navigations, page, selectors, session } = makeRecoveryPage();
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, twoChannels, "the routine returns whatever re-discovery found");
+    assert.deepEqual(session.sent, [{ method: "Storage.clearDataForOrigin", params: { origin: "https://guide.example", storageTypes: "cache_storage" } }],
+      "exactly one clear is issued, carrying the caller's origin and storage types");
+    assert.deepEqual(navigations, ["https://guide.example/guide"], "the guide is reloaded once, at the caller's reload URL");
+    assert.deepEqual(selectors, ["li.channel-row"], "the routine waits for the caller's grid selector");
+    assert.deepEqual(calls, [page], "re-discovery runs against the reloaded page");
+  });
+
+  test("returns empty and never navigates when the CDP session cannot be created", async () => {
+
+    // A createCDPSession failure is caught, not propagated. Nothing downstream of the strategy has a catch for it, so letting it escape would turn a recoverable
+    // degraded guide into an unhandled rejection.
+    const { navigations, page } = makeRecoveryPage({ createFails: true });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "a session that cannot be created ends recovery with an empty result");
+    assert.deepEqual(navigations, [], "the guide is not reloaded when the clear never happened");
+    assert.deepEqual(calls, [], "re-discovery does not run");
+  });
+
+  test("returns empty and never navigates when the clear command is refused", async () => {
+
+    const { navigations, page } = makeRecoveryPage({ session: new RejectingSendSession(null) });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "a refused clear ends recovery with an empty result");
+    assert.deepEqual(navigations, [], "the guide is not reloaded when the clear failed");
+    assert.deepEqual(calls, [], "re-discovery does not run");
+  });
+
+  test("returns empty when the guide reload fails", async () => {
+
+    // The clear succeeded here, so the failure lands squarely on the navigation and the routine stops before waiting for a grid that was never re-requested.
+    const { page, selectors } = makeRecoveryPage({ gotoFails: true });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "a failed reload ends recovery with an empty result");
+    assert.deepEqual(selectors, [], "the routine does not wait for the grid on a page it could not reload");
+    assert.deepEqual(calls, [], "re-discovery does not run");
+  });
+
+  test("returns empty when the guide grid never renders after the reload", async () => {
+
+    const { navigations, page } = makeRecoveryPage({ selectorFails: true });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "a grid that never renders ends recovery with an empty result");
+    assert.deepEqual(navigations, ["https://guide.example/guide"], "the reload still happened before the wait gave up");
+    assert.deepEqual(calls, [], "re-discovery does not run against a guide that never rendered");
+  });
+
+  test("returns empty when re-discovery finds nothing on the reloaded guide", async () => {
+
+    // The clear and reload can both succeed and still leave an empty guide. That is a completed recovery attempt that failed, not an error, so it returns the
+    // empty result and leaves the caller's own empty-guide handling to decide what happens next.
+    const { page } = makeRecoveryPage();
+    const { calls, discover } = makeDiscover([]);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "recovery that revives nothing returns an empty result");
+    assert.equal(calls.length, 1, "re-discovery ran exactly once");
   });
 });
