@@ -2,9 +2,9 @@
  *
  * shared.ts: Shared utilities for channel selection tuning strategies.
  */
+import type { CDPSession, NewDocumentScriptEvaluation, Page } from "puppeteer-core";
 import type { ChannelSelectionProfile, ClickTarget } from "../../types/index.ts";
 import { LOG, delay, formatError } from "../../utils/index.ts";
-import type { NewDocumentScriptEvaluation, Page } from "puppeteer-core";
 import { CHANNELS } from "../../channels/index.ts";
 import { CONFIG } from "../../config/index.ts";
 
@@ -308,19 +308,32 @@ export async function attemptGuideRecovery<T>(page: Page, options: {
 
   LOG.warn("Clearing %s cached site data to recover from empty guide.", providerName);
 
-  // Clear the caching layers the caller named for this origin. Those layers repopulate on reload - cookies and login session state are deliberately preserved to
-  // avoid forcing re-authentication.
+  /* Clear the caching layers the caller named for this origin. Those layers repopulate on reload - cookies and login session state are deliberately preserved to
+   * avoid forcing re-authentication.
+   *
+   * The session binding lives outside the try so the finally can release it no matter which way the block exits. Both the creation and the send sit inside the
+   * try because a browser that refuses either one is a recoverable condition the caller handles through the empty return, not something to propagate: nothing
+   * downstream of the strategy catches it. The release is fire-and-forget - awaiting a detach on a dead connection could hang the failure path, and a rejection
+   * here is expected teardown noise rather than an outcome, which the catch above already owns.
+   */
+  let client: CDPSession | undefined;
+
   try {
 
-    const client = await page.createCDPSession();
+    client = await page.createCDPSession();
 
     await client.send("Storage.clearDataForOrigin", { origin, storageTypes });
-    await client.detach();
   } catch(error) {
 
     LOG.warn("Failed to clear %s site data: %s.", providerName, formatError(error));
 
     return [];
+  } finally {
+
+    if(client) {
+
+      void client.detach().catch(() => { /* Session may already be detached. */ });
+    }
   }
 
   // Reload the guide page with fresh state.

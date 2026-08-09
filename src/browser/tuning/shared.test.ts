@@ -19,7 +19,7 @@
  * site data actually revives one remains a field observation rather than something asserted here.
  */
 import type { CDPSession, NewDocumentScriptEvaluation, Page } from "puppeteer-core";
-import { FakeCdpSession, firstOf, nthOf } from "../../testing.helpers.ts";
+import { FakeCdpSession, assertNoUnhandledRejections, firstOf, nthOf } from "../../testing.helpers.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, installOncePerPage, installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName,
   resolveMatchSelector } from "./shared.ts";
@@ -493,6 +493,35 @@ describe("attemptGuideRecovery", () => {
     }
   }
 
+  /* RejectingDetachSession is the canonical fake with a release that fails, which is what a page torn down mid-recovery produces. It still counts the attempt
+   * through the base implementation before rejecting, so a test can assert both that the release was tried and that its failure went nowhere.
+   */
+  class RejectingDetachSession extends FakeCdpSession {
+
+    public override async detach(): Promise<void> {
+
+      await super.detach();
+
+      throw new Error("detach rejected");
+    }
+  }
+
+  // The clear-failure warning is emitted through the module-singleton LOG, so the tests that count it read it back off the log emitter.
+  let captured: LogEntry[];
+
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+
+    captured = [];
+    unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+  });
+
+  afterEach(() => {
+
+    unsubscribe();
+  });
+
   /* makeRecoveryPage returns a Page-shaped stub carrying the surfaces the recovery routine touches, plus a record of what it did with them: the CDP session it
    * was handed, the URLs it navigated to, and the selectors it waited on. Any stage can be made to reject so a test can fail exactly one step of the
    * choreography and assert the routine's response to it.
@@ -687,5 +716,68 @@ describe("attemptGuideRecovery", () => {
 
     assert.deepEqual(channels, [], "recovery that revives nothing returns an empty result");
     assert.equal(calls.length, 1, "re-discovery ran exactly once");
+  });
+
+  test("releases the CDP session when the clear command is refused", async () => {
+
+    // The failure path is the one that has to hold: a refused clear returns early, and without a release keyed off the block's exit rather than its happy path,
+    // every failed recovery on a page that outlives it strands one more attached session.
+    const session = new RejectingSendSession(null);
+    const { page } = makeRecoveryPage({ session });
+    const { discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(channels, [], "the refused clear still ends recovery with an empty result");
+    assert.equal(session.detachCalls, 1, "the session is released even though the clear failed");
+  });
+
+  test("releases the CDP session exactly once when the clear succeeds", async () => {
+
+    const { navigations, page, session } = makeRecoveryPage();
+    const { discover } = makeDiscover(twoChannels);
+
+    await runRecovery(page, discover);
+
+    assert.equal(session.detachCalls, 1, "the session is released once on the success path");
+    assert.deepEqual(navigations, ["https://guide.example/guide"], "releasing the session does not cost the reload that follows it");
+  });
+
+  test("attempts no release when the session was never created, and reports the clear failure once", async () => {
+
+    // There is nothing to detach when creation itself failed, so the guarded release has to stay quiet rather than reaching through an empty binding. The single
+    // warning pins the other half of that path: a creation failure is caught and reported as a clear failure exactly once, not propagated and not double-logged.
+    const session = new FakeCdpSession(null);
+    const { page } = makeRecoveryPage({ createFails: true, session });
+    const { discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    const failures = captured.filter((line) => (line.level === "warn") && line.message.includes("Failed to clear Test Provider site data"));
+
+    assert.deepEqual(channels, [], "a creation failure returns an empty result rather than escaping the routine");
+    assert.equal(session.detachCalls, 0, "no release is attempted for a session that was never created");
+    assert.equal(failures.length, 1, "the clear failure is reported exactly once");
+  });
+
+  test("swallows a release that itself fails", async () => {
+
+    // The release is dispatched and not awaited, so a page that went away mid-recovery makes it reject with nobody waiting. That rejection has to be absorbed at
+    // the dispatch site: it must neither escape as an unhandled rejection nor change what the routine returns.
+    const restore = assertNoUnhandledRejections();
+    const session = new RejectingDetachSession(null);
+    const { page } = makeRecoveryPage({ session });
+    const { discover } = makeDiscover(twoChannels);
+
+    try {
+
+      const channels = await runRecovery(page, discover);
+
+      assert.equal(session.detachCalls, 1, "the release was attempted");
+      assert.deepEqual(channels, twoChannels, "a failing release neither throws nor changes the recovered channels");
+    } finally {
+
+      restore();
+    }
   });
 });
