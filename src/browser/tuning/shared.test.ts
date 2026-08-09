@@ -18,7 +18,7 @@
  * the choreography, the counter semantics, and every failure-path return. What no test tier can reach is a genuinely degraded provider guide, so whether clearing
  * site data actually revives one remains a field observation rather than something asserted here.
  */
-import type { CDPSession, NewDocumentScriptEvaluation, Page } from "puppeteer-core";
+import type { Browser, CDPSession, NewDocumentScriptEvaluation, Page } from "puppeteer-core";
 import { FakeCdpSession, assertNoUnhandledRejections, firstOf, nthOf } from "../../testing.helpers.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, installOncePerPage, installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName,
@@ -534,11 +534,17 @@ describe("attemptGuideRecovery", () => {
     // Makes page.goto reject, standing in for a guide reload that never lands.
     readonly gotoFails?: boolean;
 
+    // Makes browser.pages() reject, standing in for a browser that cannot report what it has open.
+    readonly pagesFails?: boolean;
+
     // Makes page.waitForSelector reject, standing in for a grid that never renders within the timeout.
     readonly selectorFails?: boolean;
 
     // The CDP session page.createCDPSession hands out. Defaults to a plain canonical fake; tests that need a failing command supply a subclass.
     readonly session?: FakeCdpSession;
+
+    // Other pages the browser reports as open alongside the recovering page. Defaults to none, so the default page is alone on its origin and the clear runs.
+    readonly siblingPages?: readonly Page[];
   }
 
   interface RecoveryPage {
@@ -562,8 +568,26 @@ describe("attemptGuideRecovery", () => {
     const selectors: string[] = [];
     const session = options.session ?? new FakeCdpSession(null);
 
+    // What browser.pages() reports. It is filled in after the page stub exists so the recovering page can be its own first entry, which is what the default
+    // arrangement needs: a browser holding only the page being recovered, where the sibling gate finds nothing and the clear proceeds.
+    const openPages: Page[] = [];
+
     const page = {
 
+      browser: (): Browser => ({
+
+        pages: async (): Promise<Page[]> => {
+
+          await Promise.resolve();
+
+          if(options.pagesFails) {
+
+            throw new Error("pages enumeration rejected");
+          }
+
+          return openPages;
+        }
+      } as unknown as Browser),
       createCDPSession: async (): Promise<CDPSession> => {
 
         await Promise.resolve();
@@ -588,6 +612,9 @@ describe("attemptGuideRecovery", () => {
 
         return null;
       },
+      // The recovering page sits on the origin under test. It has to, for the sibling gate's identity exclusion to mean anything: a gate that excluded pages by
+      // URL instead would find this page matching and refuse every clear.
+      url: (): string => "https://guide.example/guide",
       waitForSelector: async (selector: string): Promise<null> => {
 
         selectors.push(selector);
@@ -603,7 +630,15 @@ describe("attemptGuideRecovery", () => {
       }
     } as unknown as Page;
 
+    openPages.push(page, ...(options.siblingPages ?? []));
+
     return { navigations, page, selectors, session };
+  }
+
+  // makeOpenPage returns a bare page stub that reports the given URL, standing in for some other tab the browser happens to have open.
+  function makeOpenPage(url: string): Page {
+
+    return { url: (): string => url } as unknown as Page;
   }
 
   // makeDiscover returns a discovery stub that records the pages it was called with, so a test can prove re-discovery ran against the page that was reloaded
@@ -652,6 +687,13 @@ describe("attemptGuideRecovery", () => {
     assert.deepEqual(navigations, ["https://guide.example/guide"], "the guide is reloaded once, at the caller's reload URL");
     assert.deepEqual(selectors, ["li.channel-row"], "the routine waits for the caller's grid selector");
     assert.deepEqual(calls, [page], "re-discovery runs against the reloaded page");
+
+    const outcome = captured.find((line) => line.message.includes("guide recovery succeeded"));
+
+    assert.ok(outcome, "a successful recovery reports itself");
+    assert.equal(outcome.level, "info", "success is reported at info, not as a warning");
+    assert.match(outcome.message, /Test Provider guide recovery succeeded - discovered 2 channels after clearing site data\./,
+      "the success message names the provider and the channel count it recovered");
   });
 
   test("returns empty and never navigates when the CDP session cannot be created", async () => {
@@ -716,6 +758,12 @@ describe("attemptGuideRecovery", () => {
 
     assert.deepEqual(channels, [], "recovery that revives nothing returns an empty result");
     assert.equal(calls.length, 1, "re-discovery ran exactly once");
+
+    const outcome = captured.find((line) => line.message.includes("still empty after clearing site data"));
+
+    assert.ok(outcome, "a recovery that revived nothing says so");
+    assert.equal(outcome.level, "warn", "an unrevived guide is reported as a warning");
+    assert.match(outcome.message, /Test Provider guide still empty after clearing site data\./, "the message names the provider");
   });
 
   test("releases the CDP session when the clear command is refused", async () => {
@@ -779,5 +827,90 @@ describe("attemptGuideRecovery", () => {
 
       restore();
     }
+  });
+
+  test("skips the clear and reloads only when another live page shares the origin", async () => {
+
+    // Storage.clearDataForOrigin discards storage the whole origin shares, so clearing here would pull a sibling stream's caching layers out from under it
+    // mid-playback. One stream's degraded guide must not become every co-tuned stream's problem, so recovery gives up the clear and keeps the reload.
+    const { navigations, page, selectors, session } = makeRecoveryPage({ siblingPages: [makeOpenPage("https://guide.example/watch/espn")] });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(session.sent, [], "no clear is issued while a sibling shares the origin");
+    assert.deepEqual(navigations, ["https://guide.example/guide"], "the reload still runs, since it is page-scoped and costs the sibling nothing");
+    assert.deepEqual(selectors, ["li.channel-row"], "the routine still waits for the grid after the reload");
+    assert.deepEqual(calls, [page], "re-discovery still runs");
+    assert.deepEqual(channels, twoChannels, "reload-only recovery still returns whatever it found");
+
+    const refusal = captured.find((line) => (line.level === "warn") && line.message.includes("other open pages share the origin"));
+
+    assert.ok(refusal, "the skip is logged rather than being silent");
+    assert.match(refusal.message, /Test Provider/, "the refusal names the provider");
+    assert.match(refusal.message, /\(1\)/, "the refusal reports how many pages share the origin");
+
+    assert.equal(captured.filter((line) => line.message.includes("Clearing Test Provider cached site data")).length, 0,
+      "the clear is not announced on a path that does not clear");
+  });
+
+  test("counts a sibling by identity, not by URL, so a second page on the same URL still blocks the clear", async () => {
+
+    // Two pages can legitimately sit on the same URL - two streams tuned to the same guide. Only the page being recovered is exempt from the count, and it is
+    // exempt because it is that object, not because its URL matches.
+    const { page, session } = makeRecoveryPage({ siblingPages: [makeOpenPage("https://guide.example/guide")] });
+    const { discover } = makeDiscover(twoChannels);
+
+    await runRecovery(page, discover);
+
+    assert.deepEqual(session.sent, [], "a URL-identical sibling is still a sibling and still blocks the clear");
+  });
+
+  test("clears when the recovering page is the only page on its origin", async () => {
+
+    // The mirror of the case above: the recovering page matches the origin too, and excluding it by identity is what lets a lone page still get its clear. A
+    // gate that matched on URL would refuse here and no provider would ever recover.
+    const { page, session } = makeRecoveryPage();
+    const { discover } = makeDiscover(twoChannels);
+
+    await runRecovery(page, discover);
+
+    assert.equal(session.sent.length, 1, "the clear proceeds when nothing else shares the origin");
+    assert.equal(captured.filter((line) => line.message.includes("Not clearing")).length, 0, "no refusal is logged on the path that clears");
+    assert.equal(captured.filter((line) => line.message.includes("Clearing Test Provider cached site data to recover from empty guide.")).length, 1,
+      "the clear is announced exactly once, on the path that performs it");
+  });
+
+  test("ignores open pages on other origins and pages whose URL does not parse", async () => {
+
+    // The browser normally holds unrelated tabs. Only pages actually sharing the origin can be hurt by the clear, and a page whose URL cannot be read has no
+    // origin to share, so neither kind may block recovery.
+    const siblingPages = [ makeOpenPage("https://elsewhere.example/live"), makeOpenPage("about:blank"), makeOpenPage("") ];
+    const { page, session } = makeRecoveryPage({ siblingPages });
+    const { discover } = makeDiscover(twoChannels);
+
+    await runRecovery(page, discover);
+
+    assert.equal(session.sent.length, 1, "unrelated and unreadable pages do not block the clear");
+  });
+
+  test("skips the clear and reloads only when the open pages cannot be enumerated", async () => {
+
+    // With no way to tell whether a sibling is out there, protecting healthy streams outranks maximizing this stream's recovery odds. The dedicated message
+    // says so without a count, since there is no count to report.
+    const { navigations, page, session } = makeRecoveryPage({ pagesFails: true });
+    const { calls, discover } = makeDiscover(twoChannels);
+
+    const channels = await runRecovery(page, discover);
+
+    assert.deepEqual(session.sent, [], "no clear is issued when the page list could not be read");
+    assert.deepEqual(navigations, ["https://guide.example/guide"], "the reload still runs");
+    assert.deepEqual(calls, [page], "re-discovery still runs");
+    assert.deepEqual(channels, twoChannels, "reload-only recovery still returns whatever it found");
+
+    const refusal = captured.find((line) => (line.level === "warn") && line.message.includes("could not be enumerated"));
+
+    assert.ok(refusal, "the skip is logged with the dedicated no-count message");
+    assert.match(refusal.message, /Test Provider/, "the refusal names the provider");
   });
 });

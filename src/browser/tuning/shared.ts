@@ -280,9 +280,72 @@ export function createEmptyDiscoveryGuard(providerName: string): EmptyDiscoveryG
 }
 
 /**
+ * Reports whether clearing the given origin's cached site data is safe right now - that is, whether the recovering page is the only live page sitting on that
+ * origin. Storage.clearDataForOrigin reaches CacheStorage and service-worker registrations, which the specification scopes to the origin rather than to a page,
+ * so no page-scoped variant exists to fall back on: the choice is clearing for every page on the origin or for none. A sibling stream losing its caching layers
+ * mid-playback can degrade it or push it into its own recovery, turning one stream's empty guide into a service-wide event, so a shared origin means no clear.
+ * An enumeration that fails outright gets the same answer: when the open pages cannot be read, protecting healthy streams outranks maximizing this stream's
+ * recovery odds. Both refusals are logged, because a recovery that quietly did less than the surrounding messages imply would be hard to read in the field.
+ * @param page - The recovering page. Excluded from the sibling count by object identity rather than by URL, since two pages can legitimately share a URL and
+ *   only this one is the page whose caches the recovery is meant to discard.
+ * @param options - Naming for the check and its messages.
+ * @param options.origin - The origin the clear would target.
+ * @param options.providerName - Human-readable provider name for the refusal messages.
+ * @returns True when no other live page shares the origin and the clear can proceed.
+ */
+async function originClearIsSafe(page: Page, options: { origin: string; providerName: string }): Promise<boolean> {
+
+  const { origin, providerName } = options;
+
+  try {
+
+    const originToMatch = new URL(origin).origin;
+    const openPages = await page.browser().pages();
+
+    let siblings = 0;
+
+    for(const other of openPages) {
+
+      if(other === page) {
+
+        continue;
+      }
+
+      try {
+
+        if(new URL(other.url()).origin === originToMatch) {
+
+          siblings++;
+        }
+      } catch {
+
+        // A page whose URL does not parse - an about:blank tab, or a target torn down while it was being read - has no origin to share, so it never counts
+        // against the clear.
+      }
+    }
+
+    if(siblings > 0) {
+
+      LOG.warn("Not clearing %s site data - other open pages share the origin (%s). Reloading the guide only.", providerName, siblings);
+
+      return false;
+    }
+
+    return true;
+  } catch {
+
+    LOG.warn("Not clearing %s site data - the open pages could not be enumerated. Reloading the guide only.", providerName);
+
+    return false;
+  }
+}
+
+/**
  * Recovers a degraded provider guide by clearing its cached site data via CDP, reloading the guide page, and re-running the provider's own discovery. This
  * targets the failure mode where the guide grid container renders but channel entries are never populated, which stale caching layers produce. Cookies and
- * login session state survive: only the storage types the caller names are cleared, so recovery never forces re-authentication. Every failure along the way is
+ * login session state survive: only the storage types the caller names are cleared, so recovery never forces re-authentication. The clear is skipped entirely
+ * when another live page shares the origin, because the storage it discards belongs to the origin rather than to one page; recovery then degrades to the
+ * reload, which is page-scoped and leaves the sibling pages alone. Every failure along the way is
  * logged and yields an empty array, leaving the caller's existing empty-guide handling to decide what happens next. The type parameter is the caller's own raw
  * channel shape - the routine counts the discovered entries but never inspects them, so each provider keeps its discovery type end to end.
  * @param page - The Puppeteer page object positioned on the provider's guide.
@@ -306,37 +369,42 @@ export async function attemptGuideRecovery<T>(page: Page, options: {
 
   const { discover, origin, providerName, reloadUrl, storageTypes, waitSelector } = options;
 
-  LOG.warn("Clearing %s cached site data to recover from empty guide.", providerName);
-
-  /* Clear the caching layers the caller named for this origin. Those layers repopulate on reload - cookies and login session state are deliberately preserved to
-   * avoid forcing re-authentication.
+  /* Clear the caching layers the caller named for this origin, but only when this page has the origin to itself - originClearIsSafe carries that judgment and
+   * logs its own refusals. The cleared layers repopulate on reload; cookies and login session state are deliberately preserved to avoid forcing
+   * re-authentication.
    *
    * The session binding lives outside the try so the finally can release it no matter which way the block exits. Both the creation and the send sit inside the
    * try because a browser that refuses either one is a recoverable condition the caller handles through the empty return, not something to propagate: nothing
    * downstream of the strategy catches it. The release is fire-and-forget - awaiting a detach on a dead connection could hang the failure path, and a rejection
    * here is expected teardown noise rather than an outcome, which the catch above already owns.
    */
-  let client: CDPSession | undefined;
+  if(await originClearIsSafe(page, { origin, providerName })) {
 
-  try {
+    LOG.warn("Clearing %s cached site data to recover from empty guide.", providerName);
 
-    client = await page.createCDPSession();
+    let client: CDPSession | undefined;
 
-    await client.send("Storage.clearDataForOrigin", { origin, storageTypes });
-  } catch(error) {
+    try {
 
-    LOG.warn("Failed to clear %s site data: %s.", providerName, formatError(error));
+      client = await page.createCDPSession();
 
-    return [];
-  } finally {
+      await client.send("Storage.clearDataForOrigin", { origin, storageTypes });
+    } catch(error) {
 
-    if(client) {
+      LOG.warn("Failed to clear %s site data: %s.", providerName, formatError(error));
 
-      void client.detach().catch(() => { /* Session may already be detached. */ });
+      return [];
+    } finally {
+
+      if(client) {
+
+        void client.detach().catch(() => { /* Session may already be detached. */ });
+      }
     }
   }
 
-  // Reload the guide page with fresh state.
+  // Reload the guide page with fresh state. This runs on both paths: a reload is page-scoped, so it is safe even when the clear was skipped, and it is the half
+  // of recovery that costs sibling streams nothing.
   try {
 
     await page.goto(reloadUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
