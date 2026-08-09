@@ -213,6 +213,11 @@ function buildYttvDiscoveredChannels(): DiscoveredChannel[] {
  */
 function populateYttvChannelCache(rawChannels: { name: string; watchPath: string }[]): void {
 
+  // Every caller hands us a complete read of the non-virtualized guide grid, so the cache mirrors that read rather than accumulating the union of every lineup a
+  // browser session has seen. A channel the provider has dropped is absent from the next read, and starting from an empty cache is what keeps it out. The tiered
+  // alias keys go with it and are re-derived by the next lookup that needs one.
+  yttvChannelCache.clear();
+
   // Build a reverse lookup from alternate names to their parent network for affiliate detection.
   const alternateToNetwork = new Map<string, string>();
 
