@@ -3,7 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, cancellableTimeout, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
+import { LOG, boundedWait, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
@@ -1486,8 +1486,8 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
 
   if(chromeProcess?.pid && !chromeProcess.killed) {
 
-    // Listen for the exit event before sending the signal. The event fires after the OS reaps the process, so there is no zombie window. Resolves to true so
-    // Promise.race can distinguish exit from timeout.
+    // Listen for the exit event before sending the signal. The event fires after the OS reaps the process, so there is no zombie window. The promise only ever
+    // resolves, so a null from either bounded wait below means the exit never came.
     const { promise: exitPromise, resolve: signalExit } = Promise.withResolvers<true>();
 
     chromeProcess.on("exit", () => { signalExit(true); });
@@ -1496,26 +1496,19 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
 
     LOG.debug("browser:lifecycle", "Sent SIGTERM to Chrome process %d.", chromeProcess.pid);
 
-    // Wait for Chrome to exit after SIGTERM, with a timeout. If Chrome doesn't exit in time, escalate to SIGKILL.
-    const termTimeout = cancellableTimeout(TERM_WAIT_MS);
-
-    const exitedAfterTerm = await Promise.race([ exitPromise, termTimeout.promise ]);
-
-    termTimeout.cancel();
+    // Wait for Chrome to exit after SIGTERM, with a bound. If Chrome doesn't exit in time, escalate to SIGKILL.
+    const exitedAfterTerm = await boundedWait(exitPromise, TERM_WAIT_MS);
 
     if(!exitedAfterTerm) {
 
-      // SIGTERM didn't work within the timeout. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not
+      // SIGTERM didn't work within the bound. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not
       // respond to SIGTERM.
       LOG.debug("browser:lifecycle", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
       chromeProcess.kill("SIGKILL");
 
-      const killTimeout = cancellableTimeout(KILL_WAIT_MS);
-
-      await Promise.race([ exitPromise, killTimeout.promise ]);
-
-      killTimeout.cancel();
+      // The same exit promise serves the second wait: if it already resolved, this returns its value immediately.
+      await boundedWait(exitPromise, KILL_WAIT_MS);
     }
   }
 

@@ -2,7 +2,7 @@
  *
  * index.ts: Coordinator for native HLS streaming - manifest interception, DRM probe, and proxy lifecycle.
  */
-import { LOG, cancellableTimeout, formatError, startTimer } from "../utils/index.ts";
+import { LOG, boundedWait, formatError, startTimer } from "../utils/index.ts";
 import type { MediaContainer, Nullable } from "../types/index.ts";
 import type { MediaFeed, PipelineShape, ProbeCacheIdentity } from "./probe.ts";
 import { clearProbeCache, probeManifest } from "./probe.ts";
@@ -173,25 +173,19 @@ export async function attemptNativeStreaming(options: AttemptNativeStreamingOpti
 
   LOG.debug("native:coordinator", "Attempting native streaming for %s.", channelName);
 
-  // Await the manifest interception with a short timeout. The CDP listener was installed before navigation, so by the time we get here the manifest should
-  // already be captured or close to it. cancellableTimeout owns the underlying setTimeout so we clear it in finally when interceptionPromise wins the race;
-  // otherwise the ref'd timer would hold the event loop for up to INTERCEPTION_AWAIT_TIMEOUT after a successful tune.
+  // Await the manifest interception with a short bound. The CDP listener was installed before navigation, so by the time we get here the manifest should
+  // already be captured or close to it. A lapse is an ordinary outcome here - it simply means capture serves this tune - so the wait is value-shaped and its
+  // null joins the interception's own null on the fallback branch below.
   let interception: Nullable<ManifestInterceptionResult>;
-  const timeout = cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT);
 
   try {
 
-    const result = await Promise.race([ interceptionPromise, timeout.promise ]);
-
-    interception = (result === false) ? null : result;
+    interception = await boundedWait(interceptionPromise, INTERCEPTION_AWAIT_TIMEOUT);
   } catch(error) {
 
     LOG.debug("native:coordinator", "Manifest interception error for %s: %s.", channelName, formatError(error));
 
     return null;
-  } finally {
-
-    timeout.cancel();
   }
 
   if(!interception) {

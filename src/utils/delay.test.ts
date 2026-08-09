@@ -1,70 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * delay.test.ts: Unit tests for the wait policies in delay.ts (cancellableTimeout, timeoutSignal, waitWithTimeout, delay). Every export uses real setTimeout.
- * The timing-only checks on timeoutSignal drive mock.timers, whose synchronous tick is enough because an abort is delivered synchronously from the timer
- * callback; the policies that await a promise use small real-time delays (1-30ms) instead, because a synchronous tick cannot drain the microtask chain an
- * awaited wait settles through.
+ * delay.test.ts: Unit tests for the wait policies in delay.ts (timeoutSignal, waitWithTimeout, boundedWait, delay). Every export uses real setTimeout. The
+ * timing-only checks on timeoutSignal drive mock.timers, whose synchronous tick is enough because an abort is delivered synchronously from the timer callback;
+ * the policies that await a promise use small real-time delays (1-30ms) instead, because a synchronous tick cannot drain the microtask chain an awaited wait
+ * settles through.
  */
-import { cancellableTimeout, delay, timeoutSignal, waitWithTimeout } from "./delay.ts";
+import { boundedWait, delay, timeoutSignal, waitWithTimeout } from "./delay.ts";
 import { describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
-
-describe("cancellableTimeout", () => {
-
-  test("resolves to false after the configured delay when not cancelled", async () => {
-
-    const { promise } = cancellableTimeout(10);
-    const result = await promise;
-
-    assert.equal(result, false, "the timeout promise resolves with literal false on fire");
-  });
-
-  test("never resolves when cancel() is called before the timer fires", async () => {
-
-    // The cancel function clears the underlying timer. We race the cancelled promise against a longer real-time guard - if cancel did not clear the timer, the
-    // promise would resolve to false within the guard window and the assertion would catch it.
-    const { cancel, promise } = cancellableTimeout(10);
-
-    cancel();
-
-    const sentinel = Symbol("not-resolved");
-    const guarded = await Promise.race([ promise, new Promise((resolve) => { setTimeout(() => { resolve(sentinel); }, 30); }) ]);
-
-    assert.equal(guarded, sentinel, "guard wins the race because cancellation prevented the timeout from firing");
-  });
-
-  test("cancel() is idempotent and safe to call multiple times", () => {
-
-    // Negative test: calling cancel twice (or after the timer has already fired) must not throw. clearTimeout silently no-ops on already-cleared/fired timers.
-    const { cancel } = cancellableTimeout(1000);
-
-    assert.doesNotThrow(() => {
-
-      cancel();
-      cancel();
-      cancel();
-    });
-  });
-
-  test("returns an object with both promise and cancel keys", () => {
-
-    const result = cancellableTimeout(1000);
-
-    assert.equal(typeof result.cancel, "function", "cancel is callable");
-    assert.ok(result.promise instanceof Promise, "promise is a Promise instance");
-
-    result.cancel();
-  });
-
-  test("returned promise type is Promise<false>", async () => {
-
-    // The literal-type assertion is at compile-time; runtime evidence is the resolved value being strictly false.
-    const { promise } = cancellableTimeout(1);
-    const result: false = await promise;
-
-    assert.equal(result, false, "the promise should resolve to exactly false");
-  });
-});
 
 describe("timeoutSignal", () => {
 
@@ -292,6 +235,103 @@ describe("waitWithTimeout", () => {
     const { promise: never } = Promise.withResolvers<string>();
 
     await assert.rejects(() => waitWithTimeout(never, 0), /timed out after 0ms/, "0ms timeout still fires");
+  });
+});
+
+describe("boundedWait", () => {
+
+  test("returns the resolved value when the promise settles inside the bound", async () => {
+
+    const result = await boundedWait(Promise.resolve("value"), 50000);
+
+    assert.equal(result, "value", "the promise's value comes back unchanged");
+  });
+
+  test("returns null when the bound lapses before the promise settles", async () => {
+
+    /* The bound has to ride this project's own timeout signal, which is built on the global setTimeout a fake clock can virtualize, rather than on a timer the
+     * platform owns internally. A large bound is what tells those two wirings apart: mock.timers fires the virtualized timer on the tick, so the correct wiring
+     * settles here and now, while a bound riding a platform-internal timer would still be a real sixty seconds away and would lose to the short sentinel below.
+     */
+    const { promise: never } = Promise.withResolvers<string>();
+
+    mock.timers.enable({ apis: ["setTimeout"] });
+
+    const pending = boundedWait(never, 60000);
+
+    try {
+
+      mock.timers.tick(60000);
+    } finally {
+
+      mock.timers.reset();
+    }
+
+    const stillPending = Symbol("still-pending");
+    const settled = await Promise.race([ pending, new Promise((resolve) => { setTimeout(() => { resolve(stillPending); }, 50); }) ]);
+
+    assert.equal(settled, null, "the lapsed bound settles null on the tick rather than staying pending");
+  });
+
+  test("propagates a rejection that arrives inside the bound", async () => {
+
+    // Negative test: a rejection is a failure, not a lapse, so it must travel to the caller rather than being flattened into the null branch.
+    const failing = Promise.reject(new Error("inner failure"));
+
+    await assert.rejects(() => boundedWait(failing, 50000), /inner failure/, "the promise's own rejection is not swallowed");
+  });
+
+  test("a rejection arriving after the bound lapsed surfaces nowhere", async () => {
+
+    // By the time the promise rejects the wait has already settled null, so there is no caller left to throw into. The library observes the promise on every
+    // path, which is what keeps that late rejection away from Node's unhandled-rejection tracker - and this runner fails the file if one is ever reported.
+    const { promise: late, reject: rejectLate } = Promise.withResolvers<string>();
+    const lapsed = await boundedWait(late, 5);
+
+    assert.equal(lapsed, null, "the bound lapsed first");
+
+    rejectLate(new Error("arrived after the bound lapsed"));
+
+    // Give the rejection a full turn of the loop in which to be reported, if it were ever going to be.
+    await delay(20);
+  });
+
+  test("cancels the timer it created once the promise wins", async () => {
+
+    // Same reasoning as the throw-shaped policy's cleared-timer check: a dropped cancel is invisible through behavior, because the abort would land on a wait
+    // that has already settled. Watching the timer functions across one call is what makes the disposal observable.
+    const realClearTimeout = globalThis.clearTimeout;
+    const realSetTimeout = globalThis.setTimeout;
+    const cleared: unknown[] = [];
+
+    let created: ReturnType<typeof setTimeout> | undefined;
+
+    globalThis.setTimeout = ((callback: (...callbackArgs: unknown[]) => void, ms?: number): ReturnType<typeof setTimeout> => {
+
+      const handle = realSetTimeout(callback, ms);
+
+      created ??= handle;
+
+      return handle;
+    }) as unknown as typeof globalThis.setTimeout;
+
+    globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>): void => {
+
+      cleared.push(handle);
+      realClearTimeout(handle);
+    }) as unknown as typeof globalThis.clearTimeout;
+
+    try {
+
+      await boundedWait(Promise.resolve("ok"), 50000);
+    } finally {
+
+      globalThis.clearTimeout = realClearTimeout;
+      globalThis.setTimeout = realSetTimeout;
+    }
+
+    assert.notEqual(created, undefined, "the policy created a timer");
+    assert.ok(cleared.includes(created), "the timer the policy created was cleared once the promise won");
   });
 });
 

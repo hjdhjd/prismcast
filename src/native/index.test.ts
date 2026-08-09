@@ -22,9 +22,9 @@ import { attemptNativeStreaming } from "./index.ts";
  * 1. puppeteer-stream's PuppeteerStream module starts a WebSocketServer at import time. index.ts pulls in browser/manifestInterceptor.ts which in turn pulls in
  *    browser/index.ts and triggers that server creation, which keeps the event loop alive after every test resolves.
  *
- * 2. attemptNativeStreaming's interception-await timeout does not leak: cancellableTimeout owns the underlying setTimeout, and the orchestrator clears it in
- *    finally via timeout.cancel() when interceptionPromise wins the race. The residual handle leakage drained here is the per-stream token-refresh timer scheduled
- *    by scheduleTokenRefresh (cancelled only on proxy.stop()) plus the puppeteer-stream WebSocketServer from point 1.
+ * 2. attemptNativeStreaming's interception-await bound does not leak: the boundedWait policy owns its timer's whole lifecycle and cancels it at settlement. The
+ *    residual handle leakage drained here is the per-stream token-refresh timer scheduled by scheduleTokenRefresh (cancelled only on proxy.stop()) plus the
+ *    puppeteer-stream WebSocketServer from point 1.
  *
  * Strategy: monkey-patch globalThis.setTimeout to call unref() on every Timeout it produces inside this test file. Production code in attemptNativeStreaming has
  * no contract that timers stay reffed; the unref makes the timer non-blocking for event-loop draining without changing its callback firing time. Combined with
@@ -405,26 +405,23 @@ describe("attemptNativeStreaming", () => {
     assert.equal(result, null, "rejection on interception path -> null");
   });
 
-  test("returns null when interception stalls past INTERCEPTION_AWAIT_TIMEOUT (cancellableTimeout fires)", async () => {
+  test("returns null when interception stalls past INTERCEPTION_AWAIT_TIMEOUT (the bound lapses)", async () => {
 
-    /* The orchestrator's race between interceptionPromise and cancellableTimeout(INTERCEPTION_AWAIT_TIMEOUT). The "interception resolves first" branch is
-     * exercised by every other test in this suite that resolves its interception promise (all but the rejection test above, which exercises the surrounding
-     * catch block instead). The "timeout fires first" branch races
-     * cancellableTimeout against the interception promise, coerces a false race result to null, and cancels the underlying timer in finally so it does not
-     * hold an event loop reference. Without this test, a regression in the race coercion (e.g., dropping the `(result === false) ? null : result` step) or
-     * the finally-cancel cleanup would not surface here.
+    /* The orchestrator's bounded wait on interceptionPromise. The "interception arrives in time" branch is exercised by every other test in this suite that
+     * resolves its interception promise (all but the rejection test above, which exercises the surrounding catch block instead). This test covers the lapse:
+     * the bound has to genuinely bind on a promise the orchestrator does not own, and its null has to reach the "No manifest intercepted" fallback. A bound
+     * that failed to bind would leave this call pending forever rather than returning, which is exactly what the assertion below would catch.
      *
      * We virtualize setTimeout via mock.timers so the 5-second wait is instantaneous in test time. The neverResolving promise simulates a CDP listener that
-     * captured no manifest before the deadline. After advancing past INTERCEPTION_AWAIT_TIMEOUT (5000ms) the cancellableTimeout's internal setTimeout fires
-     * and resolves the race with `false`, which the orchestrator coerces to null and short-circuits to the "No manifest intercepted" log path. The await
-     * then resolves with null without waiting on real wall-clock time.
+     * captured no manifest before the deadline. After advancing past INTERCEPTION_AWAIT_TIMEOUT (5000ms) the bound's timer fires, the wait settles null, and
+     * the function short-circuits to the "No manifest intercepted" log path without waiting on real wall-clock time.
      */
     mock.timers.enable({ apis: ["setTimeout"] });
 
     try {
 
-      // A promise that intentionally never resolves so cancellableTimeout's setTimeout wins the race. We construct it via Promise.withResolvers and discard
-      // the resolvers so nothing can complete the promise from outside; this is the modern equivalent of `new Promise(() => {})` without the empty-executor
+      // A promise that intentionally never resolves, so only the bound can settle the wait. We construct it via Promise.withResolvers and discard the
+      // resolvers so nothing can complete the promise from outside; this is the modern equivalent of `new Promise(() => {})` without the empty-executor
       // lint complaint.
       const { promise: neverResolving } = Promise.withResolvers<null>();
 
@@ -438,14 +435,14 @@ describe("attemptNativeStreaming", () => {
 
       const resultPromise = attemptNativeStreaming(options);
 
-      // Advance past the 5-second INTERCEPTION_AWAIT_TIMEOUT. cancellableTimeout's setTimeout fires, the race resolves to false, the orchestrator coerces to
-      // null, and the function returns through the "No manifest intercepted" branch. A small extra tick (1ms) ensures we are past the timer's exact firing
-      // boundary regardless of strict-vs-loose comparison semantics in the runtime's timer wheel.
+      // Advance past the 5-second INTERCEPTION_AWAIT_TIMEOUT. The bound's timer fires and aborts its signal, the wait settles null, and the function returns
+      // through the "No manifest intercepted" branch. A small extra tick (1ms) ensures we are past the timer's exact firing boundary regardless of
+      // strict-vs-loose comparison semantics in the runtime's timer wheel.
       mock.timers.tick(5_001);
 
       const result = await resultPromise;
 
-      assert.equal(result, null, "timeout-wins branch coerces the race result to null");
+      assert.equal(result, null, "the lapsed bound returns null and falls back to capture");
     } finally {
 
       mock.timers.reset();

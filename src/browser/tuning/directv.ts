@@ -3,7 +3,7 @@
  * directv.ts: DirecTV Stream channel selection via webpack injection for direct tuning, with logo click fallback.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
-import { LOG, cancellableTimeout, delay, formatError } from "../../utils/index.ts";
+import { LOG, boundedWait, delay, formatError } from "../../utils/index.ts";
 import { installOncePerPage, logAvailableChannels, normalizeChannelName } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
@@ -815,28 +815,16 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
 
   if(tuneState) {
 
-    // Race the tune promise against a cancellable timeout. The tune promise maps to discriminated string results so we can distinguish "interceptor reported
-    // failure" from "no signal arrived" - critical for debugging whether the interceptor ran at all or stalled silently. cancellableTimeout owns the underlying
-    // setTimeout; we cancel it in finally when the tune wins so the ref'd timer does not linger on the event loop after the tune has already resolved.
-    const timeout = cancellableTimeout(TUNE_TIMEOUT);
-    let result: string;
+    // Bound the tune wait. The three outcomes ride the result value directly: true is a tune the interceptor confirmed, false is one it reported as failed,
+    // and null is no signal at all. Keeping "reported failure" separate from "nothing arrived" is what tells us whether the interceptor ran and failed or
+    // stalled silently.
+    const tuned = await boundedWait(tuneState.promise, TUNE_TIMEOUT);
 
-    try {
-
-      result = await Promise.race([
-        tuneState.promise.then((v) => v ? "success" : "failure"),
-        timeout.promise.then(() => "timeout")
-      ]);
-    } finally {
-
-      timeout.cancel();
-    }
-
-    // Clean up after resolution or timeout. In the success case the console listener already resolved the promise; in the timeout case this removes the
-    // stale entry so a late-arriving console signal is a no-op.
+    // Clean up after resolution or lapse. In the success case the console listener already resolved the promise; on a lapse this removes the stale entry so a
+    // late-arriving console signal is a no-op.
     pendingTunes.delete(page);
 
-    if(result === "success") {
+    if(tuned) {
 
       LOG.debug("tuning:directv", "Interceptor tune succeeded for %s.", channelName);
 
@@ -846,7 +834,7 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
     // Invalidate the cache entry so the next tune rediscovers the channel with fresh IDs from the Redux store rather than retrying with the same stale data.
     directvChannelCache.delete(normalizeChannelName(channelName));
 
-    if(result === "failure") {
+    if(tuned === false) {
 
       LOG.debug("tuning:directv", "Interceptor reported tune failure for %s. Invalidated cache entry. Falling back to logo click.", channelName);
     } else {
