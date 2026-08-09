@@ -12,7 +12,7 @@ import { LOG, delay, extractDomain, formatError, getStreamContext, isStaleCaptur
   resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, waitWithTimeout } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
-import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
+import type { Nullable, ResolvedChannel, ResolvedSiteProfile, TuneResult, UrlValidationResult } from "../types/index.ts";
 import { getAllStreams, getNextStreamId } from "./registry.ts";
 import { getAuthDomainForChannel, getServiceDisplayName, resolveServiceKey } from "../config/services.ts";
 import { getBuiltinProfile, getProfileForChannel, getProfileForUrl, resolveProfile } from "../config/profiles.ts";
@@ -20,6 +20,7 @@ import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "..
 import { initializePlayback, injectVideoSelector, muteExistingVideos, navigateToPage } from "../browser/video.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
+import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { Readable } from "node:stream";
@@ -774,17 +775,16 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // Install the CDP manifest interceptor immediately before the navigate-and-tune fork, so its observation window opens after the capture-lock and getStream phase
   // (which the observer would otherwise idle through) and spans exactly the phases that produce manifests: navigation with retry, channel selection, and video
   // setup. The install decision is gated on tab replacement and the skip flag only - static-capture profiles install too, since they stay native-HLS eligible
-  // through the interception's presence, so the guard sits upstream of the fork and both branches inherit it. The window is sized to outlive those phases: the
-  // worst-case navigation-retry duration (including its backoff sleeps), the playback-init safety net, the finalize settle the interceptor waits, and a margin. A
-  // window that expired mid-tune would resolve with whatever page load captured, which is the failure this budget forecloses; because no healthy path waits on the
-  // timer (it is a leak bound for a tune that dies without unwinding), its generosity - which also covers direct tunes - costs nothing.
-  const interceptionBudgetMs = maxRetryDuration({
+  // through the interception's presence, so the guard sits upstream of the fork and both branches inherit it. The navigation allowance handed to the budget is
+  // this path's worst-case retry duration, backoff sleeps included; establishmentBudgetMs owns why the window has to outlive that allowance and every phase
+  // after it, direct tunes included.
+  const interceptionBudgetMs = establishmentBudgetMs(maxRetryDuration({
 
     backoffJitter: CONFIG.recovery.backoffJitter,
     maxAttempts: CONFIG.streaming.maxNavigationRetries,
     maxBackoffDelay: CONFIG.recovery.maxBackoffDelay,
     timeoutMs: CONFIG.streaming.navigationTimeout
-  }) + PLAYBACK_INIT_TIMEOUT + FINALIZE_SETTLE_DELAY + INTERCEPTION_BUDGET_MARGIN_MS;
+  }));
 
   const manifestInterception = (!options.tabReplacement && !options.skipManifestInterception) ? await installManifestInterceptor(page, interceptionBudgetMs) : null;
 
@@ -808,37 +808,36 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       const navigationUrl = directUrl ?? url;
 
-      // Phase 1: Navigate to the page with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on
-      // genuine navigation failures. Navigation is wrapped in retryOperation separately from channel selection so the timeout does not race with the internal click
-      // retry loops in channel selection strategies (guideGrid can take 15-20 seconds for binary search + click retries).
-      await retryOperation({
+      /* Phase 1 (navigation) and phase 2 (channel selection + video setup) run through the shared establishment composition, so the step order this path uses -
+       * navigate, stamp the observation epoch, initialize playback under the module-scope PLAYBACK_INIT_TIMEOUT safety net - is the same order the
+       * re-establishment path runs. When navigating to a cached direct URL, channel selection is skipped because the URL already targets the correct channel.
+       * The composition places no outer timeout around channel selection: each sub-step (selectChannel, waitForVideoReady, etc.) carries its own internal
+       * timeout via videoTimeout and the click retry constants.
+       */
+      const tuneResult = await establishChannelPlayback(page, profile, manifestInterception, {
 
-        backoffJitter: CONFIG.recovery.backoffJitter,
-        description: "page navigation for " + navigationUrl,
-        maxAttempts: CONFIG.streaming.maxNavigationRetries,
-        maxBackoffDelay: CONFIG.recovery.maxBackoffDelay,
-        operation: async (): Promise<void> => {
+        initOptions: { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl },
 
-          await navigateToPage(page, navigationUrl, profile);
-        },
-        shouldAbort: () => page.isClosed(),
-        timeoutMs: CONFIG.streaming.navigationTimeout
+        // Navigate with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on genuine navigation
+        // failures. The retry ladder is this path's own policy, kept separate from channel selection so its timeout does not race the internal click retry loops
+        // in channel selection strategies (guideGrid can take 15-20 seconds for binary search + click retries).
+        navigate: async (): Promise<void> => {
+
+          await retryOperation({
+
+            backoffJitter: CONFIG.recovery.backoffJitter,
+            description: "page navigation for " + navigationUrl,
+            maxAttempts: CONFIG.streaming.maxNavigationRetries,
+            maxBackoffDelay: CONFIG.recovery.maxBackoffDelay,
+            operation: async (): Promise<void> => {
+
+              await navigateToPage(page, navigationUrl, profile);
+            },
+            shouldAbort: () => page.isClosed(),
+            timeoutMs: CONFIG.streaming.navigationTimeout
+          });
+        }
       });
-
-      // Phase 2: Channel selection + video setup. When navigating to a cached direct URL, skip channel selection since the URL already targets the correct
-      // channel. Runs after navigation succeeds with no outer timeout racing against internal click retries; each sub-step (selectChannel, waitForVideoReady, etc.)
-      // has its own internal timeout via videoTimeout and click retry constants. The module-scope PLAYBACK_INIT_TIMEOUT is the safety-net bound for the whole phase.
-
-      // Channel selection begins here, so the interceptor's observation epoch is stamped now - manifests observed earlier belong to page load (a guide page's
-      // auto-played default channel), and guide-tune selection prefers a master observed after this point. Direct tunes are stamped too but never consult the mark
-      // (the direct branch and the epoch-free timeout keep that true); static captures never reach this statement.
-      manifestInterception?.markChannelSelectionStart();
-
-      const tuneResult = await waitWithTimeout(
-        initializePlayback(page, profile, { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl }),
-        PLAYBACK_INIT_TIMEOUT,
-        new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms.")
-      );
 
       strategyDirectTune = tuneResult.directTune ?? false;
       context = tuneResult.context;
@@ -890,8 +889,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     captureSession,
     context,
 
-    // True for a cached direct URL or an API-interception tune, and also whenever the profile has no DOM-based channel-selection step to run at all.
-    directTune: usedDirectUrl || strategyDirectTune || !isChannelSelectionProfile(profile),
+    // The kind the interception is finalized against, derived by the shared formula from this path's tune facts and the profile.
+    directTune: computeDirectTuneKind({ profile, strategyDirectTune, usedDirectUrl }),
 
     manifestInterception,
     page
@@ -983,6 +982,122 @@ export async function verifyManifestSelection(interceptionPromise: Promise<Nulla
   }
 
   return provider.verifyManifestForChannel(interception.manifestUrl, profile.channelSelector);
+}
+
+// Channel Establishment.
+
+/**
+ * Sizes the interception observation window for one establishment run. The observer has to outlive every phase that can feed it: the caller's own navigation
+ * allowance (retry-aware on the tune path, a single attempt on the refresh path), the bounded playback initialization, the settle the interceptor waits out
+ * before it resolves, and a margin covering the small span between those phases. A window that expired mid-establishment would resolve with whatever the page
+ * load captured rather than the channel the selection landed on, which is the outcome this budget forecloses. Because no healthy path waits on the timer - it is
+ * a leak bound for an establishment that dies without unwinding - its generosity costs nothing.
+ * @param navigationAllowanceMs - The caller's worst-case navigation allowance, including any retry backoff its own policy performs.
+ * @returns The observation window, in milliseconds.
+ */
+export function establishmentBudgetMs(navigationAllowanceMs: number): number {
+
+  return navigationAllowanceMs + PLAYBACK_INIT_TIMEOUT + FINALIZE_SETTLE_DELAY + INTERCEPTION_BUDGET_MARGIN_MS;
+}
+
+/**
+ * Derives the direct-tune kind the interception is finalized against. A tune is direct when the route was a cached direct watch URL, when the strategy itself
+ * resolved a direct tune through API interception, or when the profile has no DOM-based channel-selection step to run at all. The refresh path always navigates
+ * the configured channel url with full selection, so it never has a cached direct URL to report and omits that term entirely.
+ * @param options - The resolved profile plus the tune facts the kind reads: whether a cached direct URL was taken (absent on paths that cannot take one) and
+ *   whether the strategy resolved a direct tune of its own.
+ * @returns True when the interception should adjudicate as a direct tune.
+ */
+export function computeDirectTuneKind(options: { profile: ResolvedSiteProfile; strategyDirectTune: boolean; usedDirectUrl?: boolean }): boolean {
+
+  return (options.usedDirectUrl ?? false) || options.strategyDirectTune || !isChannelSelectionProfile(options.profile);
+}
+
+/* The browser-boundary collaborator establishChannelPlayback composes on. Playback initialization is the one step that drives a live page, so injecting it lets
+ * the composition's choreography be driven without Chrome while production runs the real function this module already imports. This is the
+ * collaborator-injection form of the Clock port (utils/clock.ts), the same shape CreatePageWithCaptureDeps uses.
+ */
+export interface EstablishChannelPlaybackDeps {
+
+  readonly initializePlayback: typeof initializePlayback;
+}
+
+const defaultEstablishChannelPlaybackDeps: EstablishChannelPlaybackDeps = { initializePlayback };
+
+/* The per-path policy establishChannelPlayback carries. Everything that legitimately differs between the tune and the refresh arrives through here, so the step
+ * order stays the composition's while each caller keeps the decisions that are genuinely its own.
+ */
+export interface EstablishChannelPlaybackOptions {
+
+  // Options forwarded to playback initialization; each path supplies its own (the tune threads persistResolution and skipChannelSelection, the refresh supplies
+  // only requestedUrl).
+  initOptions: InitializePlaybackOptions;
+
+  // Performs the caller's navigation policy in full - the tune wraps its retry ladder here, the refresh navigates single-attempt. The composition awaits this
+  // before stamping the epoch, so the policy stays the caller's while the ordering stays the composition's.
+  navigate: () => Promise<void>;
+
+  // Invoked once when playback initialization settles - success, failure, or a late completion after the bounded wait lapsed. The caller closes over whatever
+  // context the hook needs; the refresh path uses it to restore its mute.
+  onInitSettled?: () => void;
+}
+
+/**
+ * Establishes a channel on a page: navigate under the caller's own policy, stamp the interception's observation epoch, then run playback initialization under
+ * the module's safety-net bound. The tune path and the native refresh capability both run this, so the sequence and its ordering are written exactly once and
+ * only per-path policy differs.
+ * @param page - The page being established.
+ * @param profile - The resolved site profile whose strategy drives navigation and channel selection.
+ * @param handle - The interceptor observing this establishment, or null when nothing is observing it (a tab replacement, or an install that failed).
+ * @param options - The caller's navigation policy, its initialization options, and an optional settlement hook. See EstablishChannelPlaybackOptions.
+ * @param deps - Injected browser-boundary collaborator; defaults to the real playback initializer in production.
+ * @returns The result playback initialization produced: the video context for subsequent monitoring, and the strategy's direct-tune flag where it resolved one.
+ * @throws The caller's navigation failure, the initialization's own failure, or the bound's timeout error when the bound lapses first.
+ */
+export async function establishChannelPlayback(page: Page, profile: ResolvedSiteProfile, handle: Nullable<ManifestInterceptorHandle>,
+  options: EstablishChannelPlaybackOptions, deps: EstablishChannelPlaybackDeps = defaultEstablishChannelPlaybackDeps): Promise<TuneResult> {
+
+  const { initOptions, navigate, onInitSettled } = options;
+
+  await navigate();
+
+  // Channel selection begins here, so the observation epoch is stamped now - manifests seen earlier belong to page load (a guide page's auto-played default
+  // channel), and guide-tune selection prefers a master observed after this point. A null handle means nothing is observing, so there is no epoch to stamp.
+  handle?.markChannelSelectionStart();
+
+  const initPromise = deps.initializePlayback(page, profile, initOptions);
+
+  /* The settlement hook rides the initialization's own settlement rather than a fixed step after the wait below, because only the promise knows which of
+   * success, failure, or a late completion actually happened - and a late completion is reachable, since the wait abandons rather than cancels: a lapsed
+   * initialization is not stopped, it winds down on its own bounded internal phases and can finish afterward. The trailing catch is the whole safety net for
+   * the hook itself, absorbing a hook that throws as well as a structurally-permitted async hook that rejects, so this chain can never become a rejection
+   * source of its own.
+   */
+  if(onInitSettled) {
+
+    void initPromise.finally(() => onInitSettled()).catch(() => { /* The bounded wait below owns the initialization's failure. */ });
+  }
+
+  return waitWithTimeout(initPromise, PLAYBACK_INIT_TIMEOUT, new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
+}
+
+/**
+ * Adjudicates what an establishment's interception selected: finalize it against the honest direct-tune kind, then confirm the manifest belongs to the channel
+ * the profile names. The tune path and the native refresh capability both run this, so finalize-then-verify is written exactly once.
+ *
+ * The stage hands on the interception promise rather than a resolved result, which is what keeps verifyManifestSelection's latency rule holding - its provider
+ * and selector gates run before the promise is awaited, so a stream with nothing to verify never waits on the interception here.
+ * @param handle - The interceptor this establishment installed, still observing.
+ * @param profile - The resolved site profile whose strategy names the provider and whose channelSelector names the expected channel.
+ * @param directTune - The direct-tune kind to finalize against.
+ * @returns A human-readable failure reason when the manifest belongs to a different channel, or null when it verifies (including every vacuous case).
+ */
+export async function adjudicateChannelSelection(handle: ManifestInterceptorHandle, profile: ResolvedSiteProfile,
+  directTune: boolean): Promise<Nullable<string>> {
+
+  handle.finalize(directTune);
+
+  return verifyManifestSelection(handle.promise, profile);
 }
 
 /**
@@ -1212,17 +1327,16 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       owned.use(manifestInterception);
     }
 
-    // Tune verification. Finalize the manifest interceptor and confirm the captured master manifest URL belongs to the channel that was just tuned. This step
-    // makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS, native proxy, capture mode) receives
-    // a stream guaranteed to be on the requested channel without having to opt in or coordinate. Streams with no manifest interception at all (DRM-cached
-    // channels, tab replacements) have nothing to finalize and skip the step entirely; verifyManifestSelection owns which of the remaining ones it can speak to.
-    // A failure reason throws StreamSetupError so the existing failure path marks channel health, terminates the pending registry entry, and surfaces a clear
-    // error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor, and page as the throw unwinds.
+    // Tune verification. The shared adjudication stage finalizes the manifest interceptor and confirms the captured master manifest URL belongs to the channel
+    // that was just tuned. This step makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS,
+    // native proxy, capture mode) receives a stream guaranteed to be on the requested channel without having to opt in or coordinate. Streams with no manifest
+    // interception at all (DRM-cached channels, tab replacements) have nothing to adjudicate and skip the step entirely; verifyManifestSelection owns which of
+    // the remaining ones it can speak to. A failure reason throws StreamSetupError so the existing failure path marks channel health, terminates the pending
+    // registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor, and page
+    // as the throw unwinds.
     if(manifestInterception) {
 
-      manifestInterception.finalize(directTune);
-
-      const verifyError = await verifyManifestSelection(manifestInterception.promise, profile);
+      const verifyError = await adjudicateChannelSelection(manifestInterception, profile, directTune);
 
       if(verifyError) {
 
@@ -1321,24 +1435,24 @@ export interface ReestablishChannelManifestOptions {
   url: string;
 }
 
-/* Re-establishes a stream's channel on its page and returns the fresh manifest interception, for the native token-refresh path. This is the same establishment
- * sequence the tune runs - profile-aware navigation, the epoch stamp, playback initialization with its overlay guard and channel selection, an honest finalize,
- * and the provider verifier - composed from the same primitives, so there is exactly one set of establishment semantics in this system. Three deliberate
- * divergences from the tune path, each owned here. Navigation is single-attempt: both callers of the refresh chain bring their own retry ladders (the proactive
- * timer re-arms failures with bounded backoff, and the monitor escalates a persisting stall to capture fallback), so retrying inside would stack ladders and
- * stretch a recovery the project wants fast. The route is always the configured channel url with full channel selection: a cached direct URL and a skipped
- * selection belong to the tune's own optimization, and the re-establishment takes the click-verified route instead, so the finalize kind's formula carries no
- * cached-direct-URL term. And a category selector's re-resolved call sign is not persisted here: persistence belongs to the tune lifecycle, and the recovery
- * paths already re-tune without it. Playback initialization is bounded by the same race the tune uses, with the same abandon-on-timeout semantics; the remnant
- * is bounded and act-limited - its phases expire on their own internal timeouts, its consent poll can only reject cookie banners and dismiss per-site modals
- * within its fixed window, and a later navigation on the page force-settles whatever remains - so a subsequent refresh attempt starting on this page meets at
- * worst a dying consent poll, never a competing channel click. Failures normalize to null with a warning rather than throwing - the caller is a background
- * refresh cycle whose ladder already owns the endgame. The body runs under the stream's log context so the composed primitives' own lines carry the stream
- * prefix: the ambient context is kept when a caller already established one (the monitor's recovery path carries a richer context, show-name resolution
- * included, that a nested run would replace rather than merge), and is supplied only on the proactive timer's path, which has none. The page's audio is
- * re-muted on the initialization's own settlement rather than at any fixed step: playback establishment unmutes by direct property write, so an already-playing
- * element stays audible until re-muted, and attaching the re-mute to the initialization promise covers every outcome - success, failure, and a timed-out attempt
- * whose establishment completes late - while the play-override the native upgrade registered keeps future play() calls muted without re-registration.
+/* Re-establishes a stream's channel on its page and returns the fresh manifest interception, for the native token-refresh path. It runs the same establishment
+ * composition the tune path runs - navigate under this path's own policy, stamp the observation epoch, initialize playback under the shared bound, then adjudicate
+ * what the interception selected - so there is exactly one establishment sequence in this system. The deliberate divergences from the tune path are each owned here.
+ * Navigation is single-attempt: both callers of the refresh chain bring their own retry ladders (the proactive timer re-arms failures with bounded backoff, and the
+ * monitor escalates a persisting stall to capture fallback), so retrying inside would stack ladders and stretch a recovery the project wants fast. The route is
+ * always the configured channel url with full channel selection: a cached direct URL and a skipped selection belong to the tune's own optimization, and the
+ * re-establishment takes the click-verified route instead, so the kind it finalizes against carries no cached-direct-URL term. And a category selector's
+ * re-resolved call sign is not persisted here: persistence belongs to the tune lifecycle, and the recovery paths already re-tune without it. Playback
+ * initialization is bounded by the same race the tune uses, with the same abandon-on-timeout semantics; the remnant is bounded and act-limited - its phases expire
+ * on their own internal timeouts, its consent poll can only reject cookie banners and dismiss per-site modals within its fixed window, and a later navigation on
+ * the page force-settles whatever remains - so a subsequent refresh attempt starting on this page meets at worst a dying consent poll, never a competing channel
+ * click. Failures normalize to null with a warning rather than throwing - the caller is a background refresh cycle whose ladder already owns the endgame. The body
+ * runs under the stream's log context so the composed primitives' own lines carry the stream prefix: the ambient context is kept when a caller already established
+ * one (the monitor's recovery path carries a richer context, show-name resolution included, that a nested run would replace rather than merge), and is supplied
+ * only on the proactive timer's path, which has none. The page's audio is re-muted on the initialization's own settlement rather than at any fixed step: playback
+ * establishment unmutes by direct property write, so an already-playing element stays audible until re-muted, and attaching the re-mute to the initialization
+ * promise covers every outcome - success, failure, and a timed-out attempt whose establishment completes late - while the play-override the native upgrade
+ * registered keeps future play() calls muted without re-registration.
  *
  * @param options - The stream facts the re-establishment closes over. See ReestablishChannelManifestOptions.
  * @returns The verified manifest interception, or null when the channel could not be re-established.
@@ -1351,10 +1465,9 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
 
     try {
 
-      // Size the observer to outlive every step that can feed it: one navigation attempt, one bounded playback initialization, the settle the finalize waits
-      // out, and slack. A window that expired mid-establishment would resolve with whatever the page load captured, which is the outcome this path exists to
-      // avoid.
-      const budgetMs = CONFIG.streaming.navigationTimeout + PLAYBACK_INIT_TIMEOUT + FINALIZE_SETTLE_DELAY + INTERCEPTION_BUDGET_MARGIN_MS;
+      // The navigation allowance handed to the budget is a single attempt's timeout, since this path navigates once by design; establishmentBudgetMs owns why
+      // the observer has to outlive that allowance and every step after it.
+      const budgetMs = establishmentBudgetMs(CONFIG.streaming.navigationTimeout);
 
       // Scope-bind the interceptor with "using" so its CDP observer is disposed on every exit from this function, including the early returns below.
       using handle = await installManifestInterceptor(page, budgetMs);
@@ -1366,29 +1479,33 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
         return null;
       }
 
-      // Navigate through the profile's own wait strategy, single-attempt by design. A navigation failure throws to the catch below and normalizes to null.
-      await navigateToPage(page, url, profile);
+      // Establish the channel through the shared composition: navigate, stamp the observation epoch - which fences anything the reloaded page auto-played so it
+      // cannot win adjudication over the channel the selection lands on - then run playback initialization under the same bound the tune path uses.
+      const tuneResult = await establishChannelPlayback(page, profile, handle, {
 
-      // Channel selection begins here, so anything the reloaded page auto-played is fenced behind the epoch and cannot win adjudication over the channel the
-      // selection lands on.
-      handle.markChannelSelectionStart();
+        initOptions: { requestedUrl: url },
 
-      /* Establish playback, with the re-mute riding the initialization's own settlement rather than a fixed step after the wait. Playback establishment unmutes
-       * by direct property write, so success, failure, and a timed-out attempt that completes late all need the mute restored, and only the promise itself
-       * knows when each of those happened. The bounded wait carries the tune path's abandon-on-timeout semantics: a lapsed initialization is not cancelled, it
-       * winds down on its own bounded phases.
-       */
-      const initPromise = initializePlayback(page, profile, { requestedUrl: url });
+        // Navigate through the profile's own wait strategy, single-attempt by design. A navigation failure throws to the catch below and normalizes to null.
+        navigate: async (): Promise<void> => {
 
-      void initPromise.finally(() => void muteExistingVideos(page)).catch(() => { /* The bounded wait below owns the initialization's failure. */ });
+          await navigateToPage(page, url, profile);
+        },
 
-      const tuneResult = await waitWithTimeout(initPromise, PLAYBACK_INIT_TIMEOUT,
-        new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
+        // Restore the page's mute when the initialization settles. Playback establishment unmutes by direct property write, so an element that is already
+        // playing stays audible until it is re-muted, and attaching the restore to the settlement is what covers every outcome rather than only the happy one.
+        onInitSettled: (): void => {
 
-      // Finalize honestly: this is a direct tune only where the strategy itself resolved one or the profile has no DOM-based selection step at all. There is no
-      // cached-direct-URL term because the route above never takes one.
-      handle.finalize((tuneResult.directTune ?? false) || !isChannelSelectionProfile(profile));
+          void muteExistingVideos(page);
+        }
+      });
 
+      // Adjudicate honestly: the kind formula gets no cached-direct-URL term here, because the route above never takes one.
+      const verifyError = await adjudicateChannelSelection(handle, profile, computeDirectTuneKind({ profile, strategyDirectTune: tuneResult.directTune ?? false }));
+
+      // On a verifier-bearing master path the adjudication has already awaited this promise; on the vacuous path this await is the one that waits out the
+      // finalize settle. Reading it before the verification result is contract rather than preference: an establishment that intercepted nothing has to report
+      // exactly that, and the verification gates raise no objection for a null interception anyway, so the check order is what keeps each warning accurate to
+      // its own outcome.
       const interception = await handle.promise;
 
       if(!interception) {
@@ -1397,9 +1514,6 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
 
         return null;
       }
-
-      // The promise above has already settled, so this reads the adjudicated result through the same gates a tune's verification uses.
-      const verifyError = await verifyManifestSelection(handle.promise, profile);
 
       if(verifyError) {
 
