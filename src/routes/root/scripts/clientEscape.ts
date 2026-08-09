@@ -5,10 +5,8 @@
 
 /* This module is the single source of truth for client-side HTML escaping. Every client script that concatenates an untrusted value into innerHTML - the shared
  * channel/service renderers in shared.ts, the status display in status.handlers.ts, the browse and profile wizards in channels.ts, the changelog modal in
- * config.ts, and the inline log viewer in content.ts - routes through the one window.escapeHtml this module emits. The one documented exception is the browse
- * and profile wizards in channels.ts, which pre-populate a handful of text-input value attributes with a quote-only replaceAll that maps the double quote to
- * &quot; instead of the full escaper, since a double quote is the only attribute-breakout character those fields need to neutralize. There is exactly one
- * client-side HTML escaper, installed on window.escapeHtml.
+ * config.ts, and the inline log viewer in content.ts - routes through the one window.escapeHtml this module emits. There is exactly one client-side HTML
+ * escaper, installed on window.escapeHtml.
  *
  * It is the browser-side twin of the server-side escapeHtml single source of truth in utils/markup.ts. clientEscapeHtml cannot import markup.escapeHtml: its body
  * ships to the browser verbatim via Function.prototype.toString(), where the import binding would be undefined, so the two are necessarily separate function

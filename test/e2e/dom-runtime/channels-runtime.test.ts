@@ -599,6 +599,45 @@ describe("channels.ts: window.saveProfile", () => {
   });
 });
 
+describe("channels.ts: profile wizard attribute round-trip", () => {
+
+  test("a stored strategy field carrying entity text renders back byte-faithfully on the first render and across a re-render", async () => {
+
+    /* The step-2 renderer concatenates stored state into a value attribute, so the attribute writer has to neutralize every character the HTML parser would
+     * otherwise decode - not just the double quote that would break out of the attribute. An escaper that leaves the ampersand raw lets the parser decode any
+     * entity text the value actually contains, so a stored '&amp;' reads back as '&' and the value the user saved is silently corrupted. The fixture carries a
+     * double quote, a bare ampersand, a literal entity, and angle brackets, and each assertion pins the full path: state -> escape -> attribute -> DOM parse ->
+     * value. The second pass matters on its own because the strategy radio re-renders the step from the same state, so a value that survives one render must
+     * survive every subsequent one.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    const fixture = "Say \"hi\" & &amp; <b>";
+
+    await seedProfileWizardEdit(ctx, {
+
+      key: "roundtrip",
+      profile: { channelSelection: { matchSelector: fixture, strategy: "tileClick" }, extends: "default" }
+    });
+
+    // Advancing to step 2 renders tileClick's matchSelector text field, whose value attribute is written from the seeded state.
+    clickWizardNext(ctx, "wizard-modal");
+    await ctx.flushAsync();
+
+    const readField = "(document.querySelector('#wizard-content input[data-field=\"matchSelector\"]') || {}).value";
+
+    assert.equal(ctx.evaluate(readField), fixture, "the seeded strategy field renders back unchanged on the first render");
+
+    /* The strategy radio's change handler re-renders the current step unconditionally, with no guard on whether the selection actually changed, so dispatching
+     * change on the already-selected tileClick radio drives a second render pass over state the first pass never mutated.
+     */
+    ctx.evaluate("const r = Array.from(document.querySelectorAll('input[name=\"strategy\"]')).find((x) => x.value === 'tileClick'); " +
+      "r.dispatchEvent(new Event('change', { bubbles: true }));");
+
+    assert.equal(ctx.evaluate(readField), fixture, "the strategy field survives the re-render unchanged");
+  });
+});
+
 describe("channels.ts: profile wizard validation gates (driven via clickWizardNext)", () => {
 
   /* Validation is what gates the wizard's next() advance. We drive each test by triggering the role=next button click (the controller binds it to ctrl.next at
