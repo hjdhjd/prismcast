@@ -6,6 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for HBO Max watch page navigation. Used to build full watch URLs by concatenating with the relative /channel/watch/<uuid>/<uuid> path read from the
@@ -68,13 +69,14 @@ function clearHboCache(): void {
 }
 
 /**
- * Derives a DiscoveredChannel array from the unified channel cache. HBO does not create alias entries (resolveHboDirectUrl does exact-match only, no
- * prefix/alternate fallback), so deduplication is not needed - every cache value is unique. Sorts by name before returning.
+ * Derives a DiscoveredChannel array from the unified channel cache, deduplicated by entry reference and sorted by name. HBO holds exactly one key per channel -
+ * resolveHboDirectUrl matches exactly, with no prefix or alternate fallback that would alias a second key onto an entry - so every cache value here is already
+ * distinct and the deduplication pass has nothing to collapse.
  * @returns Sorted array of discovered channels.
  */
 function buildHboDiscoveredChannels(): DiscoveredChannel[] {
 
-  return Array.from(hboChannelCache.values()).map((entry) => entry.discovered).toSorted((a, b) => a.name.localeCompare(b.name));
+  return buildDiscoveredChannelsFromCache(hboChannelCache.values(), (entry) => entry.discovered);
 }
 
 /**

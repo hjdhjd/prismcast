@@ -7,6 +7,7 @@ import { LOG, chromeFetch, delay, formatError } from "../../utils/index.ts";
 import { logAvailableChannels, normalizeChannelName } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 
 // Sling TV guide grid row index cache. Maps normalized channel names (from data-testid="channel-{NAME}" attributes) to their row indices extracted from the
 // parent .guide-row-container CSS class (gridGuideRow-{N}). Separate from Hulu's huluChannelCache rowNumber tracking because Sling uses a different row index
@@ -834,17 +835,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
  */
 function buildSlingDiscoveredChannels(): DiscoveredChannel[] {
 
-  const channels: DiscoveredChannel[] = [];
-  const seen = new Set<SlingChannelEntry>();
-
-  for(const entry of slingChannelCache.values()) {
-
-    if(seen.has(entry)) {
-
-      continue;
-    }
-
-    seen.add(entry);
+  return buildDiscoveredChannelsFromCache(slingChannelCache.values(), (entry) => {
 
     const result: DiscoveredChannel = { channelSelector: entry.displayName, name: entry.displayName };
 
@@ -853,12 +844,8 @@ function buildSlingDiscoveredChannels(): DiscoveredChannel[] {
       result.tier = entry.tier;
     }
 
-    channels.push(result);
-  }
-
-  channels.sort((a, b) => a.name.localeCompare(b.name));
-
-  return channels;
+    return result;
+  });
 }
 
 /**

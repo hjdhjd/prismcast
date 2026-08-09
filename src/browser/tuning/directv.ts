@@ -7,6 +7,7 @@ import { LOG, boundedWait, delay, formatError } from "../../utils/index.ts";
 import { installOncePerPage, logAvailableChannels, normalizeChannelName } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 
 // Unified channel cache entry combining discovery metadata and tuning identifiers. Populated from the Redux store's channel lineup emitted via the
 // [DIRECTV-CHANNELS] console signal during page load. resourceId is the stable tuning artifact dispatched to the playConsumable action (as both programChannelId
@@ -1022,23 +1023,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
  */
 function buildDirectvDiscoveredChannels(): DiscoveredChannel[] {
 
-  const channels: DiscoveredChannel[] = [];
-  const seen = new Set<string>();
-
-  for(const entry of directvChannelCache.values()) {
-
-    if(seen.has(entry.displayName)) {
-
-      continue;
-    }
-
-    seen.add(entry.displayName);
-    channels.push({ channelSelector: entry.displayName, name: entry.displayName });
-  }
-
-  channels.sort((a, b) => a.name.localeCompare(b.name));
-
-  return channels;
+  return buildDiscoveredChannelsFromCache(directvChannelCache.values(), (entry) => ({ channelSelector: entry.displayName, name: entry.displayName }));
 }
 
 /**

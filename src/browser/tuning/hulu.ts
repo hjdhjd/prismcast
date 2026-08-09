@@ -7,6 +7,7 @@ import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts
 import { installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 
 // Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API
 // responses intercepted during page load (provides uuid, programs, displayName), and (2) guide grid DOM reads during binary search or discovery linear scan
@@ -202,17 +203,7 @@ function findCurrentEabFromPrograms(programs: HuluListingProgram[]): Nullable<st
  */
 function buildHuluDiscoveredChannels(): DiscoveredChannel[] {
 
-  const channels: DiscoveredChannel[] = [];
-  const seen = new Set<HuluChannelEntry>();
-
-  for(const entry of huluChannelCache.values()) {
-
-    if(seen.has(entry)) {
-
-      continue;
-    }
-
-    seen.add(entry);
+  return buildDiscoveredChannelsFromCache(huluChannelCache.values(), (entry) => {
 
     const result: DiscoveredChannel = { channelSelector: entry.affiliate ?? entry.displayName, name: entry.displayName };
 
@@ -221,12 +212,8 @@ function buildHuluDiscoveredChannels(): DiscoveredChannel[] {
       result.affiliate = entry.affiliate;
     }
 
-    channels.push(result);
-  }
-
-  channels.sort((a, b) => a.name.localeCompare(b.name));
-
-  return channels;
+    return result;
+  });
 }
 
 // Rendered channel entry from the guide grid. Captures the lowercased trimmed name from data-testid (for matching) and the original-cased display name from

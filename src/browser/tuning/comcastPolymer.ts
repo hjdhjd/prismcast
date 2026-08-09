@@ -7,6 +7,7 @@ import { LOG, delay, formatError } from "../../utils/index.ts";
 import { installOncePerPage, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 import { logAutoDismiss } from "../consent.ts";
 
 /* Comcast's Polymer SPA (`TV-APP`) manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated from the channelmap
@@ -738,23 +739,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
    */
   function buildDiscoveredChannels(): DiscoveredChannel[] {
 
-    const channels: DiscoveredChannel[] = [];
-    const seen = new Set<ChannelEntry>();
-
-    for(const entry of channelCache.values()) {
-
-      if(seen.has(entry)) {
-
-        continue;
-      }
-
-      seen.add(entry);
-      channels.push(entry.discovered);
-    }
-
-    channels.sort((a, b) => a.name.localeCompare(b.name));
-
-    return channels;
+    return buildDiscoveredChannelsFromCache(channelCache.values(), (entry) => entry.discovered);
   }
 
   /**

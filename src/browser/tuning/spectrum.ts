@@ -7,6 +7,7 @@ import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
+import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 
 // Base URL for Spectrum TV watch page navigation.
 const SPECTRUM_BASE_URL = "https://watch.spectrum.net";
@@ -317,23 +318,7 @@ function clearSpectrumCache(): void {
  */
 function buildSpectrumDiscoveredChannels(): DiscoveredChannel[] {
 
-  const channels: DiscoveredChannel[] = [];
-  const seen = new Set<SpectrumChannelEntry>();
-
-  for(const entry of spectrumChannelCache.values()) {
-
-    if(seen.has(entry)) {
-
-      continue;
-    }
-
-    seen.add(entry);
-    channels.push(entry.discovered);
-  }
-
-  channels.sort((a, b) => a.name.localeCompare(b.name));
-
-  return channels;
+  return buildDiscoveredChannelsFromCache(spectrumChannelCache.values(), (entry) => entry.discovered);
 }
 
 /**
