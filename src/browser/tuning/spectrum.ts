@@ -7,7 +7,7 @@ import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { buildDiscoveredChannelsFromCache } from "./cache.ts";
+import { createProviderChannelCache } from "./cache.ts";
 
 // Base URL for Spectrum TV watch page navigation.
 const SPECTRUM_BASE_URL = "https://watch.spectrum.net";
@@ -25,7 +25,7 @@ interface SpectrumChannelEntry {
 // to their combined discovery and tuning data. Multiple keys may reference the same entry. Populated during the first tune (when the strategy enumerates all
 // streamable channels from the non-virtualized guide grid) or the first discovery call. Both tuning (via findSpectrumChannel) and discovery (via
 // getCachedChannels / discoverSpectrumChannels) read from this single cache. Cleared on browser disconnect via clearSpectrumCache().
-const spectrumChannelCache = new Map<string, SpectrumChannelEntry>();
+const spectrumCache = createProviderChannelCache<SpectrumChannelEntry>((entry) => entry.discovered);
 
 // Recovery guard for the degraded guide state where the grid container renders but channel entries are not populated, which stale AngularJS template or API
 // response caches produce. The guard counts the empty loads and signals when clearing Spectrum site data (cache storage) via CDP is warranted. Reset on any
@@ -152,7 +152,7 @@ async function discoverGuideChannels(page: Page): Promise<RawSpectrumChannel[]> 
  */
 function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
 
-  spectrumChannelCache.clear();
+  spectrumCache.clear();
 
   // First pass: build all entries and store under callsign key. Track network name keys separately to avoid overwriting cable channels in the second pass.
   const entries: { entry: SpectrumChannelEntry; networkKey?: string; strippedKey: string }[] = [];
@@ -197,7 +197,7 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
     const spectrumEntry: SpectrumChannelEntry = { discovered, tmsid: ch.tmsid };
 
     // Store under lowercased callsign (primary key).
-    spectrumChannelCache.set(ch.callsign.toLowerCase(), spectrumEntry);
+    spectrumCache.map.set(ch.callsign.toLowerCase(), spectrumEntry);
 
     entries.push({ entry: spectrumEntry, networkKey, strippedKey: stripped.toLowerCase() });
   }
@@ -207,17 +207,21 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
   for(const { entry, networkKey, strippedKey } of entries) {
 
     // Add stripped display name key if not already taken. First-write wins - if two channels strip to the same name, the first (lower channel number) keeps it.
-    if(!spectrumChannelCache.has(strippedKey)) {
+    if(!spectrumCache.map.has(strippedKey)) {
 
-      spectrumChannelCache.set(strippedKey, entry);
+      spectrumCache.map.set(strippedKey, entry);
     }
 
     // Add network name key for affiliates if not already taken by a cable channel or another affiliate.
-    if(networkKey && !spectrumChannelCache.has(networkKey)) {
+    if(networkKey && !spectrumCache.map.has(networkKey)) {
 
-      spectrumChannelCache.set(networkKey, entry);
+      spectrumCache.map.set(networkKey, entry);
     }
   }
+
+  // The guide pass this was built from covered every streamable row, so what sits in the cache at this point is the complete lineup and warm reads can be
+  // served from it.
+  spectrumCache.markComplete();
 }
 
 /**
@@ -239,7 +243,7 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
   const lower = channelName.toLowerCase();
 
   // Tier 1: Exact match on any cache key (callsigns, stripped names, network names).
-  const exact = spectrumChannelCache.get(lower);
+  const exact = spectrumCache.map.get(lower);
 
   if(exact) {
 
@@ -247,20 +251,20 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
   }
 
   // Tier 2: HD/DT suffix tolerance. Try appending common technology suffixes.
-  const hdMatch = spectrumChannelCache.get(lower + "hd");
+  const hdMatch = spectrumCache.map.get(lower + "hd");
 
   if(hdMatch) {
 
-    spectrumChannelCache.set(lower, hdMatch);
+    spectrumCache.map.set(lower, hdMatch);
 
     return hdMatch;
   }
 
-  const dtMatch = spectrumChannelCache.get(lower + "dt");
+  const dtMatch = spectrumCache.map.get(lower + "dt");
 
   if(dtMatch) {
 
-    spectrumChannelCache.set(lower, dtMatch);
+    spectrumCache.map.set(lower, dtMatch);
 
     return dtMatch;
   }
@@ -270,7 +274,7 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
   // in tier 1. This tier is the fallback for any names not covered by the first two tiers.
   const seen = new Set<SpectrumChannelEntry>();
 
-  for(const entry of spectrumChannelCache.values()) {
+  for(const entry of spectrumCache.map.values()) {
 
     if(seen.has(entry)) {
 
@@ -281,7 +285,7 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
 
     if(entry.discovered.name.toLowerCase() === lower) {
 
-      spectrumChannelCache.set(lower, entry);
+      spectrumCache.map.set(lower, entry);
 
       return entry;
     }
@@ -291,34 +295,13 @@ function findSpectrumChannel(channelName: string): Nullable<SpectrumChannelEntry
 }
 
 /**
- * Invalidates the cached Spectrum channel entry for the given channel selector. Called when a cached URL fails to produce a working stream. Deletes the
- * channelSelector key - the original keys from channel discovery are left intact and will be refreshed on the next strategy run when the guide page is reloaded.
- * @param channelSelector - The channel selector string to invalidate.
- */
-function invalidateSpectrumDirectUrl(channelSelector: string): void {
-
-  spectrumChannelCache.delete(channelSelector.toLowerCase());
-}
-
-/**
  * Clears the Spectrum channel cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts, since a fresh browser session
  * may have different channel availability.
  */
 function clearSpectrumCache(): void {
 
-  spectrumChannelCache.clear();
+  spectrumCache.clear();
   emptyDiscoveryGuard.reset();
-}
-
-/**
- * Derives a DiscoveredChannel array from the unified channel cache, deduplicating alias entries via Set reference equality. Multiple cache keys may point to
- * the same SpectrumChannelEntry (callsign key, stripped name key, network name key, and any alias keys created by findSpectrumChannel). Without deduplication,
- * iterating cache values would produce duplicate entries. Sorts by name before returning.
- * @returns Sorted, deduplicated array of discovered channels.
- */
-function buildSpectrumDiscoveredChannels(): DiscoveredChannel[] {
-
-  return buildDiscoveredChannelsFromCache(spectrumChannelCache.values(), (entry) => entry.discovered);
 }
 
 /**
@@ -395,7 +378,7 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
     // Channel not found. Log available channels as a diagnostic to help users identify their market's channel names.
     logAvailableChannels({
 
-      availableChannels: buildSpectrumDiscoveredChannels().map((ch) => ch.name).sort(),
+      availableChannels: spectrumCache.discovered().map((ch) => ch.name).sort(),
       channelName,
       guideUrl: "https://watch.spectrum.net/guide",
       presetSuffix: "-spectrum",
@@ -446,10 +429,12 @@ async function resolveSpectrumDirectUrl(channelSelector: string, _page: Page): P
  */
 async function discoverSpectrumChannels(page: Page): Promise<DiscoveredChannel[]> {
 
-  // Return from the unified cache if already populated.
-  if(spectrumChannelCache.size > 0) {
+  // Return from the unified cache if a prior tune or discovery call already enumerated the lineup.
+  const cached = spectrumCache.cached();
 
-    return buildSpectrumDiscoveredChannels();
+  if(cached) {
+
+    return cached;
   }
 
   // Wait for at least one channel header row to confirm the guide grid has rendered.
@@ -471,27 +456,13 @@ async function discoverSpectrumChannels(page: Page): Promise<DiscoveredChannel[]
 
   populateSpectrumChannelCache(allChannels);
 
-  return buildSpectrumDiscoveredChannels();
-}
-
-/**
- * Returns cached discovered channels from the unified channel cache, or null if the cache is empty (no prior tune or discovery call has enumerated the lineup).
- * @returns Sorted array of discovered channels or null.
- */
-function getSpectrumCachedChannels(): Nullable<DiscoveredChannel[]> {
-
-  if(spectrumChannelCache.size === 0) {
-
-    return null;
-  }
-
-  return buildSpectrumDiscoveredChannels();
+  return spectrumCache.discovered();
 }
 
 export const spectrumProvider: ProviderModule = {
 
   discoverChannels: discoverSpectrumChannels,
-  getCachedChannels: getSpectrumCachedChannels,
+  getCachedChannels: spectrumCache.cached,
   guideUrl: "https://watch.spectrum.net/guide",
   label: "Spectrum TV",
 
@@ -513,7 +484,9 @@ export const spectrumProvider: ProviderModule = {
 
     clearCache: clearSpectrumCache,
     execute: spectrumGridStrategy,
-    invalidateDirectUrl: invalidateSpectrumDirectUrl,
+
+    // Only the failing selector's own key is dropped. The keys channel discovery wrote stay put, and the next strategy run reloads the guide and rebuilds them.
+    invalidateDirectUrl: spectrumCache.invalidate,
     resolveDirectUrl: resolveSpectrumDirectUrl
   },
   strategyName: "spectrumGrid"

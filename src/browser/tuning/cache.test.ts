@@ -7,11 +7,16 @@
  * The fixtures below reproduce each provider's entry shape rather than importing the providers, because the projection is generic and the shapes are what vary:
  * a pre-built row, a display name with an optional affiliate, a display name with an optional tier, a display name alone. The conditional-field cases matter
  * because an absent optional field has to stay absent - a key present with an undefined value is a different row on the wire.
+ *
+ * createProviderChannelCache wraps that projection in the lifecycle every provider shares: the map, the completeness mark gating warm reads, and the clear a
+ * browser restart triggers. Two of its guarantees carry real weight for the providers built on it. The gate has to withhold a lineup on every combination short
+ * of marked-and-populated, because a partial cache served as the whole lineup is a channel list missing channels. And the map has to survive a clear as the same
+ * object, because providers hand out entry references as aliases and update entries in place through them - a replacement map would orphan every one.
  */
+import { buildDiscoveredChannelsFromCache, createProviderChannelCache } from "./cache.ts";
 import { describe, test } from "node:test";
 import type { DiscoveredChannel } from "../../types/index.ts";
 import assert from "node:assert/strict";
-import { buildDiscoveredChannelsFromCache } from "./cache.ts";
 
 // A cache entry that already carries its projected row, which is the shape Spectrum, YouTube TV, HBO, and the Comcast Polymer providers hold.
 interface ProjectedEntry {
@@ -200,5 +205,115 @@ describe("buildDiscoveredChannelsFromCache", () => {
 
     assert.deepEqual(byReference, byDisplayName, "both deduplication keys report the same rows for a DirecTV-shaped cache");
     assert.deepEqual(byReference.map((channel) => channel.name), [ "ABC WABC", "ESPN" ], "the aliased affiliate is reported once, alongside the plain entry");
+  });
+});
+
+describe("createProviderChannelCache", () => {
+
+  test("withholds a lineup until the cache is both marked complete and populated", () => {
+
+    // The gate's whole job is refusing to answer on the three combinations that are not a complete lineup. A cache filled by a partial capture, or marked by a
+    // walk that captured nothing, would otherwise be served to the discovery route as though it were the provider's entire channel list.
+    const unmarkedEmpty = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    assert.equal(unmarkedEmpty.cached(), null, "an untouched cache reports nothing enumerated");
+
+    const unmarkedFilled = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    unmarkedFilled.map.set("espn", row("ESPN"));
+
+    assert.equal(unmarkedFilled.cached(), null, "a populated but unmarked cache is a partial capture and is withheld");
+
+    const markedEmpty = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    markedEmpty.markComplete();
+
+    assert.equal(markedEmpty.cached(), null, "a mark over an empty map answers nothing rather than an empty lineup");
+
+    const markedFilled = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    markedFilled.map.set("espn", row("ESPN"));
+    markedFilled.markComplete();
+
+    assert.deepEqual(markedFilled.cached(), [{ channelSelector: "ESPN", name: "ESPN" }], "marked and populated is the one combination that answers");
+  });
+
+  test("clear empties the map and drops the completeness mark together", () => {
+
+    const cache = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    cache.map.set("espn", row("ESPN"));
+    cache.markComplete();
+    cache.clear();
+
+    assert.equal(cache.map.size, 0, "the map is emptied");
+    assert.equal(cache.cached(), null, "the mark is dropped, so refilling the map alone does not resume warm reads");
+
+    cache.map.set("espn", row("ESPN"));
+
+    assert.equal(cache.cached(), null, "a cache refilled after a clear stays withheld until something marks it complete again");
+  });
+
+  test("hands out one map object for its whole lifetime, including across a clear", () => {
+
+    /* Providers capture entry references out of the map and file them under additional keys, and a populate pass updates those entries in place expecting every
+     * alias to see the change. All of that hangs on there being exactly one map: were clear() to install a fresh one, every captured reference would point at an
+     * object unreachable from the cache, and the aliases would silently stop tracking their channel.
+     */
+    const cache = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+    const captured = cache.map;
+
+    cache.map.set("espn", row("ESPN"));
+    cache.clear();
+    cache.map.set("cnn", row("CNN"));
+
+    assert.equal(cache.map, captured, "the instance exposes the same map object it started with");
+    assert.equal(captured.get("cnn")?.discovered.name, "CNN", "a reference captured before the clear still sees writes made after it");
+  });
+
+  test("invalidate drops the entry filed under the lowercased selector", () => {
+
+    const cache = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    cache.map.set("espn", row("ESPN"));
+    cache.map.set("cnn", row("CNN"));
+    cache.invalidate("ESPN");
+
+    assert.equal(cache.map.has("espn"), false, "the selector's key is dropped even though the caller supplied it in a different case");
+    assert.equal(cache.map.has("cnn"), true, "every other key is left alone");
+  });
+
+  test("discovered projects the current entries regardless of the completeness mark", () => {
+
+    // The paths that have just filled the cache themselves report what they captured without waiting on the mark, which is how a walk that fell short of its
+    // completeness threshold still serves the request that triggered it.
+    const cache = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+    const espn = row("ESPN");
+
+    cache.map.set("espn", espn);
+    cache.map.set("espn hd", espn);
+    cache.map.set("cnn", row("CNN"));
+
+    assert.deepEqual(cache.discovered().map((channel) => channel.name), [ "CNN", "ESPN" ],
+      "an unmarked cache still projects, deduplicated and sorted, through the shared builder");
+    assert.equal(cache.cached(), null, "projecting does not imply the lineup is complete");
+  });
+
+  test("keeps two instances fully isolated", () => {
+
+    // The Comcast Polymer factory builds one instance per provider off a single platform, so Xfinity filling or clearing its cache must be invisible to Cox.
+    const first = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+    const second = createProviderChannelCache<ProjectedEntry>(projectedMapper);
+
+    first.map.set("espn", row("ESPN"));
+    first.markComplete();
+
+    assert.equal(second.cached(), null, "the second instance holds none of the first's entries or its mark");
+
+    second.map.set("cnn", row("CNN"));
+    second.markComplete();
+    first.clear();
+
+    assert.deepEqual(second.cached()?.map((channel) => channel.name), ["CNN"], "clearing the first instance leaves the second untouched");
   });
 });

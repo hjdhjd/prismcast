@@ -7,7 +7,7 @@ import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts
 import { installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { buildDiscoveredChannelsFromCache } from "./cache.ts";
+import { createProviderChannelCache } from "./cache.ts";
 
 // Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API
 // responses intercepted during page load (provides uuid, programs, displayName), and (2) guide grid DOM reads during binary search or discovery linear scan
@@ -23,17 +23,24 @@ interface HuluChannelEntry {
 }
 
 // Unified channel cache for Hulu. Maps normalized channel names to their combined entry. Aliases (e.g., "abc" -> same entry as "wls") share object references for
-// automatic propagation of fresh programs and EAB data. Cleared on browser disconnect via clearHuluCache().
-const huluChannelCache = new Map<string, HuluChannelEntry>();
+// automatic propagation of fresh programs and EAB data. Cleared on browser disconnect via clearHuluCache(). An affiliate projects into discovery output with its
+// network name as the channelSelector; every other channel projects with its display name.
+const huluCache = createProviderChannelCache<HuluChannelEntry>((entry) => {
+
+  const result: DiscoveredChannel = { channelSelector: entry.affiliate ?? entry.displayName, name: entry.displayName };
+
+  if(entry.affiliate) {
+
+    result.affiliate = entry.affiliate;
+  }
+
+  return result;
+});
 
 // Transient staging map for listing API response data. Maps channel UUIDs to their program schedules. Populated from listing API responses (which arrive before
 // details responses due to the interceptor's listingCapturedPromise hold). Read by populateHuluChannelCache when the details response arrives, joining UUID-keyed
 // programs with name-keyed entries. Also used to propagate fresh programs to existing cache entries when a new listing response arrives.
 const huluListingStaging = new Map<string, HuluListingProgram[]>();
-
-// Tracks whether a full discovery walk (with affiliate position inference) has completed. When true, buildHuluDiscoveredChannels can return comprehensive results
-// including proper affiliate labeling. When false, getCachedChannels returns null to force a fresh discovery walk.
-let huluFullyDiscovered = false;
 
 // Tracks pages with details API response listeners to avoid duplicate registration. Mirrors the pagesWithListeners pattern in sling.ts.
 const huluPagesWithListeners = new WeakSet<Page>();
@@ -81,13 +88,12 @@ interface HuluListingResponse {
 }
 
 /**
- * Clears all Hulu caches: the unified channel cache, listing staging map, and discovery flag. Called by clearChannelSelectionCaches() in the coordinator when the
- * browser restarts, since cached state may be stale in a new browser session.
+ * Clears all Hulu caches: the unified channel cache along with its completeness mark, and the listing staging map. Called by clearChannelSelectionCaches() in the
+ * coordinator when the browser restarts, since cached state may be stale in a new browser session.
  */
 function clearHuluCache(): void {
 
-  huluChannelCache.clear();
-  huluFullyDiscovered = false;
+  huluCache.clear();
   huluListingStaging.clear();
 }
 
@@ -100,7 +106,7 @@ function clearHuluCache(): void {
  */
 function resolveHuluCacheKey(normalizedName: string): Nullable<string> {
 
-  if(huluChannelCache.has(normalizedName)) {
+  if(huluCache.map.has(normalizedName)) {
 
     return normalizedName;
   }
@@ -109,7 +115,7 @@ function resolveHuluCacheKey(normalizedName: string): Nullable<string> {
   // between channelSelector definitions and Hulu's Details API channel_info.name values.
   const stripped = normalizedName.replace(/[^a-z0-9]/g, "");
 
-  for(const key of huluChannelCache.keys()) {
+  for(const key of huluCache.map.keys()) {
 
     if(key.replace(/[^a-z0-9]/g, "") === stripped) {
 
@@ -122,7 +128,7 @@ function resolveHuluCacheKey(normalizedName: string): Nullable<string> {
 
 /**
  * Looks up a channel in the unified cache by normalized name, with fuzzy fallback via resolveHuluCacheKey. Only used for lookups keyed by channelSelector -
- * internal cache operations that use API-derived names should use huluChannelCache.get() directly.
+ * internal cache operations that use API-derived names should use huluCache.map.get() directly.
  * @param normalizedName - The normalized (lowercased, whitespace-collapsed) channel name to look up.
  * @returns The matching cache entry, or null if no match found.
  */
@@ -130,7 +136,7 @@ function findHuluChannelEntry(normalizedName: string): Nullable<HuluChannelEntry
 
   const key = resolveHuluCacheKey(normalizedName);
 
-  return key ? huluChannelCache.get(key) ?? null : null;
+  return key ? huluCache.map.get(key) ?? null : null;
 }
 
 /**
@@ -150,7 +156,7 @@ function populateHuluChannelCache(items: HuluDetailsItem[]): void {
     if(info?.name && info.id) {
 
       const normalized = normalizeChannelName(info.name);
-      const existing = huluChannelCache.get(normalized);
+      const existing = huluCache.map.get(normalized);
       const programs = huluListingStaging.get(info.id) ?? existing?.programs;
 
       if(existing) {
@@ -165,14 +171,14 @@ function populateHuluChannelCache(items: HuluDetailsItem[]): void {
         }
       } else {
 
-        huluChannelCache.set(normalized, { displayName: info.name, programs, uuid: info.id });
+        huluCache.map.set(normalized, { displayName: info.name, programs, uuid: info.id });
       }
 
       channelsSeen.add(info.name);
     }
   }
 
-  LOG.debug("tuning:hulu", "Details API: %s items, %s unique channels. Channel cache size: %s.", items.length, channelsSeen.size, huluChannelCache.size);
+  LOG.debug("tuning:hulu", "Details API: %s items, %s unique channels. Channel cache size: %s.", items.length, channelsSeen.size, huluCache.map.size);
 }
 
 /**
@@ -194,26 +200,6 @@ function findCurrentEabFromPrograms(programs: HuluListingProgram[]): Nullable<st
   }
 
   return null;
-}
-
-/**
- * Derives a DiscoveredChannel array from the unified channel cache, deduplicating alias entries via Set reference equality. Affiliates produce entries with the
- * network name as channelSelector; non-affiliates use their display name. Used by getCachedChannels and discoverHuluChannels when returning from warm cache.
- * @returns Sorted array of discovered channels.
- */
-function buildHuluDiscoveredChannels(): DiscoveredChannel[] {
-
-  return buildDiscoveredChannelsFromCache(huluChannelCache.values(), (entry) => {
-
-    const result: DiscoveredChannel = { channelSelector: entry.affiliate ?? entry.displayName, name: entry.displayName };
-
-    if(entry.affiliate) {
-
-      result.affiliate = entry.affiliate;
-    }
-
-    return result;
-  });
 }
 
 // Rendered channel entry from the guide grid. Captures the lowercased trimmed name from data-testid (for matching) and the original-cased display name from
@@ -304,14 +290,14 @@ async function readRenderedChannels(page: Page): Promise<Nullable<RenderedChanne
     // Cache the row number and display name for future direct-scroll lookups.
     if(ch.rowNumber >= 0) {
 
-      const existing = huluChannelCache.get(ch.name);
+      const existing = huluCache.map.get(ch.name);
 
       if(existing) {
 
         existing.rowNumber = ch.rowNumber;
       } else {
 
-        huluChannelCache.set(ch.name, { displayName: ch.displayName, rowNumber: ch.rowNumber });
+        huluCache.map.set(ch.name, { displayName: ch.displayName, rowNumber: ch.rowNumber });
       }
     }
   }
@@ -1154,11 +1140,11 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
       // Cross-reference the unified cache so the network name resolves to a warm-cache direct tune on subsequent requests. The details API returns the local
       // call sign as channel_info.name, so the cache is keyed by call sign. The user's channelSelector uses the network name (e.g., "ABC"). Without this
       // cross-reference, local affiliates would always fall through to cold-cache guide grid tunes because the names never match.
-      const inferredEntry = huluChannelCache.get(inferred);
+      const inferredEntry = huluCache.map.get(inferred);
 
       if(inferredEntry) {
 
-        huluChannelCache.set(normalizedName, inferredEntry);
+        huluCache.map.set(normalizedName, inferredEntry);
 
         LOG.debug("tuning:hulu", "Cross-referenced cache: %s -> %s (from inferred affiliate %s).", channelName, inferredEntry.uuid ?? "no-uuid", inferred);
 
@@ -1210,7 +1196,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
     // Log available channels from the unified cache to help users identify the correct channelSelector value. The cache accumulates all channel names
     // encountered during binary search and linear scan, so it contains most or all channels even though the virtualized grid only renders ~13 at a time.
-    const availableChannels = Array.from(huluChannelCache.keys()).toSorted();
+    const availableChannels = Array.from(huluCache.map.keys()).toSorted();
 
     if(availableChannels.length > 0) {
 
@@ -1321,7 +1307,7 @@ function setupDetailsResponseInterception(page: Page): void {
         // Find the existing entry by UUID to create an alias (shared object reference). If no entry exists yet, create a new one with programs from staging.
         let existingEntry: Nullable<HuluChannelEntry> = null;
 
-        for(const e of huluChannelCache.values()) {
+        for(const e of huluCache.map.values()) {
 
           if(e.uuid === channelUuid) {
 
@@ -1333,13 +1319,13 @@ function setupDetailsResponseInterception(page: Page): void {
 
         if(existingEntry) {
 
-          huluChannelCache.set(name, existingEntry);
+          huluCache.map.set(name, existingEntry);
         } else {
 
-          huluChannelCache.set(name, { displayName: name, programs: huluListingStaging.get(channelUuid), uuid: channelUuid });
+          huluCache.map.set(name, { displayName: name, programs: huluListingStaging.get(channelUuid), uuid: channelUuid });
         }
 
-        LOG.debug("tuning:hulu", "Cached affiliate UUID from playlist: %s -> %s. Channel cache size: %s.", name, channelUuid, huluChannelCache.size);
+        LOG.debug("tuning:hulu", "Cached affiliate UUID from playlist: %s -> %s. Channel cache size: %s.", name, channelUuid, huluCache.map.size);
       }
     }
 
@@ -1404,7 +1390,7 @@ function setupDetailsResponseInterception(page: Page): void {
 
         // Propagate fresh programs to existing unified cache entries. Aliases share object references, so updating one entry automatically propagates to all
         // aliases for the same channel.
-        for(const entry of huluChannelCache.values()) {
+        for(const entry of huluCache.map.values()) {
 
           if(entry.uuid) {
 
@@ -1477,7 +1463,7 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
   const allCachedUuids: string[] = [];
   const allCurrentEabs: string[] = [];
 
-  for(const entry of huluChannelCache.values()) {
+  for(const entry of huluCache.map.values()) {
 
     if(!entry.uuid || seenEntries.has(entry)) {
 
@@ -2051,7 +2037,7 @@ function invalidateHuluDirectUrl(channelSelector: string): void {
 
   if(key) {
 
-    huluChannelCache.delete(key);
+    huluCache.map.delete(key);
   }
 }
 
@@ -2066,9 +2052,11 @@ function invalidateHuluDirectUrl(channelSelector: string): void {
 async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
 
   // Return from the unified cache if a full discovery walk (with affiliate inference) has already completed.
-  if(huluFullyDiscovered && (huluChannelCache.size > 0)) {
+  const cached = huluCache.cached();
 
-    return buildHuluDiscoveredChannels();
+  if(cached) {
+
+    return cached;
   }
 
   // Set up response interception BEFORE navigation so we capture the initial details and listing API responses during page load. These responses populate the
@@ -2195,19 +2183,19 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
       // Alias the network name to the affiliate's cache entry so that resolveHuluDirectUrl can look up local affiliates by their channelSelector (e.g., "PBS")
       // without falling through to the guide grid. Without this alias, the first tune after precaching would always be cold for local affiliates because the
       // cache is keyed by call sign (e.g., "wttw") and findHuluChannelEntry("pbs") would find no match.
-      const affiliateEntry = huluChannelCache.get(callSign);
+      const affiliateEntry = huluCache.map.get(callSign);
 
       if(affiliateEntry) {
 
-        huluChannelCache.set(network, affiliateEntry);
+        huluCache.map.set(network, affiliateEntry);
       }
     }
   }
 
-  // Enrich unified cache entries with affiliate metadata so buildHuluDiscoveredChannels can derive proper affiliate labeling on subsequent getCachedChannels calls.
+  // Enrich unified cache entries with affiliate metadata so the cache's projection carries proper affiliate labeling on subsequent warm reads.
   for(const [ callSign, network ] of affiliateMap) {
 
-    const entry = huluChannelCache.get(callSign);
+    const entry = huluCache.map.get(callSign);
 
     if(entry) {
 
@@ -2233,31 +2221,19 @@ async function discoverHuluChannels(page: Page): Promise<DiscoveredChannel[]> {
   if(discovered.length > 0) {
 
     discovered.sort((a, b) => a.name.localeCompare(b.name));
-    huluFullyDiscovered = true;
+
+    // A full walk with affiliate position inference is what makes the cache comprehensive enough to serve warm reads. Anything short of it leaves the cache
+    // unmarked, so a later discovery call runs the walk again rather than reporting a lineup missing its affiliate labeling.
+    huluCache.markComplete();
   }
 
   return discovered;
 }
 
-/**
- * Returns cached discovered channels from the unified channel cache, or null if a full discovery walk (with affiliate position inference) has not yet completed.
- * Derives the result on the fly from unified cache entries, deduplicating aliases via Set reference equality.
- * @returns Sorted array of discovered channels or null.
- */
-function getHuluCachedChannels(): Nullable<DiscoveredChannel[]> {
-
-  if(!huluFullyDiscovered || (huluChannelCache.size === 0)) {
-
-    return null;
-  }
-
-  return buildHuluDiscoveredChannels();
-}
-
 export const huluProvider: ProviderModule = {
 
   discoverChannels: discoverHuluChannels,
-  getCachedChannels: getHuluCachedChannels,
+  getCachedChannels: huluCache.cached,
   guideUrl: "https://www.hulu.com/live",
   handlesOwnNavigation: true,
   label: "Hulu",

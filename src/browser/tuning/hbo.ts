@@ -6,7 +6,7 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { buildDiscoveredChannelsFromCache } from "./cache.ts";
+import { createProviderChannelCache } from "./cache.ts";
 import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for HBO Max watch page navigation. Used to build full watch URLs by concatenating with the relative /channel/watch/<uuid>/<uuid> path read from the
@@ -29,7 +29,7 @@ interface HboChannelEntry {
 // Unified channel cache for HBO Max. Maps lowercased channel names (e.g., "hbo", "hbo hits") to their combined discovery and tuning data. Populated during the
 // first tune (when the strategy reads all channels from the channel rail) or the first discovery call. Both tuning (via resolveHboDirectUrl) and discovery (via
 // getCachedChannels / discoverHboChannels) read from this single cache. Cleared on browser disconnect via clearHboCache().
-const hboChannelCache = new Map<string, HboChannelEntry>();
+const hboCache = createProviderChannelCache<HboChannelEntry>((entry) => entry.discovered);
 
 /**
  * Returns a cached HBO Max watch URL for the given channel selector, or null if no cached URL exists.
@@ -38,7 +38,7 @@ const hboChannelCache = new Map<string, HboChannelEntry>();
  */
 function resolveHboDirectUrl(channelSelector: string): Nullable<string> {
 
-  const entry = hboChannelCache.get(channelSelector.toLowerCase());
+  const entry = hboCache.map.get(channelSelector.toLowerCase());
 
   if(entry) {
 
@@ -51,32 +51,12 @@ function resolveHboDirectUrl(channelSelector: string): Nullable<string> {
 }
 
 /**
- * Invalidates the cached HBO Max entry for the given channel selector. Called when a cached URL fails to produce a working stream.
- * @param channelSelector - The channel selector string to invalidate.
- */
-function invalidateHboDirectUrl(channelSelector: string): void {
-
-  hboChannelCache.delete(channelSelector.toLowerCase());
-}
-
-/**
  * Clears the unified HBO channel cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts, since cached watch URLs may be
  * stale in a new browser session.
  */
 function clearHboCache(): void {
 
-  hboChannelCache.clear();
-}
-
-/**
- * Derives a DiscoveredChannel array from the unified channel cache, deduplicated by entry reference and sorted by name. HBO holds exactly one key per channel -
- * resolveHboDirectUrl matches exactly, with no prefix or alternate fallback that would alias a second key onto an entry - so every cache value here is already
- * distinct and the deduplication pass has nothing to collapse.
- * @returns Sorted array of discovered channels.
- */
-function buildHboDiscoveredChannels(): DiscoveredChannel[] {
-
-  return buildDiscoveredChannelsFromCache(hboChannelCache.values(), (entry) => entry.discovered);
+  hboCache.clear();
 }
 
 /**
@@ -96,16 +76,20 @@ function populateHboChannelCache(rawChannels: { name: string; watchPath: string 
 
   // Replace rather than merge: the cache is a picture of the current rail, and carrying entries the rail no longer lists would keep serving dead watch URLs for
   // removed or renamed channels until the browser restarts.
-  hboChannelCache.clear();
+  hboCache.clear();
 
   for(const ch of rawChannels) {
 
     const watchUrl = HBO_MAX_BASE_URL + ch.watchPath;
 
-    hboChannelCache.set(ch.name.toLowerCase(), { discovered: { channelSelector: ch.name, name: ch.name }, watchUrl });
+    hboCache.map.set(ch.name.toLowerCase(), { discovered: { channelSelector: ch.name, name: ch.name }, watchUrl });
 
     LOG.debug("tuning:hbo", "Cached HBO Max watch URL for %s: %s.", ch.name, watchUrl);
   }
+
+  // The rail read this pass was built from lists every live linear channel, so what sits in the cache at this point is the complete lineup and warm reads can
+  // be served from it.
+  hboCache.markComplete();
 }
 
 // Result of reading the HBO channel rail. Distinguishes between the rail not being found (page structure changed, navigation went sideways) and the rail being
@@ -248,8 +232,8 @@ async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
     return { reason: "HBO channel rail not found on /channels. HBO Max may have restructured the page, or the subscription may not be active.", success: false };
   }
 
-  // Populate the unified channel cache with all discovered channels. Always repopulate rather than skipping when the cache has entries, because invalidated
-  // entries (deleted by invalidateHboDirectUrl) need to be restored with fresh watch URLs from the rail.
+  // Populate the unified channel cache with all discovered channels. Always repopulate rather than skipping when the cache has entries, because an entry the
+  // invalidate hook dropped needs restoring with a fresh watch URL from the rail.
   populateHboChannelCache(railResult.channels);
 
   // Look up the target channel from the populated cache.
@@ -303,10 +287,12 @@ async function resolveHboDirectUrlAsync(channelSelector: string, _page: Page): P
  */
 async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
 
-  // Return from the unified cache if already populated.
-  if(hboChannelCache.size > 0) {
+  // Return from the unified cache if a prior tune or discovery call already read the rail.
+  const cached = hboCache.cached();
 
-    return buildHboDiscoveredChannels();
+  if(cached) {
+
+    return cached;
   }
 
   // Read the channel rail directly. The discovery route handler has already landed the page on /channels.
@@ -319,27 +305,13 @@ async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
 
   populateHboChannelCache(railResult.channels);
 
-  return buildHboDiscoveredChannels();
-}
-
-/**
- * Returns cached discovered channels from the unified channel cache, or null if the cache is empty (no prior tune or discovery call has read the channel rail).
- * @returns Sorted array of discovered channels or null.
- */
-function getHboCachedChannels(): Nullable<DiscoveredChannel[]> {
-
-  if(hboChannelCache.size === 0) {
-
-    return null;
-  }
-
-  return buildHboDiscoveredChannels();
+  return hboCache.discovered();
 }
 
 export const hboProvider: ProviderModule = {
 
   discoverChannels: discoverHboChannels,
-  getCachedChannels: getHboCachedChannels,
+  getCachedChannels: hboCache.cached,
   guideUrl: HBO_CHANNELS_URL,
   label: "HBO Max",
 
@@ -360,7 +332,7 @@ export const hboProvider: ProviderModule = {
 
     clearCache: clearHboCache,
     execute: hboGridStrategy,
-    invalidateDirectUrl: invalidateHboDirectUrl,
+    invalidateDirectUrl: hboCache.invalidate,
     resolveDirectUrl: resolveHboDirectUrlAsync
   },
   strategyName: "hboGrid"

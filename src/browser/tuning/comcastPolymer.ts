@@ -7,7 +7,7 @@ import { LOG, delay, formatError } from "../../utils/index.ts";
 import { installOncePerPage, logAvailableChannels } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { buildDiscoveredChannelsFromCache } from "./cache.ts";
+import { createProviderChannelCache } from "./cache.ts";
 import { logAutoDismiss } from "../consent.ts";
 
 /* Comcast's Polymer SPA (`TV-APP`) manages channel playback via an internal `channelMap` object. The `channelMap.channels` property is populated from the channelmap
@@ -221,8 +221,8 @@ function isPacificCallSign(callSign: string): boolean {
 }
 
 /**
- * Creates a complete ProviderModule for a Comcast Polymer SPA provider. Each invocation creates isolated per-provider state (channel cache, channelmap response
- * cache, enumeration flag) so multiple providers sharing the same platform do not interfere with each other.
+ * Creates a complete ProviderModule for a Comcast Polymer SPA provider. Each invocation creates isolated per-provider state (channel cache with its own
+ * completeness mark, channelmap response cache) so multiple providers sharing the same platform do not interfere with each other.
  * @param config - Provider-specific configuration values.
  * @returns A fully configured ProviderModule ready for registration in the coordinator.
  */
@@ -231,11 +231,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   // Per-provider mutable state. Each provider instance gets its own channel cache and channelmap response cache, isolated via closure scope.
 
   // Unified channel cache. Maps lowercased lookup keys to combined discovery and tuning data. Multiple keys may reference the same entry (callSign, stripped
-  // callSign, branchOf name). Populated during channelmap API interception or discovery. Cleared on browser disconnect via clearCache().
-  const channelCache = new Map<string, ChannelEntry>();
-
-  // Tracks whether the channel cache has been fully enumerated from a complete channelmap API response. Guards getCachedChannels to avoid returning partial data.
-  let fullyEnumerated = false;
+  // callSign, branchOf name). Populated during channelmap API interception or discovery. Cleared on browser disconnect via clearCache(). Only a complete
+  // channelmap API response marks the lineup complete, so a partially-populated cache is never served as the whole lineup.
+  const channelCache = createProviderChannelCache<ChannelEntry>((entry) => entry.discovered);
 
   // Cached channelmap API response for CDP request interception on warm tunes. Stored on the first successful API response. The exact URL and headers are replayed
   // so that only the correct request is intercepted (the SPA makes multiple requests to URLs matching the channelmap pattern, but only one is the actual channel
@@ -284,18 +282,18 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     let keysWritten = 0;
 
     // Primary key: lowercased callSign (e.g., "cnnhd"). Always first-write-wins since each callSign is unique.
-    if(!channelCache.has(callSignLower)) {
+    if(!channelCache.map.has(callSignLower)) {
 
-      channelCache.set(callSignLower, entry);
+      channelCache.map.set(callSignLower, entry);
       keysWritten++;
     }
 
     // Secondary key: stripped callSign with common suffixes removed (e.g., "cnn" from "cnnhd" or "cnnhdp"). Non-Pacific overrides Pacific.
     const strippedKey = stripCallSignSuffix(callSign);
 
-    if((strippedKey !== callSignLower) && shouldClaimSharedKey(channelCache.get(strippedKey), entry)) {
+    if((strippedKey !== callSignLower) && shouldClaimSharedKey(channelCache.map.get(strippedKey), entry)) {
 
-      channelCache.set(strippedKey, entry);
+      channelCache.map.set(strippedKey, entry);
       keysWritten++;
     }
 
@@ -304,9 +302,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       const branchKey = branchOf.toLowerCase();
 
-      if((branchKey !== callSignLower) && (branchKey !== strippedKey) && shouldClaimSharedKey(channelCache.get(branchKey), entry)) {
+      if((branchKey !== callSignLower) && (branchKey !== strippedKey) && shouldClaimSharedKey(channelCache.map.get(branchKey), entry)) {
 
-        channelCache.set(branchKey, entry);
+        channelCache.map.set(branchKey, entry);
         keysWritten++;
       }
     }
@@ -314,7 +312,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     // Broadcast network key (e.g., "nbc", "abc"). Unconditional write ensures local affiliates override any previously-cached national entry for the same network.
     if(affiliate) {
 
-      channelCache.set(affiliate.toLowerCase(), entry);
+      channelCache.map.set(affiliate.toLowerCase(), entry);
       keysWritten++;
     }
 
@@ -427,7 +425,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
           // non-TVE entries, which are always local to the subscriber's market.
           const networkKey = broadcastNetwork.toLowerCase();
           const isLocal = localBroadcastCallSigns.has(callSignLower);
-          const existingEntry = channelCache.get(networkKey);
+          const existingEntry = channelCache.map.get(networkKey);
 
           if(existingEntry) {
 
@@ -444,13 +442,13 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
             // Better affiliate found: remove the old entry's cache keys so it doesn't appear as a duplicate in channel discovery.
             const oldCallSign = existingEntry.callSign.toLowerCase();
 
-            channelCache.delete(oldCallSign);
+            channelCache.map.delete(oldCallSign);
 
             const oldStripped = stripCallSignSuffix(existingEntry.callSign);
 
             if(oldStripped !== oldCallSign) {
 
-              channelCache.delete(oldStripped);
+              channelCache.map.delete(oldStripped);
             }
 
             count--;
@@ -493,9 +491,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
     if(count > 0) {
 
-      fullyEnumerated = true;
+      channelCache.markComplete();
 
-      LOG.debug(config.debugCategory, "Channelmap API: cached %s channels (%s cache keys).", count, channelCache.size);
+      LOG.debug(config.debugCategory, "Channelmap API: cached %s channels (%s cache keys).", count, channelCache.map.size);
     }
   }
 
@@ -564,7 +562,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     const lower = channelName.toLowerCase();
 
     // Tier 1: Exact match on any cache key (callSigns, stripped names, branchOf names).
-    const exact = channelCache.get(lower);
+    const exact = channelCache.map.get(lower);
 
     if(exact) {
 
@@ -572,20 +570,20 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     }
 
     // Tier 2: Suffix-tolerant. Try appending common technology suffixes.
-    const hdMatch = channelCache.get(lower + "hd");
+    const hdMatch = channelCache.map.get(lower + "hd");
 
     if(hdMatch) {
 
-      channelCache.set(lower, hdMatch);
+      channelCache.map.set(lower, hdMatch);
 
       return hdMatch;
     }
 
-    const dMatch = channelCache.get(lower + "d");
+    const dMatch = channelCache.map.get(lower + "d");
 
     if(dMatch) {
 
-      channelCache.set(lower, dMatch);
+      channelCache.map.set(lower, dMatch);
 
       return dMatch;
     }
@@ -594,7 +592,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     // may not have a matching cache key.
     const seen = new Set<ChannelEntry>();
 
-    for(const entry of channelCache.values()) {
+    for(const entry of channelCache.map.values()) {
 
       if(seen.has(entry)) {
 
@@ -605,7 +603,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       if(entry.discovered.name.toLowerCase() === lower) {
 
-        channelCache.set(lower, entry);
+        channelCache.map.set(lower, entry);
 
         return entry;
       }
@@ -733,16 +731,6 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   }
 
   /**
-   * Derives a deduplicated DiscoveredChannel array from the unified channel cache. Multiple cache keys may point to the same ChannelEntry, so we deduplicate
-   * via Set reference equality. Sorts by name before returning.
-   * @returns Sorted, deduplicated array of discovered channels.
-   */
-  function buildDiscoveredChannels(): DiscoveredChannel[] {
-
-    return buildDiscoveredChannelsFromCache(channelCache.values(), (entry) => entry.discovered);
-  }
-
-  /**
    * In-page SPA tuning strategy. Waits for the Polymer SPA's `TV-APP` element and its `channelMap.channels` to populate, then invokes
    * `_watchChannelEventHandler(null, { channel })` to switch channels in-page. This is the execute path for both warm and cold cache scenarios - the guide URL
    * navigation loads the SPA, and this strategy performs the channel switch within it.
@@ -794,13 +782,13 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     // deliver that interception, so polling out the remaining clock only delays the failure this tune is already headed for. The empty-cache path below reports it.
     const deadline = Date.now() + timeout;
 
-    while((channelCache.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
+    while((channelCache.map.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
 
       // eslint-disable-next-line no-await-in-loop
       await delay(CACHE_POLL_INTERVAL);
     }
 
-    if(channelCache.size === 0) {
+    if(channelCache.map.size === 0) {
 
       return { reason: config.label + " channel lineup API did not respond within timeout.", success: false };
     }
@@ -812,7 +800,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       logAvailableChannels({
 
-        availableChannels: buildDiscoveredChannels().map((ch) => ch.name + " (" + ch.channelSelector + ")").sort(),
+        availableChannels: channelCache.discovered().map((ch) => ch.name + " (" + ch.channelSelector + ")").sort(),
         channelName,
         guideUrl: config.guideUrl,
         presetSuffix: config.presetSuffix,
@@ -886,10 +874,12 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
    */
   async function discoverChannels(page: Page): Promise<DiscoveredChannel[]> {
 
-    // Return from cache if already fully enumerated.
-    if(fullyEnumerated && (channelCache.size > 0)) {
+    // Return from cache if a complete channelmap response has already been captured.
+    const cached = channelCache.cached();
 
-      return buildDiscoveredChannels();
+    if(cached) {
+
+      return cached;
     }
 
     // Set up response interception before navigation so we capture the channelmap API response during page load.
@@ -910,34 +900,20 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     // before it clears the caches. The empty-cache path below handles the early exit.
     const deadline = Date.now() + CONFIG.streaming.videoTimeout;
 
-    while((channelCache.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
+    while((channelCache.map.size === 0) && !page.isClosed() && (Date.now() < deadline)) {
 
       // eslint-disable-next-line no-await-in-loop
       await delay(CACHE_POLL_INTERVAL);
     }
 
-    if(channelCache.size === 0) {
+    if(channelCache.map.size === 0) {
 
       LOG.warn("%s channel lineup did not return any channels.", config.label);
 
       return [];
     }
 
-    return buildDiscoveredChannels();
-  }
-
-  /**
-   * Returns cached discovered channels from the unified channel cache, or null if the cache is empty or has not been fully enumerated.
-   * @returns Sorted array of discovered channels or null.
-   */
-  function getCachedChannels(): Nullable<DiscoveredChannel[]> {
-
-    if(!fullyEnumerated || (channelCache.size === 0)) {
-
-      return null;
-    }
-
-    return buildDiscoveredChannels();
+    return channelCache.discovered();
   }
 
   /**
@@ -969,23 +945,12 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
     cachedHeaders = {};
     cachedUrl = null;
     channelCache.clear();
-    fullyEnumerated = false;
-  }
-
-  /**
-   * Invalidates the cached channel entry for the given channel selector. Called when a stream fails to start after tuning, allowing the next tune attempt to
-   * re-resolve via fresh channelmap data.
-   * @param channelSelector - The channel selector string to invalidate.
-   */
-  function invalidateDirectUrl(channelSelector: string): void {
-
-    channelCache.delete(channelSelector.toLowerCase());
   }
 
   return {
 
     discoverChannels,
-    getCachedChannels,
+    getCachedChannels: channelCache.cached,
     guideUrl: config.guideUrl,
     handlesOwnNavigation: true,
     label: config.label,
@@ -1010,7 +975,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       clearCache,
       execute: directStrategy,
-      invalidateDirectUrl,
+
+      // Only the failing selector's own key is dropped, so the next tune re-resolves it from fresh channelmap data while every other key stays warm.
+      invalidateDirectUrl: channelCache.invalidate,
       resolveDirectUrl
     },
     strategyName: config.strategyName,
