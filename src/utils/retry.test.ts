@@ -241,7 +241,7 @@ describe("retryOperation", () => {
   test("returns undefined when earlySuccessCheck signals success after a timeout", async () => {
 
     // The earlySuccessCheck path covers cases where an operation legitimately finished but its caller timed out waiting for some signal (e.g., page loaded but
-    // networkidle2 never resolved). Here the operation throws a timeout-shaped error directly (the fake clock's raceWithTimeout forwards unchanged, so the
+    // networkidle2 never resolved). Here the operation throws a timeout-shaped error directly (the fake clock's waitWithTimeout forwards unchanged, so the
     // error must come from the operation itself for the formatError check to see "timed out"). The operation is typed Promise<string> so the inferred return is
     // string | undefined rather than the void-expression-flagged never | undefined.
     const { clock } = makeFakeClock();
@@ -295,14 +295,14 @@ describe("retryOperation", () => {
     assert.equal(sleeps.length, 1, "one backoff between the two attempts");
   });
 
-  test("propagates a timeout error from the clock's raceWithTimeout when the operation hangs", async () => {
+  test("propagates a timeout error from the clock's waitWithTimeout when the operation hangs", async () => {
 
     // Locks the timeout-race contract: when the per-attempt race fires before the operation resolves, the function treats it as a normal failure and proceeds to
-    // the next attempt. The fake clock's raceWithTimeout throws synchronously (without awaiting the inner promise) so we can deterministically simulate the
+    // the next attempt. The fake clock's waitWithTimeout throws synchronously (without awaiting the inner promise) so we can deterministically simulate the
     // timer winning the race. With maxAttempts=2 and no earlySuccessCheck, both attempts time out and the loop throws the last error.
     const handle = makeFakeClock({
 
-      raceWithTimeout: async (_promise, timeoutMs, timeoutError) => {
+      waitWithTimeout: async (_promise, timeoutMs, timeoutError) => {
 
         throw timeoutError ?? new Error("Operation timed out after " + String(timeoutMs) + "ms.");
       }
@@ -327,7 +327,7 @@ describe("retryOperation", () => {
         timeoutMs: 1_000
       }),
       /timed out after 1000ms/,
-      "the timeout error from raceWithTimeout is the error the loop ultimately throws"
+      "the timeout error from waitWithTimeout is the error the loop ultimately throws"
     );
 
     assert.equal(attempts, 2, "both attempts started even though both timed out");

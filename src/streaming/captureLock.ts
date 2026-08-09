@@ -143,7 +143,7 @@ export function createCaptureLock(options: CaptureLockOptions): CaptureLock {
     // is what keeps a give-up from advancing the chain past an unsettled predecessor.
     try {
 
-      await clock.raceWithTimeout(predecessor, runOptions.turnWaitMs, new CaptureTurnTimeoutError());
+      await clock.waitWithTimeout(predecessor, runOptions.turnWaitMs, new CaptureTurnTimeoutError());
     } catch(error) {
 
       void predecessor.then(signalSettled, signalSettled);
@@ -155,9 +155,9 @@ export function createCaptureLock(options: CaptureLockOptions): CaptureLock {
     const controller = new AbortController();
     const work = task(controller.signal);
 
-    // Track settlement independently of the caller-facing deadline race below. This single subscription both releases the turn when the task truly settles and
+    // Track settlement independently of the caller-facing deadline wait below. This single subscription both releases the turn when the task truly settles and
     // deliberately consumes a late rejection, so an abandoned task (whose caller already moved on) never surfaces an unhandled rejection. Attaching both callbacks is
-    // required: Promise.race in the deadline path already consumes the loser's rejection, and a fulfillment-only handler here would create unhandled-rejection noise.
+    // required: the bounded wait in the deadline path already observes the work's rejection, and a fulfillment-only handler here would create unhandled-rejection noise.
     let workSettled = false;
 
     const markSettled = (): void => {
@@ -182,7 +182,7 @@ export function createCaptureLock(options: CaptureLockOptions): CaptureLock {
     // resource retire it - and reject the caller. The turn is NOT released here; the settlement subscription above keeps holding it until the work truly settles.
     try {
 
-      return await clock.raceWithTimeout(work, runOptions.deadlineMs, new CaptureDeadlineError(runOptions.deadlineMessage));
+      return await clock.waitWithTimeout(work, runOptions.deadlineMs, new CaptureDeadlineError(runOptions.deadlineMessage));
     } catch(error) {
 
       if(error instanceof CaptureDeadlineError) {

@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * clock.test.ts: Unit tests for the realClock default. The Clock interface itself is a structural type so it has no runtime behavior to test; what we test is
- * realClock - that it exposes the documented Clock methods at the right shapes and delegates to the underlying delay()/raceWithTimeout()/performance.now()
+ * realClock - that it exposes the documented Clock methods at the right shapes and delegates to the underlying delay()/waitWithTimeout()/performance.now()
  * in ways the Clock consumers across the codebase can rely on.
  */
-import { delay, raceWithTimeout } from "./delay.ts";
+import { delay, waitWithTimeout } from "./delay.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { realClock } from "./clock.ts";
@@ -20,8 +20,8 @@ describe("realClock", () => {
 
     // Locks the structural contract: a future change that drops a method or renames one fails this test before any consumer breaks.
     assert.equal(typeof realClock.now, "function", "realClock.now is a function");
-    assert.equal(typeof realClock.raceWithTimeout, "function", "realClock.raceWithTimeout is a function");
     assert.equal(typeof realClock.sleep, "function", "realClock.sleep is a function");
+    assert.equal(typeof realClock.waitWithTimeout, "function", "realClock.waitWithTimeout is a function");
   });
 
   test("now() returns a finite non-negative number", () => {
@@ -58,37 +58,37 @@ describe("realClock", () => {
     await assert.doesNotReject(() => realClock.sleep(1), "sleep returns a promise that settles per the Clock contract");
   });
 
-  test("raceWithTimeout() returns the inner promise's value when it resolves before the timeout", async () => {
+  test("waitWithTimeout() returns the inner promise's value when it resolves before the timeout", async () => {
 
-    const value = await realClock.raceWithTimeout(Promise.resolve("won"), 1000);
+    const value = await realClock.waitWithTimeout(Promise.resolve("won"), 1000);
 
     assert.equal(value, "won", "the winning promise's value should come back unchanged");
   });
 
-  test("raceWithTimeout() throws when the timeout fires before the inner promise resolves", async () => {
+  test("waitWithTimeout() throws when the timeout fires before the inner promise resolves", async () => {
 
     // The inner promise is structured never to settle, so the 1ms timer is the only branch that can win. The thrown error matches the documented default
     // message format.
     const { promise: never } = Promise.withResolvers<string>();
 
-    await assert.rejects(() => realClock.raceWithTimeout(never, 1), /timed out after 1ms/);
+    await assert.rejects(() => realClock.waitWithTimeout(never, 1), /timed out after 1ms/);
   });
 
-  test("realClock.raceWithTimeout is the same reference as raceWithTimeout from delay.ts (SSOT delegation)", () => {
+  test("realClock.waitWithTimeout is the same reference as waitWithTimeout from delay.ts (SSOT delegation)", () => {
 
-    // The realClock literal pulls raceWithTimeout from delay.ts as a reference, not a wrapper. Locking reference identity protects against a future refactor
+    // The realClock literal pulls waitWithTimeout from delay.ts as a reference, not a wrapper. Locking reference identity protects against a future refactor
     // that inlines the implementation here and silently shadows the delay.ts SSOT - that would survive existing behavior tests but introduce a divergence
     // between the two paths (direct delay.ts users vs. clock injection users).
-    assert.equal(realClock.raceWithTimeout, raceWithTimeout, "delegation by reference, not by wrapper");
+    assert.equal(realClock.waitWithTimeout, waitWithTimeout, "delegation by reference, not by wrapper");
   });
 
   test("realClock.sleep is the same reference as delay from delay.ts (SSOT delegation)", () => {
 
-    // Symmetric with the raceWithTimeout case. realClock.sleep must be the delay function itself, not a re-implementation that could drift.
+    // Symmetric with the waitWithTimeout case. realClock.sleep must be the delay function itself, not a re-implementation that could drift.
     assert.equal(realClock.sleep, delay, "delegation by reference, not by wrapper");
   });
 
-  test("raceWithTimeout() throws the supplied custom error when one is provided", async () => {
+  test("waitWithTimeout() throws the supplied custom error when one is provided", async () => {
 
     class CustomTimeoutError extends Error {
 
@@ -101,6 +101,6 @@ describe("realClock", () => {
     // The inner promise is structured never to settle, so the supplied error must be the one the timeout race surfaces.
     const { promise: never } = Promise.withResolvers<string>();
 
-    await assert.rejects(() => realClock.raceWithTimeout(never, 1, new CustomTimeoutError()), (err: unknown) => err instanceof CustomTimeoutError);
+    await assert.rejects(() => realClock.waitWithTimeout(never, 1, new CustomTimeoutError()), (err: unknown) => err instanceof CustomTimeoutError);
   });
 });

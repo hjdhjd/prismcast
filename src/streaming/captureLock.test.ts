@@ -39,7 +39,7 @@ async function flushMacro(): Promise<void> {
   });
 }
 
-// A fake clock whose raceWithTimeout forwards every promise unchanged and whose sleep is driven manually: each sleep records its requested duration and a resolver, so
+// A fake clock whose waitWithTimeout forwards every promise unchanged and whose sleep is driven manually: each sleep records its requested duration and a resolver, so
 // a test controls exactly when (and whether) the wedge fires. This is the shape the wedge tests need - the wedge sleep stays pending until the test releases it.
 function makeManualClock(): { clock: Clock; sleeps: { ms: number; resolve: () => void }[] } {
 
@@ -48,7 +48,6 @@ function makeManualClock(): { clock: Clock; sleeps: { ms: number; resolve: () =>
   const clock: Clock = {
 
     now: (): number => 0,
-    raceWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise,
     sleep: (ms: number): Promise<void> => {
 
       // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
@@ -57,13 +56,14 @@ function makeManualClock(): { clock: Clock; sleeps: { ms: number; resolve: () =>
       sleeps.push({ ms, resolve });
 
       return promise;
-    }
+    },
+    waitWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise
   };
 
   return { clock, sleeps };
 }
 
-// A fake clock whose raceWithTimeout forwards the turn-wait but fires the deadline once - for the first task only, the one the test abandons - so its successor still
+// A fake clock whose waitWithTimeout forwards the turn-wait but fires the deadline once - for the first task only, the one the test abandons - so its successor still
 // gets its turn and completes normally. Sleep keeps the makeFakeClock default (resolves immediately, recording durations), which the retire-ordering test asserts on.
 function makeDeadlineFiringClock(): ReturnType<typeof makeFakeClock> {
 
@@ -71,7 +71,7 @@ function makeDeadlineFiringClock(): ReturnType<typeof makeFakeClock> {
 
   return makeFakeClock({
 
-    raceWithTimeout: async <T>(promise: Promise<T>, _timeoutMs: number, timeoutError?: Error): Promise<T> => {
+    waitWithTimeout: async <T>(promise: Promise<T>, _timeoutMs: number, timeoutError?: Error): Promise<T> => {
 
       if((timeoutError instanceof CaptureDeadlineError) && !deadlineFired) {
 
@@ -124,11 +124,11 @@ describe("createCaptureLock", () => {
     const restore = assertNoUnhandledRejections();
 
     // The turn-wait times out only while this flag is set, which the test flips synchronously between run() calls: run() reads the flag when it invokes
-    // raceWithTimeout, before its first await, so the reads are deterministic.
+    // waitWithTimeout, before its first await, so the reads are deterministic.
     let turnWaitTimesOut = false;
     const { clock } = makeFakeClock({
 
-      raceWithTimeout: async <T>(promise: Promise<T>, _timeoutMs: number, timeoutError?: Error): Promise<T> => {
+      waitWithTimeout: async <T>(promise: Promise<T>, _timeoutMs: number, timeoutError?: Error): Promise<T> => {
 
         if((timeoutError instanceof CaptureTurnTimeoutError) && turnWaitTimesOut) {
 

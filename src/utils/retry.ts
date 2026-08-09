@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * retry.ts: Retry logic with exponential backoff for PrismCast. Time-dependent operations route through a Clock (see clock.ts) so tests can deterministically
- * control sleeps and timeout races without depending on real-time delays - the function's nested raceWithTimeout/Promise.race/finally/await delay chain is
- * exactly the shape Node's synchronous mock.timers.tick cannot drain.
+ * control sleeps and per-attempt bounds without depending on real-time delays - the function's nested waitWithTimeout/finally/await delay chain is exactly the
+ * shape Node's synchronous mock.timers.tick cannot drain.
  */
 import { formatError, isSessionClosedError } from "./errors.ts";
 import type { Clock } from "./clock.ts";
@@ -25,8 +25,8 @@ export interface RetryOptions<T> {
   // Maximum jitter added to the backoff delay in milliseconds. Prevents synchronized retries across concurrent operations. Default: 1000ms.
   backoffJitter?: number;
 
-  // The clock used for sleeps between attempts and for the per-attempt timeout race. Defaults to realClock which delegates to delay()/raceWithTimeout() from
-  // delay.ts. Tests inject a fake clock so backoff sleeps resolve instantly and timeout races have deterministic outcomes - the production code path is
+  // The clock used for sleeps between attempts and for the per-attempt timeout bound. Defaults to realClock which delegates to delay()/waitWithTimeout() from
+  // delay.ts. Tests inject a fake clock so backoff sleeps resolve instantly and bounded waits have deterministic outcomes - the production code path is
   // unchanged.
   clock?: Clock;
 
@@ -84,7 +84,7 @@ export async function retryOperation<T>(options: RetryOptions<T>): Promise<T | u
     try {
 
       // eslint-disable-next-line no-await-in-loop
-      return await clock.raceWithTimeout(operation(), timeoutMs);
+      return await clock.waitWithTimeout(operation(), timeoutMs);
     } catch(error) {
 
       lastError = error;

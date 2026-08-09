@@ -37,7 +37,7 @@ describe("waitForPlaylist", () => {
 
   test("returns true when the playlist becomes ready before the timeout", async () => {
 
-    // Resolve the playlist before the wait so the inner promise wins the race. With the fake clock's pass-through raceWithTimeout, the result is driven by the
+    // Resolve the playlist before the wait so the inner promise wins the race. With the fake clock's pass-through waitWithTimeout, the result is driven by the
     // inner promise's resolution; no real timer is involved and no scheduling order matters.
     updatePlaylist(streamId, "#EXTM3U");
 
@@ -49,11 +49,11 @@ describe("waitForPlaylist", () => {
 
   test("returns false when the timeout fires before any playlist arrives", async () => {
 
-    // The fake clock's raceWithTimeout rejects immediately to simulate the timer winning. waitForReady's .catch maps the rejection to false. Locks the contract
+    // The fake clock's waitWithTimeout rejects immediately to simulate the timer winning. waitForReady's .catch maps the rejection to false. Locks the contract
     // without depending on real-time delay budgets.
     const { clock } = makeFakeClock({
 
-      raceWithTimeout: async (_promise, timeoutMs) => {
+      waitWithTimeout: async (_promise, timeoutMs) => {
 
         throw new Error("timed out after " + String(timeoutMs) + "ms.");
       }
@@ -87,7 +87,7 @@ describe("waitForInitSegment", () => {
 
   test("returns true when the init segment becomes ready before the timeout", async () => {
 
-    // Resolve the init segment before the wait so the inner promise wins the race; the fake clock's pass-through raceWithTimeout forwards the resolved value.
+    // Resolve the init segment before the wait so the inner promise wins the race; the fake clock's pass-through waitWithTimeout forwards the resolved value.
     storeInitSegment(streamId, Buffer.from("init"));
 
     const { clock } = makeFakeClock();
@@ -100,7 +100,7 @@ describe("waitForInitSegment", () => {
 
     const { clock } = makeFakeClock({
 
-      raceWithTimeout: async (_promise, timeoutMs) => {
+      waitWithTimeout: async (_promise, timeoutMs) => {
 
         throw new Error("timed out after " + String(timeoutMs) + "ms.");
       }

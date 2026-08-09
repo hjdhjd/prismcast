@@ -3,11 +3,11 @@
  * evaluate.ts: Puppeteer evaluate wrapper with abort and timeout support.
  */
 import type { Frame, Page } from "puppeteer-core";
-import { addAbortListener } from "node:events";
+import { composeSignals, waitWithSignal } from "homebridge-plugin-utils";
 import { getStreamId } from "./streamContext.ts";
-import { raceWithTimeout } from "./delay.ts";
+import { timeoutSignal } from "./delay.ts";
 
-/* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds critical safety mechanisms:
+/* This module provides a wrapper around Puppeteer's page.evaluate() and frame.evaluate() that adds two safety mechanisms:
  *
  * 1. Abort signal: When a stream is terminated, its AbortController is triggered, immediately rejecting all pending evaluate calls for that stream. This prevents zombie
  *    CDP calls from hanging for 180 seconds (Puppeteer's default protocolTimeout) when the browser becomes unresponsive.
@@ -18,8 +18,12 @@ import { raceWithTimeout } from "./delay.ts";
  * The wrapper automatically retrieves the abort signal from this module's local AbortController map using the stream context from AsyncLocalStorage. If no
  * stream context is available (e.g., during browser initialization), it falls back to timeout-only behavior.
  *
- * When aborting or timing out, the underlying CDP call is still pending in Puppeteer - we just stop waiting for it locally. We attach a no-op .catch() to the
- * evaluate promise to suppress unhandled rejection warnings when the CDP call eventually completes or times out.
+ * Both interrupts are one kind of thing - an abort signal - so they compose into a single signal and the wait is one race rather than a race of races. That
+ * composition is also what keeps the long-lived per-stream signal clean: the composed signal is built per call and registers its dependency internally, so no
+ * user-visible listener ever accumulates on the stream's own signal no matter how many evaluate calls a stream makes.
+ *
+ * When aborting or timing out, the underlying CDP call is still pending in Puppeteer - we just stop waiting for it locally. Waiting through waitWithSignal
+ * observes the evaluate promise on every path, which marks it handled so a CDP call that rejects after we have moved on raises no unhandled rejection.
  */
 
 // Default timeout for evaluate calls in milliseconds.
@@ -118,10 +122,10 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
 
   // Get stream context to find the abort signal.
   const streamIdStr = getStreamId();
-  const signal = streamIdStr !== undefined ? getAbortSignal(streamIdStr) : undefined;
+  const streamSignal = streamIdStr !== undefined ? getAbortSignal(streamIdStr) : undefined;
 
-  // Check if already aborted before starting.
-  if(signal?.aborted) {
+  // Check if already aborted before starting, so a stream that is already gone never issues a CDP call at all.
+  if(streamSignal?.aborted) {
 
     throw new EvaluateAbortError();
   }
@@ -132,36 +136,28 @@ export async function evaluateWithAbort<T, Args extends unknown[]>(
     context.evaluate(pageFunction as unknown as (...args: unknown[]) => T, ...args) :
     context.evaluate(pageFunction);
 
-  // Attach a no-op catch to suppress unhandled rejection warnings. When we abort or timeout, the underlying CDP call is still pending and will eventually resolve or
-  // reject. Without this, we'd get unhandled rejection warnings when the CDP call completes after we've moved on.
-  evaluatePromise.catch(() => { /* Suppress unhandled rejection from pending CDP calls after abort/timeout. */ });
-
-  // Race evaluate against timeout using the shared utility. Timer cleanup is handled by raceWithTimeout's .finally().
-  const timeoutRace = raceWithTimeout(evaluatePromise, timeout, new EvaluateTimeoutError(timeout));
-
-  // Without a stream abort signal, the timeout race is the whole story.
-  if(!signal) {
-
-    return timeoutRace;
-  }
-
-  const { promise: abortPromise, reject: rejectAbort } = Promise.withResolvers<never>();
-
-  // Subscribe to the abort via node:events addAbortListener, which returns a Disposable and fires the listener on a microtask even if the signal aborted in the
-  // narrow window between the pre-check above and this subscription. The finally disposes the subscription on EVERY exit path - normal completion, timeout, or
-  // abort - so the listener is removed symmetrically. Without that, each evaluate call would leak one listener and its closure on the long-lived per-stream
-  // AbortSignal for the stream's entire lifetime, eventually tripping MaxListenersExceededWarning. (An explicit finally rather than a "using" declaration because
-  // the binding is consumed only for its disposal, which the unused-vars lint cannot see on a bare "using".)
-  const abortSubscription = addAbortListener(signal, () => { rejectAbort(new EvaluateAbortError()); });
+  // Hold the timeout's reason in a local so the translation below can compare against it by reference. Composing the stream signal with the timeout signal
+  // yields one interrupt source whose reason names which side fired: our own timeoutReason, or - since lifecycle.ts aborts a stream with no argument - the
+  // platform's AbortError for a stream termination. Those two can never be confused, and an evaluate rejection is never the signal's reason at all, so it falls
+  // through verbatim. When there is no stream signal, composeSignals hands back the timeout signal unwrapped and the bound is the whole story.
+  const timeoutReason = new EvaluateTimeoutError(timeout);
+  const timeoutHandle = timeoutSignal(timeout, timeoutReason);
+  const signal = composeSignals(streamSignal, timeoutHandle.signal);
 
   try {
 
-    const result = await Promise.race([ timeoutRace, abortPromise ]);
+    return await waitWithSignal(evaluatePromise, signal);
+  } catch(error) {
 
-    return result;
+    if((error === signal.reason) && (error !== timeoutReason)) {
+
+      throw new EvaluateAbortError();
+    }
+
+    throw error;
   } finally {
 
-    abortSubscription[Symbol.dispose]();
+    timeoutHandle.cancel();
   }
 }
 

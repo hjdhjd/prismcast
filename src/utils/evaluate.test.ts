@@ -206,25 +206,28 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => new Promise(() => { /* hangs */ }));
 
-      // Trigger the abort on a microtask; the wrapper's signal listener should reject before the timeout fires.
-      queueMicrotask(() => { controller.abort(); });
+      // The wrapper builds its composed signal synchronously, so by the time the call returns its promise the wait is live and the stream signal has seen
+      // whatever registration it is ever going to see. Reading the count here is the during-the-wait half of the guarantee.
+      const pending = evaluateWithAbort(page, () => "v", undefined, 5_000);
 
-      await assert.rejects(
-        () => evaluateWithAbort(page, () => "v", undefined, 5_000),
-        (err: Error) => err instanceof EvaluateAbortError
-      );
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener lands on the stream signal while a wait is live");
 
-      // Completes the listener-symmetry guarantee across every exit path of evaluateWithAbort (this is the abort path; normal completion and timeout are covered
-      // below): once the abort has fired and the call settled, no abort listener lingers on the signal.
-      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "the abort listener is removed after the abort fires and the call settles");
+      controller.abort();
+
+      await assert.rejects(() => pending, (err: Error) => err instanceof EvaluateAbortError);
+
+      // Completes the guarantee across every exit path of evaluateWithAbort (this is the abort path; normal completion and timeout are covered below): the
+      // stream signal carries no user-visible abort listener after the call settles either. Composing signals registers the dependency inside the platform,
+      // where getEventListeners cannot see it, so this reads zero for the right reason - nothing to accumulate rather than something cleaned up in time.
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener lingers on the stream signal after the abort fires");
     });
   });
 
   test("rejects with EvaluateAbortError when abort fires synchronously during the inner evaluate (race-window guard)", async () => {
 
-    // The wrapper pre-checks signal.aborted before starting the evaluate, then subscribes to the abort via node:events addAbortListener. If the signal aborts in
-    // the narrow window between that pre-check and the subscription, addAbortListener still honors the already-aborted signal by firing the listener on the next
-    // microtask, so the abort racer wins. We exercise that window by having the fake's evaluate abort synchronously during the evaluate call.
+    // The wrapper pre-checks signal.aborted before starting the evaluate, then composes that signal with its timeout and waits on the result. If the stream
+    // aborts in the narrow window between the pre-check and the wait, the composed signal is already aborted when the wait begins, and waiting on an
+    // already-aborted signal rejects with its reason immediately. We exercise that window by having the fake's evaluate abort synchronously.
     const controller = new AbortController();
 
     registerAbortController("ctx-stream", controller);
@@ -233,8 +236,8 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => {
 
-        // Fire abort during the synchronous evaluate callback - this lands AFTER the wrapper's pre-check (which saw a non-aborted signal) but BEFORE the
-        // addAbortListener subscription. addAbortListener honors the already-aborted signal by invoking the listener on the next microtask, rejecting the abort racer.
+        // Fire abort during the synchronous evaluate callback - this lands AFTER the wrapper's pre-check, which saw a non-aborted signal, but BEFORE the signal
+        // composition. The composed signal is therefore born aborted, and the wait rejects with the stream's reason rather than waiting out the timeout.
         controller.abort();
 
         return new Promise(() => { /* hangs */ });
@@ -271,7 +274,7 @@ describe("evaluateWithAbort with stream context", () => {
     assert.equal(result, "fast");
   });
 
-  test("removes its abort listener after a normal completion (no listener leak across repeated calls)", async () => {
+  test("keeps the stream signal free of abort listeners across repeated normal completions", async () => {
 
     const controller = new AbortController();
 
@@ -281,15 +284,20 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => "ok");
 
-      // evaluateWithAbort must remove its abort listener on every completion path, not only when the abort fires; otherwise each normal completion would leak one
-      // listener on the long-lived per-stream signal. Ten concurrent runs add ten listeners at peak, all of which must be gone once they settle.
-      await Promise.all(Array.from({ length: 10 }, () => evaluateWithAbort(page, () => "ok")));
+      // The long-lived per-stream signal must never accumulate user-visible abort listeners, at any moment. Ten concurrent calls are the pressure test: were
+      // the wrapper to subscribe to the stream signal directly, this would read ten while they are in flight and would only return to zero if every path
+      // unsubscribed. Reading zero both during and after is the stronger statement, and it is a tripwire against reintroducing direct registration.
+      const pending = Array.from({ length: 10 }, () => evaluateWithAbort(page, () => "ok"));
 
-      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listeners linger after normal completions");
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listeners on the stream signal while ten calls are in flight");
+
+      await Promise.all(pending);
+
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listeners on the stream signal after they all complete");
     });
   });
 
-  test("removes its abort listener after a timeout (no listener leak on the timeout path)", async () => {
+  test("keeps the stream signal free of abort listeners across the timeout path", async () => {
 
     const controller = new AbortController();
 
@@ -299,9 +307,13 @@ describe("evaluateWithAbort with stream context", () => {
 
       const page = makeFakePage(() => new Promise(() => { /* hangs */ }));
 
-      await assert.rejects(() => evaluateWithAbort(page, () => "v", undefined, 5), (err: Error) => err instanceof EvaluateTimeoutError);
+      const pending = evaluateWithAbort(page, () => "v", undefined, 5);
 
-      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener lingers after a timeout");
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener on the stream signal while the bound is counting down");
+
+      await assert.rejects(() => pending, (err: Error) => err instanceof EvaluateTimeoutError);
+
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener on the stream signal after the bound lapses");
     });
   });
 });

@@ -8,8 +8,8 @@ import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, ge
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
-import { LOG, delay, extractDomain, formatError, getStreamContext, isStaleCaptureMutexError, maxRetryDuration, raceWithTimeout, realClock,
-  registerAbortController, resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer } from "../utils/index.ts";
+import { LOG, delay, extractDomain, formatError, getStreamContext, isStaleCaptureMutexError, maxRetryDuration, realClock, registerAbortController,
+  resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, waitWithTimeout } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, UrlValidationResult } from "../types/index.ts";
@@ -834,7 +834,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       // (the direct branch and the epoch-free timeout keep that true); static captures never reach this statement.
       manifestInterception?.markChannelSelectionStart();
 
-      const tuneResult = await raceWithTimeout(
+      const tuneResult = await waitWithTimeout(
         initializePlayback(page, profile, { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl }),
         PLAYBACK_INIT_TIMEOUT,
         new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms.")
@@ -1373,16 +1373,16 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
       // selection lands on.
       handle.markChannelSelectionStart();
 
-      /* Establish playback, with the re-mute riding the initialization's own settlement rather than a fixed step after the race. Playback establishment unmutes
+      /* Establish playback, with the re-mute riding the initialization's own settlement rather than a fixed step after the wait. Playback establishment unmutes
        * by direct property write, so success, failure, and a timed-out attempt that completes late all need the mute restored, and only the promise itself
-       * knows when each of those happened. The race carries the tune path's abandon-on-timeout semantics: a losing initialization is not cancelled, it winds
-       * down on its own bounded phases.
+       * knows when each of those happened. The bounded wait carries the tune path's abandon-on-timeout semantics: a lapsed initialization is not cancelled, it
+       * winds down on its own bounded phases.
        */
       const initPromise = initializePlayback(page, profile, { requestedUrl: url });
 
-      void initPromise.finally(() => void muteExistingVideos(page)).catch(() => { /* The race below owns the initialization's failure. */ });
+      void initPromise.finally(() => void muteExistingVideos(page)).catch(() => { /* The bounded wait below owns the initialization's failure. */ });
 
-      const tuneResult = await raceWithTimeout(initPromise, PLAYBACK_INIT_TIMEOUT,
+      const tuneResult = await waitWithTimeout(initPromise, PLAYBACK_INIT_TIMEOUT,
         new Error("Playback initialization timed out after " + String(PLAYBACK_INIT_TIMEOUT) + "ms."));
 
       // Finalize honestly: this is a direct tune only where the strategy itself resolved one or the profile has no DOM-based selection step at all. There is no
@@ -1549,9 +1549,9 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
       }
     } as unknown as Parameters<typeof getStream>[1];
 
-    // GATE mode: bound getStream with an internal race. On a timeout the getStream promise is still pending, so attach a both-callback handler that retires a
-    // late-arriving stream (best-effort; the page may already be closing) and consumes a late rejection. Promise.race already consumes the loser's rejection, so a
-    // fulfillment-only handler would create unhandled-rejection noise. This cleans up the orphan without serializing successive gate attempts against one another.
+    // GATE mode: bound getStream with an internal timeout. On a lapse the getStream promise is still pending, so attach a both-callback handler that retires a
+    // late-arriving stream (best-effort; the page may already be closing) and consumes a late rejection. The bounded wait already observes the promise's rejection,
+    // so a fulfillment-only handler would create unhandled-rejection noise. This cleans up the orphan without serializing successive gate attempts against one another.
     if(mode.kind === "gate") {
 
       const streamPromise = getStream(page, streamOptions) as unknown as Promise<Readable>;
@@ -1561,10 +1561,10 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
       try {
 
-        stream = await raceWithTimeout(streamPromise, mode.boundMs, timeoutError);
+        stream = await waitWithTimeout(streamPromise, mode.boundMs, timeoutError);
       } catch(error) {
 
-        // Only the internal timeout leaves getStream pending; an in-time rejection produced no stream to clean up and is already consumed by the race.
+        // Only the internal timeout leaves getStream pending; an in-time rejection produced no stream to clean up and is already observed by the bounded wait.
         if(error === timeoutError) {
 
           void streamPromise.then((late) => {

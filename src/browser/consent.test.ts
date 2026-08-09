@@ -71,7 +71,7 @@ function makePageStub(router: (arg: unknown) => unknown, options: PageStubOption
 }
 
 /* A deterministic fake Clock: now() advances only when sleep() is called, so the poll's schedule is a pure function of its tick count with no wall-clock dependency.
- * raceWithTimeout is unused by the consent module and simply forwards the promise.
+ * waitWithTimeout is unused by the consent module and simply forwards the promise.
  */
 function makeFakeClock(): Clock {
 
@@ -80,8 +80,8 @@ function makeFakeClock(): Clock {
   return {
 
     now: (): number => now,
-    raceWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise,
-    sleep: async (ms: number): Promise<void> => { now += ms; }
+    sleep: async (ms: number): Promise<void> => { now += ms; },
+    waitWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise
   };
 }
 

@@ -547,7 +547,7 @@ async function waitForReady(streamId: number, getPromise: (stream: StreamRegistr
 
   try {
 
-    return await clock.raceWithTimeout(Promise.race([ getPromise(stream).then(() => true), terminated ]), timeout).catch(() => false);
+    return await clock.waitWithTimeout(Promise.race([ getPromise(stream).then(() => true), terminated ]), timeout).catch(() => false);
   } finally {
 
     emitter.off("terminated", onTerminated);

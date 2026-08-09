@@ -5,7 +5,7 @@
 import type { AuthWallIndicators, Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { consentOverlayPresent } from "./consent.ts";
-import { raceWithTimeout } from "../utils/index.ts";
+import { waitWithTimeout } from "../utils/index.ts";
 
 /* When a channel discovery walk returns zero channels, the page it walked is still open - and what is on that page is evidence. This module classifies that
  * still-open page as a provider authentication wall, a consent overlay, or unknown, so the discovery-outcome policy in precaching.ts can persist the needs-sign-in
@@ -333,11 +333,11 @@ export async function classifyBlockedPage(page: Page, options: ClassifyBlockedPa
     }
   };
 
-  // Bound the gathering so a hung renderer cannot stall the caller: on timeout the raced rejection lands here and becomes unknown, the same outcome a slow-but-empty
+  // Bound the gathering so a hung renderer cannot stall the caller: on a lapse the rejection lands here and becomes unknown, the same outcome a slow-but-empty
   // page would produce.
   try {
 
-    return await raceWithTimeout(gather(), BLOCKED_PAGE_CLASSIFY_TIMEOUT);
+    return await waitWithTimeout(gather(), BLOCKED_PAGE_CLASSIFY_TIMEOUT);
   } catch {
 
     return { kind: "unknown" };

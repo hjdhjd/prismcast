@@ -161,8 +161,8 @@ function makeImmediateClock(): Clock {
   return {
 
     now: (): number => 0,
-    raceWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise,
-    sleep: async (): Promise<void> => { /* Resolve immediately so the cadence never waits on a real timer. */ }
+    sleep: async (): Promise<void> => { /* Resolve immediately so the cadence never waits on a real timer. */ },
+    waitWithTimeout: async <T>(promise: Promise<T>): Promise<T> => promise
   };
 }
 

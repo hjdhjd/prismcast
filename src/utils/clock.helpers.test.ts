@@ -16,8 +16,8 @@ describe("makeFakeClock", () => {
 
     assert.equal(typeof handle.clock, "object", "the handle should carry a clock object");
     assert.equal(typeof handle.clock.now, "function", "the clock should expose now()");
-    assert.equal(typeof handle.clock.raceWithTimeout, "function", "the clock should expose raceWithTimeout()");
     assert.equal(typeof handle.clock.sleep, "function", "the clock should expose sleep()");
+    assert.equal(typeof handle.clock.waitWithTimeout, "function", "the clock should expose waitWithTimeout()");
     assert.ok(Array.isArray(handle.sleeps), "the handle should carry a sleeps array");
     assert.equal(handle.sleeps.length, 0, "sleeps starts empty");
   });
@@ -67,24 +67,24 @@ describe("makeFakeClock", () => {
     assert.deepEqual(ordering, [ "microtask", "after-sleep" ], "the interleaved microtask should run before sleep's continuation");
   });
 
-  test("default raceWithTimeout forwards the inner promise's resolved value", async () => {
+  test("default waitWithTimeout forwards the inner promise's resolved value", async () => {
 
     const { clock } = makeFakeClock();
 
-    const value = await clock.raceWithTimeout(Promise.resolve("forwarded"), 1000);
+    const value = await clock.waitWithTimeout(Promise.resolve("forwarded"), 1000);
 
     assert.equal(value, "forwarded", "the default race should hand back the inner promise unchanged");
   });
 
-  test("default raceWithTimeout propagates the inner promise's rejection unchanged", async () => {
+  test("default waitWithTimeout propagates the inner promise's rejection unchanged", async () => {
 
     // The default behavior is pass-through, so a rejected inner promise rejects the race with the same reason. Tests that want to simulate the timer winning
-    // the race override raceWithTimeout explicitly; the default never invents a timeout.
+    // the race override waitWithTimeout explicitly; the default never invents a timeout.
     const { clock } = makeFakeClock();
 
     await assert.rejects(
 
-      () => clock.raceWithTimeout(Promise.reject(new Error("inner failure")), 1000),
+      () => clock.waitWithTimeout(Promise.reject(new Error("inner failure")), 1000),
       /inner failure/
     );
   });
@@ -114,13 +114,13 @@ describe("makeFakeClock", () => {
     assert.equal(sleeps.length, 0, "sleeps array is not populated when sleep() is overridden");
   });
 
-  test("raceWithTimeout override replaces the default - common case is throwing the timeout error", async () => {
+  test("waitWithTimeout override replaces the default - common case is throwing the timeout error", async () => {
 
     // The canonical use of the override is simulating the timer winning the race. retry.test.ts's "propagates a timeout error" test relies on this exact
     // pattern; locking it here means future changes to the override mechanism are caught at the helper boundary rather than at the consumer.
     const { clock } = makeFakeClock({
 
-      raceWithTimeout: async (_promise, timeoutMs, timeoutError) => {
+      waitWithTimeout: async (_promise, timeoutMs, timeoutError) => {
 
         throw timeoutError ?? new Error("timed out after " + String(timeoutMs) + "ms.");
       }
@@ -130,7 +130,7 @@ describe("makeFakeClock", () => {
 
     await assert.rejects(
 
-      () => clock.raceWithTimeout(never, 750),
+      () => clock.waitWithTimeout(never, 750),
       /timed out after 750ms/
     );
   });
@@ -154,9 +154,9 @@ describe("makeFakeClock", () => {
 
     assert.deepEqual(sleeps, [42], "sleep stayed at the default and recorded");
 
-    const value = await clock.raceWithTimeout(Promise.resolve("ok"), 1);
+    const value = await clock.waitWithTimeout(Promise.resolve("ok"), 1);
 
-    assert.equal(value, "ok", "raceWithTimeout stayed at the default and forwarded");
+    assert.equal(value, "ok", "waitWithTimeout stayed at the default and forwarded");
   });
 
   test("the sleeps array exposed on the handle is the same reference the inner sleep mutates", async () => {

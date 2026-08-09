@@ -2,7 +2,7 @@
  *
  * video.ts: Video context and playback handling for PrismCast.
  */
-import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, formatError, raceWithTimeout, startTimer } from "../utils/index.ts";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, formatError, startTimer, waitWithTimeout } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, TuneResult, VideoSelectorType } from "../types/index.ts";
 import { getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
@@ -1123,7 +1123,7 @@ export async function ensureFullscreen(
 
     try {
 
-      await raceWithTimeout(runFullscreenSequence(page, context, profile, selectorType, true), FULLSCREEN_QUEUE_TIMEOUT,
+      await waitWithTimeout(runFullscreenSequence(page, context, profile, selectorType, true), FULLSCREEN_QUEUE_TIMEOUT,
         new Error("Fullscreen queue entry timed out."));
     } catch(error) {
 

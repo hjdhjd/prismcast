@@ -426,7 +426,7 @@ describe("classifyBlockedPage - time budget", () => {
 
   test("resolves unknown when the signal gathering outruns the internal time budget", async () => {
 
-    /* Traced path: the raceWithTimeout the classifier wraps its own gathering in. A page whose evaluate never settles makes the gathering hang; the classifier must
+    /* Traced path: the waitWithTimeout the classifier wraps its own gathering in. A page whose evaluate never settles makes the gathering hang; the classifier must
      * abandon it at the budget and classify unknown, entirely on its own - no caller wrapper. Driving the parked timer past the budget is what tells apart the
      * self-bounded classifier from the old unbounded one, which would leave this promise pending forever.
      */

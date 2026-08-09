@@ -4,7 +4,7 @@
  */
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, raceWithTimeout } from "../utils/index.ts";
+import { LOG, waitWithTimeout } from "../utils/index.ts";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
 import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
   resolveServiceKey } from "../config/services.ts";
@@ -377,7 +377,7 @@ export function setupServicesEndpoint(app: Express, deps: ServiceDiscoveryDeps =
 
         /* The predecessor's settlement gates everything that follows: the guarded guide-page session awaits its page close before the walk promise settles, so
          * once this await returns no interceptor callback of that walk can write into the caches we are about to clear. How it settled is its own business -
-         * the refresh cares only THAT it settled. The race bounds the wait: a teardown wedged inside a CDP call would otherwise hold every later refresh
+         * the refresh cares only THAT it settled. The timeout bounds the wait: a teardown wedged inside a CDP call would otherwise hold every later refresh
          * hostage to Puppeteer's 180-second default protocol timeout, so past the bound we proceed and accept the clear-while-settling race for that
          * pathological case alone.
          */
@@ -387,7 +387,7 @@ export function setupServicesEndpoint(app: Express, deps: ServiceDiscoveryDeps =
 
           try {
 
-            await raceWithTimeout(doomed.promise, DISCOVERY_SETTLEMENT_TIMEOUT_MS, settlementTimeout);
+            await waitWithTimeout(doomed.promise, DISCOVERY_SETTLEMENT_TIMEOUT_MS, settlementTimeout);
           } catch(error) {
 
             // An aborted walk rejects by design and stays quiet, and a genuine walk failure was already reported to that walk's own requesters. The timeout

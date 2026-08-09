@@ -55,8 +55,8 @@ const fetchFromDvrSpy = mock.fn<pretune.PretuneDeps["fetchFromDvr"]>(async (_hos
 const fakeClock: Clock = {
 
   now: (): number => Date.now(),
-  raceWithTimeout: <T>(promise: Promise<T>): Promise<T> => promise,
-  sleep: async (ms: number): Promise<void> => { mock.timers.setTime(Date.now() + ms); }
+  sleep: async (ms: number): Promise<void> => { mock.timers.setTime(Date.now() + ms); },
+  waitWithTimeout: <T>(promise: Promise<T>): Promise<T> => promise
 };
 
 /* The injected pretune dependencies: the DVR data-acquisition trio and the initializeStream go-action, substituted at pretune's PretuneDeps port so the decision
