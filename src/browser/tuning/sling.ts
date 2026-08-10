@@ -779,6 +779,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
         availableChannels,
         channelName,
         guideUrl: SLING_GUIDE_URL,
+        presetSuffix: "-sling",
         providerName: "Sling TV"
       });
     }
