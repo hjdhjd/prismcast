@@ -1043,11 +1043,15 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
     if(rendered) {
 
-      const match = rendered.find((ch) => ch.name === normalizedName);
+      /* The entry this shortcut trusted may be filed under a key that is not the name its row renders under - an affiliate's network-name alias, or a key the
+       * fuzzy lookup resolved through - so entry identity is what recognizes the row the scroll landed on. The exact-name pass runs first and the identity pass
+       * only picks up what it leaves, so a row rendering under the requested name always wins over one that merely shares its entry.
+       */
+      const match = rendered.find((ch) => ch.name === normalizedName) ?? rendered.find((ch) => huluCache.map.get(ch.name) === cachedEntry);
 
       if(match) {
 
-        return await clickOnNowCellAndPlay(page, normalizedName, playSelector, channelName);
+        return await clickOnNowCellAndPlay(page, match.name, playSelector, channelName);
       }
     }
 
