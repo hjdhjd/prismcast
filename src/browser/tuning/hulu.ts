@@ -6,8 +6,10 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Disco
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { installOrReplaceOnNewDocument, logAvailableChannels, normalizeChannelName, scrollAndClick } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
+import type { GridProbeResult } from "./gridSearch.ts";
 import type { Page } from "puppeteer-core";
 import { createProviderChannelCache } from "./cache.ts";
+import { searchVirtualizedGrid } from "./gridSearch.ts";
 
 // Unified channel cache entry combining discovery metadata, tuning data, and guide grid scroll positions. Populated from two sources: (1) details and listing API
 // responses intercepted during page load (provides uuid, programs, displayName), and (2) guide grid DOM reads during binary search or discovery linear scan
@@ -1055,87 +1057,29 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     cachedEntry.rowNumber = undefined;
   }
 
-  // Binary search through the virtualized channel list. On each iteration we scroll to the midpoint of the current range, wait for the virtualizer to render,
-  // then check if the target channel is among the ~13 rendered rows. If not, we compare the target name alphabetically against the first and last rendered
-  // channel names to narrow the range. The search converges in ~3-4 iterations because the 13-row render window covers a large fraction of the remaining range.
-  let low = 0;
-  let high = totalRows - 1;
+  // The ~13-row render window covers a large fraction of whatever range is left after each step, so the search converges in ~3-4 iterations; ten is a bound on
+  // pathological virtualizer behavior rather than the normal exit.
   const maxIterations = 10;
-  let found = false;
 
-  for(let iteration = 0; iteration < maxIterations; iteration++) {
+  const outcome = await searchVirtualizedGrid<RenderedChannel, string, ChannelSelectorResult>({
 
-    if(low > high) {
+    // Call sign channels (W*/K* local affiliates) are excluded from the direction comparison because they sort by hidden network name, not by their displayed
+    // call sign - using them for localeCompare would send the search the wrong way.
+    isDirectionAnchor: (ch): boolean => !CALL_SIGN_PATTERN.test(ch.name),
+    maxIterations,
+    nameOf: (ch): string => ch.name,
+    onInRangeMiss: async (rendered): Promise<Nullable<{ found?: string; resolved?: ChannelSelectorResult }>> => {
 
-      break;
-    }
+      // The target is alphabetically between the first and last rendered channels but was not found by exact data-testid match. This is the "missing" case - the
+      // channel may be a local affiliate whose call sign doesn't match the network name we're searching for. Try position-based inference.
+      const inferred = inferLocalAffiliate(rendered, normalizedName);
 
-    const mid = Math.floor((low + high) / 2);
+      if(!inferred) {
 
-    // eslint-disable-next-line no-await-in-loop
-    await scrollToGuideRow(page, gridDocTop, rowHeight, mid);
-
-    // Read all rendered channels, populating the unified cache with row numbers as a side effect.
-    // eslint-disable-next-line no-await-in-loop
-    const rendered = await readRenderedChannels(page);
-
-    if(!rendered || (rendered.length === 0)) {
-
-      continue;
-    }
-
-    // Check for an exact match first.
-    const exactMatch = rendered.find((ch) => ch.name === normalizedName);
-
-    if(exactMatch) {
-
-      found = true;
-
-      break;
-    }
-
-    // Determine binary search direction by comparing the target against the first and last rendered non-call-sign channel names. Call sign channels (W*/K*
-    // local affiliates) are excluded from direction comparison because they sort by hidden network name, not by their displayed call sign - using them for
-    // localeCompare would send the search the wrong way.
-    const nonCallSigns = rendered.filter((ch) => !CALL_SIGN_PATTERN.test(ch.name));
-
-    if(nonCallSigns.length === 0) {
-
-      // All rendered channels are call signs. Cannot determine direction. Move down and hope for better data.
-      low = mid + 1;
-
-      continue;
-    }
-
-    const first = nonCallSigns[0]?.name ?? "";
-    const last = nonCallSigns.at(-1)?.name ?? "";
-
-    if(normalizedName.localeCompare(first) < 0) {
-
-      // Target sorts before the first visible non-call-sign channel. Scroll up (toward lower row indices).
-      high = mid - 1;
-
-      continue;
-    }
-
-    if(normalizedName.localeCompare(last) > 0) {
-
-      // Target sorts after the last visible non-call-sign channel. Scroll down (toward higher row indices).
-      low = mid + 1;
-
-      continue;
-    }
-
-    // The target is alphabetically between the first and last rendered channels but was not found by exact data-testid match. This is the "missing" case - the
-    // channel may be a local affiliate whose call sign doesn't match the network name we're searching for. Try position-based inference.
-    const inferred = inferLocalAffiliate(rendered, normalizedName);
-
-    if(inferred) {
+        return null;
+      }
 
       LOG.debug("tuning:hulu", "Inferred local affiliate %s for network name %s.", inferred, channelName);
-
-      clickTarget = inferred;
-      found = true;
 
       // Cross-reference the unified cache so the network name resolves to a warm-cache direct tune on subsequent requests. The details API returns the local
       // call sign as channel_info.name, so the cache is keyed by call sign. The user's channelSelector uses the network name (e.g., "ABC"). Without this
@@ -1148,17 +1092,45 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
         LOG.debug("tuning:hulu", "Cross-referenced cache: %s -> %s (from inferred affiliate %s).", channelName, inferredEntry.uuid ?? "no-uuid", inferred);
 
-        // eslint-disable-next-line no-await-in-loop
         const fastPathSuccess = await tryFastPathTune(page, inferredEntry, channelName);
 
         if(fastPathSuccess) {
 
-          return { success: true };
+          return { resolved: { success: true } };
         }
       }
-    }
 
-    break;
+      return { found: inferred };
+    },
+    probe: async (rowIndex): Promise<GridProbeResult<RenderedChannel, string>> => {
+
+      await scrollToGuideRow(page, gridDocTop, rowHeight, rowIndex);
+
+      // Read all rendered channels, populating the unified cache with row numbers as a side effect.
+      const rendered = await readRenderedChannels(page);
+
+      // The rows go back in DOM order untouched, because DOM order is this guide's visual order: Hulu files most local affiliates under their hidden network
+      // name, so sorting by the displayed name would scramble the very positions the affiliate inference reads.
+      return { found: rendered?.find((ch) => ch.name === normalizedName)?.name ?? null, rows: rendered };
+    },
+    targetName: normalizedName,
+    totalRows
+  });
+
+  // The inference hook tuned the channel itself through the fast path, which leaves the post-search fast-path retry, the playlist release, and the click path
+  // with nothing left to do.
+  if(outcome.kind === "resolved") {
+
+    return outcome.result;
+  }
+
+  let found = false;
+
+  if(outcome.kind === "found") {
+
+    // The name to click: the target's own on an exact match, the local affiliate's call sign where position inference identified one.
+    clickTarget = outcome.found;
+    found = true;
   }
 
   // If binary search did not find the channel (and position inference didn't identify a local affiliate), fall back to a linear scan through all channels. This

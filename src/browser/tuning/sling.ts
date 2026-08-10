@@ -6,8 +6,10 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, ClickTarget, Disco
 import { LOG, chromeFetch, delay, formatError } from "../../utils/index.ts";
 import { logAvailableChannels, normalizeChannelName } from "./shared.ts";
 import { CONFIG } from "../../config/index.ts";
+import type { GridProbeResult } from "./gridSearch.ts";
 import type { Page } from "puppeteer-core";
 import { createProviderChannelCache } from "./cache.ts";
+import { searchVirtualizedGrid } from "./gridSearch.ts";
 
 // Sling TV guide grid row index cache. Maps normalized channel names (from data-testid="channel-{NAME}" attributes) to their row indices extracted from the
 // parent .guide-row-container CSS class (gridGuideRow-{N}). Separate from Hulu's row tracking - the rowNumber field on its channel cache entries - because Sling
@@ -51,6 +53,10 @@ const pagesWithListeners = new WeakSet<Page>();
 
 // Base URL for constructing direct player URLs. This is the user-facing Sling domain, not a CDN edge - stable.
 const SLING_PLAYER_BASE = "https://watch.sling.com/1/asset";
+
+// The A-Z grid guide page. The discovery walk navigates here, the provider module advertises it as its guide URL, and the not-found diagnostic points the user
+// at it, so all three read the one constant.
+const SLING_GUIDE_URL = "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z";
 
 // Polling interval for the frontier-based cache wait. 300ms balances responsiveness (detecting newly arrived API pages quickly) against CPU overhead from cache
 // scans. The API delivers pages in bursts, so shorter intervals provide diminishing returns.
@@ -727,76 +733,40 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     slingRowCache.delete(normalizedName);
   }
 
-  // Phase 4: Binary search through the virtualized channel list. On each iteration we scroll to the midpoint, read rendered channels (with click target resolution
-  // for the target name), and either click immediately on match or compare alphabetically to adjust bounds. The combined readSlingChannelsAndLocate call returns
-  // both the channel list (for direction) and the on-now cell coordinates (for clicking) in a single browser round-trip.
-  let low = 0;
-  let high = totalRows - 1;
+  // Phase 4: Binary search through the virtualized channel list. Each probe scrolls to the midpoint of the remaining range and reads the rendered channels,
+  // resolving the target's on-now cell coordinates in the same pass when it is among them - one browser round-trip serves both the direction decision and the
+  // click that follows.
 
   // Binary search over ~638 rows converges in roughly log2(638) ~= 10 iterations, so 12 provides a small safety margin. This bound guards against pathological
   // virtualizer behavior rather than serving as the normal exit condition; if the search legitimately exhausts it, the channel is reported as not found.
   const maxIterations = 12;
-  let foundClickTarget: Nullable<ClickTarget> = null;
-  let foundMatchedName: Nullable<string> = null;
 
-  for(let iteration = 0; iteration < maxIterations; iteration++) {
+  const outcome = await searchVirtualizedGrid<SlingRenderedChannel, { clickTarget: ClickTarget; matchedName: Nullable<string> }>({
 
-    if(low > high) {
+    maxIterations,
+    nameOf: (ch): string => ch.name,
+    probe: async (rowIndex): Promise<GridProbeResult<SlingRenderedChannel, { clickTarget: ClickTarget; matchedName: Nullable<string> }>> => {
 
-      break;
-    }
+      await scrollToRow(rowIndex);
 
-    const mid = Math.floor((low + high) / 2);
+      const { channels, clickTarget, matchedName } = await readSlingChannelsAndLocate(page, normalizedName);
 
-    // eslint-disable-next-line no-await-in-loop
-    await scrollToRow(mid);
+      // Sort by name so first/last reflect alphabetical extremes. querySelectorAll returns DOM insertion order, which may not match visual order in a virtualizer
+      // that recycles elements by appending new rows rather than inserting in visual position.
+      if(channels) {
 
-    // eslint-disable-next-line no-await-in-loop
-    const { channels, clickTarget, matchedName } = await readSlingChannelsAndLocate(page, normalizedName);
+        channels.sort((a, b) => a.name.localeCompare(b.name));
+      }
 
-    if(!channels || (channels.length === 0)) {
+      // A located target arrives with its click coordinates already resolved, so no second evaluate is needed. A name that matched without those coordinates is
+      // not a hit: the search carries on rather than reporting a target nothing can be clicked at.
+      return { found: clickTarget ? { clickTarget, matchedName } : null, rows: channels };
+    },
+    targetName: normalizedName,
+    totalRows
+  });
 
-      continue;
-    }
-
-    // If the target was found, the click coordinates are already resolved. No second evaluate needed.
-    if(clickTarget) {
-
-      foundClickTarget = clickTarget;
-      foundMatchedName = matchedName;
-
-      break;
-    }
-
-    // Sort by name so first/last reflect alphabetical extremes. querySelectorAll returns DOM insertion order, which may not match visual order in a virtualizer
-    // that recycles elements by appending new rows rather than inserting in visual position.
-    channels.sort((a, b) => a.name.localeCompare(b.name));
-
-    // Determine binary search direction by comparing against the first and last rendered channel names.
-    const first = channels[0]?.name ?? "";
-    const last = channels.at(-1)?.name ?? "";
-
-    if(normalizedName.localeCompare(first) < 0) {
-
-      // Target sorts before the first rendered channel. Scroll up.
-      high = mid - 1;
-
-      continue;
-    }
-
-    if(normalizedName.localeCompare(last) > 0) {
-
-      // Target sorts after the last rendered channel. Scroll down.
-      low = mid + 1;
-
-      continue;
-    }
-
-    // Target is between the first and last rendered channels but no exact match. The channel may not exist in the guide.
-    break;
-  }
-
-  if(!foundClickTarget) {
+  if(outcome.kind === "notFound") {
 
     // Log available channels from the row cache to help users identify the correct channelSelector value. The cache contains channels seen during binary search
     // iterations and any prior tune attempts in this session - a partial but often actionable subset of Sling's ~638 channel catalog.
@@ -808,13 +778,15 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
         availableChannels,
         channelName,
-        guideUrl: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z",
+        guideUrl: SLING_GUIDE_URL,
         providerName: "Sling TV"
       });
     }
 
     return { reason: "Could not find channel " + channelName + " in Sling TV guide grid.", success: false };
   }
+
+  const { clickTarget: foundClickTarget, matchedName: foundMatchedName } = outcome.found;
 
   // When a local affiliate was matched via prefix, cache the network name as an alias so subsequent tunes skip binary search and scroll directly to the
   // affiliate's row.
@@ -870,7 +842,7 @@ async function discoverSlingChannels(page: Page): Promise<DiscoveredChannel[]> {
   // that discovery reads from.
   setupGridResponseInterception(page);
 
-  await page.goto("https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z", { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+  await page.goto(SLING_GUIDE_URL, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
 
   // Wait for channel entries to appear in the DOM (confirms guide grid has loaded).
   try {
@@ -972,7 +944,7 @@ export const slingProvider: ProviderModule = {
 
   discoverChannels: discoverSlingChannels,
   getCachedChannels: slingCache.cached,
-  guideUrl: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z",
+  guideUrl: SLING_GUIDE_URL,
   handlesOwnNavigation: true,
   label: "Sling TV",
 
