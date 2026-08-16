@@ -17,8 +17,9 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 /* The complete list of function runtime symbols the barrel is documented to re-export. Type-only re-exports (CapturedCdpCommand, CdpSessionListenerOp,
- * CapturedLogLine, TestLogger, FakeExecFile, FakeExecFileResult) are erased at runtime and therefore not part of this surface. Value-typed runtime exports
- * (constants like TMPDIR_PREFIX) are listed separately in EXPECTED_VALUE_EXPORTS so the function-typeof check stays clean.
+ * CapturedLogLine, TestLogger, FakeExecFile, FakeExecFileResult, FakePage, FakePageOptions, PendingPageCall) are erased at runtime and therefore not part of
+ * this surface. Value-typed runtime exports (constants like TMPDIR_PREFIX) are listed separately in EXPECTED_VALUE_EXPORTS so the function-typeof check stays
+ * clean.
  */
 const EXPECTED_FUNCTION_EXPORTS = [
 
@@ -35,8 +36,10 @@ const EXPECTED_FUNCTION_EXPORTS = [
   "execFileFromMap",
   "expectAt",
   "firstOf",
+  "flushMicrotasks",
   "makeExecFileError",
   "makeFakeCdpPage",
+  "makeFakePage",
   "noop",
   "nthOf",
   "silentLog",

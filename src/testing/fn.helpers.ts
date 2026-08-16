@@ -12,3 +12,20 @@ export function noop(): void {
 
   return undefined;
 }
+
+/**
+ * Yields to the microtask queue the given number of times. A test driving async production code under mock timers needs this between advancing the clock and
+ * asserting: advancing fires the timer callback, but the settlement it causes still has to travel one promise link per microtask turn - through a wrapper's
+ * catch, the caller's catch, a finally - and the clock does not move those. The default is deliberately generous, because an extra turn costs nothing and one
+ * turn too few is an assertion that passes or fails on chain depth.
+ * @param count - How many microtask turns to yield.
+ */
+export async function flushMicrotasks(count = 20): Promise<void> {
+
+  for(let turn = 0; turn < count; turn++) {
+
+    // Sequential by definition: each await is one microtask turn, and yielding them concurrently would collapse the whole point into a single turn.
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.resolve();
+  }
+}

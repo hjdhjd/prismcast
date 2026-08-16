@@ -219,6 +219,16 @@ export function monitorPlaybackHealth(
   // Flag indicating the cleanup function was called. When true, the next interval check will clear itself.
   let intervalCleared = false;
 
+  /* Serialization flag for the tick body. The interval fires on its schedule whether or not the previous tick's async body has settled, so without this a single
+   * slow evaluate - bounded only by the evaluate timeout, seven and a half intervals long at the default cadence - stacks concurrent bodies that each mutate the
+   * shared counters and can each independently reach a recovery decision. With it, one dispatched tick body is the most that can be in flight.
+   *
+   * The scope is exactly that: the dispatched body. A native-mode recovery is launched fire-and-forget from inside a tick and outlives the body that started it,
+   * and recoveryState.inProgress is the guard covering that window - which is why every native recovery entry point raises that flag synchronously before its
+   * first await, and why a future native recovery path must do the same or it runs under neither guard.
+   */
+  let tickInProgress = false;
+
   // The current video context (page or frame). This can change after a page navigation recovery, when we need to find the new video context.
   let currentContext: Frame | Page = context;
 
@@ -229,9 +239,21 @@ export function monitorPlaybackHealth(
   // fluctuations. Reset to 0 when video is found.
   let videoNotFoundCount = 0;
 
-  // Counter for consecutive evaluate timeouts. When the browser tab becomes unresponsive, evaluate() calls will timeout instead of returning data. After 3
-  // consecutive timeouts, we trigger tab replacement recovery (if the callback is provided). Reset to 0 on successful getVideoState().
+  /* Counter for consecutive evaluate timeouts. When the browser tab becomes unresponsive, evaluate() calls time out instead of returning data. The counter drives
+   * two things: the three-strike threshold that triggers tab replacement recovery (when the callback is provided), and the timeout the next state read is issued
+   * with - any non-zero value arms the short confirmation probe below. Reset to 0 on a successful getVideoState() and on every other piece of direct evidence
+   * that the tab answers evaluates.
+   */
   let consecutiveTimeouts = 0;
+
+  /* Evaluate bound for a state read issued while a timeout streak is open. One full-length timeout is what detects a hung tab; the reads that follow only have
+   * to tell a still-hung tab from a responsive one, and a tab that answers at all answers well inside this. At the default cadence three strikes then accumulate
+   * in roughly twenty seconds - one full timeout to detect, two short probes to confirm - rather than three full timeouts.
+   *
+   * The bound is fixed rather than derived from the operator's monitor interval: how quickly a tab must answer to count as alive is a property of the tab, not of
+   * how often we poll it, and the wall-clock to replacement scales with the chosen interval either way.
+   */
+  const UNRESPONSIVE_PROBE_TIMEOUT = 2000;
 
   // Last known video state for status reporting.
   let lastVideoState: Nullable<VideoState> = null;
@@ -875,6 +897,28 @@ export function monitorPlaybackHealth(
   }
 
   /**
+   * Reports whether the monitor stopped while a recovery action was awaiting, and releases the recovery flag when it did. A recovery await can resume after
+   * terminateStream has already disposed this monitor; the resumption must then apply nothing at all - no grace window, no discontinuity mark, no context
+   * adoption, no counter reset, no navigation-failure tally, no status emission - because each of those would describe a stream that is already gone.
+   *
+   * Releasing recoveryState.inProgress is this helper's own job for exactly that reason: all five callers raise the flag before their await and lower it on the
+   * way out, and the resumption they skip is where that lowering would otherwise have happened. executeTabReplacement is not one of them - its finally already
+   * owns the release.
+   * @returns True if the monitor stopped and the caller must apply nothing.
+   */
+  const abandonRecoveryIfStopped = (): boolean => {
+
+    if(!intervalCleared) {
+
+      return false;
+    }
+
+    recoveryState.inProgress = false;
+
+    return true;
+  };
+
+  /**
    * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), terminated (circuit breaker tripped), or was abandoned
    * because the monitor stopped while the replacement was in flight (stopped - nothing was applied and the caller must not act on it).
    */
@@ -1175,6 +1219,10 @@ export function monitorPlaybackHealth(
       // Reset video not found counter since video actually exists.
       videoNotFoundCount = 0;
 
+      // The presence check answering is direct evidence the tab runs evaluates, and the timeout streak both drives the tab-replacement threshold and arms the
+      // short confirmation probe, so it must not outlive that evidence.
+      consecutiveTimeouts = 0;
+
       emitStatusUpdate();
 
       return;
@@ -1209,6 +1257,10 @@ export function monitorPlaybackHealth(
 
           currentContext = newContext;
           videoNotFoundCount = 0;
+
+          // A validated video means the tab answered the re-search evaluates, and the timeout streak both drives the tab-replacement threshold and arms the
+          // short confirmation probe, so it must not outlive that evidence.
+          consecutiveTimeouts = 0;
 
           emitStatusUpdate();
 
@@ -1273,6 +1325,13 @@ export function monitorPlaybackHealth(
     }
 
     const recoveryResult = await performPageNavigationRecovery();
+
+    // The stream can terminate while the navigation above runs. A resumption that lands after the monitor stopped applies nothing - the discontinuity mark, the
+    // grace window, the context adoption, and the failure tally below would all describe a stream that was torn down at the source.
+    if(abandonRecoveryIfStopped()) {
+
+      return;
+    }
 
     // Page navigation disrupted the video stream. Mark a discontinuity regardless of navigation success so HLS clients resynchronize their decoders.
     markStreamDiscontinuity();
@@ -1500,6 +1559,13 @@ export function monitorPlaybackHealth(
 
       const recoveryResult = await performPageNavigationRecovery();
 
+      // Same post-await stop check as the other navigation sites: a resumption after the monitor stopped applies neither the grace windows nor the ratchet step
+      // below, since both would be bookkeeping for a stream that is gone.
+      if(abandonRecoveryIfStopped()) {
+
+        return true;
+      }
+
       markStreamDiscontinuity();
 
       // Arm the shared recovery grace window unconditionally, mirroring the proactive-reload sibling. This is the one navigation path that would otherwise leave it
@@ -1642,6 +1708,13 @@ export function monitorPlaybackHealth(
 
     const recoveryResult = await performPageNavigationRecovery();
 
+    // Same post-await stop check as the other navigation sites: a resumption after the monitor stopped applies nothing, and the reload it was maintaining is
+    // moot now that the stream is gone.
+    if(abandonRecoveryIfStopped()) {
+
+      return true;
+    }
+
     markStreamDiscontinuity();
     setRecoveryGracePeriod(3);
 
@@ -1775,6 +1848,13 @@ export function monitorPlaybackHealth(
 
         await ensurePlayback(currentPage, currentContext, profile, { recoveryLevel: recoveryState.escalationLevel, skipNativeFullscreen: true });
 
+        // The stream can terminate while ensurePlayback runs. A resumption after the monitor stopped applies none of the settlement below - the source-reload
+        // mark, the discontinuity, the grace window, the resolution reset. Returning true is what makes the caller exit the tick immediately.
+        if(abandonRecoveryIfStopped()) {
+
+          return true;
+        }
+
         if(recoveryState.escalationLevel === 2) {
 
           recoveryState.sourceReloadAttempted = true;
@@ -1811,6 +1891,13 @@ export function monitorPlaybackHealth(
           } else {
 
             const recoveryResult = await performPageNavigationRecovery();
+
+            // Same post-await stop check as the other navigation sites. The exit value here is true, not the false this function returns on normal completion:
+            // false means "continue the tick", and a tick running against a terminated stream has nothing left to do.
+            if(abandonRecoveryIfStopped()) {
+
+              return true;
+            }
 
             markStreamDiscontinuity();
 
@@ -1850,16 +1937,43 @@ export function monitorPlaybackHealth(
     return false;
   }
 
+  /**
+   * Dispatches one tick body and holds the serialization flag for that body's whole lifetime. This is the only writer of tickInProgress: the flag is raised here
+   * before the body starts and released when its promise settles, so no other site can leave it stuck raised and starve the monitor.
+   *
+   * The catch is the backstop for both dispatch branches. The capture branch's body ends in its own escape handler, but the native branch's does not, so a throw
+   * out of the native health check would otherwise surface as an unhandled rejection. Both branches hand back the promise of an async call, which is what
+   * guarantees the settlement handlers attach at all - a body that could throw synchronously would skip them and wedge the flag.
+   * @param body - The tick body to run. Its promise settling is what releases the flag.
+   */
+  const dispatchSerializedTick = (body: () => Promise<unknown>): void => {
+
+    tickInProgress = true;
+
+    void body().catch((dispatchError: unknown) => {
+
+      LOG.warn("Monitor tick dispatch failed: %s.", formatError(dispatchError));
+    }).finally(() => {
+
+      tickInProgress = false;
+    });
+  };
+
   /* Main monitoring interval. This runs every MONITOR_INTERVAL milliseconds to check video state and trigger recovery when needed.
    *
    * Every early return must call emitStatusUpdate() before returning (except when the stream is terminating, e.g., page closed or circuit breaker tripped). This
    * ensures SSE clients always have current status data (duration, memory, health) even during recovery, buffering, or video search periods. Without this, the
    * streamStatuses map becomes stale and new SSE connections receive outdated snapshots.
    *
-   * Check ordering: the recoveryState.inProgress check must come before the currentPage.isClosed() check. During tab replacement, the old page is intentionally
-   * closed while the handler creates a new page; if we checked isClosed() first, we would terminate the interval while recovery is still in progress, causing
-   * status updates to stop permanently. The required sequence is: (1) intervalCleared for explicit cleanup, (2) recoveryState.inProgress to continue during
-   * recovery, (3) isClosed() for unexpected page termination outside of recovery.
+   * Check ordering, in the sequence the callback applies them:
+   *
+   * 1. intervalCleared, for explicit cleanup.
+   * 2. tickInProgress, so a firing that lands while the previous body is still running skips instead of stacking a second body on the same counters.
+   * 3. recoveryState.inProgress. On the capture path this covers the window a recovery await holds open inside a tick body; on the native path it is the only
+   *    guard there is, since a native recovery is launched fire-and-forget and outlives the tick that started it.
+   * 4. currentPage.isClosed(), for page termination outside of recovery. It must come after the recovery check: during tab replacement the old page is
+   *    deliberately closed while the handler creates a new one, so testing isClosed() first would clear the interval mid-recovery and stop status updates
+   *    permanently.
    */
   const interval = setInterval((): void => {
 
@@ -1867,6 +1981,15 @@ export function monitorPlaybackHealth(
     if(intervalCleared) {
 
       stopMonitoring();
+
+      return;
+    }
+
+    // Skip this firing if the previous tick body has not settled. Emit status so SSE clients keep seeing current duration, memory, and health while a long read
+    // is outstanding.
+    if(tickInProgress) {
+
+      emitStatusUpdate();
 
       return;
     }
@@ -1904,16 +2027,16 @@ export function monitorPlaybackHealth(
 
       // Re-establish stream context for this interval tick before running the native health check. AsyncLocalStorage context is lost when entering setInterval
       // callbacks, so without this wrapper the native path's non-debug warnings would emit without the stream-ID prefix. This mirrors the capture-mode branch below.
-      void runWithStreamContext(streamContext, async () => {
+      dispatchSerializedTick(() => runWithStreamContext(streamContext, async () => {
 
         checkNativeStreamHealth(nativeEntry);
-      });
+      }));
 
       return;
     }
 
     // Re-establish stream context for this interval tick. AsyncLocalStorage context is lost when entering setInterval callbacks.
-    runWithStreamContext(streamContext, async () => {
+    dispatchSerializedTick(() => runWithStreamContext(streamContext, async () => {
 
       try {
 
@@ -1937,7 +2060,9 @@ export function monitorPlaybackHealth(
 
         try {
 
-          stateInfo = await getVideoState(currentContext, selectorType);
+          // A read issued while a timeout streak is open is a confirmation probe, so it carries the short bound. With no streak open the read takes the evaluate
+          // wrapper's default, which is the bound that detects a hung tab in the first place.
+          stateInfo = await getVideoState(currentContext, selectorType, (consecutiveTimeouts > 0) ? UNRESPONSIVE_PROBE_TIMEOUT : undefined);
         } catch(stateError) {
 
           // Classify through the shared page-death predicate: the world the read ran in is gone, so the video may simply live in a context we no longer hold.
@@ -1971,6 +2096,10 @@ export function monitorPlaybackHealth(
 
               currentContext = newContext;
               videoNotFoundCount = 0;
+
+              // A validated video means the tab answered the re-search evaluates, and the timeout streak both drives the tab-replacement threshold and arms the
+              // short confirmation probe, so it must not outlive that evidence.
+              consecutiveTimeouts = 0;
 
               // Emit status so SSE clients stay current even when returning early after context re-search.
               emitStatusUpdate();
@@ -2255,7 +2384,7 @@ export function monitorPlaybackHealth(
 
       // Log errors that escape the inner try/catch. In normal operation we should not reach here - if we do, there's a bug to investigate.
       LOG.warn("Monitor tick error escaped inner try/catch: %s.", formatError(outerError));
-    });
+    }));
   }, CONFIG.playback.monitorInterval);
 
   /* The monitor's teardown: mark the interval cleared (so any in-flight async tick short-circuits) and clear it. Self-contained - it owns only the interval. Defined

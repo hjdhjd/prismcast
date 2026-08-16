@@ -6,10 +6,11 @@
  *   - cdp.helpers.ts          FakeCdpSession, FakeConnection, makeFakeCdpPage, CapturedCdpCommand, CdpSessionListenerOp (puppeteer CDP stubs)
  *   - cleanup.helpers.ts      closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle
  *   - exec.helpers.ts         FakeExecFileResult, FakeExecFile, bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds
- *   - fn.helpers.ts           noop
+ *   - fn.helpers.ts           noop, flushMicrotasks
  *   - fs.helpers.ts           TMPDIR_PREFIX, withTempDir
  *   - loggers.helpers.ts      TestLogger, CapturedLogLine, silentLog, capturingLog
  *   - narrowing.helpers.ts    firstOf, nthOf
+ *   - page.helpers.ts         FakePage, FakePageOptions, PendingPageCall, makeFakePage (general Page surface double)
  *   - parity.helpers.ts       assertSameShape, declareKeysOf (factory parity checks)
  *   - process.helpers.ts      assertNoUnhandledRejections, expectAt
  *
@@ -19,6 +20,7 @@
 export type { CapturedCdpCommand, CdpSessionListenerOp } from "./testing/cdp.helpers.ts";
 export type { CapturedLogLine, TestLogger } from "./testing/loggers.helpers.ts";
 export type { FakeExecFile, FakeExecFileResult } from "./testing/exec.helpers.ts";
+export type { FakePage, FakePageOptions, PendingPageCall } from "./testing/page.helpers.ts";
 export { FakeCdpSession, FakeConnection } from "./testing/cdp.helpers.ts";
 export { TMPDIR_PREFIX, withTempDir } from "./testing/fs.helpers.ts";
 export { assertNoUnhandledRejections, expectAt } from "./testing/process.helpers.ts";
@@ -27,5 +29,6 @@ export { bufferOrStringToString, execFileAlwaysSucceeds, execFileFromMap, makeEx
 export { capturingLog, silentLog } from "./testing/loggers.helpers.ts";
 export { closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle } from "./testing/cleanup.helpers.ts";
 export { firstOf, nthOf } from "./testing/narrowing.helpers.ts";
+export { flushMicrotasks, noop } from "./testing/fn.helpers.ts";
 export { makeFakeCdpPage } from "./testing/cdp.helpers.ts";
-export { noop } from "./testing/fn.helpers.ts";
+export { makeFakePage } from "./testing/page.helpers.ts";

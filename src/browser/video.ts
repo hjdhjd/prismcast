@@ -132,9 +132,11 @@ export interface VideoStateInfo {
  * Gets the current state of the video element for health monitoring. Returns null if no video element is found.
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
+ * @param timeoutMs - How long to wait for the read before giving up. Omit for the evaluate wrapper's default bound; a caller that already has reason to suspect
+ *                    an unresponsive tab passes a shorter one, since it needs to tell a hung page from a live one rather than wait out a slow answer.
  * @returns The video state or null if no video found.
  */
-export async function getVideoState(context: Frame | Page, selectorType: VideoSelectorType): Promise<Nullable<VideoStateInfo>> {
+export async function getVideoState(context: Frame | Page, selectorType: VideoSelectorType, timeoutMs?: number): Promise<Nullable<VideoStateInfo>> {
 
   return evaluateWithAbort(context, (type: string): Nullable<VideoStateInfo> => {
 
@@ -158,7 +160,7 @@ export async function getVideoState(context: Frame | Page, selectorType: VideoSe
       videoWidth: video.videoWidth,
       volume: video.volume
     };
-  }, [selectorType]);
+  }, [selectorType], timeoutMs);
 }
 
 /**
