@@ -887,8 +887,8 @@ export function monitorPlaybackHealth(
   /**
    * Stops the monitoring interval. Pairs the two operations that must always happen together: setting intervalCleared so any in-flight async tick short-circuits at
    * its next stop check, and clearing the interval so no further ticks fire. Every path that stops the monitor - the tick's own guards, the circuit-breaker
-   * terminations, and dispose() - routes through here, so a stopped monitor can never look un-stopped to a resuming await that would otherwise trip the breaker
-   * against a newer stream re-registered under the same channel.
+   * terminations, and dispose() - routes through here, so a stopped monitor can never look un-stopped to a resuming await, which would go on to act on a stream
+   * that has already been terminated.
    */
   function stopMonitoring(): void {
 
@@ -932,7 +932,8 @@ export function monitorPlaybackHealth(
   function handleTabReplacementFailure(context: string): TabReplacementOutcome {
 
     // Entry stop check, mirroring the tick's intervalCleared-first ordering (see the main interval's check-order note): a settlement that resumed after the monitor
-    // stopped must return the stopped outcome and trip nothing, since onCircuitBreak resolves by channel name and could terminate a newer stream on this channel.
+    // stopped must return the stopped outcome and trip nothing, because the breaker accounting, the logs, and the termination would all describe a stream that
+    // has already ended.
     if(intervalCleared) {
 
       return { outcome: "stopped" };
@@ -988,7 +989,8 @@ export function monitorPlaybackHealth(
   function handleExhaustedTabReplacement(context: string): TabReplacementOutcome {
 
     // Entry stop check, mirroring the tick's intervalCleared-first ordering (see the main interval's check-order note): a settlement that resumed after the monitor
-    // stopped must return the stopped outcome without clearing metrics or tripping the breaker, since onCircuitBreak could terminate a newer stream on this channel.
+    // stopped must return the stopped outcome without clearing metrics or tripping the breaker, because both would be bookkeeping for a stream that has already
+    // ended.
     if(intervalCleared) {
 
       return { outcome: "stopped" };
@@ -1282,8 +1284,8 @@ export function monitorPlaybackHealth(
     LOG.warn("Video element not found - recovering via %s.", RECOVERY_METHODS.pageNavigation);
 
     // Post-await stop check guarding both breaker branches below. The only await on the path to here is checkVideoPresence above; a tick that resumed after the
-    // monitor stopped must not trip the breaker (onCircuitBreak resolves by channel name and could terminate a newer stream on this channel) nor navigate a
-    // terminated stream. No await separates the two breaker branches, so this single check makes both inert.
+    // monitor stopped must neither trip the breaker nor navigate, because the stream both would act on has already been terminated. No await separates the two
+    // breaker branches, so this single check makes both inert.
     if(intervalCleared) {
 
       return;
@@ -1769,8 +1771,8 @@ export function monitorPlaybackHealth(
     }
 
     // Post-await stop check for the breaker branch below. The tick awaited getVideoState before calling this; a tick that resumed after the monitor stopped must not
-    // trip the breaker, since onCircuitBreak resolves by channel name and could terminate a newer stream re-registered under this channel. Return terminal so the
-    // tick exits without further work.
+    // trip the breaker, because the accounting, the log, and the termination would all describe a stream that has already ended. Return terminal so the tick exits
+    // without further work.
     if(intervalCleared) {
 
       return true;

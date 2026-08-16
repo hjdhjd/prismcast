@@ -1440,14 +1440,19 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       { channelSelector, profile: profileOverride, url })
   };
 
-  // Circuit breaker callback - terminate the stream on unrecoverable errors.
+  /* Circuit breaker callback - terminates this stream on unrecoverable errors, by the id the closure was built for. Resolving the id through the channel index
+   * at fire time could reach a different stream: a channel re-tuned while this callback was in flight is registered under the same name with a newer id, and the
+   * breaker's verdict belongs to the stream whose monitor reached it.
+   *
+   * The registry-presence guard is what makes a repeated or late invocation silent. terminateStream's own guard covers only a termination already underway - its
+   * tracking entry is removed when that termination completes - so a second call from an independent site (an FFmpeg error handler firing after the monitor
+   * already terminated the stream) would otherwise log a second termination summary and re-emit the stream-removed event for a stream long gone.
+   */
   const onCircuitBreak = (): void => {
 
-    const currentStreamId = getChannelStreamId(channelName);
+    if(getStream(numericStreamId)) {
 
-    if(currentStreamId !== undefined) {
-
-      terminateStream(currentStreamId, channelName, "too many errors");
+      terminateStream(numericStreamId, channelName, "too many errors");
       void emitCurrentSystemStatus();
     }
   };
