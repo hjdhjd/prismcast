@@ -20,9 +20,10 @@ import { CONFIG } from "../../config/index.ts";
 const installedKeysByPage = new WeakMap<Page, Set<string>>();
 
 /**
- * Runs an install action at most once per (page, key) pair. Tuning strategies are re-entered on the same page during recovery re-tunes (tuneToChannel is the single
- * source of truth for both initial setup and recovery), so install steps that are global to a page - registering a `page.on("request")` listener, enabling request
- * interception, or installing an `evaluateOnNewDocument` script - would otherwise accumulate duplicate registrations every time the strategy resolves a direct URL.
+ * Runs an install action at most once per (page, key) pair. Tuning strategies are re-entered on the same page during recovery re-tunes: every tune resolves a
+ * direct URL first, whether it comes from stream setup or from the monitor's recovery tune, so install steps that are global to a page - registering a
+ * `page.on("request")` listener, enabling request interception, or installing an `evaluateOnNewDocument` script - would otherwise accumulate duplicate
+ * registrations every time the strategy resolves a direct URL.
  * This helper is the single source of truth for that idempotency: the first call for a given (page, key) awaits and runs `fn`, and every subsequent call for the
  * same pair is a no-op. The key is recorded before awaiting `fn` so concurrent callers on the same page do not both pass the guard.
  * @param page - The Puppeteer page the install targets. Used as the WeakMap key so the per-page record is released when the page is closed.

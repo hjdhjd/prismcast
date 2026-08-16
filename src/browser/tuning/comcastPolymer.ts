@@ -627,7 +627,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
     // Install the request-interception listener that serves the cached channelmap response on warm tunes, eliminating the 3-5s network round-trip. The install is
     // gated through installOncePerPage so a recovery re-tune on the same page does not re-enable request interception or stack a second `page.on("request")`
-    // listener - tuneToChannel is the single source of truth for both initial setup and recovery, so resolveDirectUrl runs again on the same page during recovery.
+    // listener - every tune resolves a direct URL first, so resolveDirectUrl runs again on the same page when the monitor re-tunes it.
     // The listener reads the cache through the live closure cells (cachedUrl/cachedBody/cachedHeaders) on every request rather than capturing them by value at
     // install time. This matters because the install runs once: a copy taken here would pin the channelmap snapshot from the first tune and invalidateCachedResponse
     // could never stop the listener from replaying stale data. Reading the live cells means a null cachedBody simply falls through to the network, so an invalidated

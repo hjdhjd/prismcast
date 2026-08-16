@@ -239,8 +239,8 @@ function setupConsoleListeners(page: Page): void {
  */
 async function installDirectTuneInterceptor(page: Page, channelName: string, discoverOnly: boolean): Promise<void> {
 
-  // Gate the evaluateOnNewDocument install through installOncePerPage. resolveDirectvDirectUrl runs this before every navigation, and tuneToChannel is the single
-  // source of truth for both initial setup and recovery - so a recovery re-tune calls it again on the same page. Without the gate, each re-tune would stack another
+  // Gate the evaluateOnNewDocument install through installOncePerPage. resolveDirectvDirectUrl runs this before every navigation, and the monitor's recovery tune
+  // resolves a direct URL exactly as stream setup did - so a recovery re-tune calls it again on the same page. Without the gate, each re-tune would stack another
   // webpack-interceptor script; every subsequent navigation would then run multiple competing chunk-push wrappers and Redux-store polls in the same frame. The
   // discovery path uses its own fresh page, so the single per-page key never blocks a discover-then-tune sequence on distinct pages.
   await installOncePerPage(page, "webpack-interceptor", async () => await page.evaluateOnNewDocument((targetName: string, discoverOnlyFlag: boolean,

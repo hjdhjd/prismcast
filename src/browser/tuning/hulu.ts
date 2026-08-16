@@ -1466,8 +1466,8 @@ async function resolveHuluDirectUrl(channelSelector: string, page: Page): Promis
    * details API requests, populating the UUID cache to ~123 channels on a single page load. The script runs via evaluateOnNewDocument - it executes before
    * any page JavaScript, patching window.fetch so Hulu's module-scoped fetch reference captures the interceptor.
    *
-   * The install goes through installOrReplaceOnNewDocument. tuneToChannel is the single source of truth for both initial setup and recovery, so resolveHuluDirectUrl
-   * runs again on the same page during a recovery re-tune - and the UUID/EAB cache that drives this script's arguments can warm from empty (cold first tune) to
+   * The install goes through installOrReplaceOnNewDocument. Every tune resolves a direct URL first, so resolveHuluDirectUrl runs again on the same page when the
+   * monitor re-tunes it for recovery - and the UUID/EAB cache that drives this script's arguments can warm from empty (cold first tune) to
    * populated (warm re-tune) in between. The script bakes those tokens in as evaluateOnNewDocument arguments, so re-installing each time is required to carry the
    * CURRENT tokens; installOrReplaceOnNewDocument removes the prior script before adding the fresh one, keeping exactly one live interceptor with up-to-date
    * arguments rather than an accumulating stack of competing window.fetch patches frozen at their respective install-time values. (Gating with installOncePerPage

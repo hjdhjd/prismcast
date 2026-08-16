@@ -1741,8 +1741,10 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 }
 
 /**
- * Tunes to a channel by navigating to the URL and initializing video playback. This is the single source of truth for channel initialization, used by both initial
- * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
+ * Tunes to a channel by navigating to the URL and initializing video playback. This is the recovery path's tune: the playback monitor calls it to bring a stream
+ * back by navigating the page again. Initial stream setup and native re-establishment reach the same phases through establishChannelPlayback in streaming/setup.ts,
+ * which composes navigation and playback initialization with the per-path policy each of those callers carries. Both routes land in initializePlayback, so the
+ * channel selection, video detection, and playback steps a recovered stream runs are the steps a fresh one ran.
  *
  * The tuning process:
  * 0. Check cache: If a direct watch URL is cached, navigate to it and skip channel selection. On failure, fall through, and let the cache coordinator classify

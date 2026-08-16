@@ -310,7 +310,7 @@ export function monitorPlaybackHealth(
   const PROACTIVE_RELOAD_MARGIN_MS = 120000;
 
   // Timestamp of the most recent full page navigation. Used to calculate elapsed continuous playback for proactive reload when maxContinuousPlayback is configured.
-  // Initialized to Date.now() because the monitor starts immediately after tuneToChannel() succeeds in stream setup, meaning a page load just completed. Reset
+  // Initialized to Date.now() because the monitor starts immediately after stream setup establishes playback, meaning a page load just completed. Reset
   // after any successful page navigation recovery or tab replacement, but NOT after source reloads (L2) which preserve the page's JavaScript context.
   let lastPageNavigationTime = Date.now();
 
@@ -1139,8 +1139,8 @@ export function monitorPlaybackHealth(
 
     try {
 
-      // Use tuneToChannel to reinitialize playback. This is the single source of truth for channel initialization, ensuring recovery uses the exact same sequence
-      // as initial setup (navigation, channel selection, video detection, click-to-play, playback).
+      // Use tuneToChannel to reinitialize playback. It is the tune this recovery path owns, and it runs the phases stream setup ran - navigation, channel
+      // selection, video detection, click-to-play, playback - so a recovered stream comes up the way a fresh one did.
       const { context: newContext } = await tuneToChannel(currentPage, url, profile);
 
       // Check for unexpected new tabs created during tuning.
