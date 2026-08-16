@@ -3,7 +3,7 @@
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
-import { LOG, delay, evaluateWithAbort, extractDomain, formatError } from "../utils/index.ts";
+import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, formatError, isPageDeathError } from "../utils/index.ts";
 import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
@@ -93,12 +93,25 @@ export async function resolveDirectUrl(profile: ResolvedSiteProfile, page: Page)
   return await strategies[channelSelection.strategy]?.resolveDirectUrl?.(channelSelector, page) ?? null;
 }
 
-/**
- * Invalidates the cached direct watch URL for the channel specified in the profile. Looks up the strategy entry's invalidateDirectUrl hook and calls it with
- * the channelSelector. No-op if the strategy has no invalidator or the profile has no channelSelector.
- * @param profile - The resolved site profile.
+/* The retention policy for cached watch URLs, named once so the two conditions it unions stay one concept rather than an expression a later edit can drop an arm
+ * from. A tune that died because the page, context, or frame went away, or because the stream itself was cancelled, produced no evidence about the URL it was
+ * navigating to.
  */
-export function invalidateDirectUrl(profile: ResolvedSiteProfile): void {
+const retainsCachedUrl = (cause: unknown): boolean => isPageDeathError(cause) || (cause instanceof EvaluateAbortError);
+
+/**
+ * Invalidates the cached direct watch URL for the channel specified in the profile, when the failure that prompted the call is evidence against that URL. Looks
+ * up the strategy entry's invalidateDirectUrl hook and calls it with the channelSelector. No-op if the strategy has no invalidator or the profile has no
+ * channelSelector.
+ *
+ * The decision of what counts as evidence lives here rather than at the tune sites, so every caller gets one policy. A failure that reflects the death of the
+ * page or the stream's own cancellation says nothing about whether the cached URL still resolves to the right channel, and evicting on it costs the next tune
+ * dearly: every subsequent tune for that channel is forced through guide navigation, which during an incident is exactly the path most likely to be broken too.
+ * A genuine tune failure - the video never becomes ready, the channel is not on the page, navigation is refused - is evidence, and evicts.
+ * @param profile - The resolved site profile.
+ * @param cause - The failure that prompted the invalidation, classified here against the retention policy.
+ */
+export function invalidateDirectUrl(profile: ResolvedSiteProfile, cause: unknown): void {
 
   const { channelSelection, channelSelector } = profile;
 
@@ -107,6 +120,12 @@ export function invalidateDirectUrl(profile: ResolvedSiteProfile): void {
     return;
   }
 
+  if(retainsCachedUrl(cause)) {
+
+    LOG.debug("tuning:cache", "Retaining the cached direct URL for %s: %s.", channelSelector, formatError(cause));
+
+    return;
+  }
 
   strategies[channelSelection.strategy]?.invalidateDirectUrl?.(channelSelector);
 }

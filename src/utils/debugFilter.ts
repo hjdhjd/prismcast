@@ -254,6 +254,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "timing:startup", description: "Stream startup: init segment, first playlist, capture ready." },
   { category: "timing:tab", description: "Tab replacement: old tab cleanup, new page creation." },
   { category: "timing:tune", description: "Tune waterfall: navigation, channel selection, video ready." },
+  { category: "tuning:cache", description: "Cached direct watch URLs: retention decisions when a tune fails." },
   { category: "tuning:cox", description: "Cox Contour TV: channelmap API interception, SPA channel switching, Watch Now modal dismissal." },
   { category: "tuning:directv", description: "DirecTV Stream: interceptor tuning, cache, logo click fallback." },
   { category: "tuning:fox", description: "Fox.com guide grid: console bridge, page errors, request failures, channel-switch diagnostics." },

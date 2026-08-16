@@ -854,10 +854,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     }
   } catch(error) {
 
-    // If a cached direct URL was used, invalidate it so the next attempt falls through to guide navigation.
+    // If a cached direct URL was used, offer the failure to the cache coordinator, which invalidates when the failure is evidence against the URL so the next
+    // attempt falls through to guide navigation.
     if(usedDirectUrl) {
 
-      invalidateDirectUrl(profile);
+      invalidateDirectUrl(profile, error);
     }
 
     // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the failed

@@ -12,12 +12,13 @@
  * Strategy execute paths that drive Chrome (every provider's tune flow, scroll-to-bottom and matchSelector polling, category resolution against page DOM) are
  * outside the unit-test scope and listed in the deferred-coverage block at the bottom of this file.
  */
+import type { ChannelStrategyEntry, ResolvedSiteProfile } from "../types/index.ts";
+import { EvaluateAbortError, extractDomain } from "../utils/index.ts";
 import { clearChannelSelectionCaches, getCachedProviderChannels, getProviderBySlug, getProviderByStrategy, getProviderDomainMap, getProviderGuideUrls,
   getProviderModuleInfo, getProviderSlugs, getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
 import { describe, test } from "node:test";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
-import { extractDomain } from "../utils/index.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
@@ -379,10 +380,11 @@ describe("invalidateDirectUrl", () => {
 
   test("returns silently when the profile has no channelSelector (no-op)", () => {
 
-    // Mirrors resolveDirectUrl's null-channelSelector guard. Locks the contract that callers can pass any profile without precondition checks.
+    // Mirrors resolveDirectUrl's null-channelSelector guard. Locks the contract that callers can pass any profile without precondition checks. The cause is a
+    // generic failure - one the policy would treat as evidence - so the guard is shown to short-circuit ahead of the retention decision.
     assert.doesNotThrow(() => {
 
-      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "guideGrid" }, channelSelector: null }));
+      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "guideGrid" }, channelSelector: null }), new Error("tune failed"));
     }, "no selector -> no-op");
   });
 
@@ -390,7 +392,7 @@ describe("invalidateDirectUrl", () => {
 
     assert.doesNotThrow(() => {
 
-      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "guideGrid" }, channelSelector: "" }));
+      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "guideGrid" }, channelSelector: "" }), new Error("tune failed"));
     }, "empty selector -> no-op");
   });
 
@@ -399,8 +401,79 @@ describe("invalidateDirectUrl", () => {
     // The strategy is not in the registry under key "none" so the optional-chain access produces undefined - the call is a clean no-op.
     assert.doesNotThrow(() => {
 
-      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "none" }, channelSelector: "anything" }));
+      invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "none" }, channelSelector: "anything" }), new Error("tune failed"));
     }, "none strategy -> no-op");
+  });
+});
+
+/* The retention policy decides whether a tune failure is evidence against the cached watch URL. The cases below drive it through a profile naming a registered
+ * strategy and observe the dispatch on that strategy's own invalidator, which is the decision's only visible effect. HBO is incidental: it is simply a
+ * registered provider that publishes an invalidateDirectUrl hook.
+ */
+describe("invalidateDirectUrl retention policy", () => {
+
+  /* Resolves the registered HBO strategy entry - the exact object the coordinator dispatches through for an hboGrid profile, so instrumenting it observes the
+   * real decision rather than a stand-in. The assertion establishes the hook is present; the cast then expresses that checked fact for t.mock.method, which
+   * requires a method the type system knows is there. node:test restores the method when the case ends, which is what makes instrumenting the shared provider
+   * object safe.
+   */
+  function hboStrategy(): Required<Pick<ChannelStrategyEntry, "invalidateDirectUrl">> {
+
+    const strategy = getProviderBySlug("hbomax")?.strategy;
+
+    assert.ok(strategy?.invalidateDirectUrl, "the HBO strategy publishes an invalidateDirectUrl hook");
+
+    return strategy as Required<Pick<ChannelStrategyEntry, "invalidateDirectUrl">>;
+  }
+
+  // A profile whose strategy name routes to the HBO entry, carrying the channelSelector the provider would evict by.
+  function hboProfile(): ResolvedSiteProfile {
+
+    return makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" });
+  }
+
+  test("dispatches to the provider's invalidator for a generic tune failure", (t) => {
+
+    // A failure that reached a verdict on the page it navigated to - the video never appeared - is evidence the cached URL is wrong, so the entry goes.
+    const strategy = hboStrategy();
+    const invalidate = t.mock.method(strategy, "invalidateDirectUrl", () => { /* Captured via the mock. */ });
+
+    invalidateDirectUrl(hboProfile(), new Error("Waiting for selector `video` failed: timeout 30000ms exceeded"));
+
+    assert.equal(invalidate.mock.calls.length, 1, "a genuine tune failure evicts");
+    assert.equal(invalidate.mock.calls[0]?.arguments[0], "HBO", "the provider is told which channel's entry to drop");
+  });
+
+  test("retains the cached URL when the frame was detached", (t) => {
+
+    // The incident shape: the page died under the tune, which says nothing about the URL. Evicting here forces every later tune through guide navigation.
+    const strategy = hboStrategy();
+    const invalidate = t.mock.method(strategy, "invalidateDirectUrl", () => { /* Captured via the mock. */ });
+
+    invalidateDirectUrl(hboProfile(), new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'"));
+
+    assert.equal(invalidate.mock.calls.length, 0, "a dead frame is not evidence against the URL");
+  });
+
+  test("retains the cached URL when the execution context was destroyed", (t) => {
+
+    const strategy = hboStrategy();
+    const invalidate = t.mock.method(strategy, "invalidateDirectUrl", () => { /* Captured via the mock. */ });
+
+    invalidateDirectUrl(hboProfile(), new Error("Execution context was destroyed, most likely because of a navigation"));
+
+    assert.equal(invalidate.mock.calls.length, 0, "a torn-down context is not evidence against the URL");
+  });
+
+  test("retains the cached URL when the stream was cancelled mid-tune", (t) => {
+
+    // An EvaluateAbortError means this stream was terminated while the tune ran. The tune reached no verdict at all, so the entry survives for the next stream.
+    const strategy = hboStrategy();
+    const invalidate = t.mock.method(strategy, "invalidateDirectUrl", () => { /* Captured via the mock. */ });
+
+    invalidateDirectUrl(hboProfile(), new EvaluateAbortError());
+
+    assert.equal(invalidate.mock.calls.length, 0, "the stream's own cancellation is not evidence against the URL");
   });
 });
 

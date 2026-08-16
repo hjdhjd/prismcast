@@ -1743,7 +1743,8 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
  * stream setup and recovery. Having one authoritative function ensures consistent behavior and prevents code divergence between setup and recovery paths.
  *
  * The tuning process:
- * 0. Check cache: If a direct watch URL is cached, navigate to it and skip channel selection. On failure, invalidate and fall through.
+ * 0. Check cache: If a direct watch URL is cached, navigate to it and skip channel selection. On failure, fall through, and let the cache coordinator classify
+ *    the cause to decide whether the entry survives.
  * 1. Navigate: Load the target URL using site-appropriate wait conditions
  * 2. Select channel: For multi-channel players, click the desired channel in the UI
  * 3. Find video: Locate the video element (which may be in an iframe)
@@ -1763,8 +1764,9 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
 
   const tuneElapsed = startTimer();
 
-  // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure,
-  // invalidate the cache entry and fall through to the normal guide-based flow.
+  // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure, hand the
+  // cause to the cache coordinator - which keeps the entry when the failure describes a dead page rather than a bad URL - and fall through to the normal
+  // guide-based flow either way.
   const cachedUrl = await resolveDirectUrl(profile, page);
 
   if(cachedUrl) {
@@ -1784,7 +1786,7 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
       return result;
     } catch(error) {
 
-      invalidateDirectUrl(profile);
+      invalidateDirectUrl(profile, error);
 
       LOG.warn("Cached direct URL failed for %s: %s. Falling back to guide navigation.", profile.channelSelector ?? "unknown", formatError(error));
     }

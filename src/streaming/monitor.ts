@@ -3,7 +3,8 @@
  * monitor.ts: Playback health monitoring for PrismCast.
  */
 import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
-import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isSessionClosedError, runWithStreamContext, startTimer } from "../utils/index.ts";
+import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isPageDeathError, isSessionClosedError, runWithStreamContext,
+  startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth, formatIssueType,
@@ -1939,11 +1940,8 @@ export function monitorPlaybackHealth(
           stateInfo = await getVideoState(currentContext, selectorType);
         } catch(stateError) {
 
-          // Check for execution context destroyed errors, which indicate the frame was detached.
-          const errorMessage = formatError(stateError);
-          const isContextDestroyed = [ "context", "destroyed", "detached", "target closed" ].some((term) => errorMessage.toLowerCase().includes(term));
-
-          if(isContextDestroyed) {
+          // Classify through the shared page-death predicate: the world the read ran in is gone, so the video may simply live in a context we no longer hold.
+          if(isPageDeathError(stateError)) {
 
             LOG.debug("recovery:context", "Video context was invalidated (frame detached). Will re-search for video.");
             contextInvalidated = true;

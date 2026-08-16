@@ -1,11 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * errors.test.ts: Unit tests for the error formatting helpers in errors.ts. Every export in this module is a pure function; the tests cover the
- * input-shape branches in formatError (Error instance, duck-typed message, fallback to String()) and the documented unrecoverable patterns in
- * isSessionClosedError.
+ * input-shape branches in formatError (Error instance, duck-typed message, fallback to String()), the documented unrecoverable patterns in
+ * isSessionClosedError, and the exact-phrase matching in isPageDeathError - including the errors carrying a page-death word in an unrelated sense, which are
+ * what prove the phrase matching is not a word search.
  */
 import { describe, test } from "node:test";
-import { formatError, isSessionClosedError, isStaleCaptureMutexError } from "./errors.ts";
+import { formatError, isPageDeathError, isSessionClosedError, isStaleCaptureMutexError } from "./errors.ts";
+import { EvaluateTimeoutError } from "./evaluate.ts";
 import assert from "node:assert/strict";
 
 describe("formatError", () => {
@@ -122,10 +124,13 @@ describe("isSessionClosedError", () => {
     assert.equal(isSessionClosedError(""), false);
   });
 
-  test("matching is case-sensitive (Target closed != target closed)", () => {
+  test("matching ignores case (target closed == TARGET CLOSED)", () => {
 
-    // Locking the contract: the patterns are exact substrings, not case-insensitive. Browser-emitted errors use the documented capitalization.
-    assert.equal(isSessionClosedError(new Error("target closed")), false, "lowercase variant does not match");
+    // Locking the contract: the same dead state reaches callers with different capitalization depending on which browser surface raised it, and every
+    // capitalization means the target is equally gone.
+    assert.equal(isSessionClosedError(new Error("target closed")), true, "lowercase variant matches");
+    assert.equal(isSessionClosedError(new Error("TARGET CLOSED")), true, "uppercase variant matches");
+    assert.equal(isSessionClosedError(new Error("session CLOSED unexpectedly")), true, "mixed-case variant matches");
   });
 
   test("returns true for non-Error inputs that contain a matching string", () => {
@@ -140,6 +145,65 @@ describe("isSessionClosedError", () => {
     // Negative test: nullish inputs are coerced to the strings "null"/"undefined", neither of which contains any pattern.
     assert.equal(isSessionClosedError(null), false);
     assert.equal(isSessionClosedError(undefined), false);
+  });
+});
+
+describe("isPageDeathError", () => {
+
+  test("returns true for each execution-context and frame phrasing, in any capitalization", () => {
+
+    // The CDP family this predicate exists to catch. Capitalization varies by the surface that raised the error, so every phrase is pinned in a different case.
+    assert.equal(isPageDeathError(new Error("Execution context was destroyed")), true);
+    assert.equal(isPageDeathError(new Error("EXECUTION CONTEXT IS NOT AVAILABLE")), true);
+    assert.equal(isPageDeathError(new Error("Cannot find context with specified id")), true);
+    assert.equal(isPageDeathError(new Error("Frame got detached")), true);
+    assert.equal(isPageDeathError(new Error("frame was detached")), true);
+  });
+
+  test("returns true for the session-closed family it composes, in any capitalization", () => {
+
+    // The union's other half. These reach the predicate through isSessionClosedError, so the composition is what this pins.
+    assert.equal(isPageDeathError(new Error("TARGET CLOSED")), true);
+    assert.equal(isPageDeathError(new Error("session closed")), true);
+    assert.equal(isPageDeathError(new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'")), true);
+  });
+
+  test("returns false for errors carrying a page-death word in an unrelated sense", () => {
+
+    // These are the cases that prove the matching is by phrase, not by word: each carries "destroyed", "detached", or "context" describing something that is
+    // not a dead page. Treating them as page death would route ordinary failures into page-death handling, where they suppress real signal.
+    assert.equal(isPageDeathError(new Error("The object was destroyed elsewhere")), false, "an unrelated destruction is not page death");
+    assert.equal(isPageDeathError(new Error("detached observer callback")), false, "a detached callback is not page death");
+    assert.equal(isPageDeathError(new Error("browsing context lost")), false, "a lost browsing context is not one of the CDP phrasings");
+  });
+
+  test("returns false for a message holding every page-death word without any of the phrases", () => {
+
+    // Rules out a word-pair implementation: "frame", "context", and "detached" are all present, and no exact phrase is.
+    assert.equal(isPageDeathError(new Error("iframe context was unexpectedly detached during navigation")), false);
+  });
+
+  test("returns false for ordinary tune and timeout failures", () => {
+
+    // The failures that ARE evidence about their own subject. A cached-URL tune that fails this way must still evict the entry, so a false positive here would
+    // reintroduce exactly the eviction the classifier exists to prevent - in the opposite direction.
+    assert.equal(isPageDeathError(new Error("Waiting for selector `video` failed")), false);
+    assert.equal(isPageDeathError(new EvaluateTimeoutError(15000)), false, "a timeout says the page is slow, not gone");
+  });
+
+  test("returns false for the empty string, null, and undefined", () => {
+
+    // Boundary: nothing to match against, and the nullish inputs coerce to "null"/"undefined" through formatError.
+    assert.equal(isPageDeathError(""), false);
+    assert.equal(isPageDeathError(null), false);
+    assert.equal(isPageDeathError(undefined), false);
+  });
+
+  test("classifies non-Error inputs through formatError", () => {
+
+    // The predicate takes unknown and delegates message extraction, so a bare string or a duck-typed carrier classifies the same as an Error would.
+    assert.equal(isPageDeathError("Execution context was destroyed"), true);
+    assert.equal(isPageDeathError({ message: "Frame was detached during evaluation" }), true);
   });
 });
 
