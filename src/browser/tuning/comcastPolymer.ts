@@ -749,7 +749,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
       await page.waitForSelector("tv-app", { timeout });
     } catch {
 
-      return { reason: config.label + " guide page did not load within timeout.", success: false };
+      return { guideUnavailable: true, reason: config.label + " guide page did not load within timeout.", success: false };
     }
 
     // Wait for the SPA's channelMap.channels to populate. The channelmap API fires during page load and the SPA stores the response in this property.

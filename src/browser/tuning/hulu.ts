@@ -1010,7 +1010,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
   if(!rowsVisible) {
 
-    return { reason: "Channel grid rows did not render.", success: false };
+    return { guideUnavailable: true, reason: "Channel grid rows did not render.", success: false };
   }
 
   // Normalize the channel name to lowercase for case-insensitive matching against data-testid suffixes.
@@ -1020,7 +1020,7 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
   if(!gridMeta) {
 
-    return { reason: "Could not locate channel grid spacer element.", success: false };
+    return { guideUnavailable: true, reason: "Could not locate channel grid spacer element.", success: false };
   }
 
   const { gridDocTop, rowHeight, totalRows } = gridMeta;
@@ -1207,37 +1207,6 @@ async function guideGridStrategy(page: Page, profile: ChannelSelectionProfile): 
 
   // Click the on-now program cell and wait for the play button, with click retries to handle React hydration timing.
   return await clickOnNowCellAndPlay(page, clickTarget, playSelector, channelName);
-}
-
-/**
- * Wraps guideGridStrategy with a single retry after dismissing any stale overlay that may be covering the guide grid. After a failed click attempt on the on-now
- * cell, the playback overlay or entity modal can remain open, obscuring the guide and preventing subsequent channel selection attempts from locating guide rows.
- * Pressing Escape closes most modal overlays in React-based SPAs.
- * @param page - The Puppeteer page object.
- * @param profile - The resolved site profile with a non-null channelSelector (channel name) and channelSelection config.
- * @returns Result object with success status and optional failure reason.
- */
-async function guideGridWithRetry(page: Page, profile: ChannelSelectionProfile): Promise<ChannelSelectorResult> {
-
-  let result = await guideGridStrategy(page, profile);
-
-  if(!result.success) {
-
-    LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", result.reason ?? "Unknown reason");
-
-    try {
-
-      await page.keyboard.press("Escape");
-      await delay(500);
-    } catch(error) {
-
-      LOG.debug("tuning:hulu", "Could not dismiss guide overlay: %s.", formatError(error));
-    }
-
-    result = await guideGridStrategy(page, profile);
-  }
-
-  return result;
 }
 
 /**
@@ -2237,7 +2206,7 @@ export const huluProvider: ProviderModule = {
   strategy: {
 
     clearCache: clearHuluCache,
-    execute: guideGridWithRetry,
+    execute: guideGridStrategy,
     invalidateDirectUrl: invalidateHuluDirectUrl,
     resolveDirectUrl: resolveHuluDirectUrl
   },

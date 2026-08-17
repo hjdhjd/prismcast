@@ -273,7 +273,7 @@ async function youtubeGridStrategy(page: Page, profile: ChannelSelectionProfile)
     await page.waitForSelector("ytu-epg-row", { timeout: CONFIG.streaming.videoTimeout });
   } catch {
 
-    return { reason: "YouTube TV guide grid did not load.", success: false };
+    return { guideUnavailable: true, reason: "YouTube TV guide grid did not load.", success: false };
   }
 
   // Discover all channels from the guide grid.

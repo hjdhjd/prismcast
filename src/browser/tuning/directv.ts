@@ -871,7 +871,7 @@ async function directvLogoClickFallback(page: Page, channelName: string): Promis
     await page.waitForSelector("[aria-label^=\"view \"]", { timeout: CONFIG.streaming.videoTimeout, visible: true });
   } catch {
 
-    return { reason: "DirecTV guide grid did not load (no channel logos found).", success: false };
+    return { guideUnavailable: true, reason: "DirecTV guide grid did not load (no channel logos found).", success: false };
   }
 
   // Find and scroll to the target channel's logo. We use DOM element.click() rather than coordinate-based page.mouse.click because DirecTV has an invisible

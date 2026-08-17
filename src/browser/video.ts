@@ -452,8 +452,9 @@ export async function navigateToPage(page: Page, url: string, profile: ResolvedS
 }
 
 /**
- * Reloads the current page, mirroring navigateToPage's wait strategy. Used after an embedded-player consent gate is accepted: the gate's acceptance only creates
- * the player iframe on a fresh load, so a single reload re-renders the page with consent now persisted, and the video resolves on the second pass.
+ * Reloads the current page, mirroring navigateToPage's wait strategy. Two callers, one mechanism. An accepted embedded-player consent gate only creates the player
+ * iframe on a fresh load, so a reload re-renders the page with consent persisted and the video resolves on the second pass. A guide that never rendered is the
+ * other: the reload is what gives channel selection a fresh surface to read.
  * @param page - The Puppeteer page object.
  * @param profile - The site profile, whose waitForNetworkIdle flag selects the reload wait condition.
  */
@@ -1381,27 +1382,6 @@ export async function ensurePlayback(
   }
 }
 
-/**
- * Dismisses any stale overlay or modal that may be covering the guide grid. After a failed click attempt on the on-now cell, the playback overlay or entity modal
- * can remain open, obscuring the guide and preventing subsequent channel selection attempts from locating guide rows. Pressing Escape closes most modal overlays
- * in React-based SPAs.
- * @param page - The Puppeteer page object.
- */
-async function dismissGuideOverlay(page: Page): Promise<void> {
-
-  try {
-
-    await page.keyboard.press("Escape");
-
-    // Brief delay for the overlay dismiss animation to complete and the guide grid to re-render.
-    await delay(500);
-  } catch(error) {
-
-    // Overlay dismissal is best-effort. The overlay may not exist, or the page may be in a state where keyboard input is ignored.
-    LOG.debug("browser:video", "Could not dismiss guide overlay: %s.", formatError(error));
-  }
-}
-
 /* VideoTuneDeps is the set of cross-module tune collaborators initializePlayback and its failure-path diagnosis compose on: channel selection and the overlay-
  * handling poll on the main path, plus the provider lookup and blocked-page classifier on the failure path. It is injected as a default parameter so a test can
  * substitute stubs at the same injection point - no loader mock - while production uses the real defaultVideoTuneDeps. The default is a shared module const,
@@ -1539,8 +1519,9 @@ async function withOverlayGuard<T>(page: Page, profile: ResolvedSiteProfile, pha
  * timeout, while channel selection and video setup run with their own internal time budgets (click retry loops, videoTimeout, etc.) without being killed by the
  * navigation timeout.
  *
- * For guideGrid channel selection failures, the function attempts a single retry after dismissing any stale overlay that may be covering the guide grid. This
- * handles the case where a failed click attempt left an overlay open, causing subsequent locateOnNowCell calls to fail.
+ * When channel selection fails because the guide surface itself never rendered, the function reloads the page and retries selection once. That failure class is
+ * transient - a rail whose lazy tiles never populated, an SPA shell that did not come up - and a reload is what cures it. A failure on a guide that did render,
+ * such as a channel name that is simply not in the lineup, gets no retry: reading the same rendered guide again would fail the same way, more slowly.
  *
  * @param page - The Puppeteer page object.
  * @param profile - The site profile containing all behavior flags.
@@ -1575,12 +1556,24 @@ export async function initializePlayback(page: Page, profile: ResolvedSiteProfil
 
       if(!channelResult.success) {
 
-        // For guideGrid strategy, a stale overlay from a previous failed click attempt may be covering the guide. Dismiss it and retry channel selection once.
-        if(profile.channelSelection.strategy === "guideGrid") {
+        /* The guide surface never rendered, so there was nothing for the strategy to read. That is the transient class - lazy tiles that never populated, an SPA
+         * shell that did not come up, a stale overlay left across the grid - and a reload clears all of it at once, more thoroughly than dismissing anything
+         * would. This is the one whole-selection retry in the system: providers own the cheap retries inside a single attempt, the coordinator owns this one.
+         *
+         * The budget it spends: the retry only fires after a selection has already failed, which for most providers costs up to videoTimeout and for Hulu - whose
+         * grid strategy chains a list wait and a two-phase rows wait - closer to half a minute. The reload adds up to navigationTimeout, and a second selection
+         * follows it. Hulu's worst case therefore runs past the 45-second establishment ceiling and is truncated by it, failing exactly as the un-retried attempt
+         * was already going to fail. The ceiling is deliberately left where it is: the retry can never make a tune worse than the certain failure it replaces.
+         */
+        if(channelResult.guideUnavailable === true) {
 
-          LOG.warn("Guide grid channel selection failed: %s. Dismissing overlay and retrying.", channelResult.reason ?? "Unknown reason");
+          LOG.warn("Channel selection failed because the guide did not render: %s. Reloading the page and retrying once.", channelResult.reason ?? "Unknown reason");
 
-          await dismissGuideOverlay(page);
+          await reloadPage(page, profile);
+
+          // The reloaded page auto-plays its default channel again, and capture is live for the whole tune, so that audio would bleed into the recording until the
+          // second selection lands. The re-establishment path mutes after its own reload for the same reason.
+          await muteExistingVideos(page);
 
           channelResult = await deps.selectChannel(page, profile, { persistResolution });
         }

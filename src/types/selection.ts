@@ -33,6 +33,15 @@ export interface ChannelSelectorResult {
   // True when the tune succeeded via API interception rather than DOM interaction.
   directTune?: boolean;
 
+  /* True when selection failed because the guide surface itself never rendered - the rail, grid, or SPA shell the strategy needed to read was simply not there.
+   * This is the transient failure class a reload cures, and it is what the tune path's single retry keys on; a channel name that is genuinely absent from a guide
+   * that did render is a different failure and carries no flag, because re-reading the same rendered guide would only fail again more slowly.
+   *
+   * Meaningless beside success: true. The flat result shape predates this field and the one consumer reads it inside the failure branch only; restructuring the
+   * result into a discriminated union so the type system says that too is worthwhile work, and separate from this.
+   */
+  guideUnavailable?: boolean;
+
   // Human-readable explanation of why selection failed, present only when success is false.
   reason?: string;
 

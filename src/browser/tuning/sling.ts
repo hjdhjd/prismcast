@@ -594,7 +594,7 @@ async function slingGridStrategy(page: Page, profile: ChannelSelectionProfile): 
     await page.waitForSelector("[data-testid^=\"channel-\"]", { timeout: 5000, visible: true });
   } catch {
 
-    return { reason: "Sling TV guide grid did not load.", success: false };
+    return { guideUnavailable: true, reason: "Sling TV guide grid did not load.", success: false };
   }
 
   // API fast path with frontier-based polling. The channel cache populates progressively as paginated grid API responses arrive in alphabetical order during page

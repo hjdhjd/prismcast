@@ -367,7 +367,7 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
     await page.waitForSelector("li.channel-header-row", { timeout: CONFIG.streaming.videoTimeout });
   } catch {
 
-    return { reason: "Spectrum guide grid did not load.", success: false };
+    return { guideUnavailable: true, reason: "Spectrum guide grid did not load.", success: false };
   }
 
   // Discover all channels from the guide grid.

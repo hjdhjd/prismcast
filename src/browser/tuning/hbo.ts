@@ -252,7 +252,8 @@ async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
 
   if(!railResult.railFound) {
 
-    return { reason: "HBO channel rail not found on /channels. HBO Max may have restructured the page, or the subscription may not be active.", success: false };
+    return { guideUnavailable: true, reason: "HBO channel rail not found on /channels. HBO Max may have restructured the page, or the subscription may not be " +
+      "active.", success: false };
   }
 
   // Populate the unified channel cache with all discovered channels. Always repopulate rather than skipping when the cache has entries, because an entry the
