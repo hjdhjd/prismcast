@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.10.3",
+  "version": "1.11.0",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -63,35 +63,38 @@
     "prebuild": "npm run clean",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run build",
     "start": "node dist/index.js",
-    "test": "node --strip-types --test --test-force-exit --test-timeout=15000 \"src/**/*.test.ts\"",
+    "test": "node --test --test-force-exit --test-timeout=15000 \"src/**/*.test.ts\"",
     "test:all": "npm run test && npm run test:integration",
-    "test:coverage": "node --strip-types --test --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=\"src/**/*.test.ts\" --test-coverage-exclude=\"src/**/*.helpers.ts\" --test-coverage-lines=79 --test-coverage-branches=89 --test-coverage-functions=84 --test-timeout=120000 \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
-    "test:integration": "node --strip-types --test --test-force-exit --test-timeout=120000 \"test/**/*.test.ts\"",
-    "test:watch": "node --strip-types --test --watch \"src/**/*.test.ts\"",
+    "test:coverage": "node --test --test-force-exit --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=\"src/**/*.test.ts\" --test-coverage-exclude=\"src/**/*.helpers.ts\" --test-coverage-lines=80 --test-coverage-branches=89 --test-coverage-functions=84 --test-timeout=120000 \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "test:integration": "node --test --test-force-exit --test-timeout=120000 \"test/**/*.test.ts\"",
+    "test:watch": "node --test --watch \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "watch": "npm run build && nodemon"
   },
   "dependencies": {
-    "compression": "^1.8.1",
+    "compression": "1.8.1",
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.2",
+    "homebridge-plugin-utils": "2.3.2",
     "morgan": "1.11.0",
     "puppeteer-core": "24.43.1",
-    "puppeteer-stream": "3.0.22",
-    "ws": "^8.21.0"
+    "puppeteer-stream": "3.0.23",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "5.10.0",
-    "@types/compression": "^1.8.1",
+    "@types/compression": "1.8.1",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",
-    "@types/node": "26.1.0",
-    "@types/ws": "^8.18.1",
+    "@types/node": "26.2.0",
+    "@types/ws": "8.18.1",
     "eslint": "9.39.2",
-    "happy-dom": "^20.10.6",
-    "homebridge-plugin-utils": "1.35.0",
+    "happy-dom": "20.11.2",
     "nodemon": "3.1.14",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.62.1"
+    "typescript-eslint": "8.67.0"
+  },
+  "allowScripts": {
+    "ffmpeg-for-homebridge": true
   }
 }
