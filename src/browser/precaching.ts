@@ -35,11 +35,65 @@ import { startOverlayHandling } from "./consent.ts";
 // Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
 const PRECACHE_DELAY = 5000;
 
-// Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared in a finally block.
+/* Delay in milliseconds before the services that discovered nothing are re-attempted. Five minutes puts the second pass well past the contention a boot creates -
+ * the browser launch, the first tunes, the DVR's own channel scan - which is the likeliest reason a provider's lazy content never appeared inside its walk. There
+ * is exactly one such pass: a service still empty on a settled system has a standing problem that another walk will not solve, and a repeating attempt would keep
+ * waking the browser for it indefinitely.
+ */
+const PRECACHE_RETRY_DELAY = 300000;
+
+// Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared through releasePrecacheGuard in a finally block.
 let precacheInProgress = false;
 
 // Handle for the scheduled precache cycle, tracked so a graceful shutdown can cancel it before it fires. Null when no cycle is pending.
 let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
+
+/* The pending deferred re-attempt: the services still to re-walk and the timer that will do it. One value rather than two fields, so arming, cancelling, and
+ * firing each move the whole thing at once - a slug list with no timer behind it, or a timer whose slugs were cleared, is not a state this can reach.
+ */
+let deferredRetry: Nullable<{ slugs: string[]; timer: ReturnType<typeof setTimeout> }> = null;
+
+/* Whether a full precache cycle was requested while the single-flight guard was held. The request always comes from a browser relaunch, which cleared every
+ * provider cache, so the run holding the guard is walking guides for a browser that no longer exists and its result is worth nothing - dropping the request would
+ * leave the new browser with no lineups at all. Whoever releases the guard runs it; releasePrecacheGuard is where that happens, and it is the only place.
+ */
+let fullCycleRequested = false;
+
+/**
+ * Cancels a pending deferred re-attempt and drops its state as one unit. A no-op when nothing is pending.
+ */
+function clearDeferredRetry(): void {
+
+  if(deferredRetry) {
+
+    clearTimeout(deferredRetry.timer);
+
+    deferredRetry = null;
+  }
+}
+
+/**
+ * Releases the single-flight guard and honors any full-cycle request that arrived while it was held.
+ *
+ * The order is the whole point. The flag is cleared first, so the reentrant startPrecaching below finds a free guard and schedules. Honoring first would have that
+ * call see the guard still held and record the very request being honored, which is how a browser relaunch's cycle would go round forever without ever running.
+ * Every path that takes the guard - the cycle, the deferred re-attempt, and the post-login revalidation - releases it here, so the hand-off has one home rather
+ * than a copy at each site.
+ * @param deps - The injected dependencies, handed to the cycle this may start.
+ */
+function releasePrecacheGuard(deps: PrecachingDeps): void {
+
+  precacheInProgress = false;
+
+  if(!fullCycleRequested) {
+
+    return;
+  }
+
+  fullCycleRequested = false;
+
+  startPrecaching(deps);
+}
 
 /* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate, the
  * provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup write the discovery-outcome policy performs. It is injected as a default
@@ -98,6 +152,10 @@ export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): v
 
   if(precacheInProgress) {
 
+    // Record the request rather than dropping it. This call is a browser relaunch's, and the run currently holding the guard is walking guides for a browser whose
+    // caches were just cleared out from under it - so the request is the one worth keeping, and whoever releases the guard runs it.
+    fullCycleRequested = true;
+
     LOG.debug("precache", "Precache deferred: already in progress.");
 
     return;
@@ -105,6 +163,10 @@ export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): v
 
   // Set the guard before scheduling so that a second call during the delay window (e.g., rapid browser crash + relaunch) sees the flag and defers.
   precacheInProgress = true;
+
+  // A full cycle supersedes any pending deferred re-attempt: it walks every configured service, the empty ones included, and letting both run would put two passes
+  // over the same guides in contention for one browser.
+  clearDeferredRetry();
 
   // Schedule the precache cycle after a brief delay to let the browser settle. The handle is tracked so stopPrecaching() can cancel it if shutdown begins during the
   // delay window; the ref is cleared when the timer fires since it is then spent.
@@ -116,8 +178,11 @@ export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): v
 }
 
 /**
- * Cancels a pending precache cycle and clears the in-progress guard. Called during graceful shutdown so a precache scheduled within the startup delay cannot fire
- * after the browser has been closed. Safe to call when no cycle is pending.
+ * Cancels every scheduled precache - the startup cycle and the deferred re-attempt alike - and clears the in-progress guard. Called during graceful shutdown so
+ * nothing scheduled can fire after the browser has been closed. Safe to call when nothing is pending.
+ *
+ * The guard is cleared directly rather than through releasePrecacheGuard, and the hand-off flag with it: a shutdown must not honor a pending full-cycle request,
+ * which is exactly what releasing through the hand-off would do.
  */
 export function stopPrecaching(): void {
 
@@ -127,6 +192,9 @@ export function stopPrecaching(): void {
     precacheTimer = null;
   }
 
+  clearDeferredRetry();
+
+  fullCycleRequested = false;
   precacheInProgress = false;
 }
 
@@ -558,7 +626,7 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
       }
     } finally {
 
-      precacheInProgress = false;
+      releasePrecacheGuard(deps);
     }
   } catch(error) {
 
@@ -567,14 +635,125 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
 }
 
 /**
+ * Schedules the one deferred re-attempt for the services a cycle finished with nothing to show for. Does nothing when every service came back with a lineup, and
+ * nothing during a shutdown, where scheduling work against the browser is precisely what teardown is closing down.
+ * @param slugs - The services that walked and found no channels.
+ * @param deps - The injected dependencies, handed to the pass this schedules.
+ */
+function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
+
+  if((slugs.length === 0) || deps.isGracefulShutdown()) {
+
+    return;
+  }
+
+  LOG.debug("precache", "Scheduling one deferred discovery re-attempt for %d service%s in %d minutes.", slugs.length, (slugs.length === 1) ? "" : "s",
+    PRECACHE_RETRY_DELAY / 60000);
+
+  deferredRetry = { slugs, timer: setTimeout(() => void runDeferredRetry(deps), PRECACHE_RETRY_DELAY) };
+}
+
+/**
+ * Runs the single deferred re-attempt for the services a cycle left empty. Never rejects - it is driven by a timer with nobody to hand a rejection to, so every
+ * per-service failure is contained the same way the cycle contains its own.
+ *
+ * A service whose lineup arrived in the interval - from a later full cycle, or from an on-demand discovery a user triggered - is skipped rather than re-walked,
+ * because the walk it would run is the expensive part and the answer is already in hand.
+ * @param deps - The injected browser and provider-registry dependencies.
+ * @returns A promise that resolves once the pass completes or is skipped.
+ */
+async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
+
+  const pending = deferredRetry;
+
+  // Drop the state before acting on it. This is the only pass there will be, so a handle left standing would tell a later cancellation that something is still
+  // scheduled when nothing is.
+  deferredRetry = null;
+
+  if(!pending || deps.isGracefulShutdown()) {
+
+    return;
+  }
+
+  /* A cycle or a post-login revalidation holding the guard is already walking guides, quite possibly these same ones. This pass exists to try again on a settled
+   * system, not to contend with a run in flight - and the run in flight is the better attempt of the two, so this one is dropped wholesale rather than rescheduled.
+   */
+  if(precacheInProgress) {
+
+    LOG.debug("precache", "Skipping the deferred discovery re-attempt: a precache cycle is already in progress.");
+
+    return;
+  }
+
+  precacheInProgress = true;
+
+  let attempted = 0;
+  let succeeded = 0;
+
+  try {
+
+    for(const slug of pending.slugs) {
+
+      // Re-checked every iteration, exactly as the cycle's own loop does: a shutdown that begins mid-pass must stop opening discovery pages, or the next
+      // getCurrentBrowser relaunches the Chrome that teardown just closed.
+      if(deps.isGracefulShutdown()) {
+
+        break;
+      }
+
+      const provider = deps.getProviderBySlug(slug);
+
+      if(!provider) {
+
+        continue;
+      }
+
+      if(provider.getCachedChannels()) {
+
+        LOG.debug("precache", "Skipping the deferred re-attempt for %s: its lineup was discovered in the meantime.", provider.label);
+
+        continue;
+      }
+
+      attempted++;
+
+      try {
+
+        // eslint-disable-next-line no-await-in-loop
+        const channels = await precacheService(provider, deps);
+
+        if(channels.length > 0) {
+
+          succeeded++;
+        }
+      } catch(error) {
+
+        LOG.warn("The deferred channel discovery re-attempt failed for %s: %s.", provider.label, formatError(error));
+      }
+    }
+
+    if(attempted > 0) {
+
+      LOG.info("Deferred channel discovery re-attempt complete: %d of %d service%s now have a lineup.", succeeded, attempted, (attempted === 1) ? "" : "s");
+    }
+  } finally {
+
+    releasePrecacheGuard(deps);
+  }
+}
+
+/**
  * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
- * Services not in the active service filter are silently skipped when the filter is non-empty.
+ * Services not in the active service filter are silently skipped when the filter is non-empty. Services that walk and find nothing are handed to a single deferred
+ * re-attempt, minutes later, once whatever startup contention may have starved them has passed.
  */
 async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
-  // Bail if a graceful shutdown began while this cycle was queued. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after shutdown
-  // closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag since the
-  // early return skips the finally block below.
+  /* Bail if a graceful shutdown began while this cycle was queued. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after shutdown
+   * closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag since the
+   * early return skips the finally block below - directly rather than through the hand-off, because honoring a full-cycle request is the one thing a teardown path
+   * must not do.
+   */
   if(deps.isGracefulShutdown()) {
 
     precacheInProgress = false;
@@ -587,7 +766,9 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
   const hasFilter = enabledFilter.length > 0;
   const cycleElapsed = startTimer();
 
-  let empty = 0;
+  // The services that walked but found nothing, named rather than counted: the deferred re-attempt below needs to know which ones to come back to.
+  const emptySlugs: string[] = [];
+
   let skipped = 0;
   let succeeded = 0;
 
@@ -633,7 +814,7 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
           succeeded++;
         } else {
 
-          empty++;
+          emptySlugs.push(slug);
         }
       } catch(error) {
 
@@ -642,12 +823,14 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
     }
 
     const elapsed = (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, "");
-    const emptySuffix = (empty > 0) ? ", " + String(empty) + " returned no channels" : "";
+    const emptySuffix = (emptySlugs.length > 0) ? ", " + String(emptySlugs.length) + " returned no channels" : "";
     const skippedSuffix = (skipped > 0) ? ", " + String(skipped) + " skipped (filtered)" : "";
 
     LOG.info("Channel lineup precaching complete: %d service%s cached%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", emptySuffix, skippedSuffix, elapsed);
+
+    armDeferredRetry(emptySlugs, deps);
   } finally {
 
-    precacheInProgress = false;
+    releasePrecacheGuard(deps);
   }
 }

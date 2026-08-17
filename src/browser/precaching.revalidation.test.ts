@@ -23,6 +23,7 @@ import type { Nullable } from "../types/index.ts";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "./precaching.ts";
 import type { StartOverlayHandlingOptions } from "./consent.ts";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as immediate } from "node:timers/promises";
 
@@ -388,6 +389,280 @@ describe("startPrecaching - graceful-shutdown guard", () => {
     startPrecaching(deps);
 
     assert.equal(scheduled.mock.calls.length, 1, "the same configuration schedules a cycle once shutdown clears");
+  });
+});
+
+/* A service that finishes a cycle with nothing gets one more pass, minutes later, once whatever startup contention may have starved it has cleared. The rows here
+ * drive the whole schedule on the virtual clock: the cycle fires at its own delay, the re-attempt at the longer one, and cancellation is asserted by advancing past
+ * the delay and finding that the walk never happened - not by inspecting a handle.
+ *
+ * The counter every row reads is precacheService invocations per provider, taken from the cache clear each invocation performs. It counts attempts rather than
+ * guide walks, which keeps the assertions about the schedule rather than about the guarded session's own empty-walk retry underneath it.
+ */
+describe("the deferred discovery re-attempt", () => {
+
+  // How many times precacheService was invoked for each slug, and the channels each provider's walks return. Reset per row.
+  let attempts: Record<string, number> = {};
+  let walkResults: Record<string, DiscoveredChannel[]> = {};
+
+  // Which providers report a cached lineup at the moment they are asked, standing in for a lineup that arrived between the cycle and the re-attempt.
+  let cachedSlugs = new Set<string>();
+
+  // Every timer the module scheduled but has not had fired or cancelled, keyed by the handle it was given.
+  let timers = new Map<number, { callback: () => void; delayMs: number }>();
+  let nextHandle = 1;
+
+  let originalServices: string[];
+
+  beforeEach(() => {
+
+    originalServices = CONFIG.channels.precacheServices;
+    attempts = {};
+    cachedSlugs = new Set();
+    nextHandle = 1;
+    timers = new Map();
+    walkResults = {};
+    stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
+
+    stopPrecaching();
+    clearLoginState();
+  });
+
+  afterEach(() => {
+
+    stopPrecaching();
+    clearLoginState();
+    CONFIG.channels.precacheServices = originalServices;
+  });
+
+  /* Captures the module's scheduling instead of running it, which is how this file drives schedules: a captured timer is fired by the row that means to fire it,
+   * and a cancelled one is removed the way clearTimeout removes a real one. Capture needs no timer enable/reset pair of its own, so unlike a virtual clock it
+   * cannot be disturbed by whatever timer state another suite in this process has installed. node:test restores both methods when the row ends.
+   * @param t - The row's test context, which owns the restoration.
+   */
+  function captureTimers(t: TestContext): void {
+
+    t.mock.method(globalThis, "setTimeout", (callback: () => void, delayMs?: number): unknown => {
+
+      const handle = nextHandle++;
+
+      timers.set(handle, { callback, delayMs: delayMs ?? 0 });
+
+      return handle;
+    });
+
+    t.mock.method(globalThis, "clearTimeout", (handle?: unknown): void => {
+
+      timers.delete(handle as number);
+    });
+  }
+
+  /**
+   * Lets every continuation the module queued run to completion, so a row reads settled state rather than a schedule still unwinding. setImmediate is untouched by
+   * the capture above, so each hop is a real macrotask boundary after the microtask queue has drained.
+   */
+  async function drain(): Promise<void> {
+
+    for(let hop = 0; hop < 10; hop++) {
+
+      // eslint-disable-next-line no-await-in-loop
+      await immediate();
+    }
+  }
+
+  /**
+   * Fires every captured timer scheduled for the given delay, then drains. A delay nothing was scheduled for fires nothing, which is exactly what a row asserting
+   * a cancellation is looking for.
+   * @param delayMs - The delay whose timers to fire.
+   */
+  async function fire(delayMs: number): Promise<void> {
+
+    for(const [ handle, timer ] of Array.from(timers)) {
+
+      if(timer.delayMs !== delayMs) {
+
+        continue;
+      }
+
+      timers.delete(handle);
+      timer.callback();
+    }
+
+    await drain();
+  }
+
+  /* Builds a provider whose walks return whatever walkResults holds for its slug and whose cache clear counts the precacheService invocation that performed it.
+   * handlesOwnNavigation keeps the stub page free of navigation, and getCachedChannels answers from cachedSlugs so a row can make a lineup appear mid-schedule.
+   */
+  function deferredProvider(slug: string): ProviderModule {
+
+    return {
+
+      discoverChannels: async (): Promise<DiscoveredChannel[]> => walkResults[slug] ?? [],
+      getCachedChannels: (): Nullable<DiscoveredChannel[]> => (cachedSlugs.has(slug) ? ONE_CHANNEL : null),
+      guideUrl: "https://www." + slug + ".test/guide",
+      handlesOwnNavigation: true,
+      label: slug,
+      slug,
+      strategy: {
+
+        clearCache: (): void => {
+
+          attempts[slug] = (attempts[slug] ?? 0) + 1;
+        }
+      }
+    } as unknown as ProviderModule;
+  }
+
+  test("re-attempts only the services the cycle left empty", async (t) => {
+
+    /* The feature in one row: a boot where one provider's lazy content never appeared inside its walk. The service that came back with a lineup is not touched
+     * again - re-walking it would cost a heavy SPA load for an answer already in hand - and the empty one gets exactly one more attempt.
+     */
+    mockProviders = { "deferred-empty": deferredProvider("deferred-empty"), "deferred-full": deferredProvider("deferred-full") };
+    walkResults = { "deferred-full": ONE_CHANNEL };
+    CONFIG.channels.precacheServices = [ "deferred-empty", "deferred-full" ];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1, "deferred-full": 1 }, "the cycle attempted both services once");
+
+    // The empty service's lineup shows up on the re-attempt, which is the outcome the delay is betting on.
+    walkResults = { "deferred-empty": ONE_CHANNEL, "deferred-full": ONE_CHANNEL };
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 2, "deferred-full": 1 }, "only the empty service was re-attempted");
+  });
+
+  test("skips a service whose lineup arrived in the interval", async (t) => {
+
+    // Five minutes is long enough for a full cycle after a browser relaunch, or for a user to hit the discovery endpoint. Either fills the cache, and the pass has
+    // nothing left to do for that service.
+    mockProviders = { "deferred-empty": deferredProvider("deferred-empty") };
+    CONFIG.channels.precacheServices = ["deferred-empty"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "the cycle attempted the service once");
+
+    cachedSlugs = new Set(["deferred-empty"]);
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "a service that already has a lineup is not walked again");
+  });
+
+  test("stopPrecaching cancels the pending pass, and the deferred walk never executes", async (t) => {
+
+    // The shutdown guarantee, asserted by outcome: advance well past the delay and find that nothing ran. A cancellation that only dropped a reference would let
+    // the timer fire into a closed browser and relaunch Chrome after teardown.
+    mockProviders = { "deferred-empty": deferredProvider("deferred-empty") };
+    CONFIG.channels.precacheServices = ["deferred-empty"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    stopPrecaching();
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "the cancelled pass never walked");
+  });
+
+  test("a fresh cycle supersedes the pending pass", async (t) => {
+
+    // A browser relaunch schedules a full cycle over every configured service, the empty ones included. Letting the deferred pass survive alongside it would put
+    // two passes over the same guides in contention for one browser.
+    mockProviders = { "deferred-empty": deferredProvider("deferred-empty") };
+    CONFIG.channels.precacheServices = ["deferred-empty"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "the first cycle ran");
+
+    walkResults = { "deferred-empty": ONE_CHANNEL };
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 2 }, "the fresh cycle ran its own attempt");
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 2 }, "the superseded pass never fired afterwards");
+  });
+
+  test("runs nothing once a graceful shutdown has begun", async (t) => {
+
+    // The per-service check inside the pass, and the one at its entry. Both exist because the pass opens discovery pages, and getCurrentBrowser relaunches the
+    // Chrome that teardown just closed.
+    let shuttingDown = false;
+
+    const shutdownDeps: PrecachingDeps = { ...deps, isGracefulShutdown: (): boolean => shuttingDown };
+
+    mockProviders = { "deferred-empty": deferredProvider("deferred-empty") };
+    CONFIG.channels.precacheServices = ["deferred-empty"];
+
+    captureTimers(t);
+    startPrecaching(shutdownDeps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "the cycle ran before shutdown began");
+
+    shuttingDown = true;
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-empty": 1 }, "the pass opened no discovery page during teardown");
+  });
+
+  test("a full-cycle request that arrives while the guard is held runs once the guard is released", async (t) => {
+
+    /* The dropped-cycle hand-off. A browser crash relaunch calls startPrecaching while a run still holds the guard, and that run is walking guides for a browser
+     * whose caches the relaunch just cleared - so its result is worth nothing and the request must not be discarded. The pin is the second cycle actually running,
+     * which also proves the release ordering: the reentrant call has to find a free guard, or it would record the very request being honored and schedule nothing.
+     */
+    const gate = Promise.withResolvers<DiscoveredChannel[]>();
+
+    mockProviders = { "deferred-full": { ...deferredProvider("deferred-full"), discoverChannels: async (): Promise<DiscoveredChannel[]> => gate.promise } };
+
+    CONFIG.channels.precacheServices = ["deferred-full"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-full": 1 }, "the first cycle is in flight");
+
+    // The relaunch's request, arriving while the guard is held.
+    startPrecaching(deps);
+
+    // Release the gated walk so the first cycle finishes and its release honors the request.
+    mockProviders = { "deferred-full": deferredProvider("deferred-full") };
+    walkResults = { "deferred-full": ONE_CHANNEL };
+
+    gate.resolve(ONE_CHANNEL);
+
+    await drain();
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-full": 2 }, "the deferred full cycle ran after the guard was released");
   });
 });
 
