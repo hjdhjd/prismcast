@@ -6,6 +6,9 @@
  * substitute stubs at that PrecachingDeps injection point and never drive a browser. The injected startOverlayHandling stub records each poll's options, so the
  * guide-page tests observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state assertions go through
  * getDomainAuthState, and login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
+ *
+ * The same injection point carries two further surfaces: the lineup write the discovery-outcome recorder performs, observed rather than executed, and the
+ * empty-walk retry the guarded session owns, whose rows drive a stub page that records what it was asked to do and a provider whose successive walks are scripted.
  */
 import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
@@ -14,6 +17,7 @@ import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearLoginState, setBrowserAccessors, startLoginMode } from "./login.ts";
 import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts";
 import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
+import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
@@ -776,5 +780,256 @@ describe("withProviderGuidePage", () => {
     await assert.rejects(withProviderGuidePage(provider, {}, deps), /walk failed/);
 
     assert.ok(pageEvents.includes("close"), "the failed walk still closes the page");
+  });
+});
+
+/* An empty discovery walk is the failure this arc exists to answer: a rail or grid whose lazy content never populated inside the walk's budget leaves the provider
+ * untunable for the life of the process. The session gives it one more attempt, but only when the page it left behind offers no explanation - a confirmed sign-in
+ * wall or a standing consent banner explains the emptiness completely, and reloading past that evidence would replace a recordable diagnosis with a fresh,
+ * undismissed banner.
+ *
+ * Every row here observes behavior rather than call counts where it can: what the page was asked to do, how many walks ran, and what the outcome hook was handed.
+ */
+describe("withProviderGuidePage - the empty-walk retry", () => {
+
+  // The channels each successive walk returns, and the page operations the stub recorded. Reset per test.
+  let walkResults: DiscoveredChannel[][] = [];
+  let walks = 0;
+  let retryEvents: string[] = [];
+
+  // What the outcome hook was handed, one entry per call. A retry that recorded twice, or recorded the wrong walk's result, shows up here.
+  let recorded: { channels: DiscoveredChannel[]; classification?: BlockedPageClassification }[] = [];
+
+  beforeEach(() => {
+
+    overlayHandlingCalls = [];
+    retryEvents = [];
+    recorded = [];
+    walkResults = [];
+    walks = 0;
+
+    clearLoginState();
+    mock.timers.enable({ apis: ["setTimeout"] });
+  });
+
+  afterEach(() => {
+
+    clearLoginState();
+    mock.timers.reset();
+  });
+
+  /* Builds the stub page the retry rows run against. Its evaluate routes on the argument shape, mirroring the precaching.test.ts convention: a string array is the
+   * CMP-detect probe, an object carrying maxDepth is the sign-in container collector, and anything else is the embed-gate probe, which reports a located gate by
+   * returning a record rather than null. consentPresent flips the CMP probe so a page can be made to classify as a consent overlay; reloadFails makes the reload
+   * throw the way a navigation timeout would. Every operation is recorded, which is how the rows below tell "reloaded once" apart from "never reloaded".
+   */
+  function makeRetryPage(options: { consentPresent?: boolean; reloadFails?: boolean } = {}): Page {
+
+    return {
+
+      $: async (): Promise<unknown> => null,
+      close: async (): Promise<void> => { retryEvents.push("close"); },
+      evaluate: async (_fn: unknown, arg?: unknown): Promise<unknown> => {
+
+        if(Array.isArray(arg)) {
+
+          return options.consentPresent ?? false;
+        }
+
+        return ((typeof arg === "object") && (arg !== null) && ("maxDepth" in arg)) ? [] : null;
+      },
+      evaluateOnNewDocument: async (): Promise<void> => { retryEvents.push("mute"); },
+      goto: async (): Promise<void> => { retryEvents.push("goto"); },
+      isClosed: (): boolean => false,
+      reload: async (): Promise<void> => {
+
+        retryEvents.push("reload");
+
+        if(options.reloadFails) {
+
+          throw new Error("Navigation timeout of 10000 ms exceeded");
+        }
+      },
+      url: (): string => "https://www.stub-guide.test/guide"
+    } as unknown as Page;
+  }
+
+  /* Builds a provider whose successive walks hand back walkResults in order, counting each one. authWallIndicators, when set, makes the classifier report an
+   * authentication wall off the stub page's own hostname without any DOM to probe.
+   */
+  function retryProvider(options: { handlesOwnNavigation?: boolean; wallIndicators?: boolean } = {}): ProviderModule {
+
+    return {
+
+      ...(options.wallIndicators === true ? { authWallIndicators: { hosts: ["stub-guide.test"] } } : {}),
+      discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+        const result = walkResults[walks] ?? [];
+
+        walks++;
+
+        return result;
+      },
+      guideUrl: "https://www.stub-guide.test/guide",
+      handlesOwnNavigation: options.handlesOwnNavigation ?? false,
+      label: "Stub Guide",
+      slug: "stub-guide",
+      strategy: {}
+    } as unknown as ProviderModule;
+  }
+
+  // The outcome hook every row installs: records what it was handed so the assertions can read the whole call history rather than one flag.
+  const afterWalk = async (_page: Page, channels: DiscoveredChannel[], classification?: BlockedPageClassification): Promise<void> => {
+
+    recorded.push({ channels, classification });
+
+    await Promise.resolve();
+  };
+
+  test("reloads and walks again when the first walk came back empty and the page explains nothing", async () => {
+
+    /* The incident's shape and the cure: the guide rendered, nothing blocked it, and the lineup simply was not there yet. One reload and one more walk, and the
+     * outcome that gets recorded is the second walk's - recorded once, with no classification threaded, so the recorder reads the page the retry actually saw.
+     */
+    walkResults = [ [], ONE_CHANNEL ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    const channels = await withProviderGuidePage(retryProvider(), { afterWalk }, deps);
+
+    assert.equal(walks, 2, "the empty walk was retried exactly once");
+    assert.equal(retryEvents.filter((event) => event === "reload").length, 1, "the page was reloaded exactly once before the second walk");
+    assert.deepEqual(channels, ONE_CHANNEL, "the retry's result is what the session returns");
+    assert.deepEqual(recorded, [{ channels: ONE_CHANNEL, classification: undefined }], "the outcome was recorded once, with the retry's result and no threaded " +
+      "classification");
+  });
+
+  test("runs a fresh overlay poll for the second walk", async () => {
+
+    // The first walk's poll is aborted before the classification, and an aborted signal makes the poll a silent no-op on entry - so reusing it would leave the
+    // retry walking an unprotected page, which is exactly the page a cookie banner reappears on after a reload.
+    walkResults = [ [], ONE_CHANNEL ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    await withProviderGuidePage(retryProvider(), { afterWalk }, deps);
+
+    assert.equal(overlayHandlingCalls.length, 2, "one poll per walk");
+    assert.deepEqual(overlayHandlingCalls.map((call) => call.phase), [ "discovery", "discovery" ], "both polls run under the discovery phase");
+    assert.equal(overlayHandlingCalls[1]?.signal?.aborted, true, "the retry's poll is aborted once its walk completes");
+  });
+
+  test("records the reloaded page's outcome when both walks come back empty", async () => {
+
+    /* Both-walks-empty is the path where the threaded classification must stay absent: the page the recorder is handed is the reloaded one, so a classification
+     * computed before the reload would describe a page that no longer exists.
+     */
+    walkResults = [ [], [] ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    const channels = await withProviderGuidePage(retryProvider(), { afterWalk }, deps);
+
+    assert.equal(walks, 2, "the retry ran");
+    assert.deepEqual(channels, [], "an empty retry returns empty");
+    assert.deepEqual(recorded, [{ channels: [], classification: undefined }],
+      "the outcome was recorded once, with no classification threaded, so the recorder classifies the reloaded page itself");
+  });
+
+  test("records the first walk's authentication-wall classification without reloading", async () => {
+
+    // A sign-in wall explains the empty result completely and no reload can clear it. The evidence is on the page as it stands, so the classification travels to
+    // the recorder rather than being re-derived after a navigation that would have thrown it away.
+    walkResults = [[]];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    await withProviderGuidePage(retryProvider({ wallIndicators: true }), { afterWalk }, deps);
+
+    assert.equal(walks, 1, "a blocked page is not retried");
+    assert.ok(!retryEvents.includes("reload"), "the page was never reloaded");
+    assert.equal(recorded.length, 1, "the outcome was recorded once");
+    assert.equal(recorded[0]?.classification?.kind, "authWall", "the first walk's classification is what the recorder receives");
+  });
+
+  test("records the first walk's consent-overlay classification without reloading", async () => {
+
+    // The other blocked arm. A banner the discovery poll could not clear is the standing obstacle, and reloading would put a fresh, undismissed one in front of
+    // the recorder - the diagnosis would survive but the walk that produced it would be wasted.
+    walkResults = [[]];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage({ consentPresent: true }) } as unknown as Browser;
+
+    await withProviderGuidePage(retryProvider(), { afterWalk }, deps);
+
+    assert.equal(walks, 1, "a blocked page is not retried");
+    assert.ok(!retryEvents.includes("reload"), "the page was never reloaded");
+    assert.equal(recorded[0]?.classification?.kind, "consentOverlay", "the first walk's classification is what the recorder receives");
+  });
+
+  test("falls back to the first walk's outcome when the reload throws", async () => {
+
+    // Known evidence is never lost to a throwing reload, and a page in an unknown state is never walked again. The failure is absorbed rather than propagated -
+    // the caller asked for a discovery, and it has one.
+    walkResults = [[]];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage({ reloadFails: true }) } as unknown as Browser;
+
+    const channels = await withProviderGuidePage(retryProvider(), { afterWalk }, deps);
+
+    assert.deepEqual(channels, [], "the session still returns the first walk's result");
+    assert.equal(retryEvents.filter((event) => event === "reload").length, 1, "the reload was attempted once");
+    assert.equal(walks, 1, "no second walk ran against a page whose reload failed");
+    assert.equal(recorded[0]?.classification?.kind, "unknown", "the first walk's already-computed classification is what gets recorded");
+  });
+
+  test("skips the reload for a provider that navigates inside its own walk", async () => {
+
+    // Its retry re-navigates for itself, so a reload here would be a second navigation buying nothing - and on a heavy SPA that is seconds of the startup window.
+    walkResults = [ [], ONE_CHANNEL ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    const channels = await withProviderGuidePage(retryProvider({ handlesOwnNavigation: true }), { afterWalk }, deps);
+
+    assert.equal(walks, 2, "the retry still ran");
+    assert.ok(!retryEvents.includes("reload"), "the session drove no reload of its own");
+    assert.deepEqual(channels, ONE_CHANNEL, "the retry produced the lineup");
+  });
+
+  test("runs no second walk when the caller aborted during the first", async () => {
+
+    // A refresh request that cancelled this walk wants it gone, not retried. The behavior asserted is the walk count itself rather than a spy on the gate.
+    const controller = new AbortController();
+
+    walkResults = [ [], ONE_CHANNEL ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    const provider = {
+
+      ...retryProvider(),
+      discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+        walks++;
+        controller.abort();
+
+        return [];
+      }
+    } as unknown as ProviderModule;
+
+    const channels = await withProviderGuidePage(provider, { afterWalk, signal: controller.signal }, deps);
+
+    assert.equal(walks, 1, "the aborted session ran exactly one walk");
+    assert.ok(!retryEvents.includes("reload"), "an aborted session never reloads");
+    assert.deepEqual(channels, [], "the aborted walk's empty result is what comes back");
+  });
+
+  test("runs no second walk once a graceful shutdown has begun", async () => {
+
+    // The retry opens new work against the browser, and the shutdown path closes it. Retrying here would drive the page after teardown started, which is the same
+    // relaunch hazard the precache cycle's own per-service check exists to prevent.
+    walkResults = [ [], ONE_CHANNEL ];
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    const shutdownDeps: PrecachingDeps = { ...deps, isGracefulShutdown: (): boolean => true };
+
+    const channels = await withProviderGuidePage(retryProvider(), { afterWalk }, shutdownDeps);
+
+    assert.equal(walks, 1, "no retry is attempted during teardown");
+    assert.ok(!retryEvents.includes("reload"), "no reload is driven during teardown");
+    assert.deepEqual(channels, [], "the first walk's result stands");
   });
 });

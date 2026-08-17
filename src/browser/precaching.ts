@@ -2,11 +2,12 @@
  *
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
-import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
+import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
+import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
@@ -25,9 +26,10 @@ import { startOverlayHandling } from "./consent.ts";
  * crash between services is handled transparently (the next service gets the relaunched browser).
  *
  * This module also owns the discovery-outcome policy (recordDiscoveryOutcome): the single source of truth for how a completed discovery walk translates into domain
- * auth state, shared by the precache cycle here and the /services/:slug/channels endpoint. The routes layer never calls a health mutator directly - it calls the
- * recorder, which does. The page session itself is owned by withProviderGuidePage: the single guarded-page primitive both the precache cycle and that endpoint walk
- * their guides through.
+ * auth state and a persisted channel lineup, shared by the precache cycle here and the /services/:slug/channels endpoint. The routes layer never calls a health
+ * mutator or the lineup store directly - it calls the recorder, which does. The page session itself is owned by withProviderGuidePage: the single guarded-page
+ * primitive both the precache cycle and that endpoint walk their guides through, and the one place the empty-walk retry policy lives, so no provider carries a
+ * retry of its own.
  */
 
 // Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
@@ -143,23 +145,26 @@ export function stopPrecaching(): void {
  * @param channels - The discovered channels (possibly empty).
  * @param page - The still-open discovery page, inspected only when the result is empty.
  * @param deps - The injected dependencies; the lineup write runs through deps.persistProviderLineup.
+ * @param classification - A classification the caller already performed against the page state it wants recorded. When omitted, the still-open page is classified
+ *   here, which is what every caller that has not already looked does.
  * @returns A promise that resolves once any classification and state recording completes.
  */
-export async function recordDiscoveryOutcome(provider: ProviderModule, channels: DiscoveredChannel[], page: Page, deps: PrecachingDeps): Promise<void> {
+export async function recordDiscoveryOutcome(provider: ProviderModule, channels: DiscoveredChannel[], page: Page, deps: PrecachingDeps,
+  classification?: BlockedPageClassification): Promise<void> {
 
   const domain = extractDomain(provider.guideUrl);
 
   if(channels.length === 0) {
 
-    const classification = await classifyBlockedPage(page, { indicators: provider.authWallIndicators, requestedUrl: provider.guideUrl });
+    const outcome = classification ?? await classifyBlockedPage(page, { indicators: provider.authWallIndicators, requestedUrl: provider.guideUrl });
 
-    switch(classification.kind) {
+    switch(outcome.kind) {
 
       case "authWall": {
 
         markDomainAuthRequired(domain);
         LOG.warn("%s returned no channels because the provider is presenting an authentication wall (%s). Sign in from the channel table's login icon.",
-          provider.label, classification.evidence);
+          provider.label, outcome.evidence);
 
         break;
       }
@@ -225,12 +230,106 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
  */
 interface WithProviderGuidePageOptions {
 
-  // Runs after the discovery walk completes, with the still-open (and now poll-quiet) page and the discovered channels. Used to record the discovery outcome while
-  // the page still holds its evidence.
-  readonly afterWalk?: (page: Page, channels: DiscoveredChannel[]) => Promise<void>;
+  /* Runs after the discovery walk completes, with the still-open (and now poll-quiet) page and the discovered channels. Used to record the discovery outcome while
+   * the page still holds its evidence.
+   *
+   * The third argument carries a classification the session already performed and whose page state is the one worth recording - which happens on exactly one path,
+   * where an empty walk classified as blocked and the session declined to reload. Every other path leaves it absent, and the recorder classifies the page in front
+   * of it, which is what keeps a retried walk's outcome describing the page the retry actually saw.
+   */
+  readonly afterWalk?: (page: Page, channels: DiscoveredChannel[], classification?: BlockedPageClassification) => Promise<void>;
 
   // Aborts the walk. When it fires, the page is closed, which throws any in-progress Puppeteer operation and propagates the cancellation through discoverChannels.
   readonly signal?: AbortSignal;
+}
+
+/**
+ * The outcome of the empty-walk retry.
+ */
+interface EmptyWalkRetryResult {
+
+  // What the second walk found, or the first walk's empty result when the retry was declined.
+  channels: DiscoveredChannel[];
+
+  // The first walk's classification, present only when the retry was declined and that classification is therefore the one describing the page the outcome
+  // recorder will act on. Absent when a second walk ran, because the recorder must then classify the reloaded page rather than the one before it.
+  classification?: BlockedPageClassification;
+}
+
+/**
+ * Options for retryAfterEmptyWalk().
+ */
+interface RetryAfterEmptyWalkOptions {
+
+  // The injected browser and overlay-poll dependencies.
+  readonly deps: PrecachingDeps;
+
+  // The still-open page the empty walk ran against.
+  readonly page: Page;
+
+  // The resolved site profile for the guide URL, handed to the retry's own overlay poll.
+  readonly profile: ResolvedSiteProfile;
+
+  // The provider whose walk came back empty.
+  readonly provider: ProviderModule;
+}
+
+/**
+ * Gives an empty discovery walk one more chance, when the page it left behind says the emptiness is unexplained.
+ *
+ * The classification comes first and decides everything. A confirmed authentication wall or a standing consent overlay explains the empty result completely, and
+ * neither is something a reload can fix - so those skip the retry and hand their classification back, because the evidence that justified it is on the page as it
+ * stands and a reload would only put a fresh, undismissed banner in front of the recorder. An unclassifiable page is the case worth retrying: the guide rendered,
+ * nothing blocked it, and the lineup simply never populated within the walk's budget, which a reload plausibly cures.
+ *
+ * The reload is skipped for a provider that navigates inside its own walk, since the retry re-navigates for itself; a reload that throws ends the retry rather than
+ * risking a second walk against a page in an unknown state, and the first walk's classification is what gets recorded.
+ * @param options - The page, provider, profile, and dependencies. See RetryAfterEmptyWalkOptions.
+ * @returns The retry's channels and, when the retry was declined, the classification to record.
+ */
+async function retryAfterEmptyWalk(options: RetryAfterEmptyWalkOptions): Promise<EmptyWalkRetryResult> {
+
+  const { deps, page, profile, provider } = options;
+  const classification = await classifyBlockedPage(page, { indicators: provider.authWallIndicators, requestedUrl: provider.guideUrl });
+
+  if(classification.kind !== "unknown") {
+
+    LOG.debug("precache", "%s returned no channels and the page classified as %s; recording that rather than retrying.", provider.label, classification.kind);
+
+    return { channels: [], classification };
+  }
+
+  if(provider.handlesOwnNavigation) {
+
+    LOG.debug("precache", "Retrying the empty discovery walk for %s without a reload: its walk navigates for itself.", provider.label);
+  } else {
+
+    LOG.debug("precache", "Reloading the guide and retrying the empty discovery walk for %s.", provider.label);
+
+    try {
+
+      await page.reload({ timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
+    } catch(error) {
+
+      LOG.debug("precache", "The reload before retrying %s failed: %s. Recording the first walk's outcome instead.", provider.label, formatError(error));
+
+      return { channels: [], classification };
+    }
+  }
+
+  // A fresh controller for the second walk's poll. The first one is already aborted, and the poll's entry check returns immediately on an aborted signal, so
+  // reusing it would silently leave the retry unprotected against a banner that reappears after the reload.
+  const retryController = new AbortController();
+
+  try {
+
+    void deps.startOverlayHandling(page, profile, { phase: "discovery", signal: retryController.signal });
+
+    return { channels: await provider.discoverChannels(page) };
+  } finally {
+
+    retryController.abort();
+  }
 }
 
 /**
@@ -239,6 +338,9 @@ interface WithProviderGuidePageOptions {
  * close), the abort mechanics (close-on-abort plus the pre-navigation early-abort), the audio-mute override, and the discovery-phase overlay poll that dismisses
  * cookie banners and per-site modals during the walk. The overlay poll is aborted the instant the walk completes, so the page is quiet by construction before the
  * afterWalk hook inspects it - a poll still clicking could dismiss the very overlay a classification is about to report.
+ *
+ * A walk that comes back empty gets one reload-and-retry, on the terms retryAfterEmptyWalk sets out. The hook still runs exactly once, against whichever result
+ * stands.
  * @param provider - The provider whose guide to walk.
  * @param options - The optional post-walk hook and abort signal. See WithProviderGuidePageOptions.
  * @param deps - The injected browser and overlay-poll dependencies; defaults to defaultPrecachingDeps.
@@ -307,12 +409,25 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
     }
 
-    const channels = await provider.discoverChannels(page);
+    let channels = await provider.discoverChannels(page);
 
-    // The walk is complete. Abort the overlay poll so the page is quiet by construction before the afterWalk hook classifies it.
+    // The walk is complete. Abort the overlay poll so the page is quiet by construction before anything classifies it.
     overlayController.abort();
 
-    await afterWalk?.(page, channels);
+    let classification: BlockedPageClassification | undefined;
+
+    /* An empty walk gets one more attempt, because the failure it most often represents is transient: a rail or grid whose lazy content never populated inside the
+     * walk's budget, on a page that is otherwise fine. The gates are the ones that make a second walk meaningful at all - a closed or cancelled session has nothing
+     * to retry against, and a shutdown must not open new work - and the retry's own classification decides whether a reload could help.
+     */
+    if((channels.length === 0) && !page.isClosed() && !signal?.aborted && !deps.isGracefulShutdown()) {
+
+      ({ channels, classification } = await retryAfterEmptyWalk({ deps, page, profile, provider }));
+    }
+
+    // The hook runs once, on whichever result stands - and receives the first walk's classification only when the retry declined to reload, so the page it is
+    // handed and the classification it records always describe the same moment.
+    await afterWalk?.(page, channels, classification);
 
     return channels;
   } finally {
@@ -354,12 +469,13 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
 
   return withProviderGuidePage(provider, {
 
-    afterWalk: async (page, channels): Promise<void> => {
+    afterWalk: async (page, channels, classification): Promise<void> => {
 
       LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
 
-      // Record the outcome while the page is still open - an empty result classifies the page it walked.
-      await recordDiscoveryOutcome(provider, channels, page, deps);
+      // Record the outcome while the page is still open - an empty result classifies the page it walked, unless the session already classified it and declined to
+      // reload, in which case that verdict travels here rather than being re-derived from a page the reload would have changed.
+      await recordDiscoveryOutcome(provider, channels, page, deps, classification);
     }
   }, deps);
 }

@@ -99,7 +99,7 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal, deps:
 
     const channels = await deps.withProviderGuidePage(provider, {
 
-      afterWalk: async (page, discovered): Promise<void> => {
+      afterWalk: async (page, discovered, classification): Promise<void> => {
 
         // Record the outcome of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result supplies the
         // success evidence that verifies the domain or clears a standing needs-sign-in flag, and the lineup that is worth persisting. Skipped when the walk was
@@ -107,7 +107,7 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal, deps:
         // injection port rather than from a default inside the recorder, so a call site that forgets them is a compile error instead of a silent fall-through.
         if(!signal.aborted) {
 
-          await deps.recordDiscoveryOutcome(provider, discovered, page, deps.precachingDeps);
+          await deps.recordDiscoveryOutcome(provider, discovered, page, deps.precachingDeps, classification);
         }
       },
       signal
