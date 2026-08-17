@@ -147,6 +147,36 @@ describe("youtubeGrid tune flow", () => {
   });
 });
 
+describe("durable lineup export", () => {
+
+  test("reports nothing while the cache is cold", () => {
+
+    // The store must never be handed an empty lineup as though it were a statement about the provider, and a browser session that has walked no guide has nothing
+    // to state. Null is what the recorder reads as "this provider contributed nothing", which is distinct from "this provider has no channels".
+    assert.equal(yttvProvider.exportDurableLineup?.(), null, "a cold cache exports nothing");
+  });
+
+  test("exports one row per channel with its watch URL, however many alias keys point at it", async () => {
+
+    /* The tiered lookup files an entry under the caller's own spelling when a non-exact tier matches, so tuning to "NBC" leaves two keys pointing at the single
+     * "NBC 5" entry object. Projecting the map's values without reducing them to distinct entries would persist that channel twice, and the duplicate would then
+     * ride into the channel-form suggestion list and every later boot's fallback.
+     */
+    const guide = makeGuidePage(FULL_LINEUP);
+
+    await yttvProvider.strategy.execute(guide.page, makeYttvProfile("NBC"));
+
+    assert.deepEqual(guide.navigations, ["https://tv.youtube.com/watch/nbc5"], "the affiliate resolved through a non-exact tier, which is what writes the alias");
+
+    assert.deepEqual(yttvProvider.exportDurableLineup?.(), [
+
+      { channelSelector: "Alpha Channel", name: "Alpha Channel", watchUrl: "https://tv.youtube.com/watch/alpha" },
+      { channelSelector: "Beta Channel", name: "Beta Channel", watchUrl: "https://tv.youtube.com/watch/beta" },
+      { channelSelector: "NBC", name: "NBC 5", watchUrl: "https://tv.youtube.com/watch/nbc5" }
+    ], "each channel is exported once, keyed by the selector a channel record would carry and holding the watch URL that survives a browser session");
+  });
+});
+
 describe("channel discovery", () => {
 
   test("populates the cache from the guide and returns the full lineup on the first call", async () => {

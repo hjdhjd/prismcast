@@ -5,12 +5,13 @@
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, waitWithTimeout } from "../utils/index.ts";
+import { defaultPrecachingDeps, recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
 import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
   resolveServiceKey } from "../config/services.ts";
 import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.ts";
-import { recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
 import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
+import type { PrecachingDeps } from "../browser/precaching.ts";
 
 /* The services endpoint exposes channel discovery for each registered service. A GET request to /services/:slug/channels creates a temporary browser page,
  * navigates to the service's guide, runs the service's discoverChannels implementation, and returns a sorted JSON array of discovered channels. The temporary
@@ -71,11 +72,17 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
 export interface ServiceDiscoveryDeps {
 
   readonly getProviderBySlug: typeof getProviderBySlug;
+
+  // The precaching collaborators the discovery-outcome recorder itself composes on. The recorder takes them as a required parameter rather than defaulting them,
+  // so the route holds them like any other injected member: production wires the real set, and a test that drives this route against the real recorder substitutes
+  // them here instead of having the recorder reach for production wiring behind the test's back.
+  readonly precachingDeps: PrecachingDeps;
   readonly recordDiscoveryOutcome: typeof recordDiscoveryOutcome;
   readonly withProviderGuidePage: typeof withProviderGuidePage;
 }
 
-const defaultServiceDiscoveryDeps: ServiceDiscoveryDeps = { getProviderBySlug, recordDiscoveryOutcome, withProviderGuidePage };
+const defaultServiceDiscoveryDeps: ServiceDiscoveryDeps = { getProviderBySlug, precachingDeps: defaultPrecachingDeps, recordDiscoveryOutcome,
+  withProviderGuidePage };
 
 /**
  * Runs service channel discovery through the shared guarded guide-page session, applying this endpoint's discovery-outcome policy. The helper owns the page
@@ -94,12 +101,13 @@ async function runDiscovery(provider: ProviderModule, signal: AbortSignal, deps:
 
       afterWalk: async (page, discovered): Promise<void> => {
 
-        // Record the domain auth consequences of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result
-        // supplies the success evidence that verifies the domain or clears a standing needs-sign-in flag. Skipped when the walk was aborted by a refresh=true
-        // request, since an aborted walk says nothing about the provider.
+        // Record the outcome of this discovery while the page is still open - an empty result classifies the page it walked, and a non-empty result supplies the
+        // success evidence that verifies the domain or clears a standing needs-sign-in flag, and the lineup that is worth persisting. Skipped when the walk was
+        // aborted by a refresh=true request, since an aborted walk says nothing about the provider. The recorder's own collaborators come from this route's
+        // injection port rather than from a default inside the recorder, so a call site that forgets them is a compile error instead of a silent fall-through.
         if(!signal.aborted) {
 
-          await deps.recordDiscoveryOutcome(provider, discovered, page);
+          await deps.recordDiscoveryOutcome(provider, discovered, page, deps.precachingDeps);
         }
       },
       signal

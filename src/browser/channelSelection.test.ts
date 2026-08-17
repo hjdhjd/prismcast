@@ -17,10 +17,13 @@ import { EvaluateAbortError, extractDomain } from "../utils/index.ts";
 import { clearChannelSelectionCaches, getCachedProviderChannels, getProviderBySlug, getProviderByStrategy, getProviderDomainMap, getProviderGuideUrls,
   getProviderModuleInfo, getProviderSlugs, getProvidersForDomain, invalidateDirectUrl, resolveDirectUrl, selectChannel } from "./channelSelection.ts";
 import { describe, test } from "node:test";
+import { getPersistedWatchUrl, loadProviderLineups, persistProviderLineup } from "../config/providerLineups.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
+import { initializeDataDir } from "../config/paths.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { withTempDir } from "../testing.helpers.ts";
 
 /* makeProfile builds a ResolvedSiteProfile literal with all required fields populated. selectChannel only inspects channelSelection and channelSelector; the rest
  * are present to satisfy the interface. Tests override only the fields they care about.
@@ -474,6 +477,187 @@ describe("invalidateDirectUrl retention policy", () => {
     invalidateDirectUrl(hboProfile(), new EvaluateAbortError());
 
     assert.equal(invalidate.mock.calls.length, 0, "the stream's own cancellation is not evidence against the URL");
+  });
+});
+
+describe("exportDurableLineup registration", () => {
+
+  test("only the providers with a session-independent watch address publish the hook", () => {
+
+    /* The structural guarantee behind the whole persisted fallback: a provider that tunes by interacting with its own guide has no address worth carrying across
+     * a restart, so it publishes no hook and its persisted slice can only ever hold channel identities. That is what makes the coordinator's fallback inert for
+     * those providers rather than conditionally skipped - there is nothing in the store for it to find.
+     */
+    const exporters = getProviderSlugs().filter((slug) => getProviderBySlug(slug)?.exportDurableLineup !== undefined).sort();
+
+    assert.deepEqual(exporters, [ "hbomax", "spectrum", "yttv" ], "the page-independent providers are the only ones that export a durable lineup");
+  });
+
+  test("every published hook reports nothing while its cache is cold", () => {
+
+    // A hook that answered with an empty array on a cold cache would look to the recorder like a statement that the provider carries no channels. Null is the
+    // only honest answer before a walk has happened, and the store's own empty-array guard is what would otherwise have to catch the mistake.
+    clearChannelSelectionCaches();
+
+    for(const slug of [ "hbomax", "spectrum", "yttv" ]) {
+
+      assert.equal(getProviderBySlug(slug)?.exportDurableLineup?.(), null, slug + " exports nothing before its cache is filled");
+    }
+  });
+});
+
+/* The persisted lineup is the coordinator's second source for a direct watch URL and its second eviction target. The cases below seed the real store against a
+ * temp data directory and drive the coordinator's own resolution and invalidation, so what is observed is the coordinator's decision rather than a stand-in for
+ * it. Every provider cache is cleared first, so the strategy resolvers have nothing to offer and the fallback is genuinely the thing under test.
+ */
+describe("resolveDirectUrl persisted fallback", () => {
+
+  test("serves the persisted watch URL when the live cache has nothing", async () => {
+
+    /* The cold-boot path: this browser session has walked no guide, so the provider's own resolver comes back empty and the lineup an earlier session persisted
+     * is what lets the tune skip the guide entirely.
+     */
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      clearChannelSelectionCaches();
+
+      await loadProviderLineups();
+
+      await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/cold-boot" }]);
+
+      const resolved = await resolveDirectUrl(makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" }), makeFakePage());
+
+      assert.equal(resolved, "https://play.hbomax.test/channel/watch/cold-boot", "the persisted hint stands in for a cache this session never filled");
+    });
+  });
+
+  test("never crosses providers: a hint persisted under another slug is invisible", async () => {
+
+    /* The guard that keeps the fallback honest. A lineup seeded under a real but different provider proves the slug lookup is doing work - without it, a
+     * selector-only match would hand an HBO tune a YouTube TV address, and the pin would pass vacuously against an empty store.
+     */
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      clearChannelSelectionCaches();
+
+      await loadProviderLineups();
+
+      await persistProviderLineup("yttv", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://tv.youtube.test/watch/hbo" }]);
+
+      const resolved = await resolveDirectUrl(makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" }), makeFakePage());
+
+      assert.equal(resolved, null, "the HBO strategy sees nothing of the YouTube TV slice");
+    });
+  });
+
+  test("returns null for a strategy no provider registers", async () => {
+
+    // The generic strategies (thumbnailRow, tileClick) belong to no provider, so there is no slug to look a lineup up under and the fallback has nothing to do.
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      clearChannelSelectionCaches();
+
+      await loadProviderLineups();
+
+      await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/unreachable" }]);
+
+      const resolved = await resolveDirectUrl(makeProfile({ channelSelection: { strategy: "tileClick" }, channelSelector: "HBO" }), makeFakePage());
+
+      assert.equal(resolved, null, "a non-provider strategy has no persisted lineup to reach");
+    });
+  });
+});
+
+describe("invalidateDirectUrl persisted eviction", () => {
+
+  test("evicts the persisted hint and reports the URL-evidence verdict", async () => {
+
+    // One policy statement, two hints. A failure the policy blames on the URL has to reach the durable copy too, or the next boot resurrects exactly the address
+    // this tune just proved wrong.
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      await loadProviderLineups();
+      await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/discredited" }]);
+
+      const evicted = invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" }),
+        new Error("Waiting for selector `video` failed: timeout 30000ms exceeded"));
+
+      assert.equal(evicted, true, "the coordinator reports that the failure was evidence against the URL");
+      assert.equal(getPersistedWatchUrl("hbomax", "HBO"), null, "the durable hint is gone");
+
+      // The eviction's own write is fire-and-forget, and the store runs one mutation at a time, so awaiting a write issued after it drains the queue before this
+      // scope removes the directory underneath it.
+      await persistProviderLineup("queue-drain-marker", [{ channelSelector: "Marker", name: "Marker" }]);
+    });
+  });
+
+  test("retains the persisted hint and reports no verdict when the page died", async () => {
+
+    // The retention arm, on the durable copy. A dead page reached no verdict about the URL, and dropping the hint here would force every later boot through the
+    // guide navigation an incident is most likely to have broken as well.
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      await loadProviderLineups();
+      await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/retained" }]);
+
+      const evicted = invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" }),
+        new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'"));
+
+      assert.equal(evicted, false, "the coordinator reports that the retention policy kept the entry");
+      assert.equal(getPersistedWatchUrl("hbomax", "HBO"), "https://play.hbomax.test/channel/watch/retained", "the durable hint survives");
+    });
+  });
+
+  test("reports no verdict when there is no channel selector to act on", () => {
+
+    // The guard ahead of the policy. Nothing is evicted and nothing is claimed, so a caller branching on the answer treats it like a retention.
+    assert.equal(invalidateDirectUrl(makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: null }), new Error("tune failed")), false,
+      "no selector -> no verdict");
+  });
+});
+
+describe("getCachedProviderChannels persisted fallback", () => {
+
+  test("serves a provider's persisted lineup when this session has walked no guide", async () => {
+
+    /* The channel form's suggestion list, on a boot whose precache came back empty. Without this the list is simply missing every provider channel until a tune
+     * or a manual discovery fills a cache, which is exactly the state the incident this feature answers leaves behind.
+     */
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      clearChannelSelectionCaches();
+
+      await loadProviderLineups();
+
+      await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/hbo" }]);
+
+      const group = getCachedProviderChannels().find((entry) => entry.hostname === "play.hbomax.com");
+
+      assert.ok(group, "the provider appears in the suggestion groups on the strength of its persisted lineup alone");
+      assert.deepEqual(group.entries, [{ label: "HBO", stationId: undefined, value: "HBO" }], "the persisted rows are projected as label and value pairs");
+    });
+  });
+
+  test("omits a provider with neither a live cache nor a persisted lineup", async () => {
+
+    // The negative half: the fallback adds a source, it does not invent entries. A provider nothing has ever discovered stays out of the list.
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      clearChannelSelectionCaches();
+
+      await loadProviderLineups();
+
+      assert.equal(getCachedProviderChannels().length, 0, "no provider has anything to contribute");
+    });
   });
 });
 

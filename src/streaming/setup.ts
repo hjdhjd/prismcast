@@ -152,6 +152,23 @@ class PageClosedDuringTurnError extends Error {
   }
 }
 
+/**
+ * Thrown by createPageWithCapture when an establishment that navigated to a resolved direct watch URL failed on evidence against that URL - the coordinator's own
+ * verdict, read from invalidateDirectUrl, never re-derived here. It says one thing to the caller: the hint has already been evicted, and a fresh attempt down the
+ * guide path is worth making. setupStream is the one caller that acts on it; every other caller sees an ordinary establishment failure carrying the original
+ * rejection as its cause.
+ */
+export class DirectUrlEstablishmentError extends Error {
+
+  public constructor(cause: unknown) {
+
+    // The underlying failure travels in the message as well as in cause, because the callers that do not act on the type - tab replacement above all - log the
+    // message alone, and a wrapper that swallowed the reason would make this path harder to diagnose than an untyped throw.
+    super("Direct watch URL establishment failed: " + formatError(cause) + ".", { cause });
+    this.name = "DirectUrlEstablishmentError";
+  }
+}
+
 // Maximum number of times createPageWithCapture() will retry when it detects that the page was closed while waiting for its turn on the capture lock (e.g., due to a
 // browser crash). An explicit guard prevents unbounded recursion.
 const MAX_PAGE_CLOSED_RETRIES = 3;
@@ -349,6 +366,11 @@ export interface CreatePageWithCaptureOptions {
 
   // The resolved site profile for video handling.
   profile: ResolvedSiteProfile;
+
+  // When true, the direct watch URL is not resolved at all and the establishment navigates to the guide URL. Set by setupStream's guide fallback, whose whole
+  // purpose is to take the path a resolved URL would have bypassed. Skipping the resolver rather than discarding its answer is what makes a second
+  // DirectUrlEstablishmentError structurally impossible on the fallback attempt: with no direct URL in play, the branch that throws it is never entered.
+  skipDirectUrl?: boolean;
 
   // When true, skips CDP manifest interception. Set when the probe cache already has a "drm" result for this channel, avoiding 15 seconds of wasted CDP overhead.
   skipManifestInterception?: boolean;
@@ -800,9 +822,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(!profile.staticCapture) {
 
-      // Check for a direct watch URL. If available, navigate directly to it and skip channel selection, avoiding guide page navigation entirely. On failure,
-      // the cache entry is invalidated in the catch block so the outer retry loop (in streaming/hls.ts) re-invokes with the guide URL.
-      const directUrl = await resolveDirectUrl(profile, page);
+      // Check for a direct watch URL, unless the caller has asked for the guide path outright. When one is available, navigate directly to it and skip channel
+      // selection, avoiding guide page navigation entirely. On a failure the coordinator blames the URL for, the catch block below evicts the hint and leaves this
+      // function typed, and setupStream re-invokes once with the resolution skipped so the tune still gets its guide attempt.
+      const directUrl = options.skipDirectUrl ? null : await resolveDirectUrl(profile, page);
 
       usedDirectUrl = !!directUrl;
 
@@ -854,17 +877,24 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     }
   } catch(error) {
 
-    // If a cached direct URL was used, offer the failure to the cache coordinator, which invalidates when the failure is evidence against the URL so the next
-    // attempt falls through to guide navigation.
-    if(usedDirectUrl) {
-
-      invalidateDirectUrl(profile, error);
-    }
+    // If a direct watch URL was used, offer the failure to the cache coordinator, which evicts the live and persisted hints when the failure is evidence against
+    // the URL and reports that verdict back. The retention policy lives there and is read from there - this file never re-derives which failures count.
+    const urlEvidence = usedDirectUrl && invalidateDirectUrl(profile, error);
 
     // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the failed
     // attempt. Fire-and-forget since we're about to throw. Resource teardown (capture session, interceptor, page) is handled by the DisposableStack as this throw
     // unwinds the function scope; the capture session disposes first, destroying the capture stream before the page closes, so STOP_RECORDING ordering is preserved.
     minimizeBrowserWindow().catch(() => { /* Fire-and-forget; we're about to throw. */ });
+
+    /* A failure the coordinator blamed on the URL is worth one more attempt down the guide path, so it leaves this function typed for setupStream to act on. An
+     * establishment timeout qualifies: the retry is a whole fresh invocation, so there is no abandoned first attempt still driving a page, no one-shot manifest
+     * interception handle to reuse, and no direct-tune marker to reset - the retry gets its own page, handle, and markers, which is exactly what a fresh tune
+     * would get. Page-death and abort failures, the ones the retention policy keeps the URL for, rethrow raw: nothing about them says the URL is wrong.
+     */
+    if(urlEvidence) {
+
+      throw new DirectUrlEstablishmentError(error);
+    }
 
     throw error;
   }
@@ -1111,10 +1141,14 @@ export async function adjudicateChannelSelection(handle: ManifestInterceptorHand
  *
  * @param options - Stream configuration options.
  * @param onCircuitBreak - Callback invoked when the circuit breaker trips (stream unrecoverable).
+ * @param deps - The injected browser and overlay-poll collaborators, forwarded to every establishment attempt this function makes; defaults to
+ * defaultCreatePageWithCaptureDeps. Threaded for the same reason createPageWithCapture takes them: a test drives the establishment sequence - including its guide
+ * fallback - without a live Chrome by substituting the shared-browser accessor, the capture launcher, and the overlay poll.
  * @returns Setup result with capture session, cleanup function, and metadata.
  * @throws StreamSetupError if setup fails with appropriate status code and message.
  */
-export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void): Promise<StreamSetupResult> {
+export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void,
+  deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<StreamSetupResult> {
 
   const { channel, channelName, channelSelector, clickSelector, clickToPlay, onTabReplacementFactory, probeIdentity, profileOverride, staticCapture,
     url } = options;
@@ -1259,7 +1293,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         buildPersistResolutionCallback(channelName, serviceTag) :
         undefined;
 
-      captureResult = await createPageWithCapture({
+      const attemptOptions: CreatePageWithCaptureOptions = {
 
         comment: metadataComment,
         numericStreamId,
@@ -1269,7 +1303,37 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         skipManifestInterception: skipInterception,
         streamId,
         url
-      });
+      };
+
+      /* The establishment, with its one guide fallback. A failure the coordinator blamed on a direct watch URL arrives here typed, with the hint already evicted;
+       * one more invocation with the resolution skipped is exactly what the next tune would do, and doing it now spares the client a whole failed request. The
+       * fallback runs after the first attempt's DisposableStack has unwound, so it gets a fresh page, a fresh manifest-interception handle, and usedDirectUrl
+       * naturally false - the direct-tune marker and the manifest finalizer are computed per invocation and need no reset. Only the typed error is caught here;
+       * every other failure, the fallback's own included, falls to setupStream's catch below so one classification block serves both attempts identically.
+       *
+       * The worst case it can produce: a stale hint plus a genuinely broken guide costs two establishments before the classified failure. On the preroll-fed HLS
+       * path the client stays fed throughout; on the blocking callers - pretune, MPEG-TS, an ad-hoc play - the alternative is the same second establishment run by
+       * the caller's own retry, one request later.
+       */
+      const establish = async (): Promise<CreatePageWithCaptureResult> => {
+
+        try {
+
+          return await createPageWithCapture(attemptOptions, deps);
+        } catch(error) {
+
+          if(!(error instanceof DirectUrlEstablishmentError)) {
+
+            throw error;
+          }
+
+          LOG.warn("The direct watch URL for %s did not establish playback. Retrying once through the provider's guide.", metadataComment);
+
+          return await createPageWithCapture({ ...attemptOptions, skipDirectUrl: true }, deps);
+        }
+      };
+
+      captureResult = await establish();
     } catch(error) {
 
       // The browser supervisor's acquire() rejects with these while the capture system is recovering: BrowserUnavailableError when the relaunch governor is cooling

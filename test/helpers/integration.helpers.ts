@@ -42,6 +42,7 @@ import { formatError } from "../../src/utils/errors.ts";
 import { initializeUserChannels } from "../../src/config/userChannels.ts";
 import { initializeUserProfiles } from "../../src/config/userProfiles.ts";
 import { loadHealthState } from "../../src/config/health.ts";
+import { loadProviderLineups } from "../../src/config/providerLineups.ts";
 import os from "node:os";
 import path from "node:path";
 import { setupRoutes } from "../../src/routes/index.ts";
@@ -219,9 +220,9 @@ export async function writePersistedJson(ctx: IntegrationContext, filename: stri
 }
 
 /**
- * Boots the persistence subsystem against the context's data directory: runs the user-profiles, channels, and health loaders in the same order app.ts uses at
- * startup. Use this in suites that exercise multiple stores together (e.g., cross-store consistency, settings preservation). Suites that test a single store
- * directly should not call this - they create their own FileStore via createFileStore and avoid the cost of unrelated loads.
+ * Boots the persistence subsystem against the context's data directory: runs the user-profiles, channels, health, and provider-lineup loaders in the same order
+ * app.ts uses at startup. Use this in suites that exercise multiple stores together (e.g., cross-store consistency, settings preservation). Suites that test a
+ * single store directly should not call this - they create their own FileStore via createFileStore and avoid the cost of unrelated loads.
  *
  * Production loaders also register their own intervals or background work in some cases; this helper does not call those code paths because the integration
  * harness has no use for them. If a future suite needs interval-driven behavior, add a focused boot helper for that scenario rather than expanding this one.
@@ -247,6 +248,7 @@ export async function initializePersistence(ctx: IntegrationContext): Promise<vo
   await initializeUserProfiles();
   await initializeUserChannels();
   await loadHealthState();
+  await loadProviderLineups();
 }
 
 /**

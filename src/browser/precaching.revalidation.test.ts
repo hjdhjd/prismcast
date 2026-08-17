@@ -16,6 +16,7 @@ import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts"
 import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
+import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "./precaching.ts";
 import type { StartOverlayHandlingOptions } from "./consent.ts";
 import assert from "node:assert/strict";
@@ -31,6 +32,10 @@ let stubBrowser: Browser;
 // performs, so the withProviderGuidePage tests can assert the phase, the abort state, and the mute-before-navigation ordering without a live Chrome.
 let overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 let pageEvents: string[] = [];
+
+// The lineup writes the discovery-outcome recorder issues, captured by the injected persistProviderLineup below so the port tests can assert what a completed walk
+// hands the store without touching a real file.
+const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
 /* The injected precaching dependencies: the browser accessors and page bookkeeping, the provider-registry lookups, and the discovery-phase overlay-poll launcher,
  * substituted at precaching's PrecachingDeps boundary so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state
@@ -48,6 +53,10 @@ const deps: PrecachingDeps = {
   minimizeBrowserWindow: async (): Promise<void> => {
 
     minimizeCalls++;
+  },
+  persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
+
+    persistedLineups.push({ channels, slug });
   },
   registerManagedPage: (): void => { /* Stub pages need no bookkeeping. */ },
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => {
@@ -558,6 +567,70 @@ describe("precacheService - navigation and cleanup", () => {
 
     await assert.doesNotReject(() => precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), deps),
       "a close() failure never rejects the precache");
+  });
+});
+
+/* The lineup write is the durable half of a completed walk, and it reaches the store through the same PrecachingDeps port the browser accessors do. Driving a real
+ * walk through precacheService is what makes these rows the port's pin rather than a direct call to the recorder: what is observed is that the walk's own
+ * collaborators - not the module's production wiring - are what the write travelled through.
+ */
+describe("precacheService - the lineup write through the injection port", () => {
+
+  beforeEach(() => {
+
+    persistedLineups.length = 0;
+    minimizeCalls = 0;
+
+    clearLoginState();
+    mock.timers.enable({ apis: ["setTimeout"] });
+  });
+
+  afterEach(() => {
+
+    clearLoginState();
+    mock.timers.reset();
+  });
+
+  test("a completed walk hands the provider's durable lineup to the injected write", async () => {
+
+    // The provider states its own durable shape, so what the store receives is the provider's answer rather than a projection the recorder invented for it.
+    const durable = [{ channelSelector: "Stub", name: "Stub", watchUrl: "https://www.stub-revalidate.test/watch/stub" }];
+    const provider = makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    (provider as { exportDurableLineup?: () => PersistedLineupChannel[] }).exportDurableLineup = (): PersistedLineupChannel[] => durable;
+
+    await precacheService(provider, deps);
+
+    assert.deepEqual(persistedLineups, [{ channels: durable, slug: "stub-revalidate" }], "the walk's durable lineup reached the injected write");
+  });
+
+  test("a write that rejects leaves the walk's result and its outcome recording untouched", async (t) => {
+
+    /* The containment the feature depends on: the lineup write is fire-and-forget behind a function that absorbs its own failures, and the call site guards the
+     * port on top of that, so no implementation a caller injects can turn a successful discovery into a failed one. Without the guard this row would surface as
+     * an unhandled rejection rather than a clean pass.
+     */
+    const rejectingDeps: PrecachingDeps = { ...deps, persistProviderLineup: async (): Promise<void> => Promise.reject(new Error("disk full")) };
+    const captured: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+
+      captured.push(reason);
+    };
+
+    process.on("unhandledRejection", onRejection);
+    t.after(() => process.off("unhandledRejection", onRejection));
+
+    markDomainAuthRequired("stub-revalidate.test");
+
+    const channels = await precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), rejectingDeps);
+
+    // Let any rejection the call site failed to guard reach the process handler before the assertions read it.
+    await immediate();
+    await immediate();
+
+    assert.deepEqual(channels, ONE_CHANNEL, "the walk returns its channels regardless of the write's fate");
+    assert.equal(getDomainAuthState("stub-revalidate.test")?.status, "verified", "the outcome recording completed and marked the domain verified");
+    assert.deepEqual(captured, [], "the fire-and-forget write never escapes as an unhandled rejection");
   });
 });
 

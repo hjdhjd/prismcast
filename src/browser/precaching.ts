@@ -9,9 +9,11 @@ import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerM
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
+import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
 import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
+import { persistProviderLineup } from "../config/providerLineups.ts";
 import { startOverlayHandling } from "./consent.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
@@ -38,12 +40,14 @@ let precacheInProgress = false;
 let precacheTimer: Nullable<ReturnType<typeof setTimeout>> = null;
 
 /* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate, the
- * provider lookups, and the discovery-phase overlay-poll launcher. It is injected as a default parameter threaded through the module's functions so a test can
- * substitute stubs at the same PrecachingDeps boundary - no loader mock - while production uses the real defaultPrecachingDeps built from the functions this module
- * already imports. startOverlayHandling belongs here for the same reason the browser accessors do: run for real it drives a poll against the page, so a test injects a
- * recording stub to observe the discovery poll's phase and abort timing without a live poll. It is kept as an in-module const, NOT a separate *.context.ts adapter:
- * browser/index.ts imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the
- * in-module const adds no new import edge. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ * provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup write the discovery-outcome policy performs. It is injected as a default
+ * parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader mock - while production uses the
+ * real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same reason the browser accessors do: run
+ * for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and abort timing without a live poll.
+ * persistProviderLineup belongs here for the same reason again: run for real it writes a file, so a test observes the write - and injects a failing one - at this
+ * boundary. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts imports startPrecaching and precaching.ts imports these accessors,
+ * so a separate adapter file would sit inside that value-import cycle, whereas the in-module const adds no new import edge. This is the collaborator-injection form of
+ * the Clock port (utils/clock.ts).
  */
 export interface PrecachingDeps {
 
@@ -52,18 +56,20 @@ export interface PrecachingDeps {
   readonly getProvidersForDomain: typeof getProvidersForDomain;
   readonly isGracefulShutdown: typeof isGracefulShutdown;
   readonly minimizeBrowserWindow: typeof minimizeBrowserWindow;
+  readonly persistProviderLineup: typeof persistProviderLineup;
   readonly registerManagedPage: typeof registerManagedPage;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly unregisterManagedPage: typeof unregisterManagedPage;
 }
 
-const defaultPrecachingDeps: PrecachingDeps = {
+export const defaultPrecachingDeps: PrecachingDeps = {
 
   getCurrentBrowser,
   getProviderBySlug,
   getProvidersForDomain,
   isGracefulShutdown,
   minimizeBrowserWindow,
+  persistProviderLineup,
   registerManagedPage,
   startOverlayHandling,
   unregisterManagedPage
@@ -123,19 +129,23 @@ export function stopPrecaching(): void {
 }
 
 /**
- * Records the domain auth consequences of a completed channel discovery. This is the single source of truth for discovery-outcome policy, consumed by both the
- * precache cycle (via precacheService) and the /services/:slug/channels endpoint - the routes layer never calls a health mutator directly.
+ * Records the consequences of a completed channel discovery: the domain auth state it proves, and the durable lineup it produced. This is the single source of
+ * truth for discovery-outcome policy, consumed by both the precache cycle (via precacheService) and the /services/:slug/channels endpoint - the routes layer never
+ * calls a health mutator or the lineup store directly. The two halves are bundled deliberately: a completed walk is one event, and what it proves about the domain
+ * and what it found on the guide are that event's transient and durable records.
  *
  * An empty result classifies the still-open page: a confirmed authentication wall marks the provider's domain needs-sign-in; a consent overlay and the unknown
  * classification change no state (an unexplained empty walk is not evidence of anything). A non-empty result that the provider's validatePrecache accepts (or that
- * needs no validation) marks the domain verified; a non-empty result the validator rejects proves the wall is gone but not that paid access exists, so it clears a
- * standing needs-sign-in entry back to unknown and otherwise changes nothing.
+ * needs no validation) marks the domain verified and persists the lineup; a non-empty result the validator rejects proves the wall is gone but not that paid access
+ * exists, so it clears a standing needs-sign-in entry back to unknown, changes nothing else, and persists nothing - a rejected walk is not a lineup the store can
+ * safely replace a slice with.
  * @param provider - The provider whose discovery completed.
  * @param channels - The discovered channels (possibly empty).
  * @param page - The still-open discovery page, inspected only when the result is empty.
+ * @param deps - The injected dependencies; the lineup write runs through deps.persistProviderLineup.
  * @returns A promise that resolves once any classification and state recording completes.
  */
-export async function recordDiscoveryOutcome(provider: ProviderModule, channels: DiscoveredChannel[], page: Page): Promise<void> {
+export async function recordDiscoveryOutcome(provider: ProviderModule, channels: DiscoveredChannel[], page: Page, deps: PrecachingDeps): Promise<void> {
 
   const domain = extractDomain(provider.guideUrl);
 
@@ -180,6 +190,27 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
   if(!provider.validatePrecache || provider.validatePrecache(channels)) {
 
     markDomainAuth(domain);
+
+    /* Persist what the walk found so the lineup outlives this browser session. The provider states its own durable shape through exportDurableLineup - which
+     * fields survive a session is provider knowledge, not the recorder's - and a provider with nothing durable to add contributes the channel identities the walk
+     * returned.
+     *
+     * Only a walk the validator accepted is written, and the reason is the store's replace semantics: a slice is replaced wholesale, so a rejected walk - one the
+     * provider itself judges not to be a trustworthy statement of its lineup - could shrink a fuller slice written earlier, dropping channels out of the
+     * cold-listing fallback and taking their durable watch URLs with them. Verify-on-use covers staleness, not a lineup the provider has already rejected.
+     *
+     * The write is fire-and-forget by design: it never throws, and making the discovery endpoint's response wait on a file write would charge the user for a
+     * durability guarantee they did not ask for.
+     */
+    const lineup: PersistedLineupChannel[] = provider.exportDurableLineup?.() ??
+      channels.map((channel) => ({ channelSelector: channel.channelSelector, name: channel.name }));
+
+    // The real write absorbs its own failures, so the trailing catch is about the port rather than the store: whatever a caller injects here, this call site can
+    // never become a rejection source that takes down the walk it belongs to. The health-state flush guards its own fire-and-forget write the same way.
+    void deps.persistProviderLineup(provider.slug, lineup).catch((error: unknown) => {
+
+      LOG.debug("precache", "The channel lineup write for %s did not complete: %s.", provider.label, formatError(error));
+    });
 
     return;
   }
@@ -327,8 +358,8 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
 
       LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
 
-      // Record the domain auth consequences while the page is still open - an empty result classifies the page it walked.
-      await recordDiscoveryOutcome(provider, channels, page);
+      // Record the outcome while the page is still open - an empty result classifies the page it walked.
+      await recordDiscoveryOutcome(provider, channels, page, deps);
     }
   }, deps);
 }

@@ -26,10 +26,11 @@ import assert from "node:assert/strict";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { mutateConfig } from "../../../src/config/userConfig.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
+import { persistProviderLineup } from "../../../src/config/providerLineups.ts";
 import { readFile } from "node:fs/promises";
 
 // Files this suite cares about. captureAllFiles reads each entry's main file and its .bak counterpart.
-const PERSISTED_FILES = [ "channels.json", "config.json", "profiles.json" ] as const;
+const PERSISTED_FILES = [ "channels.json", "config.json", "profiles.json", "provider-lineups.json" ] as const;
 
 /**
  * Reads every persisted file (and its .bak when present) into a map keyed by filename. Missing files are recorded as null so absent-vs-empty distinctions
@@ -292,5 +293,59 @@ describe("health.json cross-store isolation", () => {
     assert.equal(channelsAfter, channelsBefore, "channels.json must not change when health is written");
     assert.equal(configAfter, configBefore, "config.json must not change when health is written");
     assert.equal(profilesAfter, profilesBefore, "profiles.json must not change when health is written");
+  });
+});
+
+describe("provider-lineups.json cross-store isolation", () => {
+
+  /* provider-lineups.json is written from a different subsystem than every other store: a discovery walk in the browser layer, not a user-facing save. Its writes
+   * name a single provider slice rather than serializing whole in-memory state, which is what makes a routing failure here quiet - a lineup write that landed in
+   * channels.json would corrupt the user's own lineup while the tune it belonged to went on working.
+   *
+   * Both directions are pinned, mirroring the health.json block above. The writes here are undebounced, so the awaited mutator is itself the settle point.
+   */
+
+  test("mutations to channels, config, and profiles leave provider-lineups.json byte-identical", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: "https://play.hbomax.test/channel/watch/hbo" }]);
+
+    const before = await readFile(pathInDataDir(ctx, "provider-lineups.json"), "utf8");
+
+    await mutateChannels((data) => { data.channels["seed-channel"] = { name: "Seed", url: "https://example.test/seed" }; });
+    await mutateConfig((config) => { config.channelsDvr = { host: "192.168.1.50" }; });
+    await mutateProfiles((profiles) => { profiles.profiles["seed-profile"] = { description: "Seed" }; });
+
+    const after = await readFile(pathInDataDir(ctx, "provider-lineups.json"), "utf8");
+
+    assert.equal(after, before, "provider-lineups.json must be byte-identical after mutations to other stores");
+  });
+
+  test("a provider lineup write leaves channels.json, config.json, and profiles.json byte-identical", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateChannels((data) => { data.channels["seed-channel"] = { name: "Seed", url: "https://example.test/seed" }; });
+    await mutateConfig((config) => { config.channelsDvr = { host: "127.0.0.1" }; });
+    await mutateProfiles((profiles) => { profiles.profiles["seed-profile"] = { description: "Seed" }; });
+
+    const before = await captureAllFiles(ctx.dataDir);
+
+    await persistProviderLineup("yttv", [{ channelSelector: "CNN", name: "CNN", watchUrl: "https://tv.youtube.test/watch/cnn" }]);
+
+    const after = await captureAllFiles(ctx.dataDir);
+
+    assert.notEqual(after["provider-lineups.json"], before["provider-lineups.json"], "provider-lineups.json changes when a lineup is persisted");
+
+    for(const name of [ "channels.json", "config.json", "profiles.json" ] as const) {
+
+      assert.equal(after[name], before[name], name + " must not change when a provider lineup is persisted");
+      assert.equal(after[name + ".bak"], before[name + ".bak"], name + ".bak must not change when a provider lineup is persisted");
+    }
   });
 });

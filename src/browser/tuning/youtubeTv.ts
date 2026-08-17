@@ -5,9 +5,10 @@
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
+import { createProviderChannelCache, dedupeCacheEntries } from "./cache.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { createProviderChannelCache } from "./cache.ts";
+import type { PersistedLineupChannel } from "../../config/providerLineups.ts";
 
 // Base URL for YouTube TV watch page navigation.
 const YOUTUBE_TV_BASE_URL = "https://tv.youtube.com";
@@ -121,6 +122,27 @@ function clearYttvCache(): void {
 
   emptyDiscoveryGuard.reset();
   yttvCache.clear();
+}
+
+/**
+ * Returns YouTube TV's durable lineup for the persisted lineup store: each cached channel's identity paired with its watch URL. The URL is built from the guide's
+ * own watch path and carries no session state, so it survives a restart and lets a boot whose guide read failed still tune directly. The three-tier matching above
+ * files one entry object under several alias keys, so the entries are reduced to one occurrence per object before projection.
+ * @returns The durable lineup rows, or null when the cache is cold.
+ */
+function exportYttvLineup(): Nullable<PersistedLineupChannel[]> {
+
+  if(yttvCache.map.size === 0) {
+
+    return null;
+  }
+
+  return dedupeCacheEntries(yttvCache.map.values()).map((entry) => ({
+
+    channelSelector: entry.discovered.channelSelector,
+    name: entry.discovered.name,
+    watchUrl: entry.watchUrl
+  }));
 }
 
 /**
@@ -389,6 +411,7 @@ async function discoverYttvChannels(page: Page): Promise<DiscoveredChannel[]> {
 export const yttvProvider: ProviderModule = {
 
   discoverChannels: discoverYttvChannels,
+  exportDurableLineup: exportYttvLineup,
   getCachedChannels: yttvCache.cached,
   guideUrl: "https://tv.youtube.com/live",
   label: "YouTube TV",

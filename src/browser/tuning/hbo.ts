@@ -4,9 +4,10 @@
  */
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
+import { createProviderChannelCache, dedupeCacheEntries } from "./cache.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { createProviderChannelCache } from "./cache.ts";
+import type { PersistedLineupChannel } from "../../config/providerLineups.ts";
 import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for HBO Max watch page navigation. Used to build full watch URLs by concatenating with the relative /channel/watch/<uuid>/<uuid> path read from the
@@ -57,6 +58,28 @@ function resolveHboDirectUrl(channelSelector: string): Nullable<string> {
 function clearHboCache(): void {
 
   hboCache.clear();
+}
+
+/**
+ * Returns HBO Max's durable lineup for the persisted lineup store: each cached channel's identity paired with its watch URL. The URL is a stable per-channel play
+ * address rather than a session token, so it is worth carrying across a restart - a boot whose rail read comes back empty can still tune directly from it. The
+ * entries are reduced to one occurrence per entry object first, matching the discipline every provider hook uses so a cache that files one channel under several
+ * keys reports it once.
+ * @returns The durable lineup rows, or null when the cache is cold.
+ */
+function exportHboLineup(): Nullable<PersistedLineupChannel[]> {
+
+  if(hboCache.map.size === 0) {
+
+    return null;
+  }
+
+  return dedupeCacheEntries(hboCache.map.values()).map((entry) => ({
+
+    channelSelector: entry.discovered.channelSelector,
+    name: entry.discovered.name,
+    watchUrl: entry.watchUrl
+  }));
 }
 
 /**
@@ -311,6 +334,7 @@ async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
 export const hboProvider: ProviderModule = {
 
   discoverChannels: discoverHboChannels,
+  exportDurableLineup: exportHboLineup,
   getCachedChannels: hboCache.cached,
   guideUrl: HBO_CHANNELS_URL,
   label: "HBO Max",

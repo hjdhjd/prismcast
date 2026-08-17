@@ -23,6 +23,7 @@ import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
+import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "../browser/precaching.ts";
 import type { ServiceDiscoveryDeps } from "./services.ts";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
@@ -57,6 +58,10 @@ const stubProvider = {
 const gotoUrls: string[] = [];
 const overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 const pageEvents: string[] = [];
+
+// The lineup writes the real discovery-outcome recorder issues while the route drives it. Captured through the injected port rather than performed, so the suite
+// exercises the recorder for real without writing a file into the data directory.
+const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
 let barePort = 0;
 let bareServer: Server;
@@ -116,6 +121,10 @@ const stubPrecachingDeps: PrecachingDeps = {
   getProvidersForDomain: (): ProviderModule[] => [],
   isGracefulShutdown: (): boolean => false,
   minimizeBrowserWindow: async (): Promise<void> => { /* No window to minimize on a stub browser. */ },
+  persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
+
+    persistedLineups.push({ channels, slug });
+  },
   registerManagedPage: (): void => { /* Stub pages need no bookkeeping. */ },
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => {
 
@@ -132,6 +141,7 @@ const stubPrecachingDeps: PrecachingDeps = {
 const delegatingDeps: ServiceDiscoveryDeps = {
 
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),
+  precachingDeps: stubPrecachingDeps,
   recordDiscoveryOutcome,
   withProviderGuidePage: (provider, options): Promise<DiscoveredChannel[]> => withProviderGuidePage(provider, options, stubPrecachingDeps)
 };
@@ -143,6 +153,7 @@ const delegatingDeps: ServiceDiscoveryDeps = {
 const bareDeps: ServiceDiscoveryDeps = {
 
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),
+  precachingDeps: stubPrecachingDeps,
   recordDiscoveryOutcome,
   withProviderGuidePage: async (): Promise<DiscoveredChannel[]> => UNSORTED_CHANNELS
 };
@@ -267,6 +278,7 @@ function registerSequencedService(slug: string): SequencedService {
 const sequencedDeps: ServiceDiscoveryDeps = {
 
   getProviderBySlug: (slug: string): ProviderModule | undefined => sequencedServices.get(slug)?.provider,
+  precachingDeps: stubPrecachingDeps,
   recordDiscoveryOutcome,
   withProviderGuidePage: async (provider, options): Promise<DiscoveredChannel[]> => {
 

@@ -31,6 +31,7 @@ import { getAllStreams } from "./streaming/registry.ts";
 import { initializeUserChannels } from "./config/userChannels.ts";
 import { initializeUserProfiles } from "./config/userProfiles.ts";
 import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
+import { loadProviderLineups } from "./config/providerLineups.ts";
 import morgan from "morgan";
 import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
 import { setupRoutes } from "./routes/index.ts";
@@ -610,6 +611,10 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Load persisted health state (channel health + domain auth) from health.json.
   await loadHealthState();
+
+  // Load the provider channel lineups persisted by earlier sessions from provider-lineups.json. They are verify-on-use hints: they load before the browser does,
+  // so a boot whose own precache walk comes back empty can still tune a channel directly instead of failing at a guide page it cannot read.
+  await loadProviderLineups();
 
   // Install the reactive bridge that translates health/auth state changes into channel table patches over SSE. Channel row HTML has a single source of truth -
   // generateChannelRowHtml on the server - and every reactive update flows through this bridge so the client never composes channel row state imperatively.

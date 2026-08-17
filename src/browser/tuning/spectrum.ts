@@ -5,9 +5,10 @@
 import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel, Nullable, ProviderModule } from "../../types/index.ts";
 import { LOG, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { attemptGuideRecovery, createEmptyDiscoveryGuard, logAvailableChannels } from "./shared.ts";
+import { createProviderChannelCache, dedupeCacheEntries } from "./cache.ts";
 import { CONFIG } from "../../config/index.ts";
 import type { Page } from "puppeteer-core";
-import { createProviderChannelCache } from "./cache.ts";
+import type { PersistedLineupChannel } from "../../config/providerLineups.ts";
 
 // Base URL for Spectrum TV watch page navigation.
 const SPECTRUM_BASE_URL = "https://watch.spectrum.net";
@@ -225,6 +226,40 @@ function populateSpectrumChannelCache(rawChannels: RawSpectrumChannel[]): void {
 }
 
 /**
+ * Builds the Spectrum watch address for a channel's Gracenote station ID. This is the one place the /livetv?tmsid= form is written: the strategy's direct
+ * navigation, the cached-URL resolver, and the durable-lineup export all read it here, so a change to Spectrum's watch-page shape is a one-line edit rather than
+ * a hunt for every place the string was assembled.
+ * @param tmsid - The channel's Gracenote station ID.
+ * @returns The full Spectrum watch URL.
+ */
+function spectrumWatchUrl(tmsid: string): string {
+
+  return SPECTRUM_BASE_URL + "/livetv?tmsid=" + tmsid;
+}
+
+/**
+ * Returns Spectrum TV's durable lineup for the persisted lineup store: each cached channel's identity paired with the watch URL built from its Gracenote station
+ * ID. The station ID is a stable channel identifier rather than session state, so the address it builds survives a restart and lets a boot whose guide read failed
+ * still tune directly. The tiered matching below files one entry object under several alias keys, so the entries are reduced to one occurrence per object before
+ * projection.
+ * @returns The durable lineup rows, or null when the cache is cold.
+ */
+function exportSpectrumLineup(): Nullable<PersistedLineupChannel[]> {
+
+  if(spectrumCache.map.size === 0) {
+
+    return null;
+  }
+
+  return dedupeCacheEntries(spectrumCache.map.values()).map((entry) => ({
+
+    channelSelector: entry.discovered.channelSelector,
+    name: entry.discovered.name,
+    watchUrl: spectrumWatchUrl(entry.tmsid)
+  }));
+}
+
+/**
  * Looks up a channel in the unified cache using tiered matching logic:
  *
  * 1. Exact match: cache key equals the lowercased input (matches callsigns like "espnhd" and stripped names like "espn" and network names like "nbc").
@@ -392,7 +427,7 @@ async function spectrumGridStrategy(page: Page, profile: ChannelSelectionProfile
 
   try {
 
-    await page.goto(SPECTRUM_BASE_URL + "/livetv?tmsid=" + entry.tmsid, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
+    await page.goto(spectrumWatchUrl(entry.tmsid), { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "load" });
   } catch(error) {
 
     return { reason: "Failed to navigate to Spectrum watch page: " + formatError(error) + ".", success: false };
@@ -417,7 +452,7 @@ async function resolveSpectrumDirectUrl(channelSelector: string, _page: Page): P
     return null;
   }
 
-  return SPECTRUM_BASE_URL + "/livetv?tmsid=" + entry.tmsid;
+  return spectrumWatchUrl(entry.tmsid);
 }
 
 /**
@@ -462,6 +497,7 @@ async function discoverSpectrumChannels(page: Page): Promise<DiscoveredChannel[]
 export const spectrumProvider: ProviderModule = {
 
   discoverChannels: discoverSpectrumChannels,
+  exportDurableLineup: exportSpectrumLineup,
   getCachedChannels: spectrumCache.cached,
   guideUrl: "https://watch.spectrum.net/guide",
   label: "Spectrum TV",

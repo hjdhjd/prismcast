@@ -13,14 +13,30 @@
  *   2. The module-level precacheInProgress flag: when true, the function defers. The flag is set when startPrecaching schedules the cycle (before the timer fires) and
  *      cleared in runPrecacheCycle's finally block.
  */
-import type { AuthWallIndicators, DiscoveredChannel, ProviderModule } from "../types/index.ts";
+import type { AuthWallIndicators, DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { recordDiscoveryOutcome, startPrecaching } from "./precaching.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
+import type { PersistedLineupChannel } from "../config/providerLineups.ts";
+import type { PrecachingDeps } from "./precaching.ts";
 import assert from "node:assert/strict";
+
+// The lineup writes the recorder issues, captured by the injected port below so each case can assert what was persisted without touching a real file.
+let persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
+
+/* The injected deps the recorder runs against. recordDiscoveryOutcome reaches exactly one member of PrecachingDeps - the lineup write - so the double-cast
+ * documents that this stub covers the recorder's slice of the port rather than the whole surface, matching the makeProvider convention below.
+ */
+const recorderDeps = {
+
+  persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
+
+    persistedLineups.push({ channels, slug });
+  }
+} as unknown as PrecachingDeps;
 
 describe("startPrecaching", () => {
 
@@ -104,6 +120,8 @@ describe("recordDiscoveryOutcome", () => {
 
   beforeEach(() => {
 
+    persistedLineups = [];
+
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule. Each test uses
     // unique synthetic domains so state from one scenario cannot color another.
     mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
@@ -114,13 +132,13 @@ describe("recordDiscoveryOutcome", () => {
     mock.timers.reset();
   });
 
-  /* Builds a minimal ProviderModule carrying only the fields recordDiscoveryOutcome reads (authWallIndicators, guideUrl, label, validatePrecache). The double-cast
-   * documents that the recorder's contract touches this subset, not the full provider surface.
+  /* Builds a minimal ProviderModule carrying only the fields recordDiscoveryOutcome reads (authWallIndicators, exportDurableLineup, guideUrl, label, slug,
+   * validatePrecache). The double-cast documents that the recorder's contract touches this subset, not the full provider surface.
    */
-  function makeProvider(overrides: { authWallIndicators?: AuthWallIndicators; guideUrl: string;
-    validatePrecache?: (channels: DiscoveredChannel[]) => boolean; }): ProviderModule {
+  function makeProvider(overrides: { authWallIndicators?: AuthWallIndicators; exportDurableLineup?: () => Nullable<PersistedLineupChannel[]>; guideUrl: string;
+    slug?: string; validatePrecache?: (channels: DiscoveredChannel[]) => boolean; }): ProviderModule {
 
-    return { label: "Stub Service", ...overrides } as unknown as ProviderModule;
+    return { label: "Stub Service", slug: "stub-service", ...overrides } as unknown as ProviderModule;
   }
 
   /* Builds a Page stub whose evaluate routes on the argument shape, mirroring the consent.test.ts stub convention: a string array is the CMP-detect probe, an
@@ -149,7 +167,7 @@ describe("recordDiscoveryOutcome", () => {
     const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
     const provider = makeProvider({ authWallIndicators: { hosts: ["auth.case-wall.test"] }, guideUrl: "https://www.case-wall.test/guide" });
 
-    await recordDiscoveryOutcome(provider, [], makePage("https://auth.case-wall.test/login"));
+    await recordDiscoveryOutcome(provider, [], makePage("https://auth.case-wall.test/login"), recorderDeps);
 
     assert.deepEqual(getDomainAuthState("case-wall.test"), { status: "needsLogin", timestamp: 1_700_000_000_000 }, "domain marked needs-sign-in");
     assert.equal(warn.mock.calls.length, 1, "exactly one WARN");
@@ -169,7 +187,7 @@ describe("recordDiscoveryOutcome", () => {
     const provider = makeProvider({ guideUrl: "https://www.case-consent.test/guide" });
     const page = makePage("https://www.case-consent.test/guide", (arg) => Array.isArray(arg));
 
-    await recordDiscoveryOutcome(provider, [], page);
+    await recordDiscoveryOutcome(provider, [], page, recorderDeps);
 
     assert.equal(getDomainAuthState("case-consent.test"), null, "no auth state change on a consent overlay");
     assert.equal(warn.mock.calls.length, 1, "the overlay is reported at WARN");
@@ -193,7 +211,7 @@ describe("recordDiscoveryOutcome", () => {
       return ((typeof arg === "object") && (arg !== null) && ("maxDepth" in arg)) ? [] : null;
     });
 
-    await recordDiscoveryOutcome(provider, [], page);
+    await recordDiscoveryOutcome(provider, [], page, recorderDeps);
 
     assert.equal(getDomainAuthState("case-unknown.test"), null, "no auth state change on unknown");
     assert.equal(warn.mock.calls.length, 0, "no WARN on unknown");
@@ -204,7 +222,7 @@ describe("recordDiscoveryOutcome", () => {
     // Traced path: channels.length > 0 -> the !provider.validatePrecache disjunct -> markDomainAuth. This is the pre-existing verified mark, unchanged.
     const provider = makeProvider({ guideUrl: "https://www.case-plain.test/guide" });
 
-    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-plain.test/guide"));
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-plain.test/guide"), recorderDeps);
 
     assert.deepEqual(getDomainAuthState("case-plain.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified without a validator");
   });
@@ -214,7 +232,7 @@ describe("recordDiscoveryOutcome", () => {
     // Traced path: channels.length > 0 -> validatePrecache returns true -> markDomainAuth.
     const provider = makeProvider({ guideUrl: "https://www.case-validated.test/guide", validatePrecache: (): boolean => true });
 
-    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-validated.test/guide"));
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-validated.test/guide"), recorderDeps);
 
     assert.deepEqual(getDomainAuthState("case-validated.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified through the validator");
   });
@@ -229,7 +247,7 @@ describe("recordDiscoveryOutcome", () => {
 
     markDomainAuthRequired("case-unproven.test");
 
-    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-unproven.test/guide"));
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-unproven.test/guide"), recorderDeps);
 
     assert.equal(getDomainAuthState("case-unproven.test"), null, "the needs-sign-in entry is cleared to unknown");
   });
@@ -243,7 +261,7 @@ describe("recordDiscoveryOutcome", () => {
 
     markDomainAuth("case-keeps-verified.test");
 
-    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-keeps-verified.test/guide"));
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-keeps-verified.test/guide"), recorderDeps);
 
     assert.deepEqual(getDomainAuthState("case-keeps-verified.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified state untouched");
   });
@@ -253,9 +271,61 @@ describe("recordDiscoveryOutcome", () => {
     // Traced path: the validator-rejected arm with no standing entry - clearDomainAuthRequirement's guard finds nothing to clear.
     const provider = makeProvider({ guideUrl: "https://www.case-still-unknown.test/guide", validatePrecache: (): boolean => false });
 
-    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-still-unknown.test/guide"));
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-still-unknown.test/guide"), recorderDeps);
 
     assert.equal(getDomainAuthState("case-still-unknown.test"), null, "unknown stays unknown");
+  });
+
+  test("a non-empty result persists the walk's channel identities through the injected port", async () => {
+
+    /* Traced path: the non-empty arm's lineup write for a provider with no exportDurableLineup hook. The recorder falls back to the walk's own channels projected
+     * onto identity rows, so a provider that tunes in-page contributes a lineup with no watch URL in it - the shape that makes the persisted store inert for
+     * in-page-tuning platforms rather than conditionally skipped.
+     */
+    const provider = makeProvider({ guideUrl: "https://www.case-identity-lineup.test/guide", slug: "case-identity-lineup" });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-identity-lineup.test/guide"), recorderDeps);
+
+    assert.deepEqual(persistedLineups, [{ channels: [{ channelSelector: "Stub", name: "Stub" }], slug: "case-identity-lineup" }],
+      "the walk's identities are persisted under the provider's slug, with no watch URL");
+  });
+
+  test("a non-empty result prefers the provider's own durable lineup over the walk's identities", async () => {
+
+    // Traced path: the non-empty arm with an exportDurableLineup hook present. Which fields survive a browser session is provider knowledge, so the hook's answer
+    // wins outright - dropping the preference would silently strip every watch URL out of the store and reduce the feature to a suggestion list.
+    const durable = [{ channelSelector: "Stub", name: "Stub", watchUrl: "https://www.case-durable-lineup.test/watch/stub" }];
+    const provider = makeProvider({ exportDurableLineup: (): PersistedLineupChannel[] => durable, guideUrl: "https://www.case-durable-lineup.test/guide",
+      slug: "case-durable-lineup" });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-durable-lineup.test/guide"), recorderDeps);
+
+    assert.deepEqual(persistedLineups, [{ channels: durable, slug: "case-durable-lineup" }], "the provider's durable rows are what reach the store");
+  });
+
+  test("a non-empty result the validator rejects persists nothing", async () => {
+
+    /* Traced path: the validator-rejected arm, which returns without reaching the lineup write. The store replaces a provider's slice wholesale, so a walk the
+     * provider itself judges untrustworthy - Sling's free-tier lineup read without a paid subscription is the case that produces one - could shrink a fuller slice
+     * an accepted walk wrote earlier, dropping channels out of the cold-listing fallback and taking their durable watch URLs with them.
+     */
+    const provider = makeProvider({ guideUrl: "https://www.case-rejected-lineup.test/guide", slug: "case-rejected-lineup",
+      validatePrecache: (): boolean => false });
+
+    await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-rejected-lineup.test/guide"), recorderDeps);
+
+    assert.deepEqual(persistedLineups, [], "a rejected walk never reaches the lineup store");
+  });
+
+  test("an empty result persists nothing at all", async () => {
+
+    // Traced path: the empty arm returns before the lineup write. A walk that found nothing is not evidence that the provider has no channels, and letting it
+    // reach the store would erase the very hints a failed discovery most needs - the store's own empty-array guard is the second line, this is the first.
+    const provider = makeProvider({ guideUrl: "https://www.case-empty-lineup.test/guide", slug: "case-empty-lineup" });
+
+    await recordDiscoveryOutcome(provider, [], makePage("https://www.case-empty-lineup.test/guide"), recorderDeps);
+
+    assert.deepEqual(persistedLineups, [], "an empty walk never reaches the lineup store");
   });
 });
 

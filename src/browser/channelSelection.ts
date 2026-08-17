@@ -2,8 +2,10 @@
  *
  * channelSelection.ts: Channel selection coordinator for multi-channel streaming sites.
  */
-import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
+import type { ChannelSelectionProfile, ChannelSelectorResult, ChannelStrategyEntry, DiscoveredChannel, Nullable, ProviderModule,
+  ResolvedSiteProfile } from "../types/index.ts";
 import { EvaluateAbortError, LOG, delay, evaluateWithAbort, extractDomain, formatError, isPageDeathError } from "../utils/index.ts";
+import { evictPersistedWatchUrl, getPersistedLineup, getPersistedWatchUrl } from "../config/providerLineups.ts";
 import { getDomainConfig, registerProviderModuleProfile } from "../config/sites.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Page } from "puppeteer-core";
@@ -75,7 +77,13 @@ for(const provider of providerModules) {
 
 /**
  * Returns a direct watch URL for the channel specified in the profile, if one can be resolved. Looks up the strategy entry's resolveDirectUrl hook and calls it
- * with the channelSelector and page. Returns null if the strategy has no resolver, the profile has no channelSelector, or the resolver returns null.
+ * with the channelSelector and page; when the live cache has nothing to offer, falls back to the lineup persisted from an earlier session. Returns null if the
+ * profile has no channelSelector, or if neither source knows the channel.
+ *
+ * The persisted fallback is what lets the first tune of a boot whose discovery walk came back empty still reach the channel: a URL that outlived the browser
+ * session bypasses the guide entirely, which is exactly the surface a degraded session cannot render. It is a hint, never an authority - a URL that no longer
+ * works fails the establishment and is evicted by invalidateDirectUrl below. Providers that tune in-page never export watch URLs and therefore never have store
+ * entries, so this lookup is structurally inert for them rather than conditionally skipped.
  * @param profile - The resolved site profile.
  * @param page - The Puppeteer page object, passed through to the strategy's resolver for response interception setup or API calls.
  * @returns The direct watch URL or null.
@@ -89,8 +97,16 @@ export async function resolveDirectUrl(profile: ResolvedSiteProfile, page: Page)
     return null;
   }
 
+  const resolved = await strategies[channelSelection.strategy]?.resolveDirectUrl?.(channelSelector, page) ?? null;
 
-  return await strategies[channelSelection.strategy]?.resolveDirectUrl?.(channelSelector, page) ?? null;
+  if(resolved) {
+
+    return resolved;
+  }
+
+  const provider = getProviderByStrategy(channelSelection.strategy);
+
+  return provider ? getPersistedWatchUrl(provider.slug, channelSelector) : null;
 }
 
 /* The retention policy for cached watch URLs, named once so the two conditions it unions stay one concept rather than an expression a later edit can drop an arm
@@ -100,34 +116,49 @@ export async function resolveDirectUrl(profile: ResolvedSiteProfile, page: Page)
 const retainsCachedUrl = (cause: unknown): boolean => isPageDeathError(cause) || (cause instanceof EvaluateAbortError);
 
 /**
- * Invalidates the cached direct watch URL for the channel specified in the profile, when the failure that prompted the call is evidence against that URL. Looks
- * up the strategy entry's invalidateDirectUrl hook and calls it with the channelSelector. No-op if the strategy has no invalidator or the profile has no
- * channelSelector.
+ * Invalidates the direct watch URL for the channel specified in the profile, in both the strategy's live cache and the persisted lineup, when the failure that
+ * prompted the call is evidence against that URL. No-op if the strategy has no invalidator or the profile has no channelSelector.
  *
  * The decision of what counts as evidence lives here rather than at the tune sites, so every caller gets one policy. A failure that reflects the death of the
  * page or the stream's own cancellation says nothing about whether the cached URL still resolves to the right channel, and evicting on it costs the next tune
  * dearly: every subsequent tune for that channel is forced through guide navigation, which during an incident is exactly the path most likely to be broken too.
  * A genuine tune failure - the video never becomes ready, the channel is not on the page, navigation is refused - is evidence, and evicts.
+ *
+ * The verdict is returned so that one policy statement serves every consumer: a caller that only needs the eviction ignores it, and a caller whose next move
+ * depends on whether the URL was blamed reads it here rather than re-deriving the retention predicate for itself.
  * @param profile - The resolved site profile.
  * @param cause - The failure that prompted the invalidation, classified here against the retention policy.
+ * @returns True when the failure was evidence against the URL and both hints were evicted; false when the retention policy kept them, or when there was no
+ *   channel selector to act on.
  */
-export function invalidateDirectUrl(profile: ResolvedSiteProfile, cause: unknown): void {
+export function invalidateDirectUrl(profile: ResolvedSiteProfile, cause: unknown): boolean {
 
   const { channelSelection, channelSelector } = profile;
 
   if(!channelSelector) {
 
-    return;
+    return false;
   }
 
   if(retainsCachedUrl(cause)) {
 
     LOG.debug("tuning:cache", "Retaining the cached direct URL for %s: %s.", channelSelector, formatError(cause));
 
-    return;
+    return false;
   }
 
   strategies[channelSelection.strategy]?.invalidateDirectUrl?.(channelSelector);
+
+  // The same evidence that discredits the live cache entry discredits the persisted hint it may have come from, so both go together - otherwise the next boot
+  // would resurrect the URL this tune just proved wrong.
+  const provider = getProviderByStrategy(channelSelection.strategy);
+
+  if(provider) {
+
+    evictPersistedWatchUrl(provider.slug, channelSelector);
+  }
+
+  return true;
 }
 
 /**
@@ -236,9 +267,24 @@ export function getProvidersForDomain(domain: string): ProviderModule[] {
 }
 
 /**
- * Returns cached discovered channels from all provider modules, grouped by guide URL hostname. Each entry includes the hostname and an array of label/value pairs
- * suitable for datalist population. Only includes providers whose cache is non-null (i.e., discovery or precaching has already run). Used by the channels panel
- * to merge provider-discovered channels into the channel selector datalist alongside predefined channel suggestions.
+ * Projects a provider's persisted lineup onto the discovered-channel shape, for the paths that read a lineup this session has not walked for itself. The
+ * persisted rows carry channel identity only, so the projection adds nothing beyond it.
+ * @param slug - The provider slug to look up.
+ * @returns The persisted lineup as discovered channels, or null when nothing is persisted for the slug.
+ */
+function persistedLineupAsDiscovered(slug: string): Nullable<DiscoveredChannel[]> {
+
+  return getPersistedLineup(slug)?.map((channel) => ({ channelSelector: channel.channelSelector, name: channel.name })) ?? null;
+}
+
+/**
+ * Returns known channels from all provider modules, grouped by guide URL hostname. Each entry includes the hostname and an array of label/value pairs suitable for
+ * datalist population. Used by the channels panel to merge provider channels into the channel selector datalist alongside predefined channel suggestions.
+ *
+ * Two sources, in order: the live cache a discovery or precache walk filled during this browser session, and - when this session has no cache for a provider - the
+ * lineup persisted from an earlier one. The two are not distinguishable to the caller except by session state, and deliberately so: the one consumer is a
+ * suggestion list, where an entry the provider has since dropped costs a user one failed tune, and an empty list because this boot's precache came back empty
+ * costs them the feature. Providers with neither source are omitted entirely.
  * @returns Array of objects with hostname and entries properties.
  */
 export function getCachedProviderChannels(): { entries: { label: string; stationId?: string; value: string }[]; hostname: string }[] {
@@ -247,7 +293,7 @@ export function getCachedProviderChannels(): { entries: { label: string; station
 
   for(const provider of providerModules) {
 
-    const cached = provider.getCachedChannels();
+    const cached = provider.getCachedChannels() ?? persistedLineupAsDiscovered(provider.slug);
 
     if(!cached) {
 

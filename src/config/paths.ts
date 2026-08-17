@@ -105,6 +105,15 @@ export function getProfilesFilePath(): string {
 }
 
 /**
+ * Returns the path to the persisted provider channel lineups file.
+ * @returns The absolute path to provider-lineups.json inside the data directory.
+ */
+export function getProviderLineupsFilePath(): string {
+
+  return path.join(getDataDir(), "provider-lineups.json");
+}
+
+/**
  * Returns the path to the HLS resume state file.
  * @returns The absolute path to hls-resume.json inside the data directory.
  */

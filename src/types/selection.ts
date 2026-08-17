@@ -5,6 +5,7 @@
 import type { ChannelSelectionStrategy, ResolvedSiteProfile, SiteProfile } from "./profiles.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable } from "./shared.ts";
+import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 
 /**
  * Narrowed profile type for strategy functions. When selectChannel() validates that channelSelector is non-null, it narrows the profile to this type so
@@ -138,6 +139,14 @@ export interface ProviderModule {
    * is set. Returns a standardized DiscoveredChannel array.
    */
   discoverChannels: (page: Page) => Promise<DiscoveredChannel[]>;
+
+  /**
+   * Returns the provider's own statement of which lineup facts outlive the browser session that discovered them, for the persisted lineup store. A provider whose
+   * direct-tune address is a stable per-channel URL (or a stable identifier the URL is built from) exports it here alongside the channel identity; a provider that
+   * tunes by interacting with its guide has no such address and omits the hook entirely, so the store never holds a watch URL that cannot be navigated to.
+   * Returns null when the provider's cache is cold and there is nothing to state.
+   */
+  exportDurableLineup?: () => Nullable<PersistedLineupChannel[]>;
 
   /**
    * Returns cached discovered channels if the provider has already fully enumerated its lineup from a previous tune or discovery call, or null if no enumeration

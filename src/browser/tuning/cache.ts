@@ -11,16 +11,16 @@
 import type { DiscoveredChannel, Nullable } from "../../types/index.ts";
 
 /**
- * Projects a provider's cached channel entries into the discovery output its consumers read. Entries are deduplicated by reference, because every provider's
- * tiered matching writes alias keys - several cache keys pointing at one entry object - and iterating the map's values without that pass would report one channel
- * as several. A cache holding no aliases still gets a correct result and pays only the Set membership pass. The output is sorted by name.
+ * Reduces a provider's cached entry values to one occurrence per entry object. Every provider's tiered matching writes alias keys - several cache keys pointing at
+ * one entry object - so iterating a cache map's values without this pass reports one channel as several. A cache holding no aliases still gets a correct result
+ * and pays only the Set membership pass. This is the single expression of that rule, shared by the discovery projection below and by every provider hook that
+ * reads its own cache for a shape the projection cannot carry.
  * @param entries - The cache's entry values, in whatever order the map holds them.
- * @param toDiscovered - Projects one cached entry onto the discovered-channel shape the provider reports for it.
- * @returns Sorted, deduplicated discovered channels.
+ * @returns The entries in map order, one per distinct entry object.
  */
-export function buildDiscoveredChannelsFromCache<Entry>(entries: Iterable<Entry>, toDiscovered: (entry: Entry) => DiscoveredChannel): DiscoveredChannel[] {
+export function dedupeCacheEntries<Entry>(entries: Iterable<Entry>): Entry[] {
 
-  const channels: DiscoveredChannel[] = [];
+  const unique: Entry[] = [];
   const seen = new Set<Entry>();
 
   for(const entry of entries) {
@@ -31,8 +31,21 @@ export function buildDiscoveredChannelsFromCache<Entry>(entries: Iterable<Entry>
     }
 
     seen.add(entry);
-    channels.push(toDiscovered(entry));
+    unique.push(entry);
   }
+
+  return unique;
+}
+
+/**
+ * Projects a provider's cached channel entries into the discovery output its consumers read, deduplicated by entry reference and sorted by name.
+ * @param entries - The cache's entry values, in whatever order the map holds them.
+ * @param toDiscovered - Projects one cached entry onto the discovered-channel shape the provider reports for it.
+ * @returns Sorted, deduplicated discovered channels.
+ */
+export function buildDiscoveredChannelsFromCache<Entry>(entries: Iterable<Entry>, toDiscovered: (entry: Entry) => DiscoveredChannel): DiscoveredChannel[] {
+
+  const channels = dedupeCacheEntries(entries).map(toDiscovered);
 
   channels.sort((a, b) => a.name.localeCompare(b.name));
 
