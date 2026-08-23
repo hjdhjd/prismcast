@@ -3,7 +3,7 @@
  * preroll.ts: Preroll generation and compositor for immediate HLS response during stream startup.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, getBundledFFmpegPath } from "../utils/index.ts";
+import { LOG, resolvePrerollFFmpegPath } from "../utils/index.ts";
 import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
@@ -22,8 +22,8 @@ import { buffer as streamToBuffer } from "node:stream/consumers";
  *
  * Both H.264 and HEVC variants are generated when HEVC is the effective capture codec (user allows it AND GPU supports hardware encoding). This ensures the
  * preroll codec matches the capture codec at the preroll-to-live boundary, eliminating a cross-codec discontinuity that would force a decoder reinitialization.
- * The bundled ffmpeg-for-homebridge binary (which includes libx265) is used for all preroll generation, bypassing the Channels DVR FFmpeg whose minimal encoder
- * set may lack HEVC support.
+ * Preroll encodes with the bundled ffmpeg-for-homebridge binary when it is usable, because its encoder set is known to include libx265, and with an ffmpeg from
+ * the system PATH otherwise. It never uses the Channels DVR FFmpeg, whose minimal encoder set may lack HEVC support.
  *
  * The preroll playlist is served progressively - segments are revealed over time based on elapsed wall-clock time, simulating a live stream. The client polls for
  * updates, sees new segments appear, and keeps playing without stalling for the full duration of the tune. When real content arrives, the fMP4 segmenter's composite
@@ -178,22 +178,25 @@ export function getPrerollCodec(): CaptureCodec {
 // Preroll Generation.
 
 /**
- * Generates preroll fMP4 variants at startup. Uses the bundled ffmpeg-for-homebridge binary (which includes both libx264 and libx265) to guarantee encoder
- * availability regardless of the user's system FFmpeg installation. The H.264 variant is always generated. The HEVC variant is generated when HEVC is the effective
- * capture codec (user allows it AND GPU supports hardware encoding), so the preroll codec matches the capture codec at the preroll-to-live boundary.
+ * Generates preroll fMP4 variants at startup. Prefers the bundled ffmpeg-for-homebridge binary, whose encoder set is known to carry both libx264 and libx265, and
+ * falls back to an ffmpeg on the system PATH when the bundled binary is missing or will not run - the postinstall download that fetches it can fail, and a working
+ * system FFmpeg is a better answer than no preroll at all. The H.264 variant is always generated. The HEVC variant is generated when HEVC is the effective capture
+ * codec (user allows it AND GPU supports hardware encoding), so the preroll codec matches the capture codec at the preroll-to-live boundary.
  *
  * Each variant spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits the output into an init segment
  * (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS because it comes from a
- * continuous FFmpeg encode. If the bundled FFmpeg is unavailable or a variant fails, the system degrades gracefully - the blocking stream setup path is used instead.
- * Each variant's encode is bounded by the generation deadline, so a hung FFmpeg degrades startup to a preroll-free boot instead of blocking it.
+ * continuous FFmpeg encode. If no FFmpeg is available or a variant fails, the system degrades gracefully - the blocking stream setup path is used instead. That
+ * per-variant degradation is also the safety net for a PATH build that turns out to be missing an encoder, which the bundled binary would have had. Each
+ * variant's encode is bounded by the generation deadline, so a hung FFmpeg degrades startup to a preroll-free boot instead of blocking it.
  */
 export async function generatePreroll(): Promise<void> {
 
-  const ffmpegBin = getBundledFFmpegPath();
+  const ffmpegBin = await resolvePrerollFFmpegPath();
 
   if(!ffmpegBin) {
 
-    LOG.warn("Bundled FFmpeg is not available. Preroll generation skipped - startup playlists will have no segments.");
+    LOG.warn("No FFmpeg is available for preroll generation: neither the bundled binary nor an ffmpeg on the system PATH could be run. Preroll generation is " +
+      "skipped, so startup playlists will have no segments.");
 
     return;
   }

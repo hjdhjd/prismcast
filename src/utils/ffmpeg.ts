@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 const FFMPEG_NOISE_PATTERNS = [ "Press [q] to stop", "frame=", "size=", "time=", "bitrate=", "speed=" ];
 
 /**
- * The runtime context probeFFmpegPath (and getBundledFFmpegPath) consume. Models the I/O boundary used by path resolution: filesystem existence checks, the
+ * The runtime context the path-resolution functions consume. Models the I/O boundary used by path resolution: filesystem existence checks, the
  * user's home directory, the detected platform, the spawn-based probe, and the bundled FFmpeg path from the ffmpeg-for-homebridge npm package. Production wires
  * it through createDefaultFFmpegContext (in ffmpeg.context.ts); tests pass a context literal.
  */
@@ -40,17 +40,35 @@ export interface FFmpegContext {
 }
 
 /**
- * Returns the path to the bundled ffmpeg-for-homebridge binary if it exists on disk. This binary ships as an npm dependency and has a full encoder set (libx264,
- * libx265, zoompan, overlay) regardless of what the user has installed. Used by preroll generation to guarantee HEVC encoding availability without depending on
- * the Channels DVR FFmpeg (which has a minimal encoder set) or a system installation.
- * @param ctx - The FFmpeg context. Defaults to createDefaultFFmpegContext() which wires real runtime I/O.
- * @returns The absolute path to the bundled FFmpeg, or undefined if the package did not resolve or the binary is missing.
+ * Probes the bundled ffmpeg-for-homebridge binary. The package ships a full encoder set (libx264, libx265, zoompan, overlay) regardless of what the user has
+ * installed, which is why both resolvers reach for it. Resolving to a path is necessary but not sufficient: the binary can be missing on disk (a production-only
+ * install stripped it, antivirus quarantined it) or present but unable to run (wrong architecture, no execute permission), so the candidate has to both exist and
+ * answer a probe before it is offered.
+ * @param ctx - The FFmpeg context.
+ * @returns Promise resolving to the bundled path when it is usable, or undefined.
  */
-export function getBundledFFmpegPath(ctx: FFmpegContext = createDefaultFFmpegContext()): string | undefined {
+async function probeBundledFFmpeg(ctx: FFmpegContext): Promise<string | undefined> {
 
-  if(ctx.bundledPath && ctx.exists(ctx.bundledPath)) {
+  if(ctx.bundledPath && ctx.exists(ctx.bundledPath) && (await ctx.probe(ctx.bundledPath))) {
 
     return ctx.bundledPath;
+  }
+
+  return undefined;
+}
+
+/**
+ * Probes for an FFmpeg on the system PATH. There is no path to check first - the name alone is the candidate, and the probe's spawn is what answers whether the
+ * shell can find and run it. Returning the bare name rather than an absolute path is deliberate: the spawners hand it to spawn(), which does its own PATH lookup
+ * at launch time, so a PATH that changes under a long-running process is still honored.
+ * @param ctx - The FFmpeg context.
+ * @returns Promise resolving to "ffmpeg" when the system has a working one, or undefined.
+ */
+async function probeSystemFFmpeg(ctx: FFmpegContext): Promise<string | undefined> {
+
+  if(await ctx.probe("ffmpeg")) {
+
+    return "ffmpeg";
   }
 
   return undefined;
@@ -128,20 +146,28 @@ export async function probeFFmpegPath(ctx: FFmpegContext = createDefaultFFmpegCo
     }
   }
 
-  // Check ffmpeg-for-homebridge bundled FFmpeg. This provides a reliable fallback without requiring manual FFmpeg installation.
-  if(ctx.bundledPath && ctx.exists(ctx.bundledPath) && (await ctx.probe(ctx.bundledPath))) {
+  // Check ffmpeg-for-homebridge bundled FFmpeg. This provides a reliable fallback without requiring manual FFmpeg installation. Falling through to the system
+  // PATH is the last resort, and undefined out of both means FFmpeg was not found anywhere.
+  return (await probeBundledFFmpeg(ctx)) ?? (await probeSystemFFmpeg(ctx));
+}
 
-    return ctx.bundledPath;
-  }
+/**
+ * Probes for an FFmpeg suitable for preroll generation: the bundled ffmpeg-for-homebridge binary first, an ffmpeg on the system PATH second. Pure algorithm over
+ * the supplied FFmpegContext, with no internal caching, exactly like probeFFmpegPath; resolvePrerollFFmpegPath is the production-facing memoized wrapper.
+ *
+ * The preference order is the opposite end of probeFFmpegPath's, and the Channels DVR binary is deliberately absent from it. Preroll encodes black-and-silence
+ * video from scratch, so it needs the full encoder and filter set - libx264, libx265, and the filters the generation command composes - while the Channels DVR
+ * FFmpeg ships a minimal set that may lack them. Handing preroll a binary that cannot encode what it is asked to encode fails later and less legibly than not
+ * offering it at all, so this resolver never considers it. The bundled binary is preferred because its encoder set is known; the PATH fallback exists because the
+ * bundled binary's postinstall download can fail, leaving a perfectly good system FFmpeg unused. A PATH build missing an encoder is still possible, which is what
+ * preroll's per-variant degradation covers.
+ *
+ * @param ctx - The FFmpeg context. Defaults to createDefaultFFmpegContext() which wires real runtime I/O.
+ * @returns Promise resolving to an FFmpeg path suitable for preroll, or undefined if neither candidate is usable.
+ */
+export async function probePrerollFFmpegPath(ctx: FFmpegContext = createDefaultFFmpegContext()): Promise<string | undefined> {
 
-  // Finally, check if ffmpeg is available in the system PATH.
-  if(await ctx.probe("ffmpeg")) {
-
-    return "ffmpeg";
-  }
-
-  // FFmpeg not found anywhere.
-  return undefined;
+  return (await probeBundledFFmpeg(ctx)) ?? (await probeSystemFFmpeg(ctx));
 }
 
 /**
@@ -158,6 +184,15 @@ export async function probeFFmpegPath(ctx: FFmpegContext = createDefaultFFmpegCo
  * @returns Promise resolving to the FFmpeg path if found, or undefined if not available.
  */
 export const resolveFFmpegPath = memoizeAsync<string | undefined>(async () => probeFFmpegPath());
+
+/**
+ * Resolves the FFmpeg executable preroll generation should use, against the production filesystem. Memoized via memoizeAsync exactly as resolveFFmpegPath is, and
+ * for the same reasons: first call probes, subsequent calls return the cached result, and tests exercise probePrerollFFmpegPath against synthetic contexts rather
+ * than reaching for this sealed singleton. It is a separate memoizer from resolveFFmpegPath because the two answer different questions - "what can we stream
+ * with" versus "what can we encode preroll with" - and can legitimately resolve to different binaries on the same machine.
+ * @returns Promise resolving to an FFmpeg path suitable for preroll, or undefined if none is available.
+ */
+export const resolvePrerollFFmpegPath = memoizeAsync<string | undefined>(async () => probePrerollFFmpegPath());
 
 // FFmpeg Process Types.
 

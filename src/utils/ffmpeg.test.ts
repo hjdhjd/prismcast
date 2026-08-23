@@ -8,17 +8,17 @@
  * 2. buildSpawnFFmpegArgs / buildMpegTsRemuxerArgs - pure argv builders. Tested by inspecting the returned arrays for the exact flag positions and values
  *    that production callers depend on.
  *
- * 3. getBundledFFmpegPath - pure existence check via context.
+ * 3. probePrerollFFmpegPath - the preroll-specific resolution order (bundled, then system PATH, never Channels DVR), same context-injection style.
  *
  * 4. classifyFfmpegExit - the pure exit-code and signal classifier. Tested by calling it directly with synthetic (code, signal, label) combinations.
  *
  * The two spawner functions (spawnFFmpeg, spawnMpegTsRemuxer) drive real subprocesses and are not exercised here - they are thin wrappers around the spawn()
  * primitive plus the arg builders above. Their integration with the real FFmpeg binary belongs in e2e coverage.
  *
- * resolveFFmpegPath and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they offer no way for tests to substitute
- * their dependencies and take no parameters because their caching contract is intentionally sealed.
+ * resolveFFmpegPath, resolvePrerollFFmpegPath, and isFFmpegAvailable are the production-cached singletons that probe the real filesystem; they offer no way for
+ * tests to substitute their dependencies and take no parameters because their caching contract is intentionally sealed.
  */
-import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, classifyFfmpegExit, getBundledFFmpegPath, probeFFmpegPath } from "./ffmpeg.ts";
+import { buildMpegTsRemuxerArgs, buildSpawnFFmpegArgs, classifyFfmpegExit, probeFFmpegPath, probePrerollFFmpegPath } from "./ffmpeg.ts";
 import { describe, test } from "node:test";
 import type { FFmpegContext } from "./ffmpeg.ts";
 import assert from "node:assert/strict";
@@ -67,38 +67,88 @@ function makeFFmpegContext(overrides: ContextOverrides = {}): { context: FFmpegC
   return { context, existsCalls, probeCalls };
 }
 
-describe("getBundledFFmpegPath", () => {
+describe("probePrerollFFmpegPath", () => {
 
-  test("returns the bundled path when it exists on disk", () => {
+  test("returns the bundled path when it exists and probes successfully", async () => {
 
+    // The preferred candidate. Preroll wants the bundled binary above everything else because its encoder set is known to carry libx264 and libx265.
+    const { context, probeCalls } = makeFFmpegContext({
+
+      bundledPath: "/opt/bundled/ffmpeg",
+      existsSet: new Set(["/opt/bundled/ffmpeg"]),
+      probeResults: new Map([[ "/opt/bundled/ffmpeg", true ]])
+    });
+
+    assert.equal(await probePrerollFFmpegPath(context), "/opt/bundled/ffmpeg");
+    assert.deepEqual(probeCalls, ["/opt/bundled/ffmpeg"], "the PATH candidate is never probed once the bundled binary answers");
+  });
+
+  test("falls back to the system PATH when the bundled binary is missing from disk", async () => {
+
+    // The field case this resolver exists for: ffmpeg-for-homebridge resolves to a path at import time, but its postinstall download failed, so nothing is there.
+    // A perfectly good system FFmpeg is a better answer than skipping preroll entirely.
     const { context } = makeFFmpegContext({
 
       bundledPath: "/opt/bundled/ffmpeg",
-      existsSet: new Set(["/opt/bundled/ffmpeg"])
+      existsSet: new Set(),
+      probeResults: new Map([[ "ffmpeg", true ]])
     });
 
-    assert.equal(getBundledFFmpegPath(context), "/opt/bundled/ffmpeg");
+    assert.equal(await probePrerollFFmpegPath(context), "ffmpeg");
   });
 
-  test("returns undefined when the bundled path does not exist", () => {
+  test("falls back to the system PATH when the bundled binary exists but will not run", async () => {
 
-    // The package may resolve to a path string at import time, but the binary itself can be missing on disk (npm install --production stripped it, antivirus
-    // quarantine, etc.). The function checks both - resolving to a path is necessary but not sufficient.
+    // Existence is not the same as usability - a wrong-architecture or quarantined binary is on disk and still cannot encode. The probe is what tells them apart,
+    // and a candidate that fails it must not be handed to preroll.
     const { context } = makeFFmpegContext({
 
       bundledPath: "/opt/bundled/ffmpeg",
-      existsSet: new Set()
+      existsSet: new Set(["/opt/bundled/ffmpeg"]),
+      probeResults: new Map([[ "ffmpeg", true ]])
     });
 
-    assert.equal(getBundledFFmpegPath(context), undefined);
+    assert.equal(await probePrerollFFmpegPath(context), "ffmpeg");
   });
 
-  test("returns undefined when ctx.bundledPath is undefined (package failed to resolve)", () => {
+  test("falls back to the system PATH when the bundled package did not resolve at all", async () => {
 
-    // ffmpeg-for-homebridge can return undefined if the package didn't resolve at import time (rare, but possible in some bundler configurations).
-    const { context } = makeFFmpegContext({ bundledPath: undefined });
+    // ffmpeg-for-homebridge can return undefined when the package did not resolve at import time (rare, but possible in some bundler configurations).
+    const { context, existsCalls } = makeFFmpegContext({
 
-    assert.equal(getBundledFFmpegPath(context), undefined);
+      bundledPath: undefined,
+      probeResults: new Map([[ "ffmpeg", true ]])
+    });
+
+    assert.equal(await probePrerollFFmpegPath(context), "ffmpeg");
+    assert.deepEqual(existsCalls, [], "an unresolved package short-circuits before any disk check");
+  });
+
+  test("returns undefined when neither the bundled binary nor a system FFmpeg is usable", async () => {
+
+    // Both candidates miss. Preroll warns and boots without preroll rather than failing startup, so the resolver's job is simply to say so.
+    const { context } = makeFFmpegContext({ bundledPath: "/opt/bundled/ffmpeg", existsSet: new Set() });
+
+    assert.equal(await probePrerollFFmpegPath(context), undefined);
+  });
+
+  test("never considers the Channels DVR binary, even when it is the only working FFmpeg", async () => {
+
+    // The rule that separates this resolver from probeFFmpegPath. Channels DVR ships a minimal encoder set, and preroll encodes from scratch with libx264 or
+    // libx265 plus filters, so a Channels DVR binary would fail the encode later and less legibly than not being offered at all. probeFFmpegPath would return
+    // this exact path for this exact context, which is what makes the divergence worth pinning.
+    const channelsDvrPath = "/Users/test/Library/Application Support/ChannelsDVR/latest/ffmpeg";
+    const { context, probeCalls } = makeFFmpegContext({
+
+      bundledPath: undefined,
+      existsSet: new Set([channelsDvrPath]),
+      platform: "darwin",
+      probeResults: new Map([[ channelsDvrPath, true ]])
+    });
+
+    assert.equal(await probePrerollFFmpegPath(context), undefined);
+    assert.equal(probeCalls.includes(channelsDvrPath), false, "the Channels DVR path is never even probed");
+    assert.equal(await probeFFmpegPath(context), channelsDvrPath, "the general resolver does return it, so the divergence is deliberate");
   });
 });
 
