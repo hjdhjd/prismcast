@@ -10,10 +10,10 @@
  *   - UpgradeLifecycleContext (this file) - the runtime-input port; what every strategy needs to make and execute its decision
  *   - UpgradeStep (this file) - the discriminated-union outcome; consumers in commands.ts narrow on `kind` to choose between "we ran it" and "a detached helper
  *     is running it for us"
- *   - UpgradeLifecycleStrategy (this file) - a strategy record with the platforms it serves and a `perform` function that returns an UpgradeStep
+ *   - UpgradeLifecycleStrategy (this file) - a strategy record with the platforms it serves and a `perform` function that resolves with an UpgradeStep
  *   - UPGRADE_LIFECYCLES (this file) - the registry, in priority order
  *   - performUpgrade (this file) - the dispatcher; picks a strategy by platform and runs it
- *   - createDefaultLifecycleContext (lifecycle.context) - the adapter; the only place that calls spawn, execSync, getDataDir, or process.pid
+ *   - createDefaultLifecycleContext (lifecycle.context) - the adapter; the only place that calls spawn, getDataDir, or process.pid
  *
  * Why a strategy port at all? Windows introduces three facts that POSIX strategies never confront: (1) Windows file locks prevent
  * `npm install -g` from renaming the prismcast directory while any node.exe holds it open, so the upgrade cannot run in-process; (2) Windows Task Scheduler does
@@ -36,8 +36,8 @@ import type { InstallInfo } from "./detection.ts";
  */
 export type UpgradeStep = {
 
-  // The strategy ran the upgrade in-process synchronously. The success flag is the runner's outcome; the caller decides what to print and whether to exit
-  // (e.g., to trigger the service manager's restart on POSIX).
+  // The strategy ran the upgrade in this process and waited for it to finish. The success flag is the runner's outcome; the caller decides what to print and
+  // whether to exit (e.g., to trigger the service manager's restart on POSIX).
   readonly kind: "ran";
   readonly success: boolean;
 } | {
@@ -66,6 +66,11 @@ export interface UpgradeRunResult {
  */
 export interface UpgradeLifecycleContext {
 
+  // The deadline, in milliseconds, the in-process runner applies to the upgrade command. Undefined runs it unbounded. The CLI leaves it undefined because a user
+  // is watching a terminal and can interrupt; the web UI sets one so a stalled package download is killed and reported as a failed upgrade rather than holding an
+  // HTTP request open with no end in sight.
+  readonly commandTimeoutMs?: number;
+
   // The PID of the running prismcast-upgrade process. The Windows handoff helper waits on this PID before running npm install, so the parent's open file
   // handles release before npm tries to rename the prismcast directory.
   readonly parentPid: number;
@@ -75,8 +80,9 @@ export interface UpgradeLifecycleContext {
   readonly platform: NodeJS.Platform;
 
   // The subprocess runner for in-process strategies. The implementation is expected to inherit the user's terminal so npm/brew output flows live; the return
-  // value reports only success or failure, not captured stdio.
-  readonly runCommand: (cmd: string, options: { readonly cwd?: string }) => UpgradeRunResult;
+  // value reports only success or failure, not captured stdio. It resolves when the command finishes, so a caller that shares its event loop with the HTTP
+  // server keeps serving requests for the length of a package install rather than blocking on it.
+  readonly runCommand: (cmd: string, options: { readonly cwd?: string; readonly timeoutMs?: number }) => Promise<UpgradeRunResult>;
 
   // The name of the registered service task, when one exists. The Windows handoff helper queries this name via Get-ScheduledTask to know whether a running
   // service instance must be stopped before npm install and re-started afterward. Empty string when PrismCast is not registered as a service; the helper
@@ -107,9 +113,9 @@ export interface UpgradeLifecycleStrategy {
   // running platform. Listing them explicitly (rather than via a predicate) keeps the registry declarative and the test surface small.
   readonly platforms: readonly NodeJS.Platform[];
 
-  // Performs the upgrade for one InstallInfo on one context, and returns the outcome. Synchronous because both implementations (in-process execSync, detached
-  // spawn-and-return) are themselves synchronous from the caller's perspective.
-  readonly perform: (ctx: UpgradeLifecycleContext, info: InstallInfo) => UpgradeStep;
+  // Performs the upgrade for one InstallInfo on one context, and resolves with the outcome. Asynchronous because the in-process implementation waits for a
+  // package install to finish, and the caller may be an HTTP server that has to keep serving while it does.
+  readonly perform: (ctx: UpgradeLifecycleContext, info: InstallInfo) => Promise<UpgradeStep>;
 }
 
 /**
@@ -223,9 +229,9 @@ function buildHandoffCommand(args: readonly string[]): string {
 const POSIX_IN_PROCESS_LIFECYCLE: UpgradeLifecycleStrategy = {
 
   id: "posix-in-process",
-  perform: (ctx: UpgradeLifecycleContext, info: InstallInfo): UpgradeStep => {
+  perform: async (ctx: UpgradeLifecycleContext, info: InstallInfo): Promise<UpgradeStep> => {
 
-    const result = ctx.runCommand(info.upgradeCommand, { cwd: info.packageDir });
+    const result = await ctx.runCommand(info.upgradeCommand, { cwd: info.packageDir, timeoutMs: ctx.commandTimeoutMs });
 
     return { kind: "ran", success: result.success };
   },
@@ -244,7 +250,7 @@ const POSIX_IN_PROCESS_LIFECYCLE: UpgradeLifecycleStrategy = {
 const WINDOWS_HANDOFF_LIFECYCLE: UpgradeLifecycleStrategy = {
 
   id: "windows-handoff",
-  perform: (ctx: UpgradeLifecycleContext, info: InstallInfo): UpgradeStep => {
+  perform: async (ctx: UpgradeLifecycleContext, info: InstallInfo): Promise<UpgradeStep> => {
 
     const handoffCommand = buildHandoffCommand([
 
@@ -306,9 +312,9 @@ export function selectLifecycle(platform: NodeJS.Platform): UpgradeLifecycleStra
  *
  * @param ctx - The lifecycle context.
  * @param info - The detected install info.
- * @returns The upgrade outcome.
+ * @returns Promise resolving to the upgrade outcome.
  */
-export function performUpgrade(ctx: UpgradeLifecycleContext, info: InstallInfo): UpgradeStep {
+export async function performUpgrade(ctx: UpgradeLifecycleContext, info: InstallInfo): Promise<UpgradeStep> {
 
   return selectLifecycle(ctx.platform).perform(ctx, info);
 }

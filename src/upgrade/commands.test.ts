@@ -2,11 +2,12 @@
  *
  * commands.test.ts: Unit tests for handleUpgradeCommand. The handler is a pure orchestrator over an UpgradeContext, so every branch is testable by passing an
  * inline context that captures stdout/stderr, returns whatever InstallInfo the test wants, fakes the registry response, and stubs the platform-aware upgrade
- * executor. No real fetch, no real execSync, no real detectInstallMethod, no real process.exit.
+ * executor. No real fetch, no real subprocess, no real detectInstallMethod, no real process.exit.
  *
- * The field under test is `performUpgrade`, which mirrors the production UpgradeContext field. Tests stub it to return either a "ran" UpgradeStep (with the
+ * The field under test is `performUpgrade`, which mirrors the production UpgradeContext field. Tests stub it to produce either a "ran" UpgradeStep (with the
  * in-process outcome) or a "handed-off" UpgradeStep (Windows-style detached helper); the handler is exercised against both branches without the lifecycle
- * module ever being reached.
+ * module ever being reached. The production field resolves with its UpgradeStep, so the harness wraps each stub in the promise the handler awaits...the stubs
+ * themselves stay synchronous because none of them models timing.
  */
 import { describe, test } from "node:test";
 import { INSTALL_STRATEGIES } from "./detection.ts";
@@ -74,7 +75,7 @@ function makeUpgradeContext(overrides: ContextOverrides = {}): CapturedContext {
       return fetchLatestVersion();
     },
     isService: overrides.isService ?? false,
-    performUpgrade: (info: InstallInfo): UpgradeStep => {
+    performUpgrade: async (info: InstallInfo): Promise<UpgradeStep> => {
 
       performUpgradeCalls.push({ info });
 

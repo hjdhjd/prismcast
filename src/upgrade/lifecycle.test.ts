@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * lifecycle.test.ts: Unit tests for the upgrade-lifecycle strategy registry, the platform dispatcher, and the per-strategy behavior. The strategies are pure
- * functions over an UpgradeLifecycleContext, so tests inject inline contexts that capture every side-effect (runCommand invocations, spawnDetached calls) and
- * assert against them. The Windows handoff strategy's PowerShell command string is asserted to contain the structural elements the helper needs (positional
- * parameters quoted correctly, the script body, etc.) without locking the exact whitespace - we want regressions in argument order to fail, not stylistic
- * rewrites of the helper.
+ * functions over an UpgradeLifecycleContext that resolve with an UpgradeStep, so tests inject inline contexts that capture every side-effect (runCommand
+ * invocations, spawnDetached calls) and assert against the awaited outcome. The Windows handoff strategy's PowerShell command string is asserted to contain the
+ * structural elements the helper needs (positional parameters quoted correctly, the script body, etc.) without locking the exact whitespace - we want
+ * regressions in argument order to fail, not stylistic rewrites of the helper.
  */
 import { UPGRADE_LIFECYCLES, performUpgrade, selectLifecycle } from "./lifecycle.ts";
 import type { UpgradeLifecycleContext, UpgradeRunResult } from "./lifecycle.ts";
@@ -15,15 +15,16 @@ import assert from "node:assert/strict";
 interface CapturedLifecycle {
 
   context: UpgradeLifecycleContext;
-  runCalls: { cmd: string; cwd: string | undefined }[];
+  runCalls: { cmd: string; cwd: string | undefined; timeoutMs: number | undefined }[];
   spawnCalls: { command: string; args: readonly string[] }[];
 }
 
 interface ContextOverrides {
 
+  readonly commandTimeoutMs?: number;
   readonly parentPid?: number;
   readonly platform?: NodeJS.Platform;
-  readonly runCommand?: (cmd: string, options: { readonly cwd?: string }) => UpgradeRunResult;
+  readonly runCommand?: (cmd: string, options: { readonly cwd?: string; readonly timeoutMs?: number }) => UpgradeRunResult;
   readonly serviceTaskName?: string;
   readonly upgradeLogPath?: string;
 }
@@ -33,17 +34,18 @@ interface ContextOverrides {
  */
 function makeLifecycleContext(overrides: ContextOverrides = {}): CapturedLifecycle {
 
-  const runCalls: { cmd: string; cwd: string | undefined }[] = [];
+  const runCalls: { cmd: string; cwd: string | undefined; timeoutMs: number | undefined }[] = [];
   const spawnCalls: { command: string; args: readonly string[] }[] = [];
   const runCommand = overrides.runCommand ?? ((): UpgradeRunResult => ({ success: true }));
 
   const context: UpgradeLifecycleContext = {
 
+    commandTimeoutMs: overrides.commandTimeoutMs,
     parentPid: overrides.parentPid ?? 4242,
     platform: overrides.platform ?? "linux",
-    runCommand: (cmd: string, options: { readonly cwd?: string }): UpgradeRunResult => {
+    runCommand: async (cmd: string, options: { readonly cwd?: string; readonly timeoutMs?: number }): Promise<UpgradeRunResult> => {
 
-      runCalls.push({ cmd, cwd: options.cwd });
+      runCalls.push({ cmd, cwd: options.cwd, timeoutMs: options.timeoutMs });
 
       return runCommand(cmd, options);
     },
@@ -142,7 +144,7 @@ describe("selectLifecycle", () => {
 
 describe("performUpgrade with the POSIX in-process strategy", () => {
 
-  test("calls runCommand with the install info's upgradeCommand and forwards packageDir as cwd", () => {
+  test("calls runCommand with the install info's upgradeCommand and forwards packageDir as cwd", async () => {
 
     // Locks the POSIX runner's wire-up: the lifecycle is a thin pass-through over runCommand, so the runner sees exactly the InstallInfo's upgradeCommand and
     // the packageDir (if any) as cwd. A future change that started rewriting the command (e.g., wrapping it in `sudo`) would fail this test deliberately.
@@ -154,7 +156,7 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
       upgradeCommand: "npm install prismcast@latest"
     });
 
-    const step = performUpgrade(cap.context, info);
+    const step = await performUpgrade(cap.context, info);
 
     assert.deepEqual(step, { kind: "ran", success: true });
     assert.equal(cap.runCalls.length, 1);
@@ -166,7 +168,7 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
     assert.equal(call.cwd, "/Users/me/my-app");
   });
 
-  test("propagates the runner's failure outcome through the UpgradeStep", () => {
+  test("propagates the runner's failure outcome through the UpgradeStep", async () => {
 
     const cap = makeLifecycleContext({
 
@@ -174,18 +176,51 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
       runCommand: () => ({ success: false })
     });
 
-    const step = performUpgrade(cap.context, makeInstallInfo());
+    const step = await performUpgrade(cap.context, makeInstallInfo());
 
     assert.deepEqual(step, { kind: "ran", success: false });
   });
 
-  test("does not invoke spawnDetached on POSIX", () => {
+  test("forwards the context's command deadline to the runner", async () => {
+
+    // The deadline is caller policy, not a property of the platform: the web UI bounds the command so a stalled install cannot hold an HTTP request open, while
+    // the CLI runs unbounded. The strategy is the pass-through that carries the caller's choice to the runner, so the wire-up is pinned here.
+    const cap = makeLifecycleContext({ commandTimeoutMs: 120000, platform: "darwin" });
+
+    await performUpgrade(cap.context, makeInstallInfo());
+
+    assert.equal(cap.runCalls[0]?.timeoutMs, 120000);
+  });
+
+  test("forwards no deadline when the context declares none", async () => {
+
+    // The CLI's context omits the deadline entirely. Passing undefined through rather than substituting a default keeps "unbounded" expressible, which is what
+    // an interactive upgrade with a user watching the terminal wants.
+    const cap = makeLifecycleContext({ platform: "linux" });
+
+    await performUpgrade(cap.context, makeInstallInfo());
+
+    assert.equal(cap.runCalls[0]?.timeoutMs, undefined);
+  });
+
+  test("resolves rather than returning the outcome directly", async () => {
+
+    // The port is asynchronous so a caller sharing its event loop with the HTTP server keeps serving requests for the length of a package install. A regression
+    // to a synchronous return would still satisfy the awaited assertions above (await on a non-promise is a no-op), so the promise itself is pinned here.
+    const cap = makeLifecycleContext({ platform: "darwin" });
+    const pending = performUpgrade(cap.context, makeInstallInfo());
+
+    assert.equal(typeof (pending as { then?: unknown }).then, "function", "performUpgrade hands back a thenable");
+    assert.deepEqual(await pending, { kind: "ran", success: true });
+  });
+
+  test("does not invoke spawnDetached on POSIX", async () => {
 
     // Negative: the POSIX strategy is in-process by design. A regression that wired spawnDetached into the POSIX path would silently change semantics; lock
     // that the helper-spawn primitive is only touched by the Windows strategy.
     const cap = makeLifecycleContext({ platform: "darwin" });
 
-    performUpgrade(cap.context, makeInstallInfo());
+    await performUpgrade(cap.context, makeInstallInfo());
 
     assert.equal(cap.spawnCalls.length, 0);
   });
@@ -193,7 +228,7 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
 
 describe("performUpgrade with the Windows handoff strategy", () => {
 
-  test("returns a handed-off UpgradeStep with the context's log path", () => {
+  test("returns a handed-off UpgradeStep with the context's log path", async () => {
 
     const cap = makeLifecycleContext({
 
@@ -201,19 +236,19 @@ describe("performUpgrade with the Windows handoff strategy", () => {
       upgradeLogPath: "C:\\Users\\jp\\.prismcast\\upgrade.log"
     });
 
-    const step = performUpgrade(cap.context, makeInstallInfo());
+    const step = await performUpgrade(cap.context, makeInstallInfo());
 
     assert.deepEqual(step, { kind: "handed-off", logPath: "C:\\Users\\jp\\.prismcast\\upgrade.log" });
   });
 
-  test("spawns powershell.exe exactly once with the documented arguments and a single -Command string", () => {
+  test("spawns powershell.exe exactly once with the documented arguments and a single -Command string", async () => {
 
     // The launch arguments are the masterclass-stable contract: -NoProfile and -NonInteractive for a clean shell, -ExecutionPolicy Bypass for installer-style
     // scripted scenarios, -WindowStyle Hidden so no console flashes, then -Command with the composed helper script. Locking the argument list (and the
     // command name "powershell.exe") protects the entire spawn surface from accidental drift.
     const cap = makeLifecycleContext({ platform: "win32" });
 
-    performUpgrade(cap.context, makeInstallInfo());
+    await performUpgrade(cap.context, makeInstallInfo());
 
     assert.equal(cap.spawnCalls.length, 1, "Windows handoff must spawn exactly one detached child");
     assert.equal(cap.spawnCalls[0]?.command, "powershell.exe");
@@ -232,7 +267,7 @@ describe("performUpgrade with the Windows handoff strategy", () => {
     assert.equal(typeof args[7], "string");
   });
 
-  test("the -Command payload embeds the parent PID, the service task name, the upgrade command, the working directory, and the log path", () => {
+  test("the -Command payload embeds the parent PID, the service task name, the upgrade command, the working directory, and the log path", async () => {
 
     // The helper script reads five positional parameters: parent PID, task name, upgrade command, working dir, log path. The composed -Command string must
     // expose all five so the helper can do its job. We assert each one appears in the payload via its single-quote-escaped literal form.
@@ -244,7 +279,7 @@ describe("performUpgrade with the Windows handoff strategy", () => {
       upgradeLogPath: "C:\\Users\\jp\\.prismcast\\upgrade.log"
     });
 
-    performUpgrade(cap.context, makeInstallInfo({
+    await performUpgrade(cap.context, makeInstallInfo({
 
       method: "npm-local",
       packageDir: "C:\\Users\\jp\\my-app",
@@ -266,14 +301,14 @@ describe("performUpgrade with the Windows handoff strategy", () => {
     assert.match(payload, /'C:\\Users\\jp\\\.prismcast\\upgrade\.log'/, "log path must appear as a single-quoted literal");
   });
 
-  test("encodes an empty working directory as an empty single-quoted literal when the install method has no packageDir", () => {
+  test("encodes an empty working directory as an empty single-quoted literal when the install method has no packageDir", async () => {
 
     // npm-global on Windows has no packageDir. The handoff helper expects every positional parameter to be present (PowerShell positional binding is
     // order-sensitive), so we serialize the absent value as the empty string rather than dropping the argument. Locking this prevents a future refactor that
     // "saved an argument" from breaking parameter binding in the helper.
     const cap = makeLifecycleContext({ platform: "win32" });
 
-    performUpgrade(cap.context, makeInstallInfo({
+    await performUpgrade(cap.context, makeInstallInfo({
 
       method: "npm-global",
       packageDir: undefined,
@@ -291,13 +326,13 @@ describe("performUpgrade with the Windows handoff strategy", () => {
     assert.match(payload, /''/, "an empty working dir must serialize to an empty single-quoted literal, not be omitted");
   });
 
-  test("escapes embedded single quotes in the upgrade command via doubled single quotes", () => {
+  test("escapes embedded single quotes in the upgrade command via doubled single quotes", async () => {
 
     // PowerShell single-quoted strings are literal except for the embedded-quote rule: a single quote inside a literal is written as two consecutive single
     // quotes. The helper's argument-quoting layer is the only escape surface in the entire handoff path, and this is the rule it must follow.
     const cap = makeLifecycleContext({ platform: "win32" });
 
-    performUpgrade(cap.context, makeInstallInfo({ upgradeCommand: "echo 'hello' && exit 0" }));
+    await performUpgrade(cap.context, makeInstallInfo({ upgradeCommand: "echo 'hello' && exit 0" }));
 
     const spawnCall = cap.spawnCalls[0];
 
@@ -310,13 +345,13 @@ describe("performUpgrade with the Windows handoff strategy", () => {
     assert.match(payload, /'echo ''hello'' && exit 0'/, "embedded single quotes must be doubled");
   });
 
-  test("does not invoke runCommand on Windows", () => {
+  test("does not invoke runCommand on Windows", async () => {
 
     // Negative: the Windows strategy hands off; it never runs the upgrade in-process. A regression that called runCommand here would reintroduce the
     // EBUSY-prone in-process path on Windows, which is exactly what this strategy is designed to avoid.
     const cap = makeLifecycleContext({ platform: "win32" });
 
-    performUpgrade(cap.context, makeInstallInfo());
+    await performUpgrade(cap.context, makeInstallInfo());
 
     assert.equal(cap.runCalls.length, 0);
   });

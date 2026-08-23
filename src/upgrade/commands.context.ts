@@ -31,7 +31,7 @@ export function createDefaultUpgradeContext(): UpgradeContext {
     exit: (code) => process.exit(code),
     fetchLatestVersion,
     isService: isRunningAsService(),
-    performUpgrade: (info: InstallInfo): UpgradeStep => performUpgrade(createDefaultLifecycleContext(), info),
+    performUpgrade: async (info: InstallInfo): Promise<UpgradeStep> => performUpgrade(createDefaultLifecycleContext(), info),
     stderr: printError,
     stdout: print
   };

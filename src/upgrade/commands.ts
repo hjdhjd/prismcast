@@ -38,10 +38,10 @@ export interface UpgradeContext {
   // handoff branch because the helper handles the service restart itself.
   readonly isService: boolean;
 
-  // Performs the upgrade for one InstallInfo by dispatching to the platform-appropriate lifecycle strategy. Returns a discriminated UpgradeStep - either "ran"
-  // (the strategy executed the command in-process) or "handed-off" (the strategy spawned a detached helper). Callers narrow on `kind` to choose the right
-  // messaging and exit behavior.
-  readonly performUpgrade: (info: InstallInfo) => UpgradeStep;
+  // Performs the upgrade for one InstallInfo by dispatching to the platform-appropriate lifecycle strategy. Resolves with a discriminated UpgradeStep - either
+  // "ran" (the strategy executed the command in this process) or "handed-off" (the strategy spawned a detached helper). Callers narrow on `kind` to choose the
+  // right messaging and exit behavior.
+  readonly performUpgrade: (info: InstallInfo) => Promise<UpgradeStep>;
 
   // Writes a line to stderr. This is the sole error-output surface handleUpgradeCommand uses - it never calls console.error directly - so tests can capture
   // output without touching the real stderr stream.
@@ -202,10 +202,10 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
   ctx.stdout("Running: " + info.upgradeCommand);
   ctx.stdout("");
 
-  // Dispatch to the platform-aware lifecycle. The returned UpgradeStep tells us whether the upgrade ran in-process synchronously (POSIX path) or was handed
-  // off to a detached helper (Windows path); we narrow on `kind` and handle each variant's messaging and exit behavior. packageDir flows through to the
-  // lifecycle as part of InstallInfo (only npm-local declares a resolver that sets it).
-  const step = ctx.performUpgrade(info);
+  // Dispatch to the platform-aware lifecycle. The resolved UpgradeStep tells us whether the upgrade ran in this process (POSIX path) or was handed off to a
+  // detached helper (Windows path); we narrow on `kind` and handle each variant's messaging and exit behavior. packageDir flows through to the lifecycle as
+  // part of InstallInfo (only npm-local declares a resolver that sets it).
+  const step = await ctx.performUpgrade(info);
 
   if(step.kind === "handed-off") {
 
@@ -224,7 +224,7 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
     ctx.exit(0);
   }
 
-  // In-process path: the upgrade ran synchronously and the result is the runner's outcome.
+  // In-process path: the upgrade ran to completion here and the result is the runner's outcome.
   if(!step.success) {
 
     ctx.stderr("");

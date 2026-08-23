@@ -1,14 +1,22 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * upgrade.test.ts: Unit tests for the upgrade routes in upgrade.ts. setupUpgradeEndpoint registers GET /upgrade/info and POST /upgrade. The full upgrade path
- * (executing the install command, restarting the service) requires environment-specific binaries and a process restart - that coverage lives in the e2e suite.
- * Here we cover the two response shapes the routes produce: the GET /upgrade/info JSON envelope (covering both the success and failure branches of
- * fetchLatestVersion, mocked) and the not-upgradeable short-circuit on POST /upgrade.
+ * upgrade.test.ts: Unit tests for the upgrade routes in upgrade.ts. setupUpgradeEndpoint registers GET /upgrade/info and POST /upgrade.
+ *
+ * Two servers are booted. The first runs on the real dependencies and covers the GET /upgrade/info JSON envelope (both the success and failure branches of
+ * fetchLatestVersion, mocked at the fetch boundary) plus the not-upgradeable short-circuit on POST /upgrade as the environment happens to present it.
+ *
+ * The second runs on an injected UpgradeDeps and covers the whole POST decision tree: the non-upgradeable guard, the dispatch of the detected InstallInfo, both
+ * UpgradeStep kinds, and the failed-command path, each with its own shutdown expectation. Injecting the boundary is what makes those branches testable at all -
+ * running them for real would invoke a package manager and exit the process. Actually installing anything remains e2e territory.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, afterEach, before, beforeEach, describe, mock, test } from "node:test";
+import { closePuppeteerStreamWss, firstOf } from "../testing.helpers.ts";
+import type { InstallInfo } from "../upgrade/detection.ts";
+import { LOG } from "../utils/index.ts";
+import type { UpgradeDeps } from "./upgrade.ts";
+import type { UpgradeStep } from "../upgrade/lifecycle.ts";
 import assert from "node:assert/strict";
-import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
 import { setupUpgradeEndpoint } from "./upgrade.ts";
 
@@ -22,11 +30,11 @@ interface UpgradeInfoResponse {
   upgradeable: boolean;
 }
 
-function makeServer(): Promise<{ port: number; server: Server }> {
+function makeServer(deps?: UpgradeDeps): Promise<{ port: number; server: Server }> {
 
   const app = express();
 
-  setupUpgradeEndpoint(app);
+  setupUpgradeEndpoint(app, deps);
 
   return new Promise((resolve, reject) => {
 
@@ -232,5 +240,202 @@ describe("setupUpgradeEndpoint - POST /upgrade", () => {
 
     assert.equal(body.success, false);
     assert.match(body.error, /does not support in-place upgrades/);
+  });
+});
+
+/* The deps-injected POST coverage. setupUpgradeEndpoint takes its detection, upgrade dispatch, service probe, and shutdown as an injected UpgradeDeps parameter,
+ * so the whole POST decision tree runs against a real Express server without a package manager ever being invoked and without the process exiting. The scenario
+ * lives in one mutable state object the deps read through, mirroring health.test.ts's mockState: beforeEach restores the defaults and each test overrides only
+ * the field its branch turns on.
+ */
+interface MockUpgradeState {
+
+  info: InstallInfo;
+  isService: boolean;
+  performCalls: InstallInfo[];
+  shutdowns: number;
+  step: UpgradeStep;
+}
+
+let mockUpgrade: MockUpgradeState;
+
+const injectedDeps: UpgradeDeps = {
+
+  detect: (): InstallInfo => mockUpgrade.info,
+  isRunningAsService: (): boolean => mockUpgrade.isService,
+  performUpgrade: async (info: InstallInfo): Promise<UpgradeStep> => {
+
+    mockUpgrade.performCalls.push(info);
+
+    return mockUpgrade.step;
+  },
+  scheduleShutdown: (): void => {
+
+    mockUpgrade.shutdowns++;
+  }
+};
+
+function makeInstallInfo(overrides: Partial<InstallInfo> = {}): InstallInfo {
+
+  return {
+
+    displayName: "npm (global)",
+    method: "npm-global",
+    upgradeCommand: "npm install -g prismcast@latest",
+    upgradeable: true,
+    ...overrides
+  } as InstallInfo;
+}
+
+interface UpgradePostResponse {
+
+  error?: string;
+  logPath?: string;
+  message?: string;
+  success: boolean;
+  willRestart?: boolean;
+}
+
+describe("setupUpgradeEndpoint - POST /upgrade against injected deps", () => {
+
+  let injectedServer: Server;
+  let injectedPort = 0;
+
+  before(async () => {
+
+    const created = await makeServer(injectedDeps);
+
+    injectedServer = created.server;
+    injectedPort = created.port;
+  });
+
+  after(async () => {
+
+    await closeServer(injectedServer);
+  });
+
+  beforeEach(() => {
+
+    mockUpgrade = { info: makeInstallInfo(), isService: false, performCalls: [], shutdowns: 0, step: { kind: "ran", success: true } };
+  });
+
+  function postUpgrade(): Promise<Response> {
+
+    return fetch("http://127.0.0.1:" + String(injectedPort) + "/upgrade", { method: "POST" });
+  }
+
+  test("short-circuits a non-upgradeable install without reaching the lifecycle", async () => {
+
+    // The guard the route keeps ahead of the dispatch. Docker and unrecognized layouts cannot be upgraded in place, and the lifecycle must never be asked to
+    // try - a strategy that ran here would execute a command the detection layer already ruled out.
+    mockUpgrade.info = makeInstallInfo({ manualUpgradeMessage: ["Upgrade manually:"], method: "docker", upgradeable: false });
+
+    const res = await postUpgrade();
+
+    assert.equal(res.status, 400);
+
+    const body = await res.json() as UpgradePostResponse;
+
+    assert.equal(body.success, false);
+    assert.match(body.error ?? "", /does not support in-place upgrades/);
+    assert.equal(mockUpgrade.performCalls.length, 0, "the lifecycle is never dispatched for a non-upgradeable install");
+    assert.equal(mockUpgrade.shutdowns, 0);
+  });
+
+  test("hands the detected install info to the lifecycle verbatim", async () => {
+
+    // The route decides WHAT (an upgrade was requested) and the lifecycle decides HOW. Passing the InstallInfo through untouched is what lets packageDir reach
+    // the runner as its working directory without the route knowing that npm-local is the method that needs one.
+    mockUpgrade.info = makeInstallInfo({ method: "npm-local", packageDir: "/Users/me/proj", upgradeCommand: "npm install prismcast@latest" });
+
+    await postUpgrade();
+
+    assert.equal(mockUpgrade.performCalls.length, 1);
+
+    const dispatched = firstOf(mockUpgrade.performCalls, "performUpgrade call");
+
+    assert.equal(dispatched.upgradeCommand, "npm install prismcast@latest");
+    assert.equal(dispatched.packageDir, "/Users/me/proj");
+  });
+
+  test("a handed-off outcome answers with the helper log path and shuts down", async () => {
+
+    // The Windows path. A detached helper is already waiting on this process to exit before it can rename the install directory, so the response goes out and
+    // the shutdown follows unconditionally. willRestart stays false because the client polls for a restart when it is true and this upgrade outlasts that poll.
+    mockUpgrade.step = { kind: "handed-off", logPath: "C:\\Users\\jp\\.prismcast\\upgrade.log" };
+
+    const res = await postUpgrade();
+
+    assert.equal(res.status, 200);
+
+    const body = await res.json() as UpgradePostResponse;
+
+    assert.equal(body.success, true);
+    assert.equal(body.logPath, "C:\\Users\\jp\\.prismcast\\upgrade.log");
+    assert.equal(body.willRestart, false);
+    assert.match(body.message ?? "", /running in the background/);
+    assert.match(body.message ?? "", /otherwise, restart PrismCast manually/);
+    assert.equal(mockUpgrade.shutdowns, 1);
+  });
+
+  test("a handed-off outcome shuts down even when PrismCast is registered as a service", async () => {
+
+    // The exit is unconditional for this outcome, in both directions: the helper cannot begin until we are gone, whether or not a service task will bring us
+    // back. A regression that reused the in-process branch's isRunningAsService gate would strand the helper waiting on a process that never exits.
+    mockUpgrade.isService = true;
+    mockUpgrade.step = { kind: "handed-off", logPath: "C:\\log.txt" };
+
+    await postUpgrade();
+
+    assert.equal(mockUpgrade.shutdowns, 1);
+  });
+
+  test("an in-process success under a service manager reports willRestart and shuts down", async () => {
+
+    // launchd, systemd, and Task Scheduler all bring the process back after it exits, so exiting is how the new version takes effect. The client reads
+    // willRestart to decide whether to wait for the server to return.
+    mockUpgrade.isService = true;
+
+    const res = await postUpgrade();
+
+    assert.equal(res.status, 200);
+
+    const body = await res.json() as UpgradePostResponse;
+
+    assert.equal(body.success, true);
+    assert.equal(body.willRestart, true);
+    assert.equal(body.message, "Upgrade complete.");
+    assert.equal(mockUpgrade.shutdowns, 1);
+  });
+
+  test("an in-process success outside a service manager stays up", async () => {
+
+    // Nothing would restart a manual install, so exiting would leave the user with no PrismCast at all. We stay on the old version until they restart, which is
+    // exactly what willRestart=false tells the client to say.
+    const res = await postUpgrade();
+    const body = await res.json() as UpgradePostResponse;
+
+    assert.equal(body.success, true);
+    assert.equal(body.willRestart, false);
+    assert.equal(mockUpgrade.shutdowns, 0, "a manual install is never shut down out from under the user");
+  });
+
+  test("an in-process failure answers on the error envelope and stays up", async (t) => {
+
+    // A package manager that exits non-zero is a failed upgrade, not a completed one. The response carries the same error envelope a thrown failure produces so
+    // the web UI's single error path covers both, and nothing shuts down - the old version is still the running one.
+    t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+
+    mockUpgrade.step = { kind: "ran", success: false };
+
+    const res = await postUpgrade();
+
+    assert.equal(res.status, 500);
+
+    const body = await res.json() as UpgradePostResponse;
+
+    assert.equal(body.success, false);
+    assert.match(body.error ?? "", /the upgrade command reported a failure/);
+    assert.equal(mockUpgrade.shutdowns, 0, "a failed upgrade never takes the running version down");
   });
 });
