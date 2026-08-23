@@ -2,6 +2,11 @@
  *
  * index.ts: Entry point for PrismCast.
  */
+// The explicit-resource-management globals (AsyncDisposableStack, DisposableStack, SuppressedError) ship with Node 24, while our supported floor is Node 22. This
+// side-effect import installs spec-shaped constructors on runtimes that lack them and leaves newer runtimes untouched, so every construction site in the process -
+// the background-services stack in app.ts and the resource stacks in the stream setup path - reads a global that exists. It must be the first import here, before
+// any module that constructs one evaluates, and every launch path (the bin wrapper, the Docker entrypoint, the platform services) funnels through this file.
+import "homebridge-plugin-utils/polyfills";
 import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.ts";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
 import { getDebugEnv, initializeDataDir } from "./config/paths.ts";
