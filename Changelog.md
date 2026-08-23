@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.11.1 (2026-08-23)
+  * Fix: PrismCast starts on Node 22 again - v1.11.0 depended on a capability that only ships natively with Node 24, so Docker deployments and any Node 22 installation failed at startup with "AsyncDisposableStack is not defined". PrismCast now supplies that capability itself on older runtimes, and the `NODE_OPTIONS` workaround from the forum is no longer needed.
+  * Housekeeping.
+
 ## 1.11.0 (2026-08-16)
   * New feature: HDHomeRun LAN discovery - PrismCast now responds to standard HDHomeRun discovery broadcasts on UDP port 65001, so Plex finds PrismCast on the local network automatically without entering an address by hand. The new "Enable LAN Discovery" setting under HDHomeRun / Plex is on by default; turn it off in multi-tenant environments or when another real HDHomeRun device is already on the network. Channels DVR users continue to add PrismCast manually as a Custom Channels source - Channels DVR's HDHR auto-discovery assumes the standard HDHomeRun port 80, which most installations cannot bind.
   * New feature: automatic consent-prompt handling - sites that gate their player behind a cookie-consent or "enable tracking" prompt now tune on their own, so channels like France 24 work on a fresh setup. Prompts that can't be handled automatically point you to dismiss them once in login mode.
