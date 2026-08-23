@@ -251,8 +251,14 @@ export function generateConfigSubtabScript(): string {
     "      const result = await upgradeRes.json();",
     "      if(result.success && result.willRestart) {",
     "        waitForServerRestart();",
+    // A success that did not ask us to poll can still mean the upgrade is unfinished, and the server's message is what tells those outcomes apart. An upgrade
+    // handed to a detached helper is still running when the response lands, and it names the helper's log file so the user can follow it; an upgrade that ran
+    // here is done. We render whatever the server said, keep a fallback sentence for a response that carries no message, and show the still-running case as an
+    // advisory that lingers longer.
     "      } else if(result.success) {",
-    "        showToast('Upgrade complete. Please restart PrismCast manually.', 'success', 8000);",
+    "        let msg = result.message || 'Upgrade complete. Please restart PrismCast manually.';",
+    "        if(result.logPath) { msg += ' Helper log: ' + result.logPath; }",
+    "        showToast(msg, result.logPath ? 'info' : 'success', result.logPath ? 12000 : 8000);",
     "      } else {",
     "        showToast('Upgrade failed: ' + result.error, 'error');",
     "      }",

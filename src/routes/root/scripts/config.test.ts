@@ -81,6 +81,18 @@ describe("generateConfigSubtabScript", () => {
     assert.match(script, /function waitForServerRestart\(/);
   });
 
+  test("renders the upgrade outcome the server reported rather than a fixed sentence", () => {
+
+    // POST /upgrade owns the wording, and its success outcomes read differently: an upgrade handed to a detached helper is still running when the response
+    // arrives and names the helper log the user can follow, while an upgrade that ran here is done. The toast reads the message, appends the log path when one
+    // came back, and shows the still-running case as a longer-lived advisory, so a change to the route's wording reaches the user with no client edit.
+    const script = generateConfigSubtabScript();
+
+    assert.match(script, /let msg = result\.message \|\| 'Upgrade complete\./);
+    assert.match(script, /msg \+= ' Helper log: ' \+ result\.logPath;/);
+    assert.match(script, /showToast\(msg, result\.logPath \? 'info' : 'success', result\.logPath \? 12000 : 8000\);/);
+  });
+
   test("exposes the restart dialog and force-restart controls on window", () => {
 
     // showPendingRestartDialog opens the modal, updateRestartDialogStatus is called by the streamRemoved SSE handler, cancelPendingRestart closes the modal,
