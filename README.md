@@ -190,7 +190,7 @@ Configuration is stored in `~/.prismcast/config.json` and your TV provider sessi
 
 **Linux** is supported both natively and via Docker. The Docker image includes everything needed to run PrismCast (Chrome, virtual display, VNC access) and is the recommended approach for Linux server deployments. Native Linux installation works with Node.js and Google Chrome installed manually.
 
-**Windows** is supported and users have reported success running PrismCast on Windows 11. Windows is not the primary development platform, so bug reports and pull requests are always appreciated.
+**Windows** is supported and users have reported success running PrismCast on Windows 11. Run PrismCast natively rather than under Docker Desktop, which has no access to GPU acceleration on Windows and delivers noticeably worse capture as a result. Hyper-V and WSL can also interfere with Chrome's capture pipeline, so if capture verification fails on a machine with Hyper-V enabled, disabling it is the known remedy. Windows is not the primary development platform, so bug reports and pull requests are always appreciated.
 
 ## Docker / Container Deployment
 

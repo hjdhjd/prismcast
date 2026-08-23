@@ -412,6 +412,8 @@ export function generateHelpContent(): string {
     "section above for details. Native HLS channels are not affected by display size.</li>",
     "<li><strong>Chrome may drop frames after extended use.</strong> The Chrome encoder can degrade after many hours of continuous operation. PrismCast ",
     "automatically restarts Chrome during idle periods to mitigate this.</li>",
+    "<li><strong>Windows virtualization can break capture.</strong> Hyper-V, WSL, and Docker Desktop can interfere with Chrome's capture pipeline. ",
+    "Installing PrismCast natively is recommended on Windows.</li>",
     "</ul>",
     "</div>"
   ].join("\n");

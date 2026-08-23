@@ -1661,7 +1661,18 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
       await delay(PROBE_RETRY_DELAY);
     } else {
 
-      throw new Error("Capture system verification failed after " + String(PROBE_MAX_ATTEMPTS) + " attempts: " + result);
+      /* On Windows the probe's own error rarely names the cause, and two conditions account for nearly every failure there: a virtualization layer sitting between
+       * Chrome and the display, and a profile that will not load an unpacked extension. Naming both in the thrown message saves the user a support round trip.
+       * The message is unchanged on every other platform, and the hint is appended after the probe's own text so the "timed out" substring the
+       * capture-infrastructure classifier reads is still present.
+       */
+      const windowsHint = (process.platform === "win32") ? " On Windows, Hyper-V or WSL can interfere with Chrome's capture pipeline, and Chrome refuses to " +
+        "load the capture extension unless the profile has extension developer mode enabled." : "";
+
+      // The probe's message is a diagnostic fragment that may or may not end in a period, so we terminate it before appending a sentence of our own.
+      const detail = ((windowsHint.length > 0) && !result.endsWith(".")) ? (result + ".") : result;
+
+      throw new Error("Capture system verification failed after " + String(PROBE_MAX_ATTEMPTS) + " attempts: " + detail + windowsHint);
     }
   }
 }
