@@ -2,12 +2,12 @@
  *
  * upgrade.test.ts: Unit tests for the upgrade routes in upgrade.ts. setupUpgradeEndpoint registers GET /upgrade/info and POST /upgrade.
  *
- * Two servers are booted. The first runs on the real dependencies and covers the GET /upgrade/info JSON envelope (both the success and failure branches of
- * fetchLatestVersion, mocked at the fetch boundary) plus the not-upgradeable short-circuit on POST /upgrade as the environment happens to present it.
+ * Two servers are booted. The first runs on the real dependencies and covers only the GET /upgrade/info JSON envelope, including both the success and failure
+ * branches of fetchLatestVersion, mocked at the fetch boundary.
  *
- * The second runs on an injected UpgradeDeps and covers the whole POST decision tree: the non-upgradeable guard, the dispatch of the detected InstallInfo, both
- * UpgradeStep kinds, and the failed-command path, each with its own shutdown expectation. Injecting the boundary is what makes those branches testable at all -
- * running them for real would invoke a package manager and exit the process. Actually installing anything remains e2e territory.
+ * The whole POST decision tree lives on the second server, which runs on an injected UpgradeDeps: the non-upgradeable guard, the dispatch of the detected
+ * InstallInfo, both UpgradeStep kinds, and the failed-command path, each with its own shutdown expectation. Injecting the boundary is what makes those branches
+ * testable at all - running them for real would invoke a package manager and exit the process. Actually installing anything remains e2e territory.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, afterEach, before, beforeEach, describe, mock, test } from "node:test";
@@ -206,40 +206,6 @@ describe("setupUpgradeEndpoint - GET /upgrade/info", () => {
     const body = await res.json() as UpgradeInfoResponse;
 
     assert.match(body.method, /^(docker|homebrew|npm-global|npm-local|source|unknown)$/);
-  });
-});
-
-describe("setupUpgradeEndpoint - POST /upgrade", () => {
-
-  test("returns 400 with the canonical envelope when the installation method is not upgradeable", async () => {
-
-    // The docker/unknown branches return upgradeable=false; the handler short-circuits via sendValidationError to the documented envelope shape
-    // ({ error: string, success: false }) at HTTP 400, without attempting any exec. We don't pin the method (depends on the test environment) but we lock
-    // the contract: when upgradeable=false, the response is the documented validation-error envelope.
-    const infoRes = await fetch(urlFor("/upgrade/info"));
-    const info = await infoRes.json() as UpgradeInfoResponse;
-
-    if(info.upgradeable) {
-
-      // If the test environment happens to be upgradeable (e.g., npm-local with a real install), we cannot exercise the not-upgradeable branch here. Still
-      // verify the route is wired and responds; the e2e suite covers the upgradeable branch.
-      const res = await fetch(urlFor("/upgrade"), { method: "POST" });
-
-      // Either it responds successfully or fails with a 500. We don't run the upgrade path in CI because exec'ing npm install would mutate the environment.
-      assert.ok(res.status >= 200);
-      await res.json();
-
-      return;
-    }
-
-    const res = await fetch(urlFor("/upgrade"), { method: "POST" });
-
-    assert.equal(res.status, 400);
-
-    const body = await res.json() as { error: string; success: boolean };
-
-    assert.equal(body.success, false);
-    assert.match(body.error, /does not support in-place upgrades/);
   });
 });
 
