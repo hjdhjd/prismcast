@@ -646,6 +646,99 @@ function cleanStaleProfileFiles(profileDir: string): void {
 }
 
 /**
+ * Returns the object stored under a key, replacing an absent or non-object value with a fresh object so the caller always has somewhere to write. Chrome's
+ * Preferences file nests its settings several levels deep and a young profile has not written most of them yet, so a seed has to build the intermediate levels
+ * as it descends. A value that is present but not an object cannot be merged into and cannot appear in a file Chrome itself wrote, so we replace it rather than
+ * abandon the seed.
+ * @param parent - The object holding the key.
+ * @param key - The key whose object value is wanted.
+ * @returns The object stored under the key, created if it was absent or unusable.
+ */
+function ensureObjectAt(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+
+  const existing = parent[key];
+
+  if((typeof existing === "object") && (existing !== null) && !Array.isArray(existing)) {
+
+    return existing as Record<string, unknown>;
+  }
+
+  const created: Record<string, unknown> = {};
+
+  parent[key] = created;
+
+  return created;
+}
+
+/**
+ * Seeds the extension developer-mode preference into the Chrome profile so the capture extension loads. Chrome loads an unpacked extension only when the profile
+ * has extension developer mode enabled, and PrismCast's capture extension is loaded unpacked...without the flag the extension never registers and the capture
+ * probe fails the launch gate. We write the preference into the profile ourselves rather than asking the user to find the toggle on Chrome's extensions page, and
+ * we merge it into whatever the file already holds so every other profile setting survives. Chrome merges a Preferences file it finds on startup, so a file
+ * carrying only this flag is a valid starting point for a profile that has never been launched.
+ *
+ * Nothing here is allowed to break a launch. A profile we cannot read or cannot write earns one warning and the launch proceeds without the seed: Chrome rewrites
+ * a Preferences file it cannot parse, so the next launch seeds the replacement.
+ *
+ * @param profileDir - The Chrome user data directory holding the profile.
+ */
+export function seedProfilePreferences(profileDir: string): void {
+
+  const profileDefaultDir = path.join(profileDir, "Default");
+  const preferencesPath = path.join(profileDefaultDir, "Preferences");
+
+  let preferences: Record<string, unknown> = {};
+
+  try {
+
+    const parsed: unknown = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
+
+    // A Preferences file that parses to anything other than an object is one we have no way to merge into, so we leave it alone and let Chrome regenerate it.
+    if((typeof parsed !== "object") || (parsed === null) || Array.isArray(parsed)) {
+
+      LOG.warn("The Chrome profile preferences at %s are not a JSON object, so extension developer mode was not seeded.", preferencesPath);
+
+      return;
+    }
+
+    preferences = parsed as Record<string, unknown>;
+  } catch(error: unknown) {
+
+    // A missing file is the fresh-profile case and seeds a new file below. Any other failure - unparseable JSON, a permissions problem, a file held open by
+    // another process - earns one warning and no write.
+    if((error as NodeJS.ErrnoException).code !== "ENOENT") {
+
+      LOG.warn("Unable to load the Chrome profile preferences at %s, so extension developer mode was not seeded: %s.", preferencesPath, formatError(error));
+
+      return;
+    }
+  }
+
+  const extensionPreferences = ensureObjectAt(preferences, "extensions");
+  const uiPreferences = ensureObjectAt(extensionPreferences, "ui");
+
+  // The flag is already set, so there is nothing to write. Rewriting the file on every launch would churn a file Chrome reads at startup for no gain.
+  if(uiPreferences["developer_mode"] === true) {
+
+    return;
+  }
+
+  uiPreferences["developer_mode"] = true;
+
+  try {
+
+    // The Default directory does not exist on a profile Chrome has never launched, so the seed creates it before writing the file Chrome merges on its first run.
+    fs.mkdirSync(profileDefaultDir, { recursive: true });
+    fs.writeFileSync(preferencesPath, JSON.stringify(preferences) + "\n", "utf8");
+
+    LOG.debug("browser:lifecycle", "Seeded extension developer mode into the Chrome profile preferences at %s.", preferencesPath);
+  } catch(error: unknown) {
+
+    LOG.warn("Unable to write the Chrome profile preferences at %s, so extension developer mode was not seeded: %s.", preferencesPath, formatError(error));
+  }
+}
+
+/**
  * Locates the Google Chrome executable on the system. The CHROME_BIN environment variable takes precedence, allowing operators to specify a non-standard
  * installation. Otherwise, we search common installation paths across macOS, Linux, and Windows.
  *
@@ -1237,6 +1330,10 @@ export async function getCurrentBrowser(): Promise<Browser> {
 async function launchReadyBrowser(): Promise<Browser> {
 
   const browserElapsed = startTimer();
+
+  // Seed the profile's extension developer-mode flag before Chrome reads the profile. Chrome loads the unpacked capture extension only when the flag is set, and
+  // this is the one function every launch passes through, so it is also the only place that runs before the first-ever launch on a fresh install.
+  seedProfilePreferences(getChromeDataDir(CONFIG));
 
   // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that handles
   // packaged-executable extension paths. This happens on first stream request, after a browser crash, during server warmup, or during a governed relaunch.

@@ -13,21 +13,25 @@
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
+ *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
  *
  * Importing this module pulls in puppeteer-stream which starts a WebSocketServer at evaluation time. The test runner uses --test-force-exit so that handle does
  * not prevent the file from exiting cleanly.
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildLaunchOptions, emitCurrentSystemStatus, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getChromeVersion,
-  getExecutablePath, isBrowserConnected, isGracefulShutdown, registerManagedPage, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+  getExecutablePath, isBrowserConnected, isGracefulShutdown, registerManagedPage, seedProfilePreferences, setGracefulShutdown,
+  unregisterManagedPage } from "./index.ts";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
 import { subscribeToStatus } from "../streaming/statusEmitter.ts";
+import { withTempDir } from "../testing.helpers.ts";
 
 /* The data directory must be initialized before buildLaunchOptions() can resolve the Chrome user-data-dir path (it derives from the data dir via getChromeDataDir).
  * We create a temp directory once for the whole file, point initializeDataDir at it, and clean it up after every test has run. The path is deterministic per test
@@ -499,6 +503,123 @@ describe("ensureDataDirectory legacy-artifact purge", () => {
     }
 
     await assert.doesNotReject(async () => ensureDataDirectory());
+  });
+});
+
+describe("seedProfilePreferences", () => {
+
+  test("creates the Default directory and a seeded Preferences file on a profile Chrome has never launched", async () => {
+
+    // The fresh-install case: no Default directory, no Preferences file. The seed has to create both, because Chrome reads the profile before it writes one and
+    // an unpacked extension is refused without the flag already in place.
+    await withTempDir(async (dir) => {
+
+      const profileDir = path.join(dir, "chromedata");
+
+      seedProfilePreferences(profileDir);
+
+      const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+      assert.equal(existsSync(preferencesPath), true, "the seed created the Preferences file");
+
+      const written = JSON.parse(readFileSync(preferencesPath, "utf8")) as { extensions: { ui: { developer_mode: boolean } } };
+
+      assert.equal(written.extensions.ui.developer_mode, true);
+    });
+  });
+
+  test("preserves every existing preference when it seeds the flag", () => {
+
+    // The upgrade case: a profile that has been in use carries the user's whole Chrome configuration, including an extensions branch of its own. Losing any of
+    // it would silently reset the user's browser, so the seed merges rather than replaces.
+    const profileDir = path.join(tempDataDir, "merge-profile");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(path.join(profileDir, "Default", "Preferences"), JSON.stringify({
+
+      extensions: { settings: { abcdef: { state: 1 } }, ui: { "other_flag": 7 } },
+      profile: { name: "Person 1" }
+    }));
+
+    seedProfilePreferences(profileDir);
+
+    const written = JSON.parse(readFileSync(path.join(profileDir, "Default", "Preferences"), "utf8")) as {
+      extensions: { settings: { abcdef: { state: number } }; ui: { developer_mode: boolean; other_flag: number } };
+      profile: { name: string };
+    };
+
+    assert.equal(written.extensions.ui.developer_mode, true, "the flag was seeded");
+    assert.equal(written.extensions.ui.other_flag, 7, "sibling keys inside extensions.ui survive");
+    assert.equal(written.extensions.settings.abcdef.state, 1, "sibling branches inside extensions survive");
+    assert.equal(written.profile.name, "Person 1", "unrelated top-level branches survive");
+  });
+
+  test("does not rewrite the file when the flag is already set", () => {
+
+    // Every launch calls the seed, so the steady state has to cost nothing. We write the file in a shape JSON.stringify would never reproduce (indented, with a
+    // key order the seed does not preserve) and assert the bytes come back identical - a rewrite of any kind would normalize them.
+    const profileDir = path.join(tempDataDir, "already-seeded-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+    const original = JSON.stringify({ extensions: { ui: { "developer_mode": true } } }, null, 2);
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, original);
+
+    seedProfilePreferences(profileDir);
+
+    assert.equal(readFileSync(preferencesPath, "utf8"), original, "an already-seeded profile is left byte-identical");
+  });
+
+  test("warns and leaves the file alone when the Preferences file is not parseable", (t) => {
+
+    // A truncated or corrupt Preferences file must never take a launch down with it. Chrome regenerates a file it cannot parse, so the right response is one
+    // warning and no write...the next launch seeds the replacement.
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const profileDir = path.join(tempDataDir, "corrupt-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, "{ this is not json");
+
+    assert.doesNotThrow(() => seedProfilePreferences(profileDir));
+
+    assert.equal(readFileSync(preferencesPath, "utf8"), "{ this is not json", "the unparseable file is left untouched");
+    assert.equal(warn.mock.callCount(), 1, "exactly one warning is emitted");
+  });
+
+  test("warns and leaves the file alone when the Preferences file parses to something other than an object", (t) => {
+
+    // JSON.parse happily returns null, a number, or an array for a file that is valid JSON but not a settings object. Merging into any of those is impossible,
+    // so the seed treats them the same way it treats corruption.
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const profileDir = path.join(tempDataDir, "array-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, "[]");
+
+    assert.doesNotThrow(() => seedProfilePreferences(profileDir));
+
+    assert.equal(readFileSync(preferencesPath, "utf8"), "[]", "the unusable file is left untouched");
+    assert.equal(warn.mock.callCount(), 1, "exactly one warning is emitted");
+  });
+
+  test("replaces a non-object extensions branch rather than abandoning the seed", () => {
+
+    // Defensive: a Preferences file whose extensions key holds a scalar cannot be descended into. Chrome never writes such a file, but the seed still has to
+    // reach its target rather than throw on a property assignment against a primitive.
+    const profileDir = path.join(tempDataDir, "scalar-branch-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, JSON.stringify({ extensions: "unexpected", profile: { name: "Person 1" } }));
+
+    assert.doesNotThrow(() => seedProfilePreferences(profileDir));
+
+    const written = JSON.parse(readFileSync(preferencesPath, "utf8")) as { extensions: { ui: { developer_mode: boolean } }; profile: { name: string } };
+
+    assert.equal(written.extensions.ui.developer_mode, true, "the flag was seeded into a rebuilt extensions branch");
+    assert.equal(written.profile.name, "Person 1", "unrelated branches still survive");
   });
 });
 
