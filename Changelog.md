@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.12.0 (2026-08-24)
+  * New feature: every quality preset on every display - each capture page now renders at the quality preset you've chosen, whatever the size of the display or browser window behind it. A headless Mac, a Docker container, or a machine with a modest monitor captures at full preset resolution, with no dummy plug, no screen-size environment variables, and no borrowing a 4K monitor to get things going. The 4K preset works on any hardware, streaming sites serve their best rendition because their players see a full-size viewport, and the settings dropdown lists every preset without caveats. Login mode keeps using the browser window's own size, so signing in to your TV provider looks and works exactly as before. If your display happens to be smaller than the preset, a one-line note at startup lets you know and confirms that capture is unaffected.
+  * Fix: capture keeps working on Chrome 149 and later - Chrome has tightened how it loads unpacked extensions, so PrismCast now marks its own Chrome profile as trusted at every launch and the capture extension loads just as it always has. No Developer Mode toggle, patched files, or pinned Chrome version required.
+  * Fix: in-app upgrades complete cleanly on Windows - the web interface now hands the install to the same detached helper the command-line upgrade uses, which waits for PrismCast to exit before installing so Windows file locks stay out of the way. The upgrade toast also tells you what actually happened, including where to find the helper's log.
+  * Fix: instant stream startup works with a system FFmpeg - if the bundled FFmpeg download didn't complete during installation, preroll generation now uses the FFmpeg already on your PATH, so machines that bring their own FFmpeg keep instant startup.
+  * Housekeeping.
+
 ## 1.11.1 (2026-08-23)
   * Fix: PrismCast starts on Node 22 again - v1.11.0 depended on a capability that only ships natively with Node 24, so Docker deployments and any Node 22 installation failed at startup with "AsyncDisposableStack is not defined". PrismCast now supplies that capability itself on older runtimes, and the `NODE_OPTIONS` workaround from the forum is no longer needed.
   * Housekeeping.
