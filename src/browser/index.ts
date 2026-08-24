@@ -797,6 +797,8 @@ const PUPPETEER_STREAM_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
  */
 export function buildLaunchOptions(): LaunchOptions {
 
+  const viewport = getPresetViewport(CONFIG);
+
   return {
 
     /* Chrome command-line arguments. Each flag serves a specific purpose for reliable streaming:
@@ -837,8 +839,6 @@ export function buildLaunchOptions(): LaunchOptions {
      * --hide-scrollbars: Removes scrollbars from the viewport to ensure the video fills the entire capture area without UI chrome.
      *
      * --no-first-run: Skips the first-run experience dialogs and setup wizard that would require user interaction.
-     *
-     * --window-size: Sets the initial window size to match our configured viewport dimensions. This is later adjusted via CDP to account for browser chrome.
      */
     args: [
 
@@ -853,13 +853,17 @@ export function buildLaunchOptions(): LaunchOptions {
       "--disable-notifications",
       "--hide-crash-restore-bubble",
       "--hide-scrollbars",
-      "--no-first-run",
-      "--window-size=" + String(getPresetViewport(CONFIG).width) + "," + String(getPresetViewport(CONFIG).height)
+      "--no-first-run"
     ],
 
-    // Disable Puppeteer's default viewport constraints. We manage viewport sizing ourselves via CDP to account for browser chrome (toolbars, borders) and
-    // ensure the content area matches our target dimensions exactly.
-    defaultViewport: null,
+    /* The configured quality preset is the capture surface. Puppeteer holds this viewport for the browser's lifetime and applies it as a device-metrics override
+     * to every page the browser creates - capture pages, probe pages, discovery pages, and the capture extension's own page - so no individual page-creation site
+     * has to ask for it. Tab capture reads the compositor's emulated surface rather than the OS window, which is what lets capture run at the preset's resolution
+     * whatever size the display is or the window happens to be. A device scale factor of 1 keeps a 1:1 render-to-encode mapping...the surface is rastered at
+     * exactly the pixel count the encoder consumes, so nothing is scaled on the way out. puppeteer-stream reads this same option and derives Chrome's window and
+     * ozone screen dimension flags from it, so the preset's dimensions enter the launch in exactly one place.
+     */
+    defaultViewport: { deviceScaleFactor: 1, height: viewport.height, width: viewport.width },
 
     // Path to the Chrome executable, either from environment variable or autodetected.
     executablePath: getExecutablePath(),

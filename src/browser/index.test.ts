@@ -27,6 +27,7 @@ import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
+import { getPresetViewport } from "../config/presets.ts";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
@@ -362,11 +363,32 @@ describe("buildLaunchOptions", () => {
     assert.equal(options.executablePath, "/sentinel/chrome", "executablePath surfaces from CONFIG");
   });
 
-  test("disables Puppeteer's default viewport so we can manage sizing via CDP", () => {
+  test("emulates every page at the configured preset with a 1:1 device scale factor", () => {
 
-    // The contract is that defaultViewport is null - this prevents Puppeteer from forcing 800x600 on every page. We rely on CDP-based sizing in
-    // resizeAndMinimizeWindow.
-    assert.equal(buildLaunchOptions().defaultViewport, null, "default viewport disabled");
+    // The launch viewport is the capture surface: Puppeteer applies it to every page it creates, and tab capture reads that emulated surface. The dimensions have
+    // to track the configured preset, and the scale factor has to stay at 1 so the rastered surface matches the encode size exactly.
+    const viewport = getPresetViewport(CONFIG);
+
+    assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 1, height: viewport.height, width: viewport.width },
+      "viewport derived from the configured preset");
+  });
+
+  test("derives the emulated viewport from a non-default preset rather than a fixed pair of dimensions", () => {
+
+    /* The configured default preset and the getter's own fallback resolve to the same dimensions, so those numbers alone cannot tell a config-driven
+     * implementation from a hardcoded one. Configuring 4K moves the expected dimensions away from both and makes the distinction observable.
+     */
+    const originalPreset = CONFIG.streaming.qualityPreset;
+
+    CONFIG.streaming.qualityPreset = "4k";
+
+    try {
+
+      assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 1, height: 2160, width: 3840 }, "the 4K preset yields a 3840x2160 surface");
+    } finally {
+
+      CONFIG.streaming.qualityPreset = originalPreset;
+    }
   });
 
   test("runs Chrome in headed mode so the streaming extension can capture", () => {
@@ -389,16 +411,13 @@ describe("buildLaunchOptions", () => {
     assert.ok(args.includes("--autoplay-policy=no-user-gesture-required"), "autoplay flag present");
   });
 
-  test("includes window-size args derived from the configured viewport", () => {
+  test("carries no manual window-size flag, leaving the window dimensions to the launch viewport", () => {
 
-    // The function appends a --window-size arg with the preset viewport dimensions. We verify the arg is present and parseable.
+    // puppeteer-stream reads the launch viewport and pushes the window-size and ozone screen-size flags from it. A flag assembled here as well would be a second
+    // declaration of the same dimensions, free to drift from the one the capture layer acts on.
     const args = buildLaunchOptions().args ?? [];
-    const windowSizeArg = args.find((a) => a.startsWith("--window-size="));
 
-    assert.ok(windowSizeArg, "window-size arg present");
-
-    // The format is --window-size=W,H with positive integer dimensions.
-    assert.match(windowSizeArg, /^--window-size=\d+,\d+$/, "well-formed window-size arg");
+    assert.equal(args.filter((a) => a.startsWith("--window-size=")).length, 0, "no window-size arg assembled here");
   });
 
   test("excludes Puppeteer default args that would interfere with streaming (extensions, automation flag, mute)", () => {
