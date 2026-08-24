@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent, hasEnvOverrides,
   setupSettingsRoutes } from "./settings.ts";
 import type { AdvancedSection } from "../../config/userConfig.ts";
+import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 import { getAdvancedSections } from "../../config/userConfig.ts";
@@ -38,6 +39,24 @@ describe("generateSettingsTabContent", () => {
 
     assert.ok(html.length > 0, "Settings tab content renders");
     assert.ok(typeof html === "string", "returns a string");
+  });
+
+  test("offers every quality preset by friendly name, with no display-driven qualifier or warning", () => {
+
+    /* The preset dropdown is rendered from the preset table itself, so the list of options is the list of presets and each label is the preset's own name. Every
+     * preset is offered unconditionally: capture renders at whichever one is chosen, because the surface is emulated rather than taken from the display. The
+     * negative halves are the point - a qualifier on a label, or a warning under the field, would be telling the operator their choice will not be honoured.
+     */
+    const html = generateSettingsTabContent() + generateAdvancedTabContent();
+
+    for(const preset of VIDEO_QUALITY_PRESETS) {
+
+      assert.ok(html.includes(">" + preset.name + "</option>"), preset.id + " is offered under its own name");
+      assert.ok(html.includes("value=\"" + preset.id + "\""), preset.id + " is offered under its own id");
+    }
+
+    assert.equal(html.includes("limited to"), false, "no option label carries a display-driven qualifier");
+    assert.equal(html.includes("Your display cannot support this resolution"), false, "no display warning is rendered under the field");
   });
 
   test("renders the panel header with the reset-to-defaults link", () => {

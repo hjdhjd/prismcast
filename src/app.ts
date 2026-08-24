@@ -647,8 +647,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     throw error;
   }
 
-  // Generate the preroll fMP4 segment for immediate HLS response during stream startup. This runs after browser launch so that display detection has completed and
-  // getEffectiveViewport() returns the true dimensions - ensuring the preroll resolution matches what Chrome MediaRecorder will actually produce.
+  // Generate the preroll fMP4 segment for immediate HLS response during stream startup. This runs after browser launch because the preroll has to be encoded in the
+  // codec capture will actually produce, and that choice reads the GPU capabilities the launch-time capability probe caches.
   await generatePreroll();
 
   // Minimize the browser window to reduce GPU usage and desktop clutter. The browser must be visible (not headless) for capture to work, but minimizing it reduces

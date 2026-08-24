@@ -2,7 +2,7 @@
  *
  * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.merge.test.ts; here we focus on
  * the validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
- * accessor surface, and the displayConfiguration log-output branches. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
+ * accessor surface, and the displayConfiguration startup block. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
  * independent of any other suite that touches CONFIG.
  */
 import { CONFIG, applyLoggingConfigChanges, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration,
@@ -13,9 +13,9 @@ import { DEFAULTS } from "./userConfig.ts";
 import { LOG } from "../utils/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import assert from "node:assert/strict";
+import { getPresetViewport } from "./presets.ts";
 import { initializeDataDir } from "./paths.ts";
 import os from "node:os";
-import { setMaxSupportedViewport } from "../browser/display.ts";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
 describe("validatePositiveInt", () => {
@@ -328,13 +328,10 @@ describe("applyLoggingConfigChanges", () => {
 
 describe("displayConfiguration", () => {
 
-  /* The function emits a startup block through displayLine / printConfigRow (the structured-display escape hatch) plus a conditional LOG.warn for preset
-   * degradation. Both paths route through the same SSE emitter, so we capture every emitted entry via subscribeToLogs and assert against the emission stream
-   * - that decouples the test from which internal API the function uses (LOG.info vs displayLine) and pins the actual observable output instead. The LOG.warn
-   * spy stays in place for the degradation branch, which is a genuine warn-level message that should appear at level "warn" specifically.
-   *
-   * Display state from getMaxSupportedViewport() is module-level cache state (browser/display.ts). To keep the suite from leaking a small viewport into other
-   * tests, every test that mutates it restores a large viewport at the end so subsequent runs see "no degradation" by default.
+  /* The function emits a startup block through displayLine / printConfigRow (the structured-display escape hatch). That path routes through the same SSE emitter
+   * every log line does, so we capture every emitted entry via subscribeToLogs and assert against the emission stream - that decouples the test from which
+   * internal API the function uses (LOG.info vs displayLine) and pins the actual observable output instead. The LOG.warn spy stays in place to assert the block
+   * is purely informational: the configuration it reports is the configuration that will be used, so there is nothing for it to warn about.
    */
   let captured: LogEntry[];
   let unsubscribe: () => void;
@@ -358,19 +355,14 @@ describe("displayConfiguration", () => {
 
     unsubscribe();
     warnSpy.mock.restore();
-
-    // Restore a viewport at least as large as the largest defined quality preset so subsequent suites do not see the small one a degradation test may have
-    // left behind.
-    setMaxSupportedViewport(7680, 4320);
   });
 
-  test("emits informational lines covering port, preset, capture, and HDHR state without warnings when display is large", () => {
+  test("emits informational lines covering port, preset, capture, and HDHR state, and warns about none of them", () => {
 
-    /* Happy path: a large viewport means no degradation, so the warn branch must NOT fire. We do not lock specific message strings (they are operator
-     * formatting) but we do verify the function emits the documented information categories - any future refactor that drops a line will fail this test.
+    /* We do not lock specific message strings (they are operator formatting) but we do verify the function emits the documented information categories - any
+     * future refactor that drops a line will fail this test. The warn count is part of the contract: every row states a setting the run will actually use, so
+     * none of them is a condition to raise.
      */
-    setMaxSupportedViewport(7680, 4320);
-
     displayConfiguration();
 
     const messages = captured.map((entry) => entry.message);
@@ -379,7 +371,23 @@ describe("displayConfiguration", () => {
     assert.ok(messages.some((m) => m.includes("Quality preset")), "quality preset line must be emitted");
     assert.ok(messages.some((m) => m.includes("Capture codecs")), "capture codecs line must be emitted");
     assert.ok(messages.some((m) => m.includes("HDHomeRun emulation")), "HDHR line must be emitted");
-    assert.equal(warnSpy.mock.calls.length, 0, "no degradation warning when the display fits the configured preset");
+    assert.equal(warnSpy.mock.calls.length, 0, "the startup block raises no warnings");
+  });
+
+  test("states the configured preset with the dimensions every page will render at", () => {
+
+    /* The preset row is the operator's confirmation of the capture surface, so it carries the dimensions rather than the id alone. Those dimensions come from
+     * the same getter the browser launches with, which is what makes the row a true statement about what capture will produce rather than a second opinion.
+     */
+    const viewport = getPresetViewport(CONFIG);
+    const expected = "Quality preset: " + CONFIG.streaming.qualityPreset + " (" + String(viewport.width) + "\u00d7" + String(viewport.height) + ")";
+
+    displayConfiguration();
+
+    const presetRow = captured.map((entry) => entry.message).find((m) => m.includes("Quality preset"));
+
+    assert.equal(presetRow, "  " + expected, "the preset row names the preset and its dimensions");
+    assert.equal(presetRow.includes("limited to"), false, "no display-driven qualifier appears in the row");
   });
 
   test("startup block lines are emitted without trailing periods (tabular display, not sentences)", () => {
@@ -387,8 +395,6 @@ describe("displayConfiguration", () => {
     /* The block goes through displayLine which deliberately bypasses the logger's sentence-normalization contract. This locks the no-trailing-period behavior
      * so a future regression that routed the rows back through LOG.info (and re-introduced trailing periods on every tabular row) would surface immediately.
      */
-    setMaxSupportedViewport(7680, 4320);
-
     displayConfiguration();
 
     const rowMessages = captured.map((entry) => entry.message).filter((m) => m.startsWith("  "));
@@ -401,22 +407,6 @@ describe("displayConfiguration", () => {
     }
   });
 
-  test("emits a degradation warning when the display cannot fit the configured preset", () => {
-
-    /* Force the degraded branch by setting an absurdly small viewport. The configured preset (DEFAULTS.streaming.qualityPreset = 720p-high) requires a viewport
-     * larger than 320x180, so getEffectivePreset will degrade and displayConfiguration's conditional must fire LOG.warn with the display-supports message.
-     */
-    setMaxSupportedViewport(320, 180);
-
-    displayConfiguration();
-
-    assert.equal(warnSpy.mock.calls.length, 1, "one warn line for the degradation");
-
-    const messageArg = warnSpy.mock.calls[0]?.arguments[0];
-    const message = (typeof messageArg === "string") ? messageArg : "";
-
-    assert.match(message, /Display supports maximum/, "warn message names the display-driven degradation");
-  });
 });
 
 describe("configParseError exported state", () => {

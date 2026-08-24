@@ -11,7 +11,7 @@ import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
 import { buildPlaylist } from "./playlistBuilder.ts";
 import { getEffectiveCaptureCodec } from "./codec.ts";
-import { getEffectiveViewport } from "../config/presets.ts";
+import { getPresetViewport } from "../config/presets.ts";
 import { spawn } from "node:child_process";
 import { buffer as streamToBuffer } from "node:stream/consumers";
 
@@ -201,9 +201,9 @@ export async function generatePreroll(): Promise<void> {
     return;
   }
 
-  // Use the effective viewport to match the resolution Chrome MediaRecorder will produce. This prevents a resolution mismatch at the preroll-to-live discontinuity
-  // boundary.
-  const viewport = getEffectiveViewport(CONFIG);
+  // Size the preroll from the configured preset, which is the same surface capture renders and encodes at. Matching it prevents a resolution mismatch at the
+  // preroll-to-live discontinuity boundary.
+  const viewport = getPresetViewport(CONFIG);
   const size = String(viewport.width) + "x" + String(viewport.height);
 
   // Generate the H.264 variant. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and

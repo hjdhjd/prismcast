@@ -7,8 +7,8 @@ import type { Config, Nullable } from "../types/index.ts";
 import { DEFAULTS, mergeConfiguration, mutateConfig, readConfig } from "./userConfig.ts";
 import { LOG, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
 import { applyConfigChanges, computeConfigDiff, registerConfigChangeHandler } from "./reactivity.ts";
-import { formatPresetStatus, getEffectivePreset, getValidPresetIds } from "./presets.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
+import { getPresetViewport, getValidPresetIds } from "./presets.ts";
 import { RECOGNIZED_CODECS } from "../types/index.ts";
 import path from "node:path";
 
@@ -650,14 +650,11 @@ function printConfigRow(label: string, value: unknown): void {
  * The block is emitted through displayLine / printConfigRow rather than LOG.info because it is structured display output (a header plus indented label/value
  * rows), not prose log messages - the logger's sentence-normalization contract is intentionally bypassed for this block so the rows render as tabular data, not
  * sentences.
- *
- * This function also checks for preset degradation and logs a warning if the configured preset exceeds display capabilities. The warning helps users understand
- * why their stream resolution may be lower than configured.
  */
 export function displayConfiguration(): void {
 
-  const presetResult = getEffectivePreset(CONFIG);
-  const presetStatus = formatPresetStatus(presetResult);
+  const viewport = getPresetViewport(CONFIG);
+  const presetStatus = CONFIG.streaming.qualityPreset + " (" + String(viewport.width) + "\u00d7" + String(viewport.height) + ")";
 
   displayLine("Starting PrismCast v%s with configuration:", getPackageVersion());
   printConfigRow("Configuration file", getConfigFilePath());
@@ -675,13 +672,4 @@ export function displayConfiguration(): void {
   printConfigRow("Chrome executable", CONFIG.browser.executablePath ?? "autodetect");
   displayLine("  HLS segment duration: %ss, max segments: %s", CONFIG.hls.segmentDuration, CONFIG.hls.maxSegments);
   printConfigRow("HDHomeRun emulation", CONFIG.hdhr.enabled ? "enabled (port " + String(CONFIG.hdhr.port) + ")" : "disabled");
-
-  // Log a prominent warning if preset was degraded due to display limitations.
-  if(presetResult.degraded && presetResult.maxViewport) {
-
-    LOG.warn("Display supports maximum %s\u00d7%s. Configured %s preset will use %s instead.",
-      presetResult.maxViewport.width, presetResult.maxViewport.height,
-      presetResult.configuredPreset.id, presetResult.effectivePreset.id);
-  }
-
 }

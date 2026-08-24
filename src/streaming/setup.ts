@@ -30,7 +30,7 @@ import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
-import { getEffectiveViewport } from "../config/presets.ts";
+import { getPresetViewport } from "../config/presets.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
@@ -604,6 +604,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // while every other failure unwinds through the DisposableStack.
   try {
 
+    const viewport = getPresetViewport(CONFIG);
+
     const streamOptions = {
 
       audio: true,
@@ -621,11 +623,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         mandatory: {
 
           maxFrameRate: 60,
-          maxHeight: getEffectiveViewport(CONFIG).height,
-          maxWidth: getEffectiveViewport(CONFIG).width,
+          maxHeight: viewport.height,
+          maxWidth: viewport.width,
           minFrameRate: Math.max(30, Math.min(60, CONFIG.streaming.frameRate)),
-          minHeight: getEffectiveViewport(CONFIG).height,
-          minWidth: getEffectiveViewport(CONFIG).width
+          minHeight: viewport.height,
+          minWidth: viewport.width
         }
       }
     } as unknown as Parameters<typeof getStream>[1];
@@ -1716,9 +1718,11 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
   try {
 
     // Use the same capture MIME type and viewport (height/width) as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
-    // so matching those runtime constraints ensures the probe exercises a representative getStream() call.
+    // so matching those runtime constraints ensures the probe exercises a representative getStream() call. Both read the configured preset, so they agree by
+    // construction rather than by two call sites happening to pick the same numbers.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
     const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
+    const viewport = getPresetViewport(CONFIG);
 
     const streamOptions = {
 
@@ -1730,11 +1734,11 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
         mandatory: {
 
           maxFrameRate: 30,
-          maxHeight: getEffectiveViewport(CONFIG).height,
-          maxWidth: getEffectiveViewport(CONFIG).width,
+          maxHeight: viewport.height,
+          maxWidth: viewport.width,
           minFrameRate: 30,
-          minHeight: getEffectiveViewport(CONFIG).height,
-          minWidth: getEffectiveViewport(CONFIG).width
+          minHeight: viewport.height,
+          minWidth: viewport.width
         }
       }
     } as unknown as Parameters<typeof getStream>[1];

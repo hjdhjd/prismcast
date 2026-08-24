@@ -12,9 +12,9 @@ import { applyConfigurationChange, describeConfigurationOutcome } from "./index.
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
 import type { Nullable } from "../../types/index.ts";
+import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import { getConfigFilePath } from "../../config/paths.ts";
 import { getGpuCapabilities } from "../../browser/display.ts";
-import { getPresetOptionsWithDegradation } from "../../config/presets.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
 
 /* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
@@ -226,13 +226,6 @@ function getFieldWidthClass(setting: SettingMetadata): string {
   // For selects (settings with validValues), determine width based on content.
   if(setting.validValues && (setting.validValues.length > 0)) {
 
-    // Quality preset dropdown needs wide width because it displays dynamic degradation text like "1080p (limited to 720p High)" which is much longer than the
-    // static validValues entries.
-    if(setting.path === "streaming.qualityPreset") {
-
-      return "field-wide";
-    }
-
     const maxLength = Math.max(...setting.validValues.map((v) => v.length));
 
     // Short options (e.g., "none", "all", "errors") get narrow width.
@@ -376,9 +369,6 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   lines.push("</label>");
 
-  // Track if the selected preset is degraded (used for inline message).
-  let selectedPresetDegradedTo: Nullable<string> = null;
-
   // Block-level content that must appear outside the form-row flex container. Type branches that produce content too large for the inline flex layout (grids,
   // editors, lists) push their HTML here. Emitted after the description div.
   const postDescription: string[] = [];
@@ -405,32 +395,16 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
     lines.push("<select " + selectAttrs.join(" ") + ">");
 
-    // Special handling for quality preset dropdown to show degradation info.
+    /* The quality preset dropdown reads the preset table directly so each option carries the preset's friendly name rather than its id. Every preset is offered
+     * unconditionally: capture renders at whichever one is chosen, because the surface is emulated rather than taken from the display.
+     */
     if(setting.path === "streaming.qualityPreset") {
 
-      const presetOptions = getPresetOptionsWithDegradation();
+      for(const preset of VIDEO_QUALITY_PRESETS) {
 
-      for(const option of presetOptions.options) {
+        const selected = (preset.id === currentValue) ? " selected" : "";
 
-        const presetId = option.preset.id;
-        const isSelected = presetId === currentValue;
-        const selected = isSelected ? " selected" : "";
-
-        // Build the display label with degradation annotation if applicable.
-        let label = option.preset.name;
-
-        if(option.degradedTo) {
-
-          label = label + " (limited to " + option.degradedTo.name + ")";
-
-          // Track if the selected preset is degraded.
-          if(isSelected) {
-
-            selectedPresetDegradedTo = option.degradedTo.name;
-          }
-        }
-
-        lines.push("<option value=\"" + escapeHtml(presetId) + "\"" + selected + ">" + escapeHtml(label) + "</option>");
+        lines.push("<option value=\"" + escapeHtml(preset.id) + "\"" + selected + ">" + escapeHtml(preset.name) + "</option>");
       }
     } else {
 
@@ -616,13 +590,6 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   if(setting.disabledReason) {
 
     lines.push("<div class=\"form-warning\">" + escapeHtml(setting.disabledReason) + "</div>");
-  }
-
-  // Add inline message for degraded preset.
-  if(selectedPresetDegradedTo) {
-
-    lines.push("<div class=\"form-warning\">Your display cannot support this resolution. Streams will use " +
-      escapeHtml(selectedPresetDegradedTo) + " instead.</div>");
   }
 
   // Add default value hint with properly pluralized unit.

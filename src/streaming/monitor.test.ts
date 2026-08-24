@@ -71,6 +71,16 @@ function readableState(currentTime: number): Record<string, unknown> {
   };
 }
 
+/* A readable state carrying real intrinsic dimensions, so the resolution check runs its full body instead of returning at the zero-dimension guard. The
+ * dimensions match the default preset's surface exactly, so every reading is full quality and no recovery is triggered.
+ * @param currentTime - The playback position to report, so successive reads can show progression.
+ * @returns The state object a getVideoState read resolves with.
+ */
+function resolutionReadableState(currentTime: number): Record<string, unknown> {
+
+  return { ...readableState(currentTime), videoHeight: 720, videoWidth: 1280 };
+}
+
 /**
  * Advances the mock clock, in steps no larger than one monitor interval, flushing microtasks after each step.
  * @param t - The test context owning the mock timers.
@@ -171,6 +181,60 @@ describe("monitorPlaybackHealth", () => {
     assert.equal(fake.evaluations.length, 2, "the next firing runs once the previous body settled");
 
     handle.dispose();
+  });
+
+  test("reads the capture surface once for the monitor's lifetime rather than once per tick", async (t) => {
+
+    /* The quality preset is restart-gated, so a stream's capture surface cannot change while that stream runs. Re-deriving it on every two-second tick would
+     * spend work to reach the same answer forever. The values alone cannot tell a once-per-lifetime read from a once-per-tick one, so the pin counts reads: a
+     * counting accessor stands in front of the configured preset, which is the single property the viewport getter consults.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const configured = CONFIG.streaming.qualityPreset;
+    const descriptor = Object.getOwnPropertyDescriptor(CONFIG.streaming, "qualityPreset");
+
+    let presetReads = 0;
+
+    Object.defineProperty(CONFIG.streaming, "qualityPreset", {
+
+      configurable: true,
+      get: (): string => {
+
+        presetReads++;
+
+        return configured;
+      }
+    });
+
+    try {
+
+      const fake = makeFakePage();
+      const handle = startMonitor(fake.page, "surface-read-1", 9010);
+
+      // Four ticks, each answered with a healthy state carrying real intrinsic dimensions, so the resolution comparison runs its full body every time.
+      for(let tick = 0; tick < 4; tick++) {
+
+        // Sequential by definition: each tick's read must settle before the next firing.
+        // eslint-disable-next-line no-await-in-loop
+        await advance(t, MONITOR_INTERVAL);
+        fake.evaluations[tick]?.resolve(resolutionReadableState(tick + 1));
+
+        // eslint-disable-next-line no-await-in-loop
+        await flushMicrotasks();
+      }
+
+      handle.dispose();
+
+      assert.equal(fake.evaluations.length, 4, "four ticks issued four health reads");
+      assert.equal(presetReads, 1, "the capture surface was read once across all four ticks");
+    } finally {
+
+      if(descriptor) {
+
+        Object.defineProperty(CONFIG.streaming, "qualityPreset", descriptor);
+      }
+    }
   });
 
   test("emits status on the firings it skips, so subscribers stay current during a long read", async (t) => {

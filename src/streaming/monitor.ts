@@ -21,7 +21,7 @@ import { clearProbeCache } from "../native/probe.ts";
 import { emitStreamHealthChanged } from "./statusEmitter.ts";
 import { getChannelLogo } from "../config/userChannels.ts";
 import { getClientSummary } from "./clients.ts";
-import { getEffectiveViewport } from "../config/presets.ts";
+import { getPresetViewport } from "../config/presets.ts";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
 import { minimizeWindow } from "../browser/cdp.ts";
@@ -293,8 +293,12 @@ export function monitorPlaybackHealth(
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;
 
-  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the configured viewport, the service's ABR is delivering
-  // low-quality content. The threshold is expressed as a ratio - if either dimension is below this fraction of the viewport, the resolution is considered degraded.
+  // The capture surface this stream is measured against, read once for the monitor's lifetime. The quality preset is restart-gated, so it cannot change while a
+  // stream is running, and re-deriving it on every two-second tick would be work that can only ever produce the same answer.
+  const presetViewport = getPresetViewport(CONFIG);
+
+  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the capture surface, the service's ABR is delivering
+  // low-quality content. The threshold is expressed as a ratio - if either dimension is below this fraction of the surface, the resolution is considered degraded.
   // 50% catches clear ABR degradation (768x432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
   const RESOLUTION_RATIO_THRESHOLD = 0.5;
 
@@ -1512,9 +1516,8 @@ export function monitorPlaybackHealth(
       return false;
     }
 
-    const viewport = getEffectiveViewport(CONFIG);
-    const widthRatio = state.videoWidth / viewport.width;
-    const heightRatio = state.videoHeight / viewport.height;
+    const widthRatio = state.videoWidth / presetViewport.width;
+    const heightRatio = state.videoHeight / presetViewport.height;
 
     const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
 
@@ -1523,7 +1526,7 @@ export function monitorPlaybackHealth(
       resolutionState.consecutiveDegradedReadings++;
 
       LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
-        String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height),
+        String(state.videoWidth), String(state.videoHeight), String(presetViewport.width), String(presetViewport.height),
         String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
         String(resolutionState.consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
     } else {
@@ -1539,7 +1542,7 @@ export function monitorPlaybackHealth(
 
       LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
         String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
-        String(viewport.width), String(viewport.height), RECOVERY_METHODS.pageNavigation);
+        String(presetViewport.width), String(presetViewport.height), RECOVERY_METHODS.pageNavigation);
 
       recoveryState.inProgress = true;
 
@@ -1631,7 +1634,7 @@ export function monitorPlaybackHealth(
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 2)) {
 
       LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
-        String(state.videoWidth), String(state.videoHeight), String(viewport.width), String(viewport.height));
+        String(state.videoWidth), String(state.videoHeight), String(presetViewport.width), String(presetViewport.height));
 
       resolutionState.recoveryAttempt = 3;
     }
@@ -1640,7 +1643,7 @@ export function monitorPlaybackHealth(
     // above the degradation threshold but below the viewport. Include the recovery method so this single message tells the complete story.
     if(!isDegraded && (resolutionState.recoveryAttempt > 0)) {
 
-      const isFullQuality = (state.videoWidth >= viewport.width) && (state.videoHeight >= viewport.height);
+      const isFullQuality = (state.videoWidth >= presetViewport.width) && (state.videoHeight >= presetViewport.height);
       const verb = isFullQuality ? "restored" : "improved";
       const method = (resolutionState.recoveryAttempt === 1) ? "page reload" : "tab replacement";
 
