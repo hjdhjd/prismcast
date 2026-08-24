@@ -16,8 +16,8 @@ import { validateChannel } from "./hls.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// Minimal login-page stub. startLoginMode opens a page and calls goto/on/unminimizeWindow against it, none of which need real behavior here; the stub mirrors the
-// login.test.ts and precaching.revalidation.test.ts shape.
+// Minimal login-page stub. startLoginMode opens a page and calls setViewport/goto/on/unminimizeWindow against it, none of which need real behavior here; the stub
+// mirrors the login.test.ts and precaching.revalidation.test.ts shape.
 function makeLoginPageStub(): Page {
 
   return {
@@ -25,7 +25,8 @@ function makeLoginPageStub(): Page {
     close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
     goto: async (): Promise<void> => { /* Nothing to navigate on a stub. */ },
     isClosed: (): boolean => false,
-    on: (): void => { /* Close-handler registration is irrelevant here. */ }
+    on: (): void => { /* Close-handler registration is irrelevant here. */ },
+    setViewport: async (): Promise<void> => { /* The stub inherits no emulation to clear. */ }
   } as unknown as Page;
 }
 

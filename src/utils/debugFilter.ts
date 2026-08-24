@@ -247,7 +247,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "streaming:segmenter", description: "fMP4 parsing: keyframes, init segments, duration clamping." },
   { category: "streaming:setup", description: "Stream setup: redirect resolution, profile override, capture init." },
   { category: "streaming:showinfo", description: "Channels DVR show name lookups, device mapping." },
-  { category: "timing:browser", description: "Browser launch: process spawn, extension init, display detection." },
+  { category: "timing:browser", description: "Browser launch: process spawn, extension init, capability detection." },
   { category: "timing:hls", description: "HLS playlist delivery time." },
   { category: "timing:native", description: "Native streaming: interception latency, probe latency, first segment, refresh duration." },
   { category: "timing:recovery", description: "Recovery totals: navigation recovery, tab replacement." },

@@ -107,7 +107,8 @@ function makeStubProvider(discoverChannels: (page: Page) => Promise<DiscoveredCh
 // One discovered channel - enough for recordDiscoveryOutcome's non-empty arm to mark the domain verified.
 const ONE_CHANNEL = [{ channelSelector: "Stub", name: "Stub" }] as unknown as DiscoveredChannel[];
 
-// Minimal login-page stub for driving the real startLoginMode in the login-mode-active tests, mirroring the login.test.ts stub shape.
+// Minimal login-page stub for driving the real startLoginMode in the login-mode-active tests, mirroring the login.test.ts stub shape. startLoginMode clears the
+// page's inherited viewport emulation before navigating, so the stub answers setViewport as well.
 function makeLoginPageStub(): Page {
 
   return {
@@ -115,7 +116,8 @@ function makeLoginPageStub(): Page {
     close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
     goto: async (): Promise<void> => { /* Nothing to navigate on a stub. */ },
     isClosed: (): boolean => false,
-    on: (): void => { /* Close-handler registration is irrelevant here. */ }
+    on: (): void => { /* Close-handler registration is irrelevant here. */ },
+    setViewport: async (): Promise<void> => { /* The stub inherits no emulation to clear. */ }
   } as unknown as Page;
 }
 

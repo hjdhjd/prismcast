@@ -24,8 +24,8 @@ import { getClientSummary } from "./clients.ts";
 import { getEffectiveViewport } from "../config/presets.ts";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
+import { minimizeWindow } from "../browser/cdp.ts";
 import { refreshNativeManifest } from "../native/index.ts";
-import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
 
 /* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
  * watches for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
@@ -2182,7 +2182,7 @@ export function monitorPlaybackHealth(
 
           pendingReMinimize = false;
 
-          await resizeAndMinimizeWindow(currentPage);
+          await minimizeWindow(currentPage);
         }
 
         /* Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as

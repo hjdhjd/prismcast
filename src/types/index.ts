@@ -10,7 +10,7 @@ export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEY
 export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult,
   ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.ts";
 export type { AuthWallIndicators, CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile,
-  ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult, UiSize } from "./selection.ts";
+  ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult } from "./selection.ts";
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 export type { CaptureCodec, HealthStatus, MediaContainer, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
   VideoState } from "./streaming.ts";

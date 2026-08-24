@@ -15,7 +15,8 @@ import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 
 /* PageStub is the minimal Page surface that startLoginMode and endLoginMode read. We capture the close listeners installed by startLoginMode in onCloseHandlers
- * so tests can dispatch a synthetic "close" event the same way Puppeteer would, without spinning up a real browser.
+ * so tests can dispatch a synthetic "close" event the same way Puppeteer would, without spinning up a real browser. Every page operation the start path issues
+ * also appends its name to ops, because the order of the viewport clear against the first navigation is itself part of the contract.
  */
 interface PageStub {
 
@@ -27,6 +28,9 @@ interface PageStub {
   isClosedReturn: boolean;
   on: (event: string, handler: () => void) => void;
   onCloseHandlers: (() => void)[];
+  ops: string[];
+  setViewport: (viewport: unknown) => Promise<void>;
+  viewportCalls: unknown[];
 }
 
 /* makePageStub returns a PageStub that satisfies the Page surface login.ts touches. close() bumps a counter so tests can assert on close-once semantics, and an
@@ -36,6 +40,8 @@ interface PageStub {
 function makePageStub(overrides: Partial<{ closeShouldThrow: boolean; isClosedReturn: boolean }> = {}): PageStub {
 
   const onCloseHandlers: (() => void)[] = [];
+  const ops: string[] = [];
+  const viewportCalls: unknown[] = [];
 
   const stub: PageStub = {
 
@@ -50,7 +56,10 @@ function makePageStub(overrides: Partial<{ closeShouldThrow: boolean; isClosedRe
     },
     closeCalls: 0,
     closeShouldThrow: overrides.closeShouldThrow ?? false,
-    goto: async (): Promise<void> => Promise.resolve(),
+    goto: async (): Promise<void> => {
+
+      ops.push("goto");
+    },
     isClosed: function(): boolean {
 
       return this.isClosedReturn;
@@ -63,7 +72,14 @@ function makePageStub(overrides: Partial<{ closeShouldThrow: boolean; isClosedRe
         onCloseHandlers.push(handler);
       }
     },
-    onCloseHandlers
+    onCloseHandlers,
+    ops,
+    setViewport: async (viewport: unknown): Promise<void> => {
+
+      ops.push("setViewport");
+      viewportCalls.push(viewport);
+    },
+    viewportCalls
   };
 
   return stub;
@@ -271,6 +287,22 @@ describe("startLoginMode", () => {
     assert.deepEqual(result, { success: true }, "happy path returns the documented success shape");
     assert.equal(getLoginStatus().active, true, "active flag set");
     assert.equal(getLoginStatus().url, "https://example.test/login", "URL stored");
+  });
+
+  test("clears the page's inherited viewport override, and does so before the first navigation", async () => {
+
+    /* Every page the browser creates is emulated at the configured capture preset, which is what capture reads. The login page is the one page a human works in,
+     * so it opts out and renders at the real window's dimensions instead. The order is half the contract: clearing after a navigation would mean the page loaded
+     * once at the emulated size and had to be re-laid-out, so the pin asserts the sequence rather than just the occurrence.
+     */
+    const pageStub = makePageStub();
+
+    installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/login");
+
+    assert.deepEqual(pageStub.viewportCalls, [null], "the override is cleared exactly once, by passing null");
+    assert.deepEqual(pageStub.ops, [ "setViewport", "goto" ], "the clear precedes the first navigation");
   });
 
   test("returns failure when login mode is already active (refuses to start a second session)", async () => {

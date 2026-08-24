@@ -313,20 +313,3 @@ export interface TuneResult {
   // Propagated from ChannelSelectorResult - true when the tune succeeded via API interception rather than DOM interaction.
   directTune?: boolean;
 }
-
-/* Chrome DevTools Protocol operations for window management. We use CDP to resize and minimize browser windows to match viewport dimensions and reduce GPU usage
- * when the visual output isn't needed.
- */
-
-/**
- * Browser chrome dimensions (toolbars, borders) calculated by comparing window.outerHeight/Width to window.innerHeight/Width. Used to set window size such that
- * the viewport (content area) matches our target dimensions.
- */
-export interface UiSize {
-
-  // Height of browser chrome in pixels (title bar, toolbar, etc.).
-  height: number;
-
-  // Width of browser chrome in pixels (window borders, scrollbars if visible).
-  width: number;
-}

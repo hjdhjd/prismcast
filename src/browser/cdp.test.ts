@@ -1,26 +1,22 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
- * that surfaces the browser window ID), resizeAndMinimizeWindow (the resize-then-minimize routine that drives Browser.setWindowBounds), and
- * unminimizeWindow (the inverse one-shot that restores window state). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real
- * browser is launched. The browser-chrome dimensions cache in display.ts is primed before each resize test so the page.evaluate fallback never runs.
+ * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), and unminimizeWindow (the inverse
+ * one-shot that restores it). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's
+ * dimensions never enter the picture because the surface pages render at is emulated from the configured preset, not taken from the window.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { getBrowserChrome, setBrowserChrome } from "./display.ts";
-import { resizeAndMinimizeWindow, unminimizeWindow, withCDPSession } from "./cdp.ts";
-import { CONFIG } from "../config/index.ts";
-import type { Nullable } from "../types/index.ts";
+import { describe, test } from "node:test";
+import { minimizeWindow, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import assert from "node:assert/strict";
-import { getEffectiveViewport } from "../config/presets.ts";
 
 /* CdpStub captures every send() call so tests can assert on the command sequence. The send() implementation routes by method name to either the test-supplied
- * response factory or a sensible default - Browser.getWindowForTarget always returns windowId 7, Browser.getWindowBounds returns the most recently set bounds.
+ * response factory or a sensible default - Browser.getWindowForTarget always returns windowId 7, and every other command resolves with nothing, which is what
+ * Chrome's window-state commands themselves return.
  */
 interface CdpStub {
 
   calls: { method: string; params: unknown }[];
-  lastBounds: Nullable<{ height?: number; width?: number; windowState?: string }>;
   send: (method: string, params?: unknown) => Promise<unknown>;
 }
 
@@ -31,7 +27,6 @@ function makeCdpStub(options: { getWindowForTargetResponse?: { windowId?: number
   = {}): CdpStub {
 
   const calls: { method: string; params: unknown }[] = [];
-  let lastBounds: Nullable<{ height?: number; width?: number; windowState?: string }> = null;
 
   const send = async (method: string, params?: unknown): Promise<unknown> => {
 
@@ -47,42 +42,10 @@ function makeCdpStub(options: { getWindowForTargetResponse?: { windowId?: number
       return options.getWindowForTargetResponse ?? { windowId: 7 };
     }
 
-    if(method === "Browser.setWindowBounds") {
-
-      // Record the bounds we just set so a subsequent getWindowBounds returns them. This mimics Chrome's normal behavior - the bounds we asked for are reflected
-      // back when we read them.
-      const bounds = (params as { bounds?: { height?: number; width?: number; windowState?: string } }).bounds;
-
-      if(bounds && (("height" in bounds) || ("width" in bounds))) {
-
-        // Only record dimension changes; pure windowState changes don't update the dimensions cache.
-        lastBounds = { height: bounds.height, width: bounds.width };
-      }
-
-      return Promise.resolve(undefined);
-    }
-
-    if(method === "Browser.getWindowBounds") {
-
-      return { bounds: lastBounds ?? {} };
-    }
-
     return Promise.resolve(undefined);
   };
 
-  return {
-
-    calls,
-    get lastBounds(): Nullable<{ height?: number; width?: number; windowState?: string }> {
-
-      return lastBounds;
-    },
-    set lastBounds(value: Nullable<{ height?: number; width?: number; windowState?: string }>) {
-
-      lastBounds = value;
-    },
-    send
-  };
+  return { calls, send };
 }
 
 /* makePageStub returns a Page-shaped stub whose createCDPSession resolves with the supplied stub and whose isClosed flag is configurable. The cast through unknown
@@ -194,126 +157,54 @@ describe("withCDPSession", () => {
   });
 });
 
-describe("resizeAndMinimizeWindow", () => {
-
-  let originalChrome: Nullable<{ height: number; width: number }>;
-
-  beforeEach(() => {
-
-    originalChrome = getBrowserChrome();
-
-    // Prime the chrome cache so resizeAndMinimizeWindow does not call page.evaluate(). The helper short-circuits to the cached value when present.
-    setBrowserChrome(0, 70);
-  });
-
-  afterEach(() => {
-
-    if(originalChrome) {
-
-      setBrowserChrome(originalChrome.width, originalChrome.height);
-    }
-  });
+describe("minimizeWindow", () => {
 
   test("returns silently when the page is already closed (no CDP traffic)", async () => {
 
     const cdpStub = makeCdpStub();
 
-    await resizeAndMinimizeWindow(makePageStub({ cdpStub, isClosedReturn: true }));
+    await minimizeWindow(makePageStub({ cdpStub, isClosedReturn: true }));
 
     assert.equal(cdpStub.calls.length, 0, "no CDP calls issued for a closed page");
   });
 
-  test("resizes to viewport+chrome and minimizes when chrome cache is primed and dimensions match on first attempt", async () => {
+  test("issues exactly one setWindowBounds call, carrying windowState: minimized and no dimensions", async () => {
 
-    // The CDP stub's getWindowBounds reflects whatever was just set, so the readback verification matches on the first attempt and no retries are needed.
-    const cdpStub = makeCdpStub();
-
-    await resizeAndMinimizeWindow(makePageStub({ cdpStub }));
-
-    const viewport = getEffectiveViewport(CONFIG);
-    const chrome = getBrowserChrome();
-
-    assert.ok(chrome, "chrome cache primed");
-
-    const expectedHeight = viewport.height + chrome.height;
-    const expectedWidth = viewport.width + chrome.width;
-
-    // Verify the dimension-setting call carries viewport+chrome.
-    const setBoundsDimensionCalls = cdpStub.calls.filter((c) => {
-
-      if(c.method !== "Browser.setWindowBounds") {
-
-        return false;
-      }
-
-      const bounds = (c.params as { bounds?: { height?: number; width?: number } }).bounds;
-
-      if(!bounds) {
-
-        return false;
-      }
-
-      return (bounds.height === expectedHeight) && (bounds.width === expectedWidth);
-    });
-
-    assert.equal(setBoundsDimensionCalls.length, 1, "setWindowBounds called once with viewport+chrome dimensions");
-
-    // Verify a minimize call landed.
-    const minimizeCalls = cdpStub.calls.filter((c) => {
-
-      if(c.method !== "Browser.setWindowBounds") {
-
-        return false;
-      }
-
-      return (c.params as { bounds?: { windowState?: string } }).bounds?.windowState === "minimized";
-    });
-
-    assert.equal(minimizeCalls.length, 1, "minimize call issued exactly once");
-  });
-
-  test("issues a normal-state setWindowBounds before each dimension write (so the resize is applied to a non-maximized window)", async () => {
-
-    const cdpStub = makeCdpStub();
-
-    await resizeAndMinimizeWindow(makePageStub({ cdpStub }));
-
-    // The first setWindowBounds call must have windowState: "normal" - this restores from any prior maximized state so the dimension write is applied.
-    const firstSetBounds = cdpStub.calls.find((c) => c.method === "Browser.setWindowBounds");
-
-    assert.ok(firstSetBounds, "at least one setWindowBounds call");
-
-    assert.equal((firstSetBounds.params as { bounds?: { windowState?: string } }).bounds?.windowState, "normal",
-      "first setWindowBounds carries windowState: normal");
-  });
-
-  test("verifies the resize via getWindowBounds (the readback step in the loop)", async () => {
-
-    const cdpStub = makeCdpStub();
-
-    await resizeAndMinimizeWindow(makePageStub({ cdpStub }));
-
-    const getBoundsCalls = cdpStub.calls.filter((c) => c.method === "Browser.getWindowBounds");
-
-    assert.ok(getBoundsCalls.length >= 1, "at least one getWindowBounds verification call");
-  });
-
-  test("falls back to page.evaluate when the chrome cache is empty (early-init path)", async () => {
-
-    /* This test pins the primed-cache short-circuit. The chrome cache is normally primed during display detection, but resizeAndMinimizeWindow can be called
-     * BEFORE detection completes (e.g., during the first stream startup before the browser settles into a known state). When getBrowserChrome() returns null,
-     * the production code calls page.evaluate to measure window.outerHeight - innerHeight live; when it returns a value the evaluate fallback must not run.
-     * getBrowserChrome() is a plain object-or-null cache - there is no isPrimed concept and a (0,0) value is a truthy object, not null. beforeEach primes the
-     * cache to (0, 70), so here we provide a Page stub whose evaluate would record a call, then assert that evaluate is NOT invoked. (A separate test for the
-     * genuine empty-cache fallback would require a way to reset the cache exported from display.ts, which does not exist today.)
+    /* The window's size is not this function's business: pages render at the emulated preset viewport, so a dimension write here would be asking the OS for a
+     * size nothing reads. The pin is both halves - one bounds call, and that call carrying state alone.
      */
     const cdpStub = makeCdpStub();
 
-    // To exercise the genuine fallback path we would need getBrowserChrome to return null, which in production only happens before any setBrowserChrome call.
-    // getBrowserChrome is a plain object-or-null cache, so a value set by setBrowserChrome (even (0, 70)) is a truthy object and never reported as null. The
-    // display cache is a singleton per process and exposes no clear, so we can't reset it to null cleanly here; instead we drive the primed-cache branch (cache
-    // primed to (0, 70) by beforeEach) and assert the synthetic Page's evaluate is NOT called. This pins the dispatch contract: a primed cache must
-    // short-circuit the page.evaluate measurement.
+    await minimizeWindow(makePageStub({ cdpStub }));
+
+    const setBoundsCalls = cdpStub.calls.filter((c) => c.method === "Browser.setWindowBounds");
+
+    assert.equal(setBoundsCalls.length, 1, "exactly one setWindowBounds call");
+
+    const bounds = (setBoundsCalls[0]?.params as { bounds?: { height?: number; width?: number; windowState?: string } }).bounds;
+
+    // Comparing the whole bounds object pins both halves at once: the state that was asked for, and the absence of any dimension key beside it.
+    assert.deepEqual(bounds, { windowState: "minimized" }, "the call carries the minimized state and nothing else");
+  });
+
+  test("never reads the window bounds back (nothing is being verified)", async () => {
+
+    // The read-back existed to confirm a resize landed. With no resize to confirm, a getWindowBounds call here would be a round trip that costs latency on every
+    // tune and every recovery re-minimize and tells the caller nothing.
+    const cdpStub = makeCdpStub();
+
+    await minimizeWindow(makePageStub({ cdpStub }));
+
+    assert.equal(cdpStub.calls.filter((c) => c.method === "Browser.getWindowBounds").length, 0, "no bounds read-back");
+  });
+
+  test("never measures the page (the window's content size is not an input)", async () => {
+
+    /* The chrome-dimension measurement fed the resize target. Nothing sizes the window now, so a page.evaluate here would be a live DOM read on the capture page
+     * for a value no code consumes. The stub records any evaluate the implementation issues.
+     */
+    const cdpStub = makeCdpStub();
+
     let evaluateCallCount = 0;
 
     const page = {
@@ -328,22 +219,25 @@ describe("resizeAndMinimizeWindow", () => {
       isClosed: (): boolean => false
     } as unknown as Page;
 
-    await resizeAndMinimizeWindow(page);
+    await minimizeWindow(page);
 
-    // With the cache primed to (0, 70) by beforeEach, the page.evaluate fallback must NOT have been invoked. This locks the cache-priming optimization in
-    // place: a regression that always re-measured would fire evaluate on every resize and cost tens of ms per stream startup.
-    assert.equal(evaluateCallCount, 0, "primed chrome cache short-circuits the page.evaluate fallback");
+    assert.equal(evaluateCallCount, 0, "no page measurement issued");
   });
 
-  test("retries when getWindowBounds reports mismatched dimensions, then succeeds on the third attempt (macOS NSWindow async-state-transition case)", async () => {
+  test("resolves the window ID once before issuing the state change", async () => {
 
-    /* On macOS, NSWindow state transitions are asynchronous - Chrome can acknowledge a "windowState: normal" CDP command before the OS window manager finishes
-     * the transition, so a subsequent dimension-setting call is silently ignored. The implementation defends against this with a verify-then-retry loop (up to
-     * 3 attempts). The default test stub reflects whatever bounds were just set, so the readback always matches on attempt 1 and the retry path never fires.
-     * We exercise the retry by overriding getWindowBounds to return mismatched values for the first two reads and matching values on the third.
-     */
-    let getBoundsCallCount = 0;
+    // Every CDP entry through withCDPSession resolves the window ID first. The pin catches a minimize that reached for a window it never looked up.
+    const cdpStub = makeCdpStub();
 
+    await minimizeWindow(makePageStub({ cdpStub }));
+
+    assert.equal(cdpStub.calls.filter((c) => c.method === "Browser.getWindowForTarget").length, 1, "window ID resolved exactly once");
+    assert.equal(cdpStub.calls[0]?.method, "Browser.getWindowForTarget", "the lookup precedes the state change");
+  });
+
+  test("absorbs CDP errors silently (returns without throwing when the session rejects)", async () => {
+
+    // Negative test: minimizing is a best-effort desktop-hygiene act. A target that closed mid-call must not surface an error into a tune or a recovery cycle.
     const cdpStub = makeCdpStub({
 
       overrideSend: async (method): Promise<unknown> => {
@@ -353,100 +247,11 @@ describe("resizeAndMinimizeWindow", () => {
           return { windowId: 7 };
         }
 
-        if(method === "Browser.setWindowBounds") {
-
-          // Record-only; we don't need to track the bounds because we'll force the readback's response.
-          return Promise.resolve(undefined);
-        }
-
-        if(method === "Browser.getWindowBounds") {
-
-          getBoundsCallCount += 1;
-
-          if(getBoundsCallCount <= 2) {
-
-            // First two readbacks: return wrong dimensions to trigger the retry.
-            return { bounds: { height: 1, width: 1 } };
-          }
-
-          // Third readback: return matching dimensions to break out of the loop.
-          const viewport = getEffectiveViewport(CONFIG);
-          const chrome = getBrowserChrome();
-
-          assert.ok(chrome, "chrome cache primed");
-
-          return { bounds: { height: viewport.height + chrome.height, width: viewport.width + chrome.width } };
-        }
-
-        return Promise.resolve(undefined);
+        throw new Error("synthetic CDP rejection");
       }
     });
 
-    await resizeAndMinimizeWindow(makePageStub({ cdpStub }));
-
-    assert.equal(getBoundsCallCount, 3, "exactly three readbacks - two mismatches, one match");
-
-    // Verify the dimension-setting setWindowBounds was called three times (once per attempt).
-    const dimensionSetBoundsCalls = cdpStub.calls.filter((c) => {
-
-      if(c.method !== "Browser.setWindowBounds") {
-
-        return false;
-      }
-
-      const bounds = (c.params as { bounds?: { height?: number; width?: number } }).bounds;
-
-      return bounds?.height !== undefined;
-    });
-
-    assert.equal(dimensionSetBoundsCalls.length, 3, "setWindowBounds-with-dimensions invoked once per retry attempt");
-  });
-
-  test("logs a warning when all three retry attempts fail to match the requested dimensions", async () => {
-
-    /* When every attempt's readback comes back with the wrong dimensions, the loop exits at attempt 2 without breaking and the implementation logs a warn-level
-     * message. The all-mismatch case is the worst-case macOS hang scenario where Chrome never converges on the requested size; users see a stuck window. The
-     * warn-log is the operator-facing signal that resize is misbehaving. We exercise it by always returning mismatched bounds.
-     */
-    const { LOG } = await import("../utils/index.ts");
-    const warnCalls: unknown[][] = [];
-
-    mock.method(LOG, "warn", (...args: unknown[]): void => { warnCalls.push(args); });
-
-    try {
-
-      const cdpStub = makeCdpStub({
-
-        overrideSend: async (method): Promise<unknown> => {
-
-          if(method === "Browser.getWindowForTarget") {
-
-            return { windowId: 7 };
-          }
-
-          if(method === "Browser.getWindowBounds") {
-
-            return { bounds: { height: 1, width: 1 } };
-          }
-
-          return Promise.resolve(undefined);
-        }
-      });
-
-      await resizeAndMinimizeWindow(makePageStub({ cdpStub }));
-
-      const resizeFailedWarn = warnCalls.find((call) => {
-
-        const message = typeof call[0] === "string" ? call[0] : "";
-
-        return message.includes("Window resize failed");
-      });
-
-      assert.ok(resizeFailedWarn, "warn-level 'Window resize failed' log emitted after all retries exhausted");
-    } finally {
-
-      mock.reset();
-    }
+    await assert.doesNotReject(() => minimizeWindow(makePageStub({ cdpStub })), "minimizeWindow should swallow CDP errors");
   });
 });
 

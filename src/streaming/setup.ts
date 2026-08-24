@@ -34,10 +34,10 @@ import { getEffectiveViewport } from "../config/presets.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
+import { minimizeWindow } from "../browser/cdp.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
 import { pipeline } from "node:stream/promises";
-import { resizeAndMinimizeWindow } from "../browser/cdp.ts";
 import { startOverlayHandling } from "../browser/consent.ts";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
@@ -906,8 +906,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     await delay(500);
   }
 
-  // Resize and minimize window.
-  await resizeAndMinimizeWindow(page);
+  // Minimize the window now that the page is fully established.
+  await minimizeWindow(page);
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
 

@@ -652,8 +652,9 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   await generatePreroll();
 
   // Minimize the browser window to reduce GPU usage and desktop clutter. The browser must be visible (not headless) for capture to work, but minimizing it reduces
-  // resource consumption. CDP allows us to control window state without affecting capture. We defer minimization until after display detection and the launch-gate
-  // capture probe complete, since both require the window in a normal state.
+  // resource consumption. CDP allows us to control window state without affecting capture. We defer minimization until after the browser capability probe and the
+  // launch-gate capture probe complete: the GPU probe wants an environment representative of the one capture runs in, and the display advisory reads the bounds
+  // the OS granted the window, which a minimized window does not report.
   await minimizeBrowserWindow();
 
   // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale

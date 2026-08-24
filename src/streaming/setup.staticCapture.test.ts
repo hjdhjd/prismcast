@@ -4,12 +4,12 @@
  * those. createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no
  * Chrome launch), a PassThrough capture stream (no puppeteer-stream), and a recording overlay poll, while the real pipeline runs everything else. The stub page is
  * shaped so the static branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here); createCaptureSession merely wraps the injected
- * PassThrough; and resizeAndMinimizeWindow returns silently when its chrome-size probe (page.evaluate) rejects, which the stub arranges. Native capture mode skips the
- * FFmpeg path and skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as the only pipeline the call
+ * PassThrough; and minimizeWindow returns silently because the stub's CDP session reports no window to act on. Native capture mode skips the FFmpeg path and
+ * skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as the only pipeline the call
  * exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage, minimizeBrowserWindow) run real: they mutate an in-process page set or
  * early-return without a live browser, so they are inert against the stub.
  */
-import type { Browser, Page } from "puppeteer-core";
+import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
@@ -28,8 +28,9 @@ let overlayCalls: StartOverlayHandlingOptions[] = [];
 let pageGotos: string[] = [];
 
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
- * and resizeAndMinimizeWindow's chrome-size probe swallows the rejection and returns, so the success path completes without a CDP surface. For the non-static control,
- * the tune path's channel selection rejects the same way, failing that branch fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay
+ * and nothing else on the success path measures the page. createCDPSession hands back a session that reports no window for the target, which is the shape that
+ * makes minimizeWindow return without issuing a command. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
+ * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay
  * poll through the real consent module (not this file's injected recorder); the poll's tick-error taxonomy reads page.browser().connected, so the stub reports a
  * disconnected browser to resolve the tick to "stop" and let the fire-and-forget poll settle cleanly rather than leaving a rejected promise pending after the test.
  */
@@ -38,6 +39,7 @@ function makeStubPage(): Page {
   return {
 
     browser: (): Browser => ({ connected: false } as unknown as Browser),
+    createCDPSession: async (): Promise<CDPSession> => ({ send: async (): Promise<unknown> => ({}) } as unknown as CDPSession),
     evaluate: async (): Promise<never> => { throw new Error("The stub page has no live DOM to evaluate against."); },
     evaluateOnNewDocument: async (): Promise<void> => { /* The injected video-selector helper needs no real document on a stub. */ },
     goto: async (url: string): Promise<void> => { pageGotos.push(url); },

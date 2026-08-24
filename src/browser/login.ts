@@ -142,6 +142,12 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
 
     loginPage = page;
 
+    /* Clear the device-metrics override this page inherited from the browser's launch viewport. Every automated page stays emulated at the configured preset
+     * because that is the surface capture reads, but this page is for a human working inside the real window, so it renders at the window's own dimensions
+     * instead. The clear runs before the first navigation, so the page loads once, at its natural size.
+     */
+    await page.setViewport(null);
+
     /* Set up handler for tab close detection. If the user closes the tab manually, we should end login mode automatically.
      *
      * The guard compares the page this listener was registered for against the one the module currently holds, so a listener left behind by a superseded

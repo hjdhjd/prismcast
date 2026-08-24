@@ -3,17 +3,14 @@
  * cdp.ts: Chrome DevTools Protocol helpers for PrismCast.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, delay, evaluateWithAbort, formatError } from "../utils/index.ts";
-import type { Nullable, UiSize } from "../types/index.ts";
-import { CONFIG } from "../config/index.ts";
-import { getBrowserChrome } from "./display.ts";
-import { getEffectiveViewport } from "../config/presets.ts";
+import { LOG, delay, formatError } from "../utils/index.ts";
 
 /* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:
  *
- * - Window management: setting window size and normal/minimized state. Puppeteer's viewport API controls the content area, but we need CDP to control the
- *   entire window including browser chrome.
+ * - Window presentation: moving the shared browser window between its normal and minimized states. That state is the only window property this application
+ *   drives. The surface a page renders at belongs to Puppeteer's viewport, which emulates the configured quality preset on every page independently of how large
+ *   the OS window is, so window bounds carry no capture meaning...minimizing is about desktop clutter and GPU cost alone.
  *
  * - Browser-level operations: Operations that affect the browser rather than a specific page, like getting the window ID for a page's target.
  *
@@ -84,21 +81,11 @@ export async function withCDPSession<T>(
 }
 
 /**
- * Resizes the browser window to match our target viewport dimensions and minimizes it. This function solves the problem of ensuring the video content area
- * exactly matches our configured viewport size.
- *
- * The complication is that browser windows have "chrome" - the title bar, toolbar, borders, and other UI elements that take up space. If we set the window size
- * to 1280x720, the actual content area will be smaller (perhaps 1280x670 after accounting for the toolbar). To get a 1280x720 content area, we need to add the
- * chrome dimensions to our window size.
- *
- * This function:
- * 1. Measures the current chrome dimensions by comparing window.outerWidth/Height to window.innerWidth/Height
- * 2. Sets the window size to viewport + chrome dimensions, giving us the exact viewport size we want
- * 3. Verifies the resize took effect by reading back the window bounds, retrying if dimensions don't match
- * 4. Minimizes the window to reduce GPU usage while still allowing capture
+ * Minimizes the browser window to reduce GPU usage and keep the desktop clear. Minimizing does not interrupt capture: the capture extension reads the compositor's
+ * surface rather than the visible display, and that surface is the page's emulated viewport, which the window's presentation state does not touch.
  * @param page - The Puppeteer page object.
  */
-export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
+export async function minimizeWindow(page: Page): Promise<void> {
 
   // Early exit if the page is already closed.
   if(page.isClosed()) {
@@ -106,94 +93,12 @@ export async function resizeAndMinimizeWindow(page: Page): Promise<void> {
     return;
   }
 
-  // Get browser chrome dimensions. Prefer cached values from display detection, which were measured when the browser was in a known good state. Fall back to
-  // measuring via page.evaluate() if cached values aren't available (e.g., during early initialization before display detection completes).
-  let uiSize: Nullable<UiSize> = getBrowserChrome();
-
-  if(!uiSize) {
-
-    try {
-
-      uiSize = await evaluateWithAbort(page, (): UiSize => {
-
-        return {
-
-          // Height of chrome = total window height - content height. This includes the title bar, toolbar, and any other vertical UI elements.
-          height: window.outerHeight - window.innerHeight,
-
-          // Width of chrome = total window width - content width. This typically includes window borders and any side panels.
-          width: window.outerWidth - window.innerWidth
-        };
-      });
-    } catch(_error) {
-
-      // If measuring fails (page closed, navigation in progress, etc.), silently return. The resize is not critical and will be attempted again on the next
-      // stream if needed.
-      return;
-    }
-  }
-
-  // Use CDP to set the window bounds with verification. We add the chrome dimensions to our target viewport to get the correct total window size. The resize is
-  // verified by reading back the window bounds after setting them - if the dimensions don't match (e.g., Chrome was still transitioning from maximized to normal
-  // state), we retry after a brief delay. CDP requires separate calls for dimensions and window state.
   await withCDPSession(page, async (session, windowId) => {
 
-    const viewport = getEffectiveViewport(CONFIG);
-    const targetHeight = viewport.height + uiSize.height;
-    const targetWidth = viewport.width + uiSize.width;
-
-    // Resize with verification. Each attempt restores the window to "normal" state - safe to repeat on every retry attempt - and sets the target dimensions,
-    // then reads back the actual bounds to confirm. On macOS, NSWindow state transitions are asynchronous - Chrome may acknowledge the "normal" state CDP
-    // command before the OS window manager finishes the transition, causing a subsequent dimension-setting call to be silently ignored. The readback detects
-    // this and retries.
-    for(let attempt = 0; attempt < 3; attempt++) {
-
-      // Ensure the window is in "normal" state. Setting bounds on a maximized window is ignored, so we must restore it first. On retries, this re-sends the
-      // normal state in case the previous transition hadn't completed.
-      // eslint-disable-next-line no-await-in-loop
-      await session.send("Browser.setWindowBounds", {
-
-        bounds: { windowState: "normal" },
-        windowId
-      });
-
-      // Set the window size to viewport + chrome. After this, the content area should be exactly our target viewport dimensions.
-      // eslint-disable-next-line no-await-in-loop
-      await session.send("Browser.setWindowBounds", {
-
-        bounds: { height: targetHeight, width: targetWidth },
-        windowId
-      });
-
-      // Verify the resize took effect by reading back the current window bounds. If the dimensions match our target, the resize succeeded.
-      // eslint-disable-next-line no-await-in-loop
-      const result = await session.send("Browser.getWindowBounds", { windowId });
-
-      if((result.bounds.height === targetHeight) && (result.bounds.width === targetWidth)) {
-
-        break;
-      }
-
-      // Dimensions didn't match - the window manager may still be processing the state transition. Wait briefly before retrying.
-      if(attempt < 2) {
-
-        LOG.debug("browser:lifecycle", "Window resize verification failed (attempt %s): expected %s\u00d7%s, got %s\u00d7%s. Retrying.",
-          attempt + 1, targetWidth, targetHeight, result.bounds.width ?? 0, result.bounds.height ?? 0);
-
-        // eslint-disable-next-line no-await-in-loop
-        await delay(100);
-      } else {
-
-        LOG.warn("Window resize failed after %s attempts: expected %s\u00d7%s, got %s\u00d7%s.",
-          attempt + 1, targetWidth, targetHeight, result.bounds.width ?? 0, result.bounds.height ?? 0);
-      }
-    }
-
-    // Minimize the window to reduce GPU usage. This must be a separate CDP call because window state cannot be combined with dimensions. Minimizing doesn't stop
-    // video capture - the puppeteer-stream extension captures from the compositor rather than the visible display.
-
-    // Brief delay to allow Chrome's window manager to finish processing the resize before minimizing. Without this delay, the minimize can be ignored when
-    // the window is being significantly resized (e.g., during preset degradation from 1080p to 720p).
+    /* Let the window manager settle before asking for the state change. On macOS, NSWindow state transitions run asynchronously relative to Chrome's
+     * acknowledgement of a CDP command, and the page this call arrives on has usually just been created or navigated, which activates the window. A minimize
+     * issued into that unfinished transition can be dropped, leaving the window on screen.
+     */
     await delay(100);
 
     await session.send("Browser.setWindowBounds", {

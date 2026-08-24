@@ -3,14 +3,13 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
-import { LOG, boundedWait, delay, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
+import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
-import { getEffectivePreset, getPresetViewport } from "../config/presets.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
-import { getGpuCapabilities, setBrowserChrome, setGpuCapabilities, setMaxSupportedViewport } from "./display.ts";
-import { resizeAndMinimizeWindow, unminimizeWindow } from "./cdp.ts";
+import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
+import { minimizeWindow, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import type { BrowserLifecycle } from "./browserSupervisor.ts";
 import { CONFIG } from "../config/index.ts";
 import type { GpuCapabilities } from "./display.ts";
@@ -23,6 +22,7 @@ import { createBrowserSupervisor } from "./browserSupervisor.ts";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
 import { evaluateStalePages } from "./pageStaleness.ts";
 import fs from "node:fs";
+import { getPresetViewport } from "../config/presets.ts";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
 import { setChromeUserAgent } from "../utils/index.ts";
@@ -967,19 +967,42 @@ function formatGpuSuffix(gpu: GpuCapabilities): string {
 }
 
 /**
- * Detects the maximum supported viewport dimensions based on the user's display, and probes GPU hardware-encoding capabilities. The viewport half measures the
- * available screen space and subtracts browser chrome to determine the largest viewport we can use for video capture; the GPU half queries CDP
- * SystemInfo.getInfo for renderer identity and H.264/HEVC/AV1 hardware encoding support, falling back to a MediaRecorder capability probe where the CDP data
- * is incomplete.
+ * Decides whether the window bounds the browser granted prove the display cannot show a whole captured frame, returning those bounds when they do and null
+ * otherwise. Bounds the browser could not report, and bounds read while the window carried a state other than normal, describe a transient condition rather than
+ * the display...treating either as evidence would let a CDP hiccup or an unfinished window transition pose as a small display, so both yield null. Beyond that,
+ * either dimension falling below the capture surface is enough: a frame that does not fit the window in one axis is already a frame the screen cannot show whole.
+ * @param bounds - The window bounds the browser reported, or undefined when the read did not complete.
+ * @param captureSurface - The dimensions every page renders at, derived from the configured quality preset.
+ * @returns The granted window dimensions when the display falls short of the capture surface, null otherwise.
+ */
+export function getUndersizedDisplayBounds(bounds: { height?: number; width?: number; windowState?: string } | undefined,
+  captureSurface: { height: number; width: number }): Nullable<{ height: number; width: number }> {
+
+  if((bounds?.windowState !== "normal") || (bounds.width === undefined) || (bounds.height === undefined)) {
+
+    return null;
+  }
+
+  if((bounds.width >= captureSurface.width) && (bounds.height >= captureSurface.height)) {
+
+    return null;
+  }
+
+  return { height: bounds.height, width: bounds.width };
+}
+
+/**
+ * Probes the browser's GPU hardware-encoding capabilities and reports how the display compares to the configured capture surface. The GPU half queries CDP
+ * SystemInfo.getInfo for renderer identity and H.264/HEVC/AV1 hardware encoding support, falling back to a MediaRecorder capability probe where the CDP data is
+ * incomplete, and caches the result for codec selection to read. The display half is advisory: every page renders at the configured preset, so a display too
+ * small to show a whole frame changes nothing about capture and is worth stating once.
  *
- * The detection uses a temporary page (or existing page if available) to evaluate screen dimensions and GPU capabilities via JavaScript and CDP. Both results
- * are cached in the display module for use by the preset system when determining effective viewport and capture codec.
+ * The probe runs against an existing page where one is open, and a temporary page otherwise.
  * @param browser - The browser instance to use for detection.
  */
-async function detectDisplayDimensions(browser: Browser): Promise<void> {
+async function detectBrowserCapabilities(browser: Browser): Promise<void> {
 
   let tempPage: Nullable<Page> = null;
-  let usingTempPage = false;
 
   try {
 
@@ -990,79 +1013,15 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
     if(!targetPage) {
 
       tempPage = await browser.newPage();
-      usingTempPage = true;
       targetPage = tempPage;
     }
 
-    // Ensure the window is in normal state before measuring. Chrome restores window state from the persistent user data directory, so after a scheduled browser
-    // restart the window may launch minimized. A minimized window reports outerWidth/outerHeight as 0 while innerWidth/innerHeight retains the viewport dimensions,
-    // producing negative chrome measurements that poison all subsequent window sizing.
+    /* Restore the window to its normal state before probing. Chrome restores window state from the persistent user data directory, so after a scheduled browser
+     * restart the window can come up minimized, and a minimized window reports its bounds as the shrunken presentation rather than the size the OS granted it -
+     * which would make the display advisory below fire against a size no display ever imposed. It also keeps the GPU probe's environment representative of the
+     * one capture runs in.
+     */
     await unminimizeWindow(targetPage);
-
-    // Measure display dimensions and browser chrome via JavaScript. The measurement is retried if chrome dimensions are negative, which indicates the macOS window
-    // manager has not yet finished the minimize-to-normal state transition (the animation is asynchronous relative to the CDP command).
-    let dimensions: { availHeight: number; availWidth: number; chromeHeight: number; chromeWidth: number } | undefined;
-
-    for(let attempt = 0; attempt < 3; attempt++) {
-
-      // eslint-disable-next-line no-await-in-loop
-      dimensions = await evaluateWithAbort(targetPage, (): { availHeight: number; availWidth: number; chromeHeight: number; chromeWidth: number } => {
-
-        return {
-
-          // Available screen dimensions (excludes taskbar, dock, menu bar).
-          availHeight: screen.availHeight,
-          availWidth: screen.availWidth,
-
-          // Browser chrome dimensions (title bar, toolbar, borders).
-          chromeHeight: window.outerHeight - window.innerHeight,
-          chromeWidth: window.outerWidth - window.innerWidth
-        };
-      });
-
-      if((dimensions.chromeWidth >= 0) && (dimensions.chromeHeight >= 0)) {
-
-        break;
-      }
-
-      // Chrome dimensions are negative - the window manager is still transitioning. Wait briefly and remeasure.
-      if(attempt < 2) {
-
-        LOG.debug("browser:lifecycle", "Display detection measured negative chrome dimensions (%s\u00d7%s, attempt %s). Retrying after window state settles.",
-          dimensions.chromeWidth, dimensions.chromeHeight, attempt + 1);
-
-        // eslint-disable-next-line no-await-in-loop
-        await delay(100);
-      }
-    }
-
-    // If all attempts produced negative chrome dimensions, skip caching to avoid poisoning window sizing. The preset system will use the configured preset without
-    // degradation, and resizeAndMinimizeWindow will fall back to measuring chrome dimensions via page.evaluate() on each call.
-    if(!dimensions) {
-
-      return;
-    }
-
-    if((dimensions.chromeWidth < 0) || (dimensions.chromeHeight < 0)) {
-
-      LOG.warn("Display detection produced invalid chrome dimensions after 3 attempts (%s\u00d7%s). Window sizing may be incorrect.",
-        dimensions.chromeWidth, dimensions.chromeHeight);
-
-      return;
-    }
-
-    // Calculate maximum viewport: available screen space minus browser chrome.
-    const maxWidth = dimensions.availWidth - dimensions.chromeWidth;
-    const maxHeight = dimensions.availHeight - dimensions.chromeHeight;
-
-    // Cache the results for use by the preset system and window sizing.
-    setBrowserChrome(dimensions.chromeWidth, dimensions.chromeHeight);
-    setMaxSupportedViewport(maxWidth, maxHeight);
-
-    LOG.debug("browser:lifecycle", "Display detection complete: screen %s\u00d7%s, chrome %s\u00d7%s, max viewport %s\u00d7%s.",
-      dimensions.availWidth, dimensions.availHeight,
-      dimensions.chromeWidth, dimensions.chromeHeight,
-      maxWidth, maxHeight);
 
     // Detect GPU capabilities via CDP SystemInfo.getInfo. This is the authoritative source for GPU identity and hardware encoding capabilities - it runs at the
     // browser level (no page context or secure context required) and returns the actual list of hardware-accelerated video encoding profiles.
@@ -1175,22 +1134,31 @@ async function detectDisplayDimensions(browser: Browser): Promise<void> {
       LOG.debug("browser:lifecycle", "GPU detection failed: %s.", String(gpuError));
     }
 
-    // Check if the configured preset needs to be degraded and warn the user.
-    const presetResult = getEffectivePreset(CONFIG);
+    /* Report a display that cannot show a whole frame. The bounds come from the browser rather than from the page, because an emulated page reports the emulated
+     * size for screen.* and window.* alike, which would make the comparison circular - Browser.getWindowBounds is window state the page's emulation cannot reach.
+     */
+    const bounds = await withCDPSession(targetPage, async (session, windowId) => {
 
-    if(presetResult.degraded && presetResult.maxViewport) {
+      const result = await session.send("Browser.getWindowBounds", { windowId });
 
-      LOG.warn("Display supports maximum %s\u00d7%s. Configured %s preset will use %s instead.",
-        presetResult.maxViewport.width, presetResult.maxViewport.height,
-        presetResult.configuredPreset.id, presetResult.effectivePreset.id);
+      return result.bounds;
+    });
+
+    const captureSurface = getPresetViewport(CONFIG);
+    const granted = getUndersizedDisplayBounds(bounds, captureSurface);
+
+    if(granted) {
+
+      LOG.info("The display is smaller than the configured %s\u00d7%s capture surface (the browser window was granted %s\u00d7%s). Capture is unaffected: every " +
+        "page renders at the configured preset regardless of display or window size.", captureSurface.width, captureSurface.height, granted.width, granted.height);
     }
   } catch(error) {
 
-    LOG.warn("Display detection failed: %s. Preset degradation will not be available.", formatError(error));
+    LOG.warn("Browser capability detection failed: %s. Hardware encoding capabilities are unknown for this session.", formatError(error));
   } finally {
 
     // Clean up temporary page if we created one.
-    if(usingTempPage && tempPage) {
+    if(tempPage) {
 
       try {
 
@@ -1382,11 +1350,11 @@ async function launchReadyBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Capture probe complete. (+%sms)", browserElapsed());
 
-    // Detect display dimensions to determine the maximum supported viewport. This must happen before streaming so the preset system can degrade to a smaller preset
-    // if needed.
-    await detectDisplayDimensions(browser);
+    // Probe the browser's capabilities before the browser is published ready. Codec selection and preroll generation both read the cached GPU capabilities, so
+    // they have to be in hand before anything downstream can choose a capture codec.
+    await detectBrowserCapabilities(browser);
 
-    LOG.debug("timing:browser", "Display detection complete. (+%sms)", browserElapsed());
+    LOG.debug("timing:browser", "Browser capability detection complete. (+%sms)", browserElapsed());
 
     // Capture the Chrome version and User-Agent. The version is logged for diagnostics (correlating browser behavior changes with specific Chrome releases) and
     // surfaced by the health endpoint; the User-Agent lets server-side fetch() calls to service CDNs match Chrome's identity.
@@ -1463,9 +1431,8 @@ export function isBrowserConnected(): boolean {
 }
 
 /**
- * Resizes the browser window to the effective viewport and minimizes it. This function combines viewport sizing with minimization to ensure the window is
- * properly sized before being minimized. The resize uses the effective viewport from getEffectiveViewport(), which accounts for display size constraints and
- * preset degradation.
+ * Minimizes the browser window. The window's presentation state is all this touches - the surface pages render at is emulated from the configured preset and is
+ * unaffected by whether the window is on screen.
  *
  * To avoid issues with creating temporary pages (which can cause the window to restore on macOS), we prefer using an existing page if one is available. Only if
  * no pages exist do we create a temporary page.
@@ -1481,7 +1448,6 @@ export async function minimizeBrowserWindow(): Promise<void> {
   }
 
   let tempPage: Nullable<Page> = null;
-  let usingTempPage = false;
 
   try {
 
@@ -1493,19 +1459,17 @@ export async function minimizeBrowserWindow(): Promise<void> {
     if(!targetPage) {
 
       tempPage = await browser.newPage();
-      usingTempPage = true;
 
       // Register the temp page so stale cleanup knows it's ours.
       registerManagedPage(tempPage);
       targetPage = tempPage;
     }
 
-    // Delegate to resizeAndMinimizeWindow for the actual CDP operations. This ensures consistent resize+minimize behavior and maintains a single source of
-    // truth for the viewport sizing logic.
-    await resizeAndMinimizeWindow(targetPage);
+    // Delegate to the CDP helper for the window-state change, so every minimize in the codebase issues the same command sequence.
+    await minimizeWindow(targetPage);
 
     // Clean up the temporary page if we created one.
-    if(usingTempPage && tempPage) {
+    if(tempPage) {
 
       unregisterManagedPage(tempPage);
 
@@ -1514,7 +1478,7 @@ export async function minimizeBrowserWindow(): Promise<void> {
   } catch(error) {
 
     // If we created a temp page, make sure to unregister it even on error.
-    if(usingTempPage && tempPage) {
+    if(tempPage) {
 
       unregisterManagedPage(tempPage);
 
@@ -1527,8 +1491,8 @@ export async function minimizeBrowserWindow(): Promise<void> {
       }
     }
 
-    // Resizing/minimizing is not critical - log a warning but don't fail the operation.
-    LOG.debug("browser:lifecycle", "Could not resize and minimize browser window: %s.", formatError(error));
+    // Minimizing is not critical - log a warning but don't fail the operation.
+    LOG.debug("browser:lifecycle", "Could not minimize the browser window: %s.", formatError(error));
   }
 }
 
