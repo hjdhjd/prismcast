@@ -2,9 +2,9 @@
  *
  * logs.test.ts: Unit tests for the log viewing routes in logs.ts. setupLogsEndpoint registers GET /logs (recent entries from the rotating log file) and GET
  * /logs/stream (Server-Sent Events for live entries). The handler shape we lock here covers the query-parameter parsing (lines and level), the response
- * envelope (entries + filtered + mode + total), the missing-file ENOENT branch (returns empty entries with mode: "file"), the console-mode short-circuit (no
- * file read), and the SSE handshake (headers, immediate flush). Live SSE event delivery is covered by the logEmitter.test.ts suite; we only test the route's
- * subscription wiring here.
+ * envelope (entries + filtered + mode + total), the level allowlist the endpoints share, the missing-file ENOENT branch (returns empty entries with mode:
+ * "file"), the console-mode short-circuit (no file read), and the SSE handshake (headers, immediate flush). Live SSE event delivery is covered by the
+ * logEmitter.test.ts suite; we only test the route's subscription wiring here.
  */
 import type { AddressInfo, Server } from "node:net";
 import type { Express, Request, Response } from "express";
@@ -29,6 +29,17 @@ interface LogsResponse {
   mode: "console" | "file";
   total: number;
 }
+
+// The body an endpoint sends when the level query parameter names no recognized level: the envelope marker, a message, and the set the caller may choose from.
+interface LevelRejection {
+
+  error: string;
+  success: boolean;
+  validLevels: string[];
+}
+
+// The allowlist the endpoints advertise. Asserted as a value rather than imported, so a change to the production tuple has to be a deliberate edit here too.
+const VALID_LEVELS = [ "error", "info", "warn" ];
 
 function makeServer(): Promise<{ port: number; server: Server }> {
 
@@ -159,8 +170,8 @@ describe("setupLogsEndpoint - GET /logs (file mode, no log file)", () => {
 
   test("accepts the level query parameter (error/warn/info)", async () => {
 
-    // The level filter is validated against the documented set. Values outside the set are silently ignored (no filter applied), which we don't directly
-    // observe with an empty file, but the response shape must still parse cleanly.
+    // A recognized level narrows the read. We don't directly observe the narrowing with an empty file, but the request must be accepted and the response shape
+    // must still parse cleanly.
     const res = await fetch(urlFor("/logs?level=error"));
     const body = await res.json() as LogsResponse;
 
@@ -174,6 +185,53 @@ describe("setupLogsEndpoint - GET /logs (file mode, no log file)", () => {
 
     assert.equal(res.status, 200);
     await res.json();
+  });
+
+  test("treats an empty level value as no filter", async () => {
+
+    // Boundary: the log viewer's "All" option carries the empty string as its value. The client omits the parameter in that case, but a caller that sends it
+    // anyway is asking for every level, not for a level named "". Rejecting it would break the most literal reading of the UI's own form.
+    const res = await fetch(urlFor("/logs?level="));
+    const body = await res.json() as LogsResponse;
+
+    assert.equal(res.status, 200, "an empty level is a no-filter request, not a validation failure");
+    assert.equal(body.mode, "file", "the read proceeds normally");
+  });
+
+  test("rejects an unrecognized level with 400 and names the valid set", async () => {
+
+    // A misspelled level is answered rather than widened to every entry, which would leave the caller with no way to tell that its filter did nothing. The
+    // rejection names the alternatives so the caller can correct the request without consulting the API reference.
+    const res = await fetch(urlFor("/logs?level=BOGUS"));
+    const body = await res.json() as LevelRejection;
+
+    assert.equal(res.status, 400);
+    assert.equal(body.error, "Invalid log level: BOGUS.");
+    assert.deepEqual(body.validLevels, VALID_LEVELS);
+    assert.equal(body.success, false, "the rejection carries the envelope failure marker");
+  });
+
+  test("rejects level=debug with 400 (debug is gated at the logging source, not here)", async () => {
+
+    // Debug is a real log level but not a selectable filter: debug entries are gated by the PRISMCAST_DEBUG category filter before they are ever written, so a
+    // request for them here could never narrow anything and is answered rather than silently widened.
+    const res = await fetch(urlFor("/logs?level=debug"));
+    const body = await res.json() as LevelRejection;
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(body.validLevels, VALID_LEVELS, "debug is absent from the advertised set");
+  });
+
+  test("rejects a repeated level parameter with 400 (an array value names no single level)", async () => {
+
+    // Boundary: Express parses a repeated query parameter into an array, so the guard's string check is what rejects it. Without that check the array would
+    // fall through the allowlist test and be compared against entry.level, matching nothing and silently emptying the response.
+    const res = await fetch(urlFor("/logs?level=error&level=warn"));
+    const body = await res.json() as LevelRejection;
+
+    assert.equal(res.status, 400);
+    assert.match(body.error, /^Invalid log level: /);
+    assert.deepEqual(body.validLevels, VALID_LEVELS);
   });
 });
 
@@ -241,28 +299,52 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
 
   test("respects the level query parameter on the SSE endpoint (validation only)", async () => {
 
-    // The route accepts ?level=error|warn|info and validates against a static allowlist. Values outside the list are silently ignored. We exercise both a valid
-    // and an invalid value to confirm neither produces an error response.
+    // The stream accepts the same levels the read endpoint does. A recognized value opens the stream; an unrecognized one is answered as an ordinary JSON
+    // error, so the client sees a failed request rather than a stream that opens and then never delivers anything.
     const validController = new AbortController();
     const validRes = await fetch(urlFor("/logs/stream?level=error"), { signal: validController.signal });
 
     try {
 
       assert.equal(validRes.status, 200);
+      assert.match(validRes.headers.get("content-type") ?? "", /text\/event-stream/);
     } finally {
 
       validController.abort();
     }
 
-    const invalidController = new AbortController();
-    const invalidRes = await fetch(urlFor("/logs/stream?level=BOGUS"), { signal: invalidController.signal });
+    const invalidRes = await fetch(urlFor("/logs/stream?level=BOGUS"));
+    const body = await invalidRes.json() as LevelRejection;
+
+    assert.equal(invalidRes.status, 400);
+    assert.equal(body.error, "Invalid log level: BOGUS.");
+    assert.deepEqual(body.validLevels, VALID_LEVELS);
+    assert.doesNotMatch(invalidRes.headers.get("content-type") ?? "", /text\/event-stream/, "a rejected request must not be answered as an event stream");
+  });
+
+  test("rejects level=debug on the SSE endpoint with 400", async () => {
+
+    const res = await fetch(urlFor("/logs/stream?level=debug"));
+    const body = await res.json() as LevelRejection;
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(body.validLevels, VALID_LEVELS);
+  });
+
+  test("opens the stream for an empty level value (no filter)", async () => {
+
+    // Boundary companion to the read endpoint's empty-value row: the stream has to read the empty string the same way the read does, or the log viewer's "All"
+    // option would behave differently across the history fetch and the live stream.
+    const controller = new AbortController();
+    const res = await fetch(urlFor("/logs/stream?level="), { signal: controller.signal });
 
     try {
 
-      assert.equal(invalidRes.status, 200, "invalid level should not error - the validator silently treats it as no filter");
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
     } finally {
 
-      invalidController.abort();
+      controller.abort();
     }
   });
 });
@@ -352,24 +434,31 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
     triggerReqEvent("close");
   });
 
-  test("invalid level query parameter is silently ignored - all entries reach the wire (no filter applied)", () => {
+  test("an unrecognized level answers 400 and installs no stream - no SSE headers, no subscription", () => {
 
-    // Boundary: the route validates the level query param against [error, info, warn]. Anything else is treated as no filter (filterLevel = null), so every
-    // emitted entry forwards. Asserting this prevents a regression where the validator throws or 400s on unknown values.
+    /* The fetch-based row above sees the status code; this one sees what the handler did to the response. The rejection has to happen before installSseStream,
+     * because once the SSE headers are flushed the status is already committed and the only remaining way to signal the error would be to close the connection.
+     * We assert the negative directly: no header was set, the headers were never flushed, and later emits reach nothing, which is only true if the handler
+     * returned before subscribing.
+     */
     const route = findLogsStreamHandler();
-    const { req, res, triggerReqEvent, write } = makeReqRes({ query: { level: "BOGUS" } });
+    const { flushHeaders, json, req, res, setHeader, status, write } = makeReqRes({ query: { level: "BOGUS" } });
 
     invokeLogsStreamHandler(route, req, res);
 
-    write.mock.resetCalls();
+    assert.equal(status.mock.callCount(), 1, "the handler set a status");
+    assert.deepEqual(status.mock.calls[0]?.arguments, [400]);
+    assert.deepEqual(json.mock.calls[0]?.arguments,
+      [{ error: "Invalid log level: BOGUS.", success: false, validLevels: VALID_LEVELS }]);
 
+    assert.equal(setHeader.mock.callCount(), 0, "no SSE header may be set on a rejected request");
+    assert.equal(flushHeaders.mock.callCount(), 0, "the headers must never be flushed on a rejected request");
+
+    // No subscription was installed, so nothing emitted afterwards can reach the wire.
     emitLogEntry({ level: "info", message: "info entry", timestamp: "2026/05/06 16:00:00.000" });
-    emitLogEntry({ level: "warn", message: "warn entry", timestamp: "2026/05/06 16:00:01.000" });
     emitLogEntry({ level: "error", message: "error entry", timestamp: "2026/05/06 16:00:02.000" });
 
-    assert.equal(write.mock.callCount(), 3, "all three entries pass through when filter is invalid (no filter)");
-
-    triggerReqEvent("close");
+    assert.equal(write.mock.callCount(), 0, "a rejected request must never forward a log entry");
   });
 
   test("req.on('close') handler unsubscribes from the log emitter - post-close emits do not reach the wire", () => {

@@ -4,12 +4,12 @@
  */
 import type { Express, Request, Response } from "express";
 import { isConsoleLogging, subscribeToLogs } from "../utils/index.ts";
+import { sendErrorResponse, sendValidationError } from "./config/http/envelope.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
 import { getLogFilePath } from "../config/paths.ts";
 import { installSseStream } from "./sse.ts";
-import { sendErrorResponse } from "./config/http/envelope.ts";
 
 const { promises: fsPromises } = fs;
 
@@ -32,6 +32,52 @@ interface LogsResponse {
   filtered: number;
   mode: "console" | "file";
   total: number;
+}
+
+/* The levels a caller may filter on. Debug is absent because debug entries are gated at the logging source through the PRISMCAST_DEBUG category filter (see
+ * utils/debugFilter.ts) rather than through this query parameter, so asking for it here could never narrow anything. A level outside this set is answered as a
+ * validation error rather than quietly ignored: a caller that misspells a level otherwise receives every entry and has no way to tell that its filter did
+ * nothing.
+ */
+const LOG_LEVEL_FILTERS = [ "error", "info", "warn" ] as const;
+
+type LogLevelFilter = (typeof LOG_LEVEL_FILTERS)[number];
+
+/**
+ * Tests whether a raw query value names a level a caller may filter on. Express types a repeated query parameter as an array, so the string check rejects
+ * `?level=a&level=b` alongside any unrecognized level name.
+ * @param value - The raw query parameter value.
+ * @returns True when the value is one of the recognized level filters.
+ */
+function isLogLevelFilter(value: unknown): value is LogLevelFilter {
+
+  return (typeof value === "string") && (LOG_LEVEL_FILTERS as readonly string[]).includes(value);
+}
+
+/**
+ * Answers a request whose level query parameter names no recognized level. An absent or empty value is not a rejection - the log viewer's "All" option submits
+ * the empty string, which means no filter at all. Each log endpoint runs this before doing any other work, which is what lets the SSE endpoint answer with a
+ * plain JSON body instead of opening a stream it would have to tear down a moment later.
+ * @param level - The raw level query parameter.
+ * @param res - The Express response object a validation error is sent on.
+ * @returns True when a validation error was sent and the caller must stop; false when the value is usable.
+ */
+function rejectUnrecognizedLevel(level: unknown, res: Response): boolean {
+
+  if((level === undefined) || (level === "") || isLogLevelFilter(level)) {
+
+    return false;
+  }
+
+  /* A repeated or structured query parameter reaches Express as an array or an object rather than a string, and neither carries a useful default
+   * stringification. The plain case - a misspelled level - is reported as itself, and anything else is reported in its JSON form so the message names what
+   * arrived instead of collapsing to "[object Object]".
+   */
+  const described = (typeof level === "string") ? level : JSON.stringify(level);
+
+  sendValidationError(res, { error: "Invalid log level: " + described + ".", validLevels: [...LOG_LEVEL_FILTERS] });
+
+  return true;
 }
 
 /* The log file uses a consistent format that can be parsed with a regular expression. Each line starts with a bracketed timestamp, optionally followed by a bracketed
@@ -112,10 +158,10 @@ function parseLogLine(line: string): Nullable<LogEntry> {
 /**
  * Reads and parses the log file, returning the most recent entries.
  * @param lines - Maximum number of lines to return.
- * @param levelFilter - Optional level filter (error, warn, info, or undefined for all).
+ * @param levelFilter - The validated level to narrow to, or null for every level.
  * @returns The parsed log entries and metadata.
  */
-async function readLogEntries(lines: number, levelFilter?: string): Promise<LogsResponse> {
+async function readLogEntries(lines: number, levelFilter: Nullable<LogLevelFilter>): Promise<LogsResponse> {
 
   // Check if using console logging mode (no file logs available).
   if(isConsoleLogging()) {
@@ -146,12 +192,10 @@ async function readLogEntries(lines: number, levelFilter?: string): Promise<Logs
 
     const total = allEntries.length;
 
-    // The total above already reflects every parsed entry; filtering below only narrows what is returned in filteredEntries. The allowlist covers error,
-    // info, and warn only, since debug entries are gated at the logging source via the PRISMCAST_DEBUG category filter (see utils/debugFilter.ts) rather
-    // than through this query parameter, so debug is never a selectable level here.
+    // The total above already reflects every parsed entry; filtering below only narrows what is returned in filteredEntries.
     let filteredEntries = allEntries;
 
-    if(levelFilter && [ "error", "info", "warn" ].includes(levelFilter)) {
+    if(levelFilter) {
 
       filteredEntries = allEntries.filter((entry) => entry.level === levelFilter);
     }
@@ -191,11 +235,16 @@ export function setupLogsEndpoint(app: Express): void {
     // The 1000-line ceiling bounds how much log content a single request can pull into a JSON response; 100 is the default because it matches the log
     // viewer's initial page size, so an unqualified request returns exactly what the UI renders on first load.
     const lines = (!Number.isNaN(linesParam) && (linesParam > 0) && (linesParam <= 1000)) ? linesParam : 100;
-    const level = req.query["level"] as string | undefined;
+    const level = req.query["level"];
+
+    if(rejectUnrecognizedLevel(level, res)) {
+
+      return;
+    }
 
     try {
 
-      const logsResponse = await readLogEntries(lines, level);
+      const logsResponse = await readLogEntries(lines, isLogLevelFilter(level) ? level : null);
 
       // GET /logs success path is a data response, not an envelope - the client (loadLogs in routes/root/content.ts) consumes `data.mode` and `data.entries`
       // directly. We deliberately do not wrap with sendSuccess here, since adding `success: true` would change the response contract from "data shape" to
@@ -217,13 +266,17 @@ export function setupLogsEndpoint(app: Express): void {
 
   app.get("/logs/stream", (req: Request, res: Response): void => {
 
-    const sse = installSseStream(res);
+    const level = req.query["level"];
 
-    // Optional level filter from query parameter. As with the /logs allowlist above, debug is never a selectable level here: debug entries are gated at
-    // the logging source via the PRISMCAST_DEBUG category filter (see utils/debugFilter.ts), not through this parameter.
-    const levelFilter = req.query["level"] as string | undefined;
-    const validLevels = [ "error", "info", "warn" ];
-    const filterLevel = (levelFilter && validLevels.includes(levelFilter)) ? levelFilter : null;
+    // The level is validated ahead of installSseStream so a rejected request answers with an ordinary JSON error instead of an event stream whose headers are
+    // already on the wire, which an EventSource client would surface as a connection that opened and then went silent.
+    if(rejectUnrecognizedLevel(level, res)) {
+
+      return;
+    }
+
+    const filterLevel = isLogLevelFilter(level) ? level : null;
+    const sse = installSseStream(res);
 
     // Subscribe to log entries and forward them as unnamed SSE data events; the heartbeat is owned by installSseStream.
     const unsubscribe = subscribeToLogs((entry) => {
