@@ -72,11 +72,11 @@ describe("resolveProfile", () => {
 
   test("resolves multi-level inheritance (embeddedDynamicMultiVideo -> embeddedPlayer -> fullscreenApi)", () => {
 
-    // The chain is walked root-first, so each level that contributes a flag lands over the one below it. The root contributes none, which is why the API flag
-    // reads the default here.
+    // The chain is walked root-first, so each level that contributes a flag lands over the one below it. The root contributes none of its own, so the API flag
+    // in the resolved shape can only have come from the level above it.
     const result = resolveProfile("embeddedDynamicMultiVideo");
 
-    assert.equal(result.useRequestFullscreen, false, "the root contributes no behavior flag, so the default holds");
+    assert.equal(result.useRequestFullscreen, true, "from embeddedPlayer, whose players need the native call to escape the iframe's box");
     assert.equal(result.needsIframeHandling, true, "from embeddedPlayer");
     assert.equal(result.waitForNetworkIdle, true, "from embeddedDynamicMultiVideo");
     assert.equal(result.selectReadyVideo, true, "from embeddedDynamicMultiVideo");

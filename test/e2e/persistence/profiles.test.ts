@@ -324,8 +324,9 @@ describe("profile resolution over stored user profiles", () => {
   test("a user profile extending a builtin resolves to the builtin's flags with the user profile's own flags on top", async () => {
 
     /* The parity check for the ordinary case: embeddedPlayer contributes needsIframeHandling, and the user profile sets that same flag to the OPPOSITE value, so
-     * the assertion proves precedence rather than mere inheritance - a merge applied in the wrong order resolves it to true here. The second flag is the other
-     * half of the contract: useRequestFullscreen is how a custom profile turns the native Fullscreen API on for its own site, over the default.
+     * the assertion proves precedence rather than mere inheritance - a merge applied in the wrong order resolves it to true here. The second flag is the option
+     * a profile turns the native Fullscreen API on through, and the user profile and embeddedPlayer both set it, so it reaches the resolved shape whichever of
+     * the two the merge takes it from.
      */
     await using ctx = await createIntegrationContext();
 
@@ -341,15 +342,15 @@ describe("profile resolution over stored user profiles", () => {
     const resolved = resolveProfile("userOverBuiltin");
 
     assert.equal(resolved.needsIframeHandling, false, "the user profile's value overrides the value set further up the chain");
-    assert.equal(resolved.useRequestFullscreen, true, "a custom profile is how a site turns the native call on, over the default");
+    assert.equal(resolved.useRequestFullscreen, true, "the flag both the user profile and the builtin set reaches the resolved shape");
     assert.equal(resolved.channelSelector, "user-value", "the user profile's own flag applies");
     assert.equal(resolved.selectReadyVideo, false, "flags no profile in the chain sets fall back to the default");
   });
 
   test("a builtin chain two hops deep resolves every ancestor's flags and carries no metadata fields", async () => {
 
-    /* embeddedDynamicMultiVideo extends embeddedPlayer, which extends fullscreenApi - a distinct flag contributed at each of the two lower levels, and metadata
-     * carried at every level. Asserting that the metadata keys are structurally ABSENT is what catches an implementation that strips them from only the
+    /* embeddedDynamicMultiVideo extends embeddedPlayer, which extends fullscreenApi - flags contributed at every level below the named profile except the root,
+     * and metadata carried at every level. Asserting that the metadata keys are structurally ABSENT is what catches an implementation that strips them from only the
      * last entry it merges: object spread accepts the extra properties, so flag equality alone would pass against a resolved profile still carrying a stale
      * category or extends.
      */
@@ -360,7 +361,7 @@ describe("profile resolution over stored user profiles", () => {
 
     const resolved = resolveProfile("embeddedDynamicMultiVideo");
 
-    assert.equal(resolved.useRequestFullscreen, false, "the root ancestor contributes no behavior flag, so the default holds");
+    assert.equal(resolved.useRequestFullscreen, true, "the intermediate ancestor's native call is inherited, the root ancestor contributing no flag of its own");
     assert.equal(resolved.needsIframeHandling, true, "the intermediate ancestor's flag is inherited");
     assert.equal(resolved.selectReadyVideo, true, "the named profile's own flags apply");
     assert.equal(resolved.waitForNetworkIdle, true, "every flag the named profile sets applies");

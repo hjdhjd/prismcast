@@ -34,12 +34,15 @@ import { getUserDomains } from "./userProfiles.ts";
  * - Whether to lock volume properties to prevent auto-muting
  * - Whether the page is static content (no video element expected)
  *
- * Fullscreen is a family name here rather than an action. Each family names the native mechanism the site's player supports, and the builtin site profiles in
- * these tables invoke none of them: PrismCast fills the capture by styling the video to the viewport instead (applyVideoStyles in browser/video.ts), which
- * works from a background tab and leaves whatever application the user has in front of them where it is. The recording's dimensions come from the quality
- * preset's emulated capture surface, not from the browser window, so the styling costs the picture nothing. A provider profile opts into the native path where
- * its player requires one, and a custom profile turns a native trigger on for a single site; both do it through the option that carries the mechanism -
- * fullscreenKey for the keypress, fullscreenSelector for the player's own control, useRequestFullscreen for the JavaScript API.
+ * Fullscreen is a family name here rather than an action. Each family names the native mechanism the site's player supports, and whether a profile actually
+ * invokes that mechanism depends on whose layout owns the player's box. Wherever the video sits in a page we can style, PrismCast fills the capture by styling
+ * the video to the viewport (applyVideoStyles in browser/video.ts), which works from a background tab and leaves whatever application the user has in front of
+ * them where it is. The recording's dimensions come from the quality preset's emulated capture surface, not from the browser window, so the styling costs the
+ * picture nothing there. The iframe families are the exception: styling applied inside the frame fills the frame, but the iframe element's box on the top page
+ * belongs to the site's own layout and nothing done from within reaches it, so those profiles invoke the native mechanism their players expose. A provider
+ * profile opts into the native path where its player requires one, and a custom profile turns a native trigger on for a single site; every one of them does it
+ * through the option that carries the mechanism - fullscreenKey for the keypress, fullscreenSelector for the player's own control, useRequestFullscreen for the
+ * JavaScript API.
  *
  * When adding support for a new streaming site, first check if an existing profile matches its behavior. Only create a new profile if the site requires unique
  * handling not covered by existing profiles.
@@ -136,15 +139,21 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     waitForNetworkIdle: true
   },
 
-  // Intermediate profile for sites that embed their player in an iframe and whose player exposes the JavaScript fullscreen API. Many modern players use this
-  // architecture to isolate ad content, and they answer to programmatic fullscreen rather than to keyboard shortcuts.
+  /* Intermediate profile for sites that embed their player in an iframe and whose player exposes the JavaScript fullscreen API. Many modern players use this
+   * architecture to isolate ad content, and they answer to programmatic fullscreen rather than to keyboard shortcuts.
+   *
+   * This family calls the API rather than relying on the capture styling alone. The styling reaches the video inside the frame and fills it, but the iframe
+   * element's own box on the top page is whatever the site sized it to - a centered player a fraction of the capture surface on many of these sites - and no
+   * styling applied from inside the frame can grow it. The API call is what takes the picture past that box, and every profile extending this one inherits it.
+   */
   embeddedPlayer: {
 
     category: "api",
     description: "Intermediate base profile for iframe-embedded players that expose the fullscreen API.",
     extends: "fullscreenApi",
     needsIframeHandling: true,
-    summary: "Embedded iframe players"
+    summary: "Embedded iframe players",
+    useRequestFullscreen: true
   },
 
   // Profile for iframe-embedded players that aggressively mute audio after page load - likely to comply with autoplay policies or for accessibility reasons. Some
@@ -201,13 +210,19 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Player toggles fullscreen on 'f'"
   },
 
-  // Profile for iframe-embedded video players whose native fullscreen is the f key. The video element is not directly in the main page DOM, so we need to search
-  // through all frames to find it.
+  /* Profile for iframe-embedded video players whose native fullscreen is the f key. The video element is not directly in the main page DOM, so we need to search
+   * through all frames to find it.
+   *
+   * The keypress is this family's answer to the same geometry the API answers for embeddedPlayer: the capture styling fills the frame with the video, but the
+   * iframe element's box on the top page is the site's to size and no styling from within the frame reaches it. Sending the key to the player is what takes the
+   * picture past that box and onto the full capture surface.
+   */
   keyboardIframe: {
 
     category: "keyboard",
     description: "Sites with video embedded in iframes, on players that toggle fullscreen with the 'f' key.",
     extends: "keyboardFullscreen",
+    fullscreenKey: "f",
     needsIframeHandling: true,
     summary: "Iframe sites ('f' key player)"
   },

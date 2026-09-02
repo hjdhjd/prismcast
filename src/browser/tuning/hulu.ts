@@ -2185,19 +2185,23 @@ export const huluProvider: ProviderModule = {
 
   // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking the #CHANNELS tab (listSelector), then the
   // target channel is located by matching its normalized name against the data-testid="live-guide-channel-kyber-{name}" attribute on the virtualized guide rows
-  // (binary search to scroll the target into the render window, with position-based affiliate inference). Extends fullscreenApi: the watch page's player exposes
-  // the JavaScript fullscreen API. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses
-  // waitForNetworkIdle because
-  // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
-  // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.
+  // (binary search to scroll the target into the render window, with position-based affiliate inference). Takes the native fullscreen path: useRequestFullscreen
+  // calls the JavaScript fullscreen API the watch page's player exposes, and fullscreenSelector clicks the player's own maximize control, whose aria-label Hulu
+  // writes in uppercase...the attribute match carries the "i" flag so it reads case-insensitively. The click does more than repeat what the API call asks for: it
+  // also takes the player out of its mini-player layout, whose sizing logic would otherwise overwrite the width the capture styling sets. Requires
+  // selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because Hulu's SPA has heavy async
+  // initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback in navigateToPage()
+  // allows execution to continue to channel selection even when background requests are still pending.
   profile: {
 
     category: "multiChannel",
     channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
     description: "Hulu Live TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
     extends: "fullscreenApi",
+    fullscreenSelector: "[aria-label=\"Maximize\" i]",
     selectReadyVideo: true,
     summary: "Hulu Live TV (guide grid, needs selector)",
+    useRequestFullscreen: true,
     waitForNetworkIdle: true
   },
   profileName: "huluLive",
