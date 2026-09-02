@@ -895,9 +895,18 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           state.hasInit = true;
           state.initSegment = initData;
 
-          // Check whether the init content changed. Always true for fresh streams (no previousInitSegment). For tab replacement, false when the new capture
-          // happens to use the same codec parameters as the old one.
+          // Check whether the init content changed. Always true for a fresh stream, which continues nothing. A capture that continues an earlier one - a tab
+          // replacement, or a resume across a restart - carries that capture's initialization, and an identical one suppresses the pending discontinuity.
           const initChanged = !previousInitSegment || !initData.equals(previousInitSegment);
+
+          /* A continued capture whose initialization differs is the event worth counting in the field: the encoder came back with other parameters, so every
+           * client re-initializes - an HLS client through the discontinuity and the re-emitted map URI, an MPEG-TS client through a connection end. One line per
+           * occurrence, at a lifecycle event rather than per keyframe.
+           */
+          if(previousInitSegment && initChanged) {
+
+            LOG.info("Capture parameters changed: the new initialization segment differs from the one this capture continues from.");
+          }
 
           // Version the init URI for HLS cache busting. Incrementing the version makes the #EXT-X-MAP URI different from the previous playlist, forcing clients
           // to re-fetch the init segment. This prevents timescale mismatches when Chrome's MediaRecorder picks a different timescale between capture sessions.

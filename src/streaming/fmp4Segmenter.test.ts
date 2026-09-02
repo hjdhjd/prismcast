@@ -14,6 +14,7 @@ import { computeDiscontinuitySequence, createFMP4Segmenter, formatKeyframeStatsS
 import { getInitSegment, getPlaylist, getSegment, getSegmentCount } from "./hlsSegments.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
@@ -530,6 +531,14 @@ function makeTestMoof(trackId = 1): Buffer {
   return makeMoof(makeTraf(makeTfhd({ defaultSampleDuration: 2000, trackId }), makeTfdt(0), makeTrun({ sampleCount: 1 })));
 }
 
+/* reportCount counts the captured info lines that announce a changed initialization on a continued capture. Reading by prefix rather than by total keeps the
+ * rows that use it indifferent to any other info line the segmenter emits on the same drive.
+ */
+function reportCount(messages: string[]): number {
+
+  return messages.filter((message) => message.startsWith("Capture parameters changed")).length;
+}
+
 describe("createFMP4Segmenter", () => {
 
   let streamId: number;
@@ -545,7 +554,11 @@ describe("createFMP4Segmenter", () => {
     mock.timers.reset();
   });
 
-  test("stores the init segment on moov and bumps the version from a fresh start (no previousInitSegment)", () => {
+  test("stores the init segment on moov and bumps the version from a fresh start (no previousInitSegment)", (t) => {
+
+    const infos: string[] = [];
+
+    t.mock.method(LOG, "info", (message: string) => { infos.push(message); });
 
     const onError = mock.fn();
     const onStop = mock.fn();
@@ -565,6 +578,7 @@ describe("createFMP4Segmenter", () => {
     assert.equal(getInitSegment(streamId)?.equals(expectedInit), true, "storeInitSegment() persisted ftyp+moov to the registry under this streamId");
     assert.equal(segmenter.getInitSegment()?.equals(expectedInit), true, "the segmenter's own getter mirrors the stored init segment");
     assert.equal(segmenter.getInitVersion(), 1, "a fresh stream (no previousInitSegment) always counts as changed and bumps the version 0 -> 1");
+    assert.equal(reportCount(infos), 0, "a fresh start continues nothing, so there is no earlier initialization for it to differ from");
     assert.equal(onError.mock.calls.length, 0, "a well-formed init segment never reports an error");
   });
 
@@ -685,11 +699,15 @@ describe("createFMP4Segmenter", () => {
     assert.equal(onError.mock.calls.length, 0);
   });
 
-  test("suppresses both the discontinuity marker and the version bump when the new init is byte-identical to the previous one", () => {
+  test("suppresses both the discontinuity marker and the version bump when the new init is byte-identical to the previous one", (t) => {
 
     const ftyp = makeFtyp();
     const moov = makeMoov();
     const init = Buffer.concat([ ftyp, moov ]);
+
+    const infos: string[] = [];
+
+    t.mock.method(LOG, "info", (message: string) => { infos.push(message); });
 
     const onError = mock.fn();
     const onStop = mock.fn();
@@ -707,6 +725,39 @@ describe("createFMP4Segmenter", () => {
     assert.equal(segmenter.getSegmentIndex(), 1, "segment0 emitted via the fast path");
     assert.equal(segmenter.getInitVersion(), 5, "a byte-identical init never bumps the version - the exact contrast to the fresh-start case above");
     assert.doesNotMatch(getPlaylist(streamId) ?? "", /#EXT-X-DISCONTINUITY/, "an unchanged init suppresses the pending discontinuity marker");
+    assert.equal(reportCount(infos), 0, "and an unchanged init reports nothing, because the parameters this capture continues from are the ones it came back with");
+    assert.equal(onError.mock.calls.length, 0);
+  });
+
+  test("reports a continued capture whose initialization differs from the one it continues from, once", (t) => {
+
+    /* The field measurement, read as a count. The encoder coming back with other parameters is the event every client re-initializes on, and it is invisible in
+     * the log today. The row drives a continuation whose initialization genuinely differs and demands exactly one line, alongside the effects that must still
+     * follow it: the version bump the map URI is cache-busted with, and the discontinuity marker the playlist carries. The fresh-start row and the byte-identical
+     * row are its controls - both assert zero.
+     */
+    const previousInitSegment = Buffer.concat([ makeBox("ftyp", Buffer.from("iso6")), makeMoov() ]);
+
+    const infos: string[] = [];
+
+    t.mock.method(LOG, "info", (message: string) => { infos.push(message); });
+
+    const onError = mock.fn();
+    const onStop = mock.fn();
+    const segmenter = createFMP4Segmenter({ continuity: { previousInitSegment, startingInitVersion: 5 }, onError, onStop, pendingDiscontinuity: true, streamId });
+    const readable = new PassThrough();
+
+    segmenter.pipe(readable);
+
+    readable.write(makeFtyp());
+    readable.write(makeMoov());
+    readable.write(makeTestMoof());
+    readable.write(makeMdat("m0"));
+    readable.write(makeTestMoof());
+
+    assert.equal(reportCount(infos), 1, "a continued capture whose initialization differs is reported exactly once");
+    assert.equal(segmenter.getInitVersion(), 6, "and the version bumps, so clients re-fetch the init segment through a fresh map URI");
+    assert.match(getPlaylist(streamId) ?? "", /#EXT-X-DISCONTINUITY/, "and the first segment carries the discontinuity marker");
     assert.equal(onError.mock.calls.length, 0);
   });
 
