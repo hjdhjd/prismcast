@@ -7,8 +7,9 @@ export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HL
 export type { CanonicalChannel, Channel, ChannelDefinition, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelServiceBinding,
   CustomizableField, ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.ts";
 export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.ts";
-export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileResolutionResult, ProfilesValidationResult,
-  ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.ts";
+export type { ChannelSelectionConfig, ChannelSelectionStrategy, DomainConfig, ProfileCategory, ProfileCategoryInfo, ProfileResolutionResult,
+  ProfilesValidationResult, ResolvedSiteProfile, ServicePack, SiteProfile, UserProfilesFile, UserProfilesLoadResult } from "./profiles.ts";
+export { PROFILE_CATEGORIES } from "./profiles.ts";
 export type { AuthWallIndicators, CategoryResolution, CategoryResolutionConfig, CategoryResolutionFailure, CategoryResolutionSuccess, ChannelSelectionProfile,
   ChannelSelectorResult, ChannelStrategyEntry, ChannelStrategyHandler, ClickTarget, DiscoveredChannel, ProviderModule, TuneResult } from "./selection.ts";
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";

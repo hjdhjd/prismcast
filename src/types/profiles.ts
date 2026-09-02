@@ -87,15 +87,69 @@ export interface ChannelSelectionConfig {
  */
 
 /**
- * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by the native fullscreen mechanism their sites' players
- * support, and by special characteristics.
- * - "api": Profiles for players that expose the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
- * - "custom": User-defined profiles created via the profile builder wizard or imported from service packs.
- * - "keyboard": Profiles for players that toggle fullscreen with a keyboard shortcut (typically the 'f' key).
- * - "multiChannel": Multi-channel profiles requiring a channel selector for tile or thumbnail-based channel selection.
- * - "special": Special-purpose profiles like static page capture.
+ * One profile category as every surface renders it.
  */
-export type ProfileCategory = "api" | "custom" | "keyboard" | "multiChannel" | "special";
+export interface ProfileCategoryInfo {
+
+  // The prose shown under the category's heading in the profile reference and in the custom-profile wizard.
+  readonly description: string;
+
+  // The identifier a profile declares in its own category field, and the key categorizeProfiles buckets by.
+  readonly key: string;
+
+  // Whether the category's profiles need a channel selector to tune. The dropdown appends a "(needs selector)" note to the label, and the profile reference
+  // carries the channel-selector guide inside the category's block.
+  readonly requiresSelector: boolean;
+
+  // The category name every surface shows: the dropdown's optgroup label, the profile reference's heading, and the wizard's base-profile headings.
+  readonly title: string;
+}
+
+/**
+ * Every profile category, in the order the profile dropdown, the profile reference, and the custom-profile wizard all display them. Categories group profiles
+ * by the native fullscreen mechanism their sites' players support, and by special characteristics:
+ *
+ * - "api": players that expose the JavaScript fullscreen API, including the embedded iframe and click-to-play variants.
+ * - "keyboard": players that toggle fullscreen with a keyboard shortcut, typically the 'f' key.
+ * - "special": special-purpose profiles like static page capture.
+ * - "multiChannel": profiles that need a channel selector for tile or thumbnail-based channel selection.
+ * - "custom": user-defined profiles created via the profile builder wizard or imported from service packs.
+ *
+ * This array is the single definition from which the ProfileCategory type and every rendered category title and description derive, so adding a category is
+ * one entry here and the compiler then asks for its bucket everywhere a category is enumerated.
+ */
+export const PROFILE_CATEGORIES = [
+  {
+
+    description: "For single-channel sites whose player exposes JavaScript's requestFullscreen() API.", key: "api", requiresSelector: false,
+    title: "Fullscreen API"
+  },
+  {
+
+    description: "For single-channel sites whose player toggles fullscreen with the 'f' key.", key: "keyboard", requiresSelector: false,
+    title: "Keyboard Fullscreen"
+  },
+  {
+
+    description: "For non-standard use cases like static pages without video.", key: "special", requiresSelector: false, title: "Special"
+  },
+  {
+
+    description: "For sites that host multiple live channels on a single page. These profiles require a channel selector to identify which channel to tune " +
+      "to. Set the Channel Selector field in Advanced Options when using these profiles.", key: "multiChannel", requiresSelector: true,
+    title: "Multi-Channel"
+  },
+  {
+
+    description: "User-defined profiles created via the profile builder wizard or imported from service packs.", key: "custom", requiresSelector: false,
+    title: "Custom"
+  }
+] as const satisfies readonly ProfileCategoryInfo[];
+
+/**
+ * UI category for profile grouping in dropdowns and reference documentation, derived from PROFILE_CATEGORIES.
+ */
+export type ProfileCategory = typeof PROFILE_CATEGORIES[number]["key"];
 
 /**
  * Site profile definition with optional flags. All flags are optional because profiles can inherit from other profiles, and only the flags that differ from the

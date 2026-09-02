@@ -14,6 +14,7 @@ import { getBuiltinProfile, getProfiles } from "../../config/profiles.ts";
 import { getChannelListing, validateChannelUrl } from "../../config/userChannels.ts";
 import { sendErrorResponse, sendNotFoundError, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
+import { PROFILE_CATEGORIES } from "../../types/index.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import { categorizeProfiles } from "./index.ts";
 import { generateWizardModal } from "../components.ts";
@@ -352,8 +353,8 @@ export function generateProfileWizardModal(): string {
     ],
     contentId: "wizard-content",
     dataBlocks: [
-      "<script>window.__wizardProfiles = " + JSON.stringify(profileData) + ";window.__wizardStrategies = " + JSON.stringify(WIZARD_STRATEGIES) +
-        ";window.__wizardFields = " + JSON.stringify(WIZARD_FIELDS) + ";</script>"
+      "<script>window.__wizardCategories = " + JSON.stringify(PROFILE_CATEGORIES) + ";window.__wizardProfiles = " + JSON.stringify(profileData) +
+        ";window.__wizardStrategies = " + JSON.stringify(WIZARD_STRATEGIES) + ";window.__wizardFields = " + JSON.stringify(WIZARD_FIELDS) + ";</script>"
     ],
     errorId: "wizard-error",
     id: "wizard-modal",

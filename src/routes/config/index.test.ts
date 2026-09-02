@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { categorizeProfiles, describeConfigurationOutcome, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";
 import type { ApplyConfigurationResult } from "./index.ts";
 import type { ConfigChange } from "../../config/reactivity.ts";
+import { PROFILE_CATEGORIES } from "../../types/index.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import type { RestartResult } from "./index.ts";
 import assert from "node:assert/strict";
@@ -34,6 +35,43 @@ function makeProfile(overrides: Partial<ProfileInfo> = {}): ProfileInfo {
     ...overrides
   };
 }
+
+describe("PROFILE_CATEGORIES", () => {
+
+  test("lists each category exactly once, in the order every surface displays them", () => {
+
+    // The dropdown, the profile reference, and the custom-profile wizard all iterate this table, so its order is the rendered order and a repeated key would
+    // render a category twice.
+    const keys = PROFILE_CATEGORIES.map((category) => category.key);
+
+    assert.deepEqual(keys, [ "api", "keyboard", "special", "multiChannel", "custom" ]);
+    assert.equal(new Set(keys).size, keys.length, "every category key appears exactly once");
+  });
+
+  test("every entry carries the title and description its surfaces render, and only multiChannel needs a selector", () => {
+
+    // The renderers read title and description straight out of the table with no fallback of their own, and both the dropdown's \"(needs selector)\" note and
+    // the profile reference's channel-selector guide read requiresSelector.
+    for(const category of PROFILE_CATEGORIES) {
+
+      assert.ok(category.title.length > 0, category.key + " carries a title");
+      assert.ok(category.description.length > 0, category.key + " carries a description");
+    }
+
+    assert.deepEqual(PROFILE_CATEGORIES.filter((category) => category.requiresSelector).map((category) => category.key), ["multiChannel"]);
+  });
+
+  test("categorizeProfiles returns exactly one bucket per table entry", () => {
+
+    /* The runtime half of a compile-time relationship: ProfileCategory derives from the table's keys, so a category added to the table without a bucket in
+     * categorizeProfiles is a type error. This reads the same rule from the other side, over the empty input where every bucket must still be present.
+     */
+    const groups = categorizeProfiles([]);
+
+    assert.deepEqual(Object.keys(groups).toSorted(), PROFILE_CATEGORIES.map((category) => category.key).toSorted(),
+      "one bucket per table entry, no more and no fewer");
+  });
+});
 
 describe("categorizeProfiles", () => {
 

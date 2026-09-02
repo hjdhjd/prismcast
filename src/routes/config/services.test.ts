@@ -9,14 +9,15 @@
 import { describe, test } from "node:test";
 import { generateCustomProfilesPanel, generateProfileWizardModal, setupProfileRoutes } from "./services.ts";
 import type { ChannelSelectionConfig } from "../../types/index.ts";
+import { PROFILE_CATEGORIES } from "../../types/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 import { makeExpressStub } from "../express.helpers.ts";
 import { validateProfile } from "../../config/userProfiles.ts";
 
 /* Extracts a serialized wizard registry from the modal HTML by slicing the JSON between its assignment marker and the next statement boundary. The data block is
- * `window.__wizardProfiles = {...};window.__wizardStrategies = [...];window.__wizardFields = [...];</script>`, so each registry is bounded on both sides by a literal
- * the others cannot contain.
+ * `window.__wizardCategories = [...];window.__wizardProfiles = {...};window.__wizardStrategies = [...];window.__wizardFields = [...];</script>`, so each
+ * registry is bounded on both sides by a literal the others cannot contain.
  */
 function extractRegistry(html: string, startMarker: string, endMarker: string): unknown {
 
@@ -171,13 +172,26 @@ describe("generateProfileWizardModal", () => {
 
   test("embeds the wizard registries as JSON in a single <script> data block", () => {
 
-    // The data-driven wizard pulls profile groupings, strategies, and fields from window.__wizardProfiles/__wizardStrategies/__wizardFields. All three
-    // must be set in a single <script> tag that the wizard reads on init.
+    // The data-driven wizard pulls categories, profile groupings, strategies, and fields from window.__wizardCategories/__wizardProfiles/__wizardStrategies/
+    // __wizardFields. All four must be set in a single <script> tag that the wizard reads on init, with the category registry leading it.
     const html = generateProfileWizardModal();
 
+    assert.match(html, /<script>window\.__wizardCategories\s*=/, "the category registry is embedded, and leads the block");
     assert.match(html, /window\.__wizardProfiles\s*=/, "profile registry is embedded");
     assert.match(html, /window\.__wizardStrategies\s*=/, "strategy registry is embedded");
     assert.match(html, /window\.__wizardFields\s*=/, "field registry is embedded");
+  });
+
+  test("the embedded category registry is PROFILE_CATEGORIES itself", () => {
+
+    /* The wizard renders its base-profile headings and category prose from this registry, so what the page carries has to be the same table the dropdown and
+     * the profile reference render server-side. Slicing to the next assignment locks the member's position as well: the category registry leads the block,
+     * which is what keeps the markers the other three extractions slice on where they are.
+     */
+    const html = generateProfileWizardModal();
+    const categories = extractRegistry(html, "window.__wizardCategories = ", ";window.__wizardProfiles");
+
+    assert.deepEqual(categories, JSON.parse(JSON.stringify(PROFILE_CATEGORIES)), "the embedded registry round-trips to the table");
   });
 
   test("strategy registry includes the three user-configurable strategies (tileClick, thumbnailRow, none)", () => {

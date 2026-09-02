@@ -18,6 +18,7 @@ import { getProfileForChannel, getProfiles } from "../../../config/profiles.ts";
 import { ACTIONS } from "../../clientActions.ts";
 import { CONFIG } from "../../../config/index.ts";
 import { PREDEFINED_CHANNELS } from "../../../channels/index.ts";
+import { PROFILE_CATEGORIES } from "../../../types/index.ts";
 import type { ProfileInfo } from "../../../config/profiles.ts";
 import { categorizeProfiles } from "../index.ts";
 import { generateWizardModal } from "../../components.ts";
@@ -187,64 +188,20 @@ function generateProfileDropdown(id: string, selectedProfile: string, profiles: 
   lines.push("<select class=\"form-select field-wide\" id=\"" + id + "\" name=\"profile\"" + defaultAttr + ">");
   lines.push("<option value=\"\">Autodetect (Recommended)</option>");
 
-  // Fullscreen API profiles (most common).
-  if(groups.api.length > 0) {
+  // One optgroup per category, in the table's display order. The "(needs selector)" note is keyed on requiresSelector so the label and the reference's
+  // selector guide stay tied to the same property rather than to a repeated category name. An empty category renders nothing.
+  for(const category of PROFILE_CATEGORIES) {
 
-    lines.push("<optgroup label=\"Fullscreen API\">");
+    const group = groups[category.key];
 
-    for(const profile of groups.api) {
+    if(group.length === 0) {
 
-      lines.push(renderOption(profile));
+      continue;
     }
 
-    lines.push("</optgroup>");
-  }
+    lines.push("<optgroup label=\"" + category.title + (category.requiresSelector ? " (needs selector)" : "") + "\">");
 
-  // Keyboard fullscreen profiles.
-  if(groups.keyboard.length > 0) {
-
-    lines.push("<optgroup label=\"Keyboard Fullscreen\">");
-
-    for(const profile of groups.keyboard) {
-
-      lines.push(renderOption(profile));
-    }
-
-    lines.push("</optgroup>");
-  }
-
-  // Special profiles.
-  if(groups.special.length > 0) {
-
-    lines.push("<optgroup label=\"Special\">");
-
-    for(const profile of groups.special) {
-
-      lines.push(renderOption(profile));
-    }
-
-    lines.push("</optgroup>");
-  }
-
-  // Multi-channel profiles.
-  if(groups.multiChannel.length > 0) {
-
-    lines.push("<optgroup label=\"Multi-Channel (needs selector)\">");
-
-    for(const profile of groups.multiChannel) {
-
-      lines.push(renderOption(profile));
-    }
-
-    lines.push("</optgroup>");
-  }
-
-  // Custom (user-defined) profiles.
-  if(groups.custom.length > 0) {
-
-    lines.push("<optgroup label=\"Custom\">");
-
-    for(const profile of groups.custom) {
+    for(const profile of group) {
 
       lines.push(renderOption(profile));
     }
@@ -286,127 +243,65 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
   lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
 
-  // Fullscreen API profiles (most common).
-  if(groups.api.length > 0) {
+  // One block per category, in the table's display order, each rendering the table's own title and description. An empty category renders nothing.
+  for(const category of PROFILE_CATEGORIES) {
 
-    lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Fullscreen API Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For single-channel sites whose player exposes JavaScript's requestFullscreen() API.</p>");
-    lines.push("<dl class=\"profile-list\">");
+    const group = groups[category.key];
 
-    for(const profile of groups.api) {
+    if(group.length === 0) {
 
-      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
-      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
+      continue;
     }
 
-    lines.push("</dl>");
-    lines.push("</div>");
-  }
-
-  // Keyboard fullscreen profiles.
-  if(groups.keyboard.length > 0) {
-
     lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Keyboard Fullscreen Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For single-channel sites whose player toggles fullscreen with the 'f' key.</p>");
+    lines.push("<h4>" + category.title + " Profiles</h4>");
+    lines.push("<p class=\"category-desc\">" + escapeHtml(category.description) + "</p>");
     lines.push("<dl class=\"profile-list\">");
 
-    for(const profile of groups.keyboard) {
-
-      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
-      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
-    }
-
-    lines.push("</dl>");
-    lines.push("</div>");
-  }
-
-  // Special profiles.
-  if(groups.special.length > 0) {
-
-    lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Special Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For non-standard use cases like static pages without video.</p>");
-    lines.push("<dl class=\"profile-list\">");
-
-    for(const profile of groups.special) {
-
-      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
-      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
-    }
-
-    lines.push("</dl>");
-    lines.push("</div>");
-  }
-
-  // Multi-channel profiles (requires channel selector) - at the end since these are more advanced.
-  if(groups.multiChannel.length > 0) {
-
-    lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Multi-Channel Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For sites that host multiple live channels on a single page. These profiles require a channel selector ");
-    lines.push("to identify which channel to tune to. Set the Channel Selector field in Advanced Options when using these profiles.</p>");
-    lines.push("<dl class=\"profile-list\">");
-
-    for(const profile of groups.multiChannel) {
-
-      lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
-      lines.push("<dd>" + escapeHtml(profile.description) + "</dd>");
-    }
-
-    lines.push("</dl>");
-
-    // Per-strategy guidance for finding Channel Selector values. Organized by strategy type since the same strategy can be used across multiple profiles.
-    lines.push("<h4 class=\"selector-guide-heading\">Finding Your Channel Selector</h4>");
-    lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
-    lines.push("profile's strategy type:</p>");
-    lines.push("<dl class=\"profile-list\">");
-    lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (element selector)</dt>");
-    lines.push("<dd>These profiles use a <code>matchSelector</code> CSS template to find the channel element. The default pattern matches image URLs: ");
-    lines.push("right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
-    lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\"). ");
-    lines.push("Custom <code>matchSelector</code> patterns can match any attribute (aria-label, data-testid, title, etc.).</dd>");
-    lines.push("<dt>foxLive (station code)</dt>");
-    lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use ");
-    lines.push("the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
-    lines.push("<dt>hboMax (channel name)</dt>");
-    lines.push("<dd>Inspect a channel tile in the HBO rail \u2192 find the <code>&lt;p aria-hidden=\"true\"&gt;</code> element \u2192 use the text ");
-    lines.push("content (e.g., HBO, HBO Comedy, HBO Drama, HBO Hits, HBO Movies).</dd>");
-    lines.push("<dt>huluLive (channel name)</dt>");
-    lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with ");
-    lines.push("<code>live-guide-channel-kyber-</code> \u2192 use the portion after that prefix. The name may differ from the logo shown ");
-    lines.push("(e.g., the full name rather than an abbreviation). For local affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast ");
-    lines.push("resolves the local station automatically.</dd>");
-    lines.push("<dt>slingLive (channel name)</dt>");
-    lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with <code>channel-</code> ");
-    lines.push("\u2192 use the portion after that prefix. The name may differ from the logo shown (e.g., \"FOX Sports 1\" not \"FS1\"). For local ");
-    lines.push("affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast resolves the local station automatically.</dd>");
-    lines.push("<dt>youtubeTV (channel name)</dt>");
-    lines.push("<dd>Inspect a channel thumbnail in the guide \u2192 find the <code>aria-label</code> attribute on the ");
-    lines.push("<code>ytu-endpoint</code> element \u2192 use the name after \"watch \" (e.g., <code>aria-label=\"watch CNN\"</code> \u2192 CNN). ");
-    lines.push("For locals, use the network name (e.g., NBC) \u2014 affiliates like \"NBC 5\" are resolved automatically. PBS resolves to the ");
-    lines.push("local affiliate in major markets.</dd>");
-    lines.push("</dl>");
-
-    lines.push("</div>");
-  }
-
-  // Custom (user-defined) profiles.
-  if(groups.custom.length > 0) {
-
-    lines.push("<div class=\"profile-category\">");
-    lines.push("<h4>Custom Profiles</h4>");
-    lines.push("<p class=\"category-desc\">User-defined profiles created via the profile builder wizard or imported from service packs.</p>");
-    lines.push("<dl class=\"profile-list\">");
-
-    for(const profile of groups.custom) {
+    for(const profile of group) {
 
       lines.push("<dt>" + escapeHtml(profile.name) + "</dt>");
       lines.push("<dd>" + escapeHtml(profile.description || "No description provided.") + "</dd>");
     }
 
     lines.push("</dl>");
+
+    // The channel-selector guide belongs to the category whose profiles need a selector, so it is keyed on requiresSelector rather than on a category name.
+    if(category.requiresSelector) {
+
+      // Per-strategy guidance for finding Channel Selector values. Organized by strategy type since the same strategy can be used across multiple profiles.
+      lines.push("<h4 class=\"selector-guide-heading\">Finding Your Channel Selector</h4>");
+      lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
+      lines.push("profile's strategy type:</p>");
+      lines.push("<dl class=\"profile-list\">");
+      lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (element selector)</dt>");
+      lines.push("<dd>These profiles use a <code>matchSelector</code> CSS template to find the channel element. The default pattern matches image URLs: ");
+      lines.push("right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
+      lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\"). ");
+      lines.push("Custom <code>matchSelector</code> patterns can match any attribute (aria-label, data-testid, title, etc.).</dd>");
+      lines.push("<dt>foxLive (station code)</dt>");
+      lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use ");
+      lines.push("the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
+      lines.push("<dt>hboMax (channel name)</dt>");
+      lines.push("<dd>Inspect a channel tile in the HBO rail \u2192 find the <code>&lt;p aria-hidden=\"true\"&gt;</code> element \u2192 use the text ");
+      lines.push("content (e.g., HBO, HBO Comedy, HBO Drama, HBO Hits, HBO Movies).</dd>");
+      lines.push("<dt>huluLive (channel name)</dt>");
+      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with ");
+      lines.push("<code>live-guide-channel-kyber-</code> \u2192 use the portion after that prefix. The name may differ from the logo shown ");
+      lines.push("(e.g., the full name rather than an abbreviation). For local affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast ");
+      lines.push("resolves the local station automatically.</dd>");
+      lines.push("<dt>slingLive (channel name)</dt>");
+      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with <code>channel-</code> ");
+      lines.push("\u2192 use the portion after that prefix. The name may differ from the logo shown (e.g., \"FOX Sports 1\" not \"FS1\"). For local ");
+      lines.push("affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast resolves the local station automatically.</dd>");
+      lines.push("<dt>youtubeTV (channel name)</dt>");
+      lines.push("<dd>Inspect a channel thumbnail in the guide \u2192 find the <code>aria-label</code> attribute on the ");
+      lines.push("<code>ytu-endpoint</code> element \u2192 use the name after \"watch \" (e.g., <code>aria-label=\"watch CNN\"</code> \u2192 CNN). ");
+      lines.push("For locals, use the network name (e.g., NBC) \u2014 affiliates like \"NBC 5\" are resolved automatically. PBS resolves to the ");
+      lines.push("local affiliate in major markets.</dd>");
+      lines.push("</dl>");
+    }
+
     lines.push("</div>");
   }
 

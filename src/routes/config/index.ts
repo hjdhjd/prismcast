@@ -168,8 +168,9 @@ export function describeConfigurationOutcome(result: ApplyConfigurationResult): 
 }
 
 /**
- * Groups profiles by their declared category for UI display. Each profile declares its own category (api, custom, keyboard, multiChannel, special) and this helper
- * simply filters by that field. Display order is left entirely to the caller, and different callers order the categories differently.
+ * Groups profiles by their declared category for UI display. Each profile declares its own category and this helper simply filters by that field. The record is
+ * written out key by key rather than built from PROFILE_CATEGORIES, so a category added to the table without a bucket here is a compile error. Display order
+ * belongs to the table, and every caller renders in it.
  * @param profiles - List of available profiles with category, descriptions, and summaries.
  * @returns Object with profiles grouped by category.
  */
