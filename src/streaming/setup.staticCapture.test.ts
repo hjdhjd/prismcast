@@ -20,8 +20,12 @@ import type { OpenSharedWindowTabContext } from "../browser/tabSelection.ts";
 import { PassThrough } from "node:stream";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
 import assert from "node:assert/strict";
+import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+
+// Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
+closePuppeteerStreamWssOnIdle();
 
 // The overlay-handling options recorded by the injected startOverlayHandling, in call order, so the test can assert the phase and the absence of an abort signal for
 // the static poll.

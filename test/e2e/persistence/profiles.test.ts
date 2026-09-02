@@ -347,6 +347,30 @@ describe("profile resolution over stored user profiles", () => {
     assert.equal(resolved.selectReadyVideo, false, "flags no profile in the chain sets fall back to the default");
   });
 
+  test("a user profile turns the native fullscreen call on over a chain that contributes none of its own", async () => {
+
+    /* The opt-in proof the precedence case above cannot give. clickToPlayApi extends fullscreenApi and neither sets the flag that drives the native
+     * requestFullscreen call, so a resolved profile carrying it can only have taken it from the user profile. The second assertion is the control that keeps
+     * that true: should the parent chain ever start contributing the flag, it fails here rather than leaving the opt-in assertion to pass on an inherited value.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    await mutateProfiles((data) => {
+
+      data.profiles["userNativeFullscreen"] = { channelSelector: "opt-in-value", extends: "clickToPlayApi", useRequestFullscreen: true };
+    });
+
+    await initializeUserProfiles();
+
+    const resolved = resolveProfile("userNativeFullscreen");
+
+    assert.equal(resolved.useRequestFullscreen, true, "the user profile's own opt-in reaches the resolved shape");
+    assert.equal(resolveProfile("clickToPlayApi").useRequestFullscreen, false, "no profile in the parent chain sets the native fullscreen flag");
+    assert.equal(resolved.channelSelector, "opt-in-value", "the user profile's own flag applies");
+  });
+
   test("a builtin chain two hops deep resolves every ancestor's flags and carries no metadata fields", async () => {
 
     /* embeddedDynamicMultiVideo extends embeddedPlayer, which extends fullscreenApi - flags contributed at every level below the named profile except the root,
