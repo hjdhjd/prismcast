@@ -1271,7 +1271,8 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
     if(granted) {
 
       LOG.info("The display is smaller than the configured %s\u00d7%s capture surface (the browser window was granted %s\u00d7%s). Capture is unaffected: every " +
-        "page renders at the configured preset regardless of display or window size.", captureSurface.width, captureSurface.height, granted.width, granted.height);
+        "page renders at the configured preset whatever size the display is, and the window stays visible while captures run.", captureSurface.width,
+      captureSurface.height, granted.width, granted.height);
     }
   } catch(error) {
 
