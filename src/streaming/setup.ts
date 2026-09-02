@@ -11,7 +11,7 @@ import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } fro
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
-import { LOG, delay, extractDomain, formatError, getStreamContext, maxRetryDuration, realClock, registerAbortController,
+import { LOG, chromeFetch, delay, extractDomain, formatError, getStreamContext, maxRetryDuration, realClock, registerAbortController,
   resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, waitWithTimeout } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
@@ -25,7 +25,6 @@ import type { CaptureSession } from "./captureSession.ts";
 import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
-import { chromeFetch } from "../utils/index.ts";
 import { createCaptureSession } from "./captureSession.ts";
 import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";

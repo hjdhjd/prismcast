@@ -15,7 +15,7 @@
  * HDHR or another emulator on the same host) is logged at warn level and treated as graceful "discovery not available" rather than a startup failure - the HTTP
  * HDHR surface keeps working in that scenario, only LAN auto-detect is lost.
  */
-import { LOG, isCategoryEnabled } from "../utils/index.ts";
+import { LOG, getPackageVersion, isCategoryEnabled } from "../utils/index.ts";
 import type { NetworkInterfaceInfo, NetworkInterfaceInfoIPv4 } from "node:os";
 import { PACKET_UPGRADE_REQUEST, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
 import { CONFIG } from "../config/index.ts";
@@ -24,7 +24,6 @@ import type { Nullable } from "../types/index.ts";
 import type { Socket } from "node:dgram";
 import { createSocket } from "node:dgram";
 import { formatError } from "../utils/errors.ts";
-import { getPackageVersion } from "../utils/index.ts";
 import { getTunerStates } from "./tunerState.ts";
 import { networkInterfaces } from "node:os";
 import { resolveGet } from "./getHandlers.ts";

@@ -6,7 +6,7 @@
  * focus on the direct-fetch branch and the early-exit conditions (proxy stopped, page closed). The companion attemptNativeStreaming tests live in index.test.ts.
  */
 import type { PipelineShape, ProbeCacheIdentity } from "./probe.ts";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, mock, test } from "node:test";
 import { buildProbeCacheStamp, clearProbeCache, getCachedEncryption, probeManifest } from "./probe.ts";
 import { closePuppeteerStreamWssOnIdle, noop } from "../testing.helpers.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
@@ -15,7 +15,6 @@ import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import type { RefreshedFeedMetadata } from "./index.ts";
 import assert from "node:assert/strict";
-import { mock } from "node:test";
 import { refreshNativeManifest } from "./index.ts";
 import { subscribeToLogs } from "../utils/index.ts";
 

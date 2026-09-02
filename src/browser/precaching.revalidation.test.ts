@@ -11,7 +11,7 @@
  * empty-walk retry the guarded session owns, whose rows drive a stub page that records what it was asked to do and a provider whose successive walks are scripted.
  */
 import type { Browser, Page } from "puppeteer-core";
-import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";
+import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
 import { LOG, extractDomain } from "../utils/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearLoginState, setBrowserAccessors, startLoginMode } from "./login.ts";
@@ -19,7 +19,6 @@ import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts"
 import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
-import type { Nullable } from "../types/index.ts";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "./precaching.ts";
 import type { StartOverlayHandlingOptions } from "./consent.ts";

@@ -8,13 +8,12 @@
  * backup rotation, etc.) is owned by persistence.test.ts; we exercise only what's specific to health.ts on top of that framework.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { createIntegrationContext, pathInDataDir, waitForHealthFlush } from "../../helpers/integration.helpers.ts";
+import { createIntegrationContext, pathInDataDir, waitForHealthFlush, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { flushHealthStateNow, getChannelHealth, getDomainAuthState, getHealthSnapshot, loadHealthState, markChannelSuccess,
   markDomainAuth } from "../../../src/config/health.ts";
 import { LOG } from "../../../src/utils/index.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { writePersistedJson } from "../../helpers/integration.helpers.ts";
 
 describe("loadHealthState - parser branches over hand-edited / corrupt content", () => {
 

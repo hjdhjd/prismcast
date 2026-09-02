@@ -4,14 +4,12 @@
  * tests scope filesystem cases to a temp directory via withTempDir so cleanup is guaranteed. The isProcessRunning() check uses signal 0; we test against the
  * current process (always running) and a deliberately-implausible PID (always not running).
  */
+import { capturingLog, withTempDir } from "../testing.helpers.ts";
 import { clearPidFile, isProcessRunning } from "./pid.ts";
 import { describe, test } from "node:test";
+import { existsSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { capturingLog } from "../testing.helpers.ts";
-import { existsSync } from "node:fs";
 import path from "node:path";
-import { withTempDir } from "../testing.helpers.ts";
-import { writeFileSync } from "node:fs";
 
 describe("isProcessRunning", () => {
 

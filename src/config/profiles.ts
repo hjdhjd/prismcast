@@ -5,10 +5,9 @@
 import { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig,
   getRegisteredProviderModuleProfiles } from "./sites.ts";
 import type { DomainConfig, ProfileCategory, ProfileResolutionResult, ResolvedSiteProfile, SiteProfile } from "../types/index.ts";
+import { LOG, extractDomain } from "../utils/index.ts";
 import { getUserDomains, getUserProfiles, validateDomain, validateProfile } from "./userProfiles.ts";
 import { CHANNELS } from "../channels/index.ts";
-import { LOG } from "../utils/index.ts";
-import { extractDomain } from "../utils/index.ts";
 
 // Re-export site data so existing consumers can import from either module.
 export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, getBuiltinProfile, getDomainConfig };

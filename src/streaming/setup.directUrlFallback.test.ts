@@ -12,16 +12,15 @@
  * pointed at a temp data directory so nothing is written outside it.
  */
 import type { Browser, Page } from "puppeteer-core";
+import type { CaptureMode, ResolvedSiteProfile } from "../types/index.ts";
 import { DirectUrlEstablishmentError, createPageWithCapture, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { evictPersistedWatchUrl, persistProviderLineup } from "../config/providerLineups.ts";
 import { CONFIG } from "../config/index.ts";
-import type { CaptureMode } from "../types/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import { Readable } from "node:stream";
-import type { ResolvedSiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { initializeDataDir } from "../config/paths.ts";

@@ -12,14 +12,13 @@
  * structurally elsewhere, so what is asserted here is the composition's own contract, not their integrated behavior.
  */
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
-import type { Nullable, TuneResult } from "../types/index.ts";
+import type { Nullable, ResolvedSiteProfile, TuneResult } from "../types/index.ts";
 import { adjudicateChannelSelection, computeDirectTuneKind, establishChannelPlayback, establishmentBudgetMs } from "./setup.ts";
 import { assertNoUnhandledRejections, closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { describe, test } from "node:test";
 import type { EstablishChannelPlaybackDeps } from "./setup.ts";
 import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { Page } from "puppeteer-core";
-import type { ResolvedSiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { makeProfile } from "../config/profiles.helpers.ts";
 

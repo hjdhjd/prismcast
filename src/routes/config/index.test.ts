@@ -7,13 +7,12 @@
  * barrel re-exports verified only as identity-typed function references. The actual route handlers require a live Express app; we flag their per-handler
  * behavior as integration-level rather than exercise it here.
  */
+import type { ApplyConfigurationResult, RestartResult } from "./index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { categorizeProfiles, describeConfigurationOutcome, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";
-import type { ApplyConfigurationResult } from "./index.ts";
 import type { ConfigChange } from "../../config/reactivity.ts";
 import { PROFILE_CATEGORIES } from "../../types/index.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
-import type { RestartResult } from "./index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 

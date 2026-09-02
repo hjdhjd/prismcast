@@ -10,6 +10,7 @@
  */
 import type { Browser, Page } from "puppeteer-core";
 import { BrowserCaptureImpairedError, BrowserUnavailableError } from "../browser/index.ts";
+import { StreamSetupError, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import type { BrowserPurpose } from "../browser/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
@@ -17,7 +18,6 @@ import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import { LOG } from "../utils/index.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import { Readable } from "node:stream";
-import { StreamSetupError } from "./setup.ts";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
@@ -25,7 +25,6 @@ import { initializeDataDir } from "../config/paths.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { setupStream } from "./setup.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();

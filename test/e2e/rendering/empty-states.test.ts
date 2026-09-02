@@ -17,9 +17,8 @@
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
-import { generateTagFilterContent, generateTagManagerBody } from "../../../src/routes/config/channels/table.ts";
+import { generateChannelsPanel, generateTagFilterContent, generateTagManagerBody } from "../../../src/routes/config/channels/table.ts";
 import assert from "node:assert/strict";
-import { generateChannelsPanel } from "../../../src/routes/config/channels/table.ts";
 import { generateCustomProfilesPanel } from "../../../src/routes/config/services.ts";
 import { mutateChannelDisplayPrefs } from "../../../src/config/userChannels.ts";
 import { mutateEnabledServices } from "../../../src/config/services.ts";

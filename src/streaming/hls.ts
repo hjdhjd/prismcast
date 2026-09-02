@@ -7,6 +7,7 @@ import { LOG, formatError, formatResolutionLabel, runWithStreamContext, startTim
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
+import type { StreamSetupResult, TabReplacementHandlerFactory } from "./setup.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
@@ -25,8 +26,6 @@ import type { CaptureCodec } from "./codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
-import type { StreamSetupResult } from "./setup.ts";
-import type { TabReplacementHandlerFactory } from "./setup.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";
 import { createFMP4Segmenter } from "./fmp4Segmenter.ts";

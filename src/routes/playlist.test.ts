@@ -7,12 +7,11 @@
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";
-import { generatePlaylistContent, resolveBaseUrl } from "./playlist.ts";
+import { generatePlaylistContent, resolveBaseUrl, setupPlaylistEndpoint } from "./playlist.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
 import { makeReqRes } from "./express.helpers.ts";
-import { setupPlaylistEndpoint } from "./playlist.ts";
 
 function makeServer(): Promise<{ port: number; server: Server }> {
 
