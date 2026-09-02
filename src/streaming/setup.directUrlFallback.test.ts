@@ -72,6 +72,7 @@ function makeStubPage(): Page {
 // plain Readable - the capture session only ever destroys it on the unwind.
 const deps: CreatePageWithCaptureDeps = {
 
+  emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
   getStream: async (): Promise<PuppeteerStream> => new Readable({ read: (): void => { /* Nothing is ever read from the stub capture. */ } }) as PuppeteerStream,
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },

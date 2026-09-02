@@ -12,6 +12,7 @@
  *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
  *   - getUndersizedDisplayBounds (the pure decision the display advisory composes)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
+ *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
  *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
@@ -20,15 +21,16 @@
  * not prevent the file from exiting cleanly.
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, emitCurrentSystemStatus, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getChromeVersion,
-  getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, registerManagedPage, seedProfilePreferences, setGracefulShutdown,
-  unregisterManagedPage } from "./index.ts";
+import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance,
+  getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, registerManagedPage, seedProfilePreferences,
+  setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Page } from "puppeteer-core";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "../config/presets.ts";
+import { setImmediate as immediate } from "node:timers/promises";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
@@ -66,6 +68,43 @@ function fakePage(): Page {
 
   return {} as unknown as Page;
 }
+
+// Exactly the device-metrics fields emulateCaptureSurface declares, so a row can assert the whole override with one deepEqual rather than field by field.
+interface DeclaredSurface {
+
+  deviceScaleFactor: number;
+  height: number;
+  width: number;
+}
+
+/* The page double the capture-surface rows run against: evaluate answers with whatever the row's display reports (or rejects, or stays pending on a deferred),
+ * and setViewport records what was declared, in call order, so a row can read both the count and the content. This file's literal-double convention covers it;
+ * a single consumer does not earn a shared helper.
+ * @param evaluate - The reader standing in for the page's devicePixelRatio read.
+ * @returns The recorded declarations and the page to hand to emulateCaptureSurface.
+ */
+function makeCapturePage(evaluate: () => Promise<number>): { declared: DeclaredSurface[]; page: Page } {
+
+  const declared: DeclaredSurface[] = [];
+
+  return {
+
+    declared,
+    page: { evaluate, setViewport: async (viewport: DeclaredSurface): Promise<void> => { declared.push(viewport); } } as unknown as Page
+  };
+}
+
+/* The readings a page can hand back that are not usable scale factors, each with the check that identifies it inside the recorded warning: NaN and a missing
+ * value need a predicate rather than an equality, while zero and a negative are exact.
+ */
+const UNUSABLE_DENSITIES: readonly { assertReported: (reported: unknown) => void; label: string; reported: number }[] = [
+
+  { assertReported: (reported): void => assert.ok(Number.isNaN(reported), "the warning names the NaN reading"), label: "NaN", reported: NaN },
+  { assertReported: (reported): void => assert.equal(reported, 0, "the warning names the zero reading"), label: "a density of zero", reported: 0 },
+  { assertReported: (reported): void => assert.equal(reported, -1, "the warning names the negative reading"), label: "a negative density", reported: -1 },
+  { assertReported: (reported): void => assert.equal(reported, undefined, "the warning names the missing reading"), label: "no density at all",
+    reported: undefined as unknown as number }
+];
 
 describe("isGracefulShutdown / setGracefulShutdown", () => {
 
@@ -425,14 +464,16 @@ describe("buildLaunchOptions", () => {
     assert.equal(options.executablePath, "/sentinel/chrome", "executablePath surfaces from CONFIG");
   });
 
-  test("emulates every page at the configured preset with a 1:1 device scale factor", () => {
+  test("emulates every page at the configured preset and leaves the pixel density native", () => {
 
-    // The launch viewport is the capture surface: Puppeteer applies it to every page it creates, and tab capture reads that emulated surface. The dimensions have
-    // to track the configured preset, and the scale factor has to stay at 1 so the rastered surface matches the encode size exactly.
+    /* The launch viewport is the capture surface: Puppeteer applies it to every page it creates, and tab capture reads that emulated surface. The dimensions have
+     * to track the configured preset, and the scale factor has to be 0 - Chrome's disable value - so every page renders at the display's own density, which is
+     * what makes a page's reported devicePixelRatio the real one for emulateCaptureSurface to read back and declare on each capture page.
+     */
     const viewport = getPresetViewport(CONFIG);
 
-    assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 1, height: viewport.height, width: viewport.width },
-      "viewport derived from the configured preset");
+    assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 0, height: viewport.height, width: viewport.width },
+      "preset dimensions with the density override disabled");
   });
 
   test("derives the emulated viewport from a non-default preset rather than a fixed pair of dimensions", () => {
@@ -446,7 +487,8 @@ describe("buildLaunchOptions", () => {
 
     try {
 
-      assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 1, height: 2160, width: 3840 }, "the 4K preset yields a 3840x2160 surface");
+      assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 0, height: 2160, width: 3840 },
+        "the 4K preset yields a 3840x2160 surface, still at native density");
     } finally {
 
       CONFIG.streaming.qualityPreset = originalPreset;
@@ -492,6 +534,124 @@ describe("buildLaunchOptions", () => {
     for(const expected of [ "--disable-extensions", "--enable-automation", "--mute-audio" ]) {
 
       assert.ok(ignored.includes(expected), "ignoreDefaultArgs includes " + expected);
+    }
+  });
+});
+
+describe("emulateCaptureSurface", () => {
+
+  test("declares the preset's dimensions at the pixel density the page reports", async () => {
+
+    /* The row that tells a real read apart from a hardcoded declaration: the page reports a density of 2, so the override has to carry 2 - an implementation
+     * declaring NATIVE_DENSITY, or any literal, fails here - at exactly the configured preset's dimensions, and the caller gets those same dimensions back to
+     * constrain capture with.
+     */
+    const { declared, page } = makeCapturePage(async (): Promise<number> => 2);
+    const viewport = getPresetViewport(CONFIG);
+
+    const surface = await emulateCaptureSurface(page);
+
+    assert.deepEqual(declared, [{ deviceScaleFactor: 2, height: viewport.height, width: viewport.width }], "one override, at the preset size and the reported density");
+    assert.deepEqual(surface, { height: viewport.height, width: viewport.width }, "the declared dimensions come back for the capture constraints");
+  });
+
+  test("declares a fractional density exactly as the page reported it", async () => {
+
+    // Fractional scale factors are ordinary on Windows and Linux desktops, where 150% display scaling reports 1.5. Rounding or truncating to an integer would
+    // declare a density the display does not have, which is the disagreement the explicit declaration exists to prevent.
+    const { declared, page } = makeCapturePage(async (): Promise<number> => 1.5);
+
+    await emulateCaptureSurface(page);
+
+    assert.equal(declared[0]?.deviceScaleFactor, 1.5, "1.5 is declared unchanged");
+  });
+
+  for(const unusable of UNUSABLE_DENSITIES) {
+
+    test("declares a density of 1 and warns once when the page reports " + unusable.label, async (t) => {
+
+      /* A page that cannot report a usable density leaves nothing to measure, and the compositor still needs an explicit value...so the declaration falls back to
+       * 1 and says so. The warning has to carry the reading it rejected, not just fire: an operator reading the log needs to know what the page said.
+       */
+      const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+      const { declared, page } = makeCapturePage(async (): Promise<number> => unusable.reported);
+      const viewport = getPresetViewport(CONFIG);
+
+      const surface = await emulateCaptureSurface(page);
+
+      assert.deepEqual(declared, [{ deviceScaleFactor: 1, height: viewport.height, width: viewport.width }], "the fallback still declares an explicit density");
+      assert.deepEqual(surface, { height: viewport.height, width: viewport.width }, "the returned dimensions are the ones declared");
+      assert.equal(warn.mock.callCount(), 1, "exactly one warning covers the fallback");
+
+      const args = warn.mock.calls[0]?.arguments ?? [];
+
+      unusable.assertReported(args[1]);
+      assert.equal(args[2], 1, "the warning names the density that was declared instead");
+    });
+  }
+
+  test("warns about nothing when the page reports a usable density", async (t) => {
+
+    // The negative control for the fallback rows: a good reading is declared silently, so a warning on this path would mean the fallback branch is misfiring.
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const { page } = makeCapturePage(async (): Promise<number> => 2);
+
+    await emulateCaptureSurface(page);
+
+    assert.equal(warn.mock.callCount(), 0, "a usable reading needs no warning");
+  });
+
+  test("declares nothing when the density read fails", async () => {
+
+    // The read runs through evaluateWithAbort, so a terminated stream or an unresponsive page rejects here. The establishment unwinds through its DisposableStack
+    // on that path; declaring a guessed density on a page we could not measure would be the wrong answer to a failed measurement.
+    const failure = new Error("The page went away mid-read.");
+    const { declared, page } = makeCapturePage(async (): Promise<number> => { throw failure; });
+
+    await assert.rejects(emulateCaptureSurface(page), (error: Error): boolean => error === failure, "the read's failure reaches the caller");
+    assert.equal(declared.length, 0, "no override is declared when the density is unknown");
+  });
+
+  test("reads the density before it declares the surface", async () => {
+
+    /* Ordering is the whole mechanism: a declaration issued ahead of the read would re-declare the launch default, leaving the page reporting a density the
+     * surface was never emulated at. Holding the read open on a deferred forces the question rather than leaving it to microtask coincidence.
+     */
+    const { promise, resolve } = Promise.withResolvers<number>();
+    const { declared, page } = makeCapturePage(() => promise);
+    const pending = emulateCaptureSurface(page);
+
+    await immediate();
+
+    assert.equal(declared.length, 0, "nothing is declared while the read is still pending");
+
+    resolve(2);
+
+    await pending;
+
+    assert.deepEqual(declared.map((viewport) => viewport.deviceScaleFactor), [2], "the declaration lands exactly once, after the read resolved, at the density read");
+  });
+
+  test("derives the declared dimensions from a non-default preset rather than a fixed pair", async () => {
+
+    /* The configured default preset and the getter's own fallback resolve to the same dimensions, so those numbers alone cannot tell a config-driven declaration
+     * from a hardcoded one. Configuring 4K moves the expected dimensions away from both and makes the distinction observable.
+     */
+    const originalPreset = CONFIG.streaming.qualityPreset;
+
+    CONFIG.streaming.qualityPreset = "4k";
+
+    try {
+
+      const { declared, page } = makeCapturePage(async (): Promise<number> => 2);
+
+      const surface = await emulateCaptureSurface(page);
+
+      assert.deepEqual(declared, [{ deviceScaleFactor: 2, height: 2160, width: 3840 }], "the 4K preset is declared at the reported density");
+      assert.deepEqual(surface, { height: 2160, width: 3840 }, "the returned dimensions follow the preset");
+    } finally {
+
+      CONFIG.streaming.qualityPreset = originalPreset;
     }
   });
 });

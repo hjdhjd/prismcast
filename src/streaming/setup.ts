@@ -3,8 +3,8 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser, registerManagedPage,
-  setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserSupersededError, BrowserUnavailableError, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser,
+  registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
@@ -526,19 +526,22 @@ function disposePage(page: Page): void {
  * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same collaborator-injection boundary - no loader mock -
  * while production uses the real
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
- * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window. The remaining
- * browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the
- * collaborator-injection form of the Clock port (utils/clock.ts).
+ * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window.
+ * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering pin
+ * has to observe it landing there. The remaining browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page
+ * set, so they need no substitution. This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface CreatePageWithCaptureDeps {
 
+  readonly emulateCaptureSurface: typeof emulateCaptureSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly getStream: typeof getStream;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { getCurrentBrowser, getStream, startOverlayHandling, syncWindowVisibility };
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { emulateCaptureSurface, getCurrentBrowser, getStream, startOverlayHandling,
+  syncWindowVisibility };
 
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
@@ -587,6 +590,11 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   registerManagedPage(page, { inFlightSetup: true });
   resources.adopt(page, disposePage);
 
+  // Emulate the capture surface before anything else touches the page and well before capture acquires it: the dimensions the encoder is held to and the pixel
+  // density the compositor rasters at are both settled here, on a page nothing has overridden yet, and a failure unwinds through the DisposableStack exactly as
+  // every later step does.
+  const surface = await deps.emulateCaptureSurface(page);
+
   await page.setBypassCSP(true);
 
   // Inject the shared video selector helper into the browser context. This must happen before navigation so the helper is available when evaluate calls run during
@@ -611,8 +619,6 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // while every other failure unwinds through the DisposableStack.
   try {
 
-    const viewport = getPresetViewport(CONFIG);
-
     const streamOptions = {
 
       audio: true,
@@ -621,20 +627,24 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       video: true,
       videoBitsPerSecond: CONFIG.streaming.videoBitsPerSecond,
 
-      // Constrain capture frame rate to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower rate.
-      // The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but never
-      // drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its getStream() fails or succeeds at the tabCapture
-      // API level before encoding matters, so a representative-but-minimal constraint set suffices there.
+      /* The dimension bounds pin the track to exactly the surface emulateCaptureSurface declared on this page, rather than to a second read of the configured
+       * preset, so a preset saved mid-establishment cannot leave the encoder constrained to dimensions the page was never emulated at.
+       *
+       * The frame rate is constrained to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower
+       * rate. The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but
+       * never drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its getStream() fails or succeeds at the
+       * tabCapture API level before encoding matters, so a representative-but-minimal constraint set suffices there.
+       */
       videoConstraints: {
 
         mandatory: {
 
           maxFrameRate: 60,
-          maxHeight: viewport.height,
-          maxWidth: viewport.width,
+          maxHeight: surface.height,
+          maxWidth: surface.width,
           minFrameRate: Math.max(30, Math.min(60, CONFIG.streaming.frameRate)),
-          minHeight: viewport.height,
-          minWidth: viewport.width
+          minHeight: surface.height,
+          minWidth: surface.width
         }
       }
     } as unknown as Parameters<typeof getStream>[1];

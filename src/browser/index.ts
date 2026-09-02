@@ -866,6 +866,10 @@ export function getExecutablePath(): string {
  */
 const PUPPETEER_STREAM_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
 
+// Chrome's documented value for disabling the device-scale-factor part of a metrics override, leaving the display's own density in effect. Naming it keeps the
+// sentinel from reading as a literal density of zero.
+const NATIVE_DENSITY = 0;
+
 /**
  * Assembles the configuration options for launching Chrome with Puppeteer. These options are critical for reliable streaming:
  *
@@ -938,12 +942,18 @@ export function buildLaunchOptions(): LaunchOptions {
 
     /* The configured quality preset is the capture surface. Puppeteer holds this viewport for the browser's lifetime and applies it as a device-metrics override
      * to every page the browser creates - capture pages, probe pages, discovery pages, and the capture extension's own page - so no individual page-creation site
-     * has to ask for it. Tab capture reads the compositor's emulated surface rather than the OS window, which is what lets capture run at the preset's resolution
-     * whatever size the display is or the window happens to be. A device scale factor of 1 keeps a 1:1 render-to-encode mapping...the surface is rastered at
-     * exactly the pixel count the encoder consumes, so nothing is scaled on the way out. puppeteer-stream reads this same option and derives Chrome's window and
-     * ozone screen dimension flags from it, so the preset's dimensions enter the launch in exactly one place.
+     * has to ask for it. Tab capture reads the compositor's emulated surface, which is what lets capture run at the preset's resolution whatever size the display
+     * is.
+     *
+     * The size is overridden for every page; the pixel density is not. Declaring NATIVE_DENSITY leaves each page rendering the preset-sized surface at whatever
+     * density the display actually has, which is what makes a page's own devicePixelRatio a truthful reading of that display...emulateCaptureSurface reads it
+     * back and declares it explicitly on each capture page, because Chrome composes an active tab's capture correctly only under an explicitly declared density
+     * equal to the display's real one. Non-capture pages - the launch-gate probe, the discovery and precache pages, the extension's own page - keep this default
+     * and are never encoded. The encoder still receives exactly the preset dimensions, because the capture constraints pin the track size independently.
+     * puppeteer-stream reads this same option and derives Chrome's window and ozone screen dimension flags from it, so the preset's dimensions enter the launch in
+     * exactly one place.
      */
-    defaultViewport: { deviceScaleFactor: 1, height: viewport.height, width: viewport.width },
+    defaultViewport: { deviceScaleFactor: NATIVE_DENSITY, height: viewport.height, width: viewport.width },
 
     // Path to the Chrome executable, either from environment variable or autodetected.
     executablePath: getExecutablePath(),
@@ -988,6 +998,37 @@ export function buildLaunchOptions(): LaunchOptions {
     // restarts, sites remember login state and don't require re-authentication.
     userDataDir: getChromeDataDir(CONFIG)
   };
+}
+
+/**
+ * Emulates the capture surface on a page that is about to be captured: the configured quality preset's dimensions, declared at the pixel density the display
+ * actually has. Chrome composes an active tab's capture from the window presentation unless the page's device-metrics override declares a density explicitly
+ * and that density matches the display's real one, so the density is read from the page itself - which the launch default leaves at the display's own value,
+ * precisely so this read returns it - and declared back before capture acquires the page. The declared dimensions are returned so the caller pins its capture
+ * constraints to the surface that was emulated rather than reading the preset a second time.
+ * @param page - The page to emulate the capture surface on.
+ * @returns The dimensions declared on the page.
+ */
+export async function emulateCaptureSurface(page: Page): Promise<{ height: number; width: number }> {
+
+  const viewport = getPresetViewport(CONFIG);
+  const reportedDensity = await evaluateWithAbort(page, (): number => window.devicePixelRatio);
+
+  // A reading that is not a positive finite number is no measurement at all, and the compositor still needs an explicit density...1 is the density of an
+  // unscaled display, which is the safest thing to declare when the page cannot say.
+  const densityIsUsable = Number.isFinite(reportedDensity) && (reportedDensity > 0);
+  const deviceScaleFactor = densityIsUsable ? reportedDensity : 1;
+
+  if(!densityIsUsable) {
+
+    LOG.warn("The capture page reported a pixel density of %s. Emulating the capture surface at a density of %d instead.", reportedDensity, deviceScaleFactor);
+  }
+
+  await page.setViewport({ deviceScaleFactor, height: viewport.height, width: viewport.width });
+
+  LOG.debug("browser:lifecycle", "Emulated the capture surface at %dx%d with a pixel density of %s.", viewport.width, viewport.height, deviceScaleFactor);
+
+  return { height: viewport.height, width: viewport.width };
 }
 
 /**

@@ -32,6 +32,7 @@ function makeClosedStubPage(): Page {
 // it throws to make a regression that skipped the isClosed() check surface loudly.
 const deps: CreatePageWithCaptureDeps = {
 
+  emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeClosedStubPage() } as unknown as Browser),
   getStream: async (): Promise<PuppeteerStream> => { throw new Error("getStream must not run when the page is already closed at turn grant."); },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },
