@@ -64,6 +64,10 @@ export interface SystemStatus {
 
   browser: {
 
+    // True while the browser is waiting to relaunch because it can no longer start captures. Its running captures continue and new stream requests receive a 503
+    // back-off until the relaunch completes.
+    captureImpaired: boolean;
+
     connected: boolean;
     pageCount: number;
   };
@@ -226,17 +230,30 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
 }
 
 /**
+ * Reports whether two system statuses differ in anything a client renders: whether the browser is connected, whether it is waiting to relaunch because it can no
+ * longer start captures, and how many streams are active. Naming the comparison here gives the fields the dedupe turns on one home, and it takes a non-nullable
+ * previous so the emit's own null case stays a plain guard rather than a chain of optional accesses.
+ * @param previous - The status already cached.
+ * @param next - The status about to replace it.
+ * @returns True when the rendered state differs.
+ */
+function isRenderedStateChanged(previous: SystemStatus, next: SystemStatus): boolean {
+
+  return (previous.browser.captureImpaired !== next.browser.captureImpaired) || (previous.browser.connected !== next.browser.connected) ||
+    (previous.streams.active !== next.streams.active);
+}
+
+/**
  * Emits a system status changed event when browser or system state changes.
  * @param status - The updated system status.
  */
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
-  // Only emit if something meaningful changed. The optional chain on the second condition is required, not incidental: cachedSystemStatus can be null here (the
-  // first emit before any cache is set), and a !== comparison does not narrow the optional-chained base to non-null. ESLint flags the second ?. as unnecessary,
-  // so the disable below preserves the null-safe access against that false positive.
-  if((cachedSystemStatus?.browser.connected !== status.browser.connected) ||
-     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-     (cachedSystemStatus?.streams.active !== status.streams.active)) {
+  // The first emit has no cache to compare against, so it always fires; after that only a change a client would render is worth waking every subscriber for,
+  // which is what keeps the periodic memory updates off the wire.
+  const previous = cachedSystemStatus;
+
+  if(!previous || isRenderedStateChanged(previous, status)) {
 
     cachedSystemStatus = status;
     statusEmitter.emit("systemStatusChanged", status);
@@ -263,7 +280,7 @@ export function getStatusSnapshot(): StatusSnapshot {
     streams: Array.from(streamStatuses.values()),
     system: cachedSystemStatus ?? {
 
-      browser: { connected: false, pageCount: 0 },
+      browser: { captureImpaired: false, connected: false, pageCount: 0 },
       memory: { heapUsed: 0, rss: 0 },
       streams: { active: 0, limit: CONFIG.streaming.maxConcurrentStreams },
       uptime: 0

@@ -4,7 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { getAllStreams, getStreamCount, getTotalSegmentMemory } from "../streaming/registry.ts";
-import { getBrowserPages, getChromeVersion, isBrowserConnected } from "../browser/index.ts";
+import { getBrowserPages, getCaptureImpairment, getChromeVersion, isBrowserConnected } from "../browser/index.ts";
 import { getPackageVersion, isFFmpegAvailable } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { ClientType } from "../streaming/clients.ts";
@@ -25,6 +25,7 @@ export interface HealthDeps {
 
   readonly getAllStreams: typeof getAllStreams;
   readonly getBrowserPages: typeof getBrowserPages;
+  readonly getCaptureImpairment: typeof getCaptureImpairment;
   readonly getChromeVersion: typeof getChromeVersion;
   readonly getClientSummary: typeof getClientSummary;
   readonly getStreamCount: typeof getStreamCount;
@@ -32,7 +33,8 @@ export interface HealthDeps {
   readonly isBrowserConnected: typeof isBrowserConnected;
 }
 
-const defaultHealthDeps: HealthDeps = { getAllStreams, getBrowserPages, getChromeVersion, getClientSummary, getStreamCount, getTotalSegmentMemory, isBrowserConnected };
+const defaultHealthDeps: HealthDeps = { getAllStreams, getBrowserPages, getCaptureImpairment, getChromeVersion, getClientSummary, getStreamCount,
+  getTotalSegmentMemory, isBrowserConnected };
 
 /**
  * The health decision: the tri-state status, its HTTP code, and the operator message. Deriving it in one place collapses what were three separate evaluations of
@@ -46,20 +48,29 @@ interface HealthDecision {
 }
 
 /**
- * Derives the health status, HTTP code, and operator message from browser connectivity and stream utilization. Unhealthy (browser down) outranks degraded
- * (utilization at or past the 0.8 threshold); otherwise healthy. Pure and total - no I/O - so the branch precedence and the threshold live in exactly one place.
- * @param browserConnected - Whether the shared browser is currently connected.
- * @param streamUtilization - Active streams divided by the configured concurrency limit.
+ * Derives the health status, HTTP code, and operator message from browser connectivity, the browser's ability to start captures, and stream utilization. The
+ * precedence runs in that order: unhealthy (browser down) outranks degraded-because-marked, which outranks degraded-because-utilization (at or past the 0.8
+ * threshold); otherwise healthy. A disconnected browser outranks a marked one because a marked browser is still serving what it started, while a disconnected one
+ * is serving nothing. Pure and total - no I/O - so the branch precedence and the threshold live in exactly one place.
+ * @param options - The decision inputs.
+ * @param options.browserConnected - Whether the shared browser is currently connected.
+ * @param options.captureImpaired - Whether the browser can no longer start captures and is waiting to relaunch.
+ * @param options.streamUtilization - Active streams divided by the configured concurrency limit.
  * @returns The tri-state decision consumed by the /health handler.
  */
-export function deriveHealthStatus(browserConnected: boolean, streamUtilization: number): HealthDecision {
+export function deriveHealthStatus(options: { browserConnected: boolean; captureImpaired: boolean; streamUtilization: number }): HealthDecision {
 
-  if(!browserConnected) {
+  if(!options.browserConnected) {
 
     return { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" };
   }
 
-  if(streamUtilization >= 0.8) {
+  if(options.captureImpaired) {
+
+    return { httpStatus: 200, message: "The browser can no longer start captures and will relaunch once it is idle.", status: "degraded" };
+  }
+
+  if(options.streamUtilization >= 0.8) {
 
     return { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" };
   }
@@ -77,6 +88,10 @@ export function setupHealthEndpoint(app: Express, deps: HealthDeps = defaultHeal
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
 
     const browserConnected = deps.isBrowserConnected();
+
+    // Both browser facts are read here, before the first await, so the response describes one request-time instant. A request composes its own snapshot and there
+    // is no cross-request cache to race, which is what lets this read sit at the top rather than beside the fields it feeds.
+    const captureImpaired = deps.getCaptureImpairment() !== null;
 
     let pageCount = 0;
 
@@ -117,12 +132,13 @@ export function setupHealthEndpoint(app: Express, deps: HealthDeps = defaultHeal
     // warning below, giving monitoring and alerting systems headroom to react while streams can still be served rather than only flagging trouble at full saturation.
     const streamUtilization = deps.getStreamCount() / CONFIG.streaming.maxConcurrentStreams;
 
-    const decision = deriveHealthStatus(browserConnected, streamUtilization);
+    const decision = deriveHealthStatus({ browserConnected, captureImpaired, streamUtilization });
 
     const health: HealthStatus = {
 
       browser: {
 
+        captureImpaired: captureImpaired,
         connected: browserConnected,
         pageCount: pageCount
       },

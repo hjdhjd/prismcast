@@ -31,6 +31,7 @@ import type { AddressInfo, Server } from "node:net";
 import type { ClientSummary, ClientType } from "../streaming/clients.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { deriveHealthStatus, setupHealthEndpoint } from "./health.ts";
+import type { CaptureImpairment } from "../browser/index.ts";
 import type { Express } from "express";
 import type { HealthDeps } from "./health.ts";
 import type { Nullable } from "../types/index.ts";
@@ -46,6 +47,7 @@ import express from "express";
 interface MockState {
 
   browserConnected: boolean;
+  captureImpaired: boolean;
   chromeVersion: Nullable<string>;
   pageCount: number;
   pageError: Nullable<Error>;
@@ -60,7 +62,7 @@ interface MockState {
 // source type also drifted.
 interface HealthBody {
 
-  browser: { connected: boolean; pageCount: number };
+  browser: { captureImpaired: boolean; connected: boolean; pageCount: number };
   captureMode: string;
   chrome: Nullable<string>;
   clients: { byType: { count: number; type: string }[]; total: number };
@@ -121,6 +123,7 @@ function defaultMockState(): MockState {
   return {
 
     browserConnected: false,
+    captureImpaired: false,
     chromeVersion: null,
     pageCount: 0,
     pageError: null,
@@ -147,6 +150,7 @@ const deps: HealthDeps = {
     // The handler reads only pages.length, so the elements are minimal stubs cast to Page - the accepted Puppeteer-double convention where only a subset matters.
     return Array.from({ length: mockState.pageCount }, (_, i) => ({ pageId: i })) as unknown as Page[];
   },
+  getCaptureImpairment: (): Nullable<CaptureImpairment> => (mockState.captureImpaired ? { reason: "probe", since: 0 } : null),
   getChromeVersion: (): Nullable<string> => mockState.chromeVersion,
   getClientSummary: (streamId: number): ClientSummary => mockState.streamSummaries.get(streamId) ?? { clients: [], total: 0 },
   getStreamCount: (): number => mockState.streamCount,
@@ -444,6 +448,26 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
   });
 });
 
+describe("setupHealthEndpoint - GET /health (browser connected, capture-impaired branch)", () => {
+
+  test("reports degraded with the impairment message and the mark in the payload", async () => {
+
+    /* The whole projection in one request: the endpoint reads the mark, the decision turns it into a degraded status with its own message, and the payload carries
+     * the field an external monitor polls. Utilization is zero, so nothing but the mark can produce this answer.
+     */
+    mockState.browserConnected = true;
+    mockState.captureImpaired = true;
+
+    const res = await fetch(urlFor("/health"));
+    const body = await res.json() as HealthBody;
+
+    assert.equal(res.status, 200, "a marked browser is degraded, not unhealthy - it is still serving what it started");
+    assert.equal(body.status, "degraded");
+    assert.equal(body.message, "The browser can no longer start captures and will relaunch once it is idle.");
+    assert.equal(body.browser.captureImpaired, true, "and the mark is reported field by field for a monitor to read");
+  });
+});
+
 describe("setupHealthEndpoint - GET /health (client aggregation loop)", () => {
 
   test("aggregates per-stream client summaries into a system-wide byType breakdown", async () => {
@@ -516,22 +540,48 @@ describe("deriveHealthStatus - the pure decision core", () => {
 
   test("browser disconnected is unhealthy (503) regardless of utilization", () => {
 
-    // Branch precedence: browser-down outranks any utilization. Pins the single source of truth the handler now derives status, message, and HTTP code from.
-    assert.deepEqual(deriveHealthStatus(false, 0), { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" });
-    assert.deepEqual(deriveHealthStatus(false, 0.9), { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" },
-      "browser-down outranks a high utilization");
+    // Branch precedence: browser-down outranks any utilization. Pins the single source of truth the handler derives status, message, and HTTP code from.
+    assert.deepEqual(deriveHealthStatus({ browserConnected: false, captureImpaired: false, streamUtilization: 0 }),
+      { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" });
+    assert.deepEqual(deriveHealthStatus({ browserConnected: false, captureImpaired: false, streamUtilization: 0.9 }),
+      { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" }, "browser-down outranks a high utilization");
   });
 
   test("connected and below 0.8 utilization is healthy (200, no message)", () => {
 
-    assert.deepEqual(deriveHealthStatus(true, 0.79), { httpStatus: 200, status: "healthy" });
+    assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: false, streamUtilization: 0.79 }), { httpStatus: 200, status: "healthy" });
   });
 
   test("connected at or above 0.8 utilization is degraded (200)", () => {
 
     // The 0.8 threshold is inclusive and cliff-then-stay - the exact contract the handler tests exercise through the server, pinned here in isolation.
-    assert.deepEqual(deriveHealthStatus(true, 0.8), { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" },
-      "the threshold is inclusive at 0.8");
-    assert.deepEqual(deriveHealthStatus(true, 1.5), { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" });
+    assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: false, streamUtilization: 0.8 }),
+      { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" }, "the threshold is inclusive at 0.8");
+    assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: false, streamUtilization: 1.5 }),
+      { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" });
+  });
+
+  test("a connected browser that can no longer start captures is degraded with its own message", () => {
+
+    // The mark's own branch. An idle browser reads healthy on every other input, so a decision that ignored the mark would return healthy here and the endpoint
+    // would report nothing while every tune was being refused.
+    assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: true, streamUtilization: 0 }),
+      { httpStatus: 200, message: "The browser can no longer start captures and will relaunch once it is idle.", status: "degraded" });
+  });
+
+  test("the mark outranks utilization, so a busy marked browser reports the mark", () => {
+
+    // Both conditions are degraded, so only the message tells them apart - and the mark is the one an operator has to act on, since capacity resolves itself as
+    // streams end while the mark is what is refusing the next tune.
+    assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: true, streamUtilization: 0.9 }),
+      { httpStatus: 200, message: "The browser can no longer start captures and will relaunch once it is idle.", status: "degraded" });
+  });
+
+  test("disconnection outranks the mark, so a disconnected marked browser is still unhealthy", () => {
+
+    // A marked browser is still serving what it started; a disconnected one is serving nothing. The 503 has to survive the mark, or a monitoring system watching
+    // status codes would see a browser crash reported as a 200.
+    assert.deepEqual(deriveHealthStatus({ browserConnected: false, captureImpaired: true, streamUtilization: 0 }),
+      { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" });
   });
 });

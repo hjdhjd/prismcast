@@ -415,6 +415,12 @@ export async function emitCurrentSystemStatus(): Promise<void> {
 
     browser: {
 
+      /* Read at compose time, beside the connectivity read below rather than as a snapshot taken before the page-count await. This function is called un-awaited
+       * from many sites, so two calls can be in flight around the instant a mark lands; a pre-mark snapshot settling after the mark's own emit would broadcast
+       * false over the cached true and the dedupe would honor it. Reading here makes every emit describe the state at the moment consumers receive it, so the
+       * later of two racing emits is also the truer one.
+       */
+      captureImpaired: supervisor.captureImpairment() !== null,
       connected: !!browser && browser.connected,
       pageCount
     },

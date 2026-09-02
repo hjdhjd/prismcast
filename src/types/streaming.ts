@@ -109,6 +109,10 @@ export interface HealthStatus {
   // Browser connection information.
   browser: {
 
+    // Whether the browser is waiting to relaunch because it can no longer start captures. Its running captures continue and new stream requests are refused with a
+    // 503 back-off until nothing depends on it and the relaunch runs.
+    captureImpaired: boolean;
+
     // Whether the Puppeteer browser instance is currently connected. False indicates the browser crashed or was closed.
     connected: boolean;
 

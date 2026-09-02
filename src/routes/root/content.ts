@@ -785,7 +785,7 @@ export function generateApiReferenceContent(): string {
     "<div class=\"section\">",
     "<h3>Example: Health Check Response</h3>",
     "<pre>{",
-    "  \"browser\": { \"connected\": true, \"pageCount\": 2 },",
+    "  \"browser\": { \"captureImpaired\": false, \"connected\": true, \"pageCount\": 2 },",
     "  \"captureMode\": \"ffmpeg\",",
     "  \"chrome\": \"Chrome/144.0.7559.110\",",
     "  \"clients\": { \"byType\": [{ \"count\": 1, \"type\": \"hls\" }], \"total\": 1 },",

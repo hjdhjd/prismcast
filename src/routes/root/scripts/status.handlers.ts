@@ -66,7 +66,7 @@ export interface StreamSummary {
  */
 export interface SystemSummary {
 
-  readonly browser: { readonly connected: boolean };
+  readonly browser: { readonly captureImpaired: boolean; readonly connected: boolean };
   readonly streams: { readonly active: number; readonly limit: number };
 }
 
@@ -495,8 +495,10 @@ function renderDetailStarted(s: StreamSummary): string {
 // DOM mutators. Each takes a HandlerContext (and any per-call inputs) and reads/writes ctx.document and ctx.state. Tests call them directly against happy-dom
 // or stub documents.
 
-// Update the system-status display in the page header. Shows browser-connected status (green dot when connected, red dot + "Browser offline" when not) plus a
-// stream count summary.
+// Update the system-status display in the page header. The browser's indicator shows one state at a time, in precedence order: disconnected, which outranks
+// everything else and shows a red dot with "Browser offline"; connected but waiting to relaunch because it can no longer start captures, which shows the
+// recovering-state dot and a "Browser relaunch pending" label whose tooltip explains why a tune is being refused; and connected and able to start captures, which
+// shows the plain green dot. A stream count summary follows it.
 function updateSystemStatus(ctx: HandlerContext): void {
 
   if(!ctx.state.systemData) {
@@ -512,12 +514,16 @@ function updateSystemStatus(ctx: HandlerContext): void {
     return;
   }
 
-  if(ctx.state.systemData.browser.connected) {
-
-    healthEl.innerHTML = "<span class=\"status-dot\" style=\"color: var(--stream-healthy);\">&#9679;</span>";
-  } else {
+  if(!ctx.state.systemData.browser.connected) {
 
     healthEl.innerHTML = "<span class=\"status-dot\" style=\"color: var(--stream-error);\">&#9679;</span> Browser offline";
+  } else if(ctx.state.systemData.browser.captureImpaired) {
+
+    healthEl.innerHTML = "<span class=\"status-dot\" style=\"color: var(--stream-recovering);\">&#9679;</span> <span title=\"The browser can no longer " +
+      "start captures. It relaunches as soon as no stream is active, and new tunes are refused until then.\">Browser relaunch pending</span>";
+  } else {
+
+    healthEl.innerHTML = "<span class=\"status-dot\" style=\"color: var(--stream-healthy);\">&#9679;</span>";
   }
 
   const active = ctx.state.systemData.streams.active;

@@ -835,7 +835,8 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
     return (async (): Promise<void> => {
 
       await using ctx = await createDomTestContext();
-      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { connected: true }, streams: { active: 0, limit: 5 } } } });
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: false, connected: true },
+        streams: { active: 0, limit: 5 } } } });
 
       handlers.updateSystemStatus(harness.ctx);
 
@@ -856,7 +857,8 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
     return (async (): Promise<void> => {
 
       await using ctx = await createDomTestContext();
-      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { connected: false }, streams: { active: 0, limit: 5 } } } });
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: false, connected: false },
+        streams: { active: 0, limit: 5 } } } });
 
       handlers.updateSystemStatus(harness.ctx);
 
@@ -867,12 +869,56 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
     })();
   });
 
+  test("renders the relaunch-pending state when the browser can no longer start captures", () => {
+
+    /* The third header state. The color and the label are both pinned, and so is the tooltip, because the tooltip is the only place the interface explains why a
+     * tune is being refused - a state rendered without it would leave a user watching a failing tune with nothing to read. The offline label is asserted absent so
+     * a regression that fell through to the disconnected branch surfaces here.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: true, connected: true },
+        streams: { active: 1, limit: 5 } } } });
+
+      handlers.updateSystemStatus(harness.ctx);
+
+      const healthEl = ctx.document.getElementById("system-health");
+
+      assert.match(healthEl?.innerHTML ?? "", /var\(--stream-recovering\)/, "the relaunch-pending state must use the recovering color");
+      assert.match(healthEl?.innerHTML ?? "", /Browser relaunch pending/);
+      assert.match(healthEl?.innerHTML ?? "", /title="[^"]*can no longer start captures/, "the label carries a tooltip explaining the refusal");
+      assert.doesNotMatch(healthEl?.innerHTML ?? "", /Browser offline/, "a marked but connected browser is not offline");
+    })();
+  });
+
+  test("renders 'Browser offline' rather than relaunch-pending when a marked browser is also disconnected", () => {
+
+    // Precedence at the interface, matching the health endpoint's: a disconnected browser is serving nothing, so it outranks a mark that says it can still serve
+    // what it started. A branch order that tested the mark first would render the wrong state here.
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: true, connected: false },
+        streams: { active: 0, limit: 5 } } } });
+
+      handlers.updateSystemStatus(harness.ctx);
+
+      const healthEl = ctx.document.getElementById("system-health");
+
+      assert.match(healthEl?.innerHTML ?? "", /Browser offline/);
+      assert.match(healthEl?.innerHTML ?? "", /var\(--stream-error\)/, "offline state must use the error color");
+      assert.doesNotMatch(healthEl?.innerHTML ?? "", /Browser relaunch pending/, "disconnected outranks the mark");
+    })();
+  });
+
   test("renders '{active}/{limit} streams' and adds clickable class when active > 0", () => {
 
     return (async (): Promise<void> => {
 
       await using ctx = await createDomTestContext();
-      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { connected: true }, streams: { active: 3, limit: 8 } } } });
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: false, connected: true },
+        streams: { active: 3, limit: 8 } } } });
 
       handlers.updateSystemStatus(harness.ctx);
 
@@ -895,7 +941,8 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
 
       ctx.document.getElementById("stream-popover-menu")?.classList.add("show");
 
-      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { connected: true }, streams: { active: 0, limit: 5 } } } });
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { systemData: { browser: { captureImpaired: false, connected: true },
+        streams: { active: 0, limit: 5 } } } });
 
       handlers.updateSystemStatus(harness.ctx);
 
@@ -1517,7 +1564,7 @@ describe("status.handlers: handleSnapshot (SSE handler)", () => {
       const snapshot: SnapshotPayload = {
 
         streams: [makeStream({ channel: "NBC", id: "1" })],
-        system: { browser: { connected: true }, streams: { active: 1, limit: 5 } }
+        system: { browser: { captureImpaired: false, connected: true }, streams: { active: 1, limit: 5 } }
       };
 
       handlers.handleSnapshot(snapshot, harness.ctx);
@@ -1546,7 +1593,7 @@ describe("status.handlers: handleSnapshot (SSE handler)", () => {
 
         channelPatch,
         streams: [],
-        system: { browser: { connected: true }, streams: { active: 0, limit: 5 } }
+        system: { browser: { captureImpaired: false, connected: true }, streams: { active: 0, limit: 5 } }
       };
 
       handlers.handleSnapshot(snapshot, harness.ctx);
@@ -1565,7 +1612,7 @@ describe("status.handlers: handleSnapshot (SSE handler)", () => {
       const snapshot: SnapshotPayload = {
 
         streams: [],
-        system: { browser: { connected: true }, streams: { active: 0, limit: 5 } }
+        system: { browser: { captureImpaired: false, connected: true }, streams: { active: 0, limit: 5 } }
       };
 
       handlers.handleSnapshot(snapshot, harness.ctx);
@@ -1735,7 +1782,7 @@ describe("status.handlers: handleSystemStatusChanged (SSE handler)", () => {
       await using ctx = await createDomTestContext();
       const harness = makeHandlerContext(asDomDocument(ctx));
 
-      handlers.handleSystemStatusChanged({ browser: { connected: false }, streams: { active: 2, limit: 10 } }, harness.ctx);
+      handlers.handleSystemStatusChanged({ browser: { captureImpaired: false, connected: false }, streams: { active: 2, limit: 10 } }, harness.ctx);
 
       assert.equal(harness.ctx.state.systemData?.browser.connected, false);
       assert.match(ctx.document.getElementById("system-health")?.innerHTML ?? "", /Browser offline/);

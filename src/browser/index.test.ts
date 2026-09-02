@@ -726,13 +726,14 @@ describe("emitCurrentSystemStatus", () => {
     if(captured.length > 0) {
 
       const status = captured[0]?.data as {
-        browser: { connected: boolean; pageCount: number };
+        browser: { captureImpaired: boolean; connected: boolean; pageCount: number };
         memory: { heapUsed: number; rss: number };
         streams: { active: number; limit: number };
         uptime: number;
       };
 
       assert.ok(status, "status object captured");
+      assert.equal(typeof status.browser.captureImpaired, "boolean", "browser.captureImpaired is a boolean");
       assert.equal(typeof status.browser.connected, "boolean", "browser.connected is a boolean");
       assert.equal(typeof status.browser.pageCount, "number", "browser.pageCount is a number");
       assert.equal(typeof status.memory.heapUsed, "number", "memory.heapUsed is a number");
@@ -741,7 +742,9 @@ describe("emitCurrentSystemStatus", () => {
       assert.equal(typeof status.streams.limit, "number", "streams.limit is a number");
       assert.equal(typeof status.uptime, "number", "uptime is a number");
 
-      // No browser launched in the unit-test environment, so the connected flag must be false and the page count must be zero.
+      // No browser launched in the unit-test environment, so the connected flag must be false, the page count must be zero, and there is no ready browser for a
+      // capture-impairment mark to live on.
+      assert.equal(status.browser.captureImpaired, false, "no browser -> no impairment mark");
       assert.equal(status.browser.connected, false, "no browser -> not connected");
       assert.equal(status.browser.pageCount, 0, "no browser -> zero pages");
     }

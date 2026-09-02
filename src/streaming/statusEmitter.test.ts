@@ -54,13 +54,13 @@ function makeStreamStatus(overrides: Partial<StreamStatus> = {}): StreamStatus {
 }
 
 /* makeSystemStatus mirrors the SystemStatus shape used by emitSystemStatusChanged and getStatusSnapshot. We expose individual overrides so tests can tweak the
- * specific dedup-relevant fields (browser.connected, streams.active) without rebuilding the rest.
+ * specific dedup-relevant fields (browser.captureImpaired, browser.connected, streams.active) without rebuilding the rest.
  */
 function makeSystemStatus(overrides: { browser?: Partial<SystemStatus["browser"]>; streams?: Partial<SystemStatus["streams"]> } = {}): SystemStatus {
 
   return {
 
-    browser: { connected: false, pageCount: 0, ...overrides.browser },
+    browser: { captureImpaired: false, connected: false, pageCount: 0, ...overrides.browser },
     memory: { heapUsed: 0, rss: 0 },
     streams: { active: 0, limit: 10, ...overrides.streams },
     uptime: 0
@@ -354,6 +354,36 @@ describe("emitSystemStatusChanged", () => {
 
     unsubscribe();
   });
+
+  test("emits when browser.captureImpaired toggles, and dedupes the repeat", () => {
+
+    /* The mark is broadcast on its own account. A status that differs from the cached one only in captureImpaired has the same connectivity and the same active
+     * count, so a dedupe that compared only those would swallow the very transition the interface needs to render - and the repeat that follows must still be
+     * suppressed, or the periodic status updates would wake every client for the life of the mark. The clearing is pinned as well, so a dedupe that noticed only the
+     * rising edge would surface here.
+     */
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
+
+    const events: { event: StatusEventType; data: unknown }[] = [];
+    const unsubscribe = subscribeToStatus((event, data) => {
+
+      events.push({ data, event });
+    });
+
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
+
+    assert.equal(events.filter((e) => e.event === "systemStatusChanged").length, 1, "the mark triggers an emit on its own");
+
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
+
+    assert.equal(events.filter((e) => e.event === "systemStatusChanged").length, 1, "and an identical repeat is suppressed");
+
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
+
+    assert.equal(events.filter((e) => e.event === "systemStatusChanged").length, 2, "and the clearing emits on its own account too");
+
+    unsubscribe();
+  });
 });
 
 describe("updateSystemStatus", () => {
@@ -413,10 +443,24 @@ describe("getStatusSnapshot", () => {
     // concrete numbers - other tests in this module mutate cachedSystemStatus.
     const snapshot = getStatusSnapshot();
 
+    assert.ok(typeof snapshot.system.browser.captureImpaired === "boolean");
     assert.ok(typeof snapshot.system.browser.connected === "boolean");
     assert.ok(typeof snapshot.system.browser.pageCount === "number");
     assert.ok(typeof snapshot.system.streams.active === "number");
     assert.ok(typeof snapshot.system.streams.limit === "number");
+  });
+
+  test("carries the browser's capture-impairment mark through to a connecting client", () => {
+
+    // The snapshot is the whole state a client gets on connect, so a mark that only rode the delta events would leave a client that connected during the mark
+    // rendering a healthy header until the next transition.
+    updateSystemStatus(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
+
+    assert.equal(getStatusSnapshot().system.browser.captureImpaired, true, "the cached mark reaches the snapshot");
+
+    updateSystemStatus(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
+
+    assert.equal(getStatusSnapshot().system.browser.captureImpaired, false, "and so does its clearing");
   });
 
   test("does not include health state in its snapshot - that responsibility moved to the route layer", () => {
