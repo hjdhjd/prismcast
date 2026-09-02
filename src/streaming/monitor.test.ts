@@ -71,8 +71,8 @@ function readableState(currentTime: number): Record<string, unknown> {
   };
 }
 
-/* A readable state carrying real intrinsic dimensions, so the resolution check runs its full body instead of returning at the zero-dimension guard. The
- * dimensions match the default preset's surface exactly, so every reading is full quality and no recovery is triggered.
+/* A readable state carrying real intrinsic dimensions, so the resolution check runs its full body instead of returning at the zero-dimension guard. Every reading
+ * is the same size, so the first one sets the stream's peak and each one after is full quality against it and triggers no recovery.
  * @param currentTime - The playback position to report, so successive reads can show progression.
  * @returns The state object a getVideoState read resolves with.
  */
@@ -310,6 +310,112 @@ describe("monitorPlaybackHealth", () => {
     handle.dispose();
     unsubscribe();
     emitStreamRemoved(numericStreamId);
+  });
+
+  test("never judges a source degraded for staying at the best it has ever delivered", async (t) => {
+
+    /* The false-positive class this replaces: a 480x270 source read against a 1280x720 capture surface is 37 percent of it in either dimension, so the surface
+     * comparison called forty steady readings a degradation and reloaded the page. Measured against the stream's own peak - which this source sets on its first
+     * reading and then matches - the same forty readings are full quality.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+    const handle = startMonitor(fake.page, "resolution-steady-1", 9012);
+
+    for(let tick = 0; tick < 40; tick++) {
+
+      // Sequential by definition: each tick's read must settle before the next firing.
+      // eslint-disable-next-line no-await-in-loop
+      await advance(t, MONITOR_INTERVAL);
+      fake.evaluations[tick]?.resolve({ ...readableState(tick + 1), videoHeight: 270, videoWidth: 480 });
+
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    handle.dispose();
+
+    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 0, "a source at its own best is never judged degraded");
+    assert.equal(fake.navigations.length, 0, "and no recovery navigation was issued");
+  });
+
+  test("rides out a one-rung adaptive downshift without recovering against it", async (t) => {
+
+    /* The exposure this threshold closes: sixteen readings at 1600x900 establish the peak, then the service steps one rung down to 1024x576 - 41 percent of
+     * that peak by area, the ordinary pacing of an adaptive stream rather than a collapse. Every recovery the detector drives is a capture restart, so a dip of
+     * this size has to ride: no degradation warning and no recovery navigation across the same forty ticks that fire for a genuine collapse.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+    const handle = startMonitor(fake.page, "resolution-onerung-1", 9014);
+
+    for(let tick = 0; tick < 40; tick++) {
+
+      // Sequential by definition: each tick's read must settle before the next firing.
+      // eslint-disable-next-line no-await-in-loop
+      await advance(t, MONITOR_INTERVAL);
+      fake.evaluations[tick]?.resolve((tick < 16) ? { ...readableState(tick + 1), videoHeight: 900, videoWidth: 1600 } :
+        { ...readableState(tick + 1), videoHeight: 576, videoWidth: 1024 });
+
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    handle.dispose();
+
+    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 0, "a one-rung downshift is not a degradation");
+    assert.equal(fake.navigations.length, 0, "and no recovery navigation was issued");
+  });
+
+  test("still recovers a drop to below half the picture the stream had been delivering", async (t) => {
+
+    /* The other direction, and the behavior the detector exists for: sixteen readings at 1280x720 establish the peak, then the source sticks on 480x270 - 14
+     * percent of that peak by area. The ladder's first step still fires, one reading count later than the grace window and the count threshold together allow,
+     * and it issues exactly one page navigation.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+    const handle = startMonitor(fake.page, "resolution-drop-1", 9013);
+
+    let warnTick = -1;
+
+    for(let tick = 0; tick < 40; tick++) {
+
+      // Sequential by definition: each tick's read must settle before the next firing.
+      // eslint-disable-next-line no-await-in-loop
+      await advance(t, MONITOR_INTERVAL);
+      fake.evaluations[tick]?.resolve((tick < 16) ? resolutionReadableState(tick + 1) : { ...readableState(tick + 1), videoHeight: 270, videoWidth: 480 });
+
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+
+      if(countMessages(messages, "Video resolution has been degraded for") > 0) {
+
+        warnTick = tick;
+
+        break;
+      }
+    }
+
+    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 1, "the ladder warned exactly once");
+    assert.equal(warnTick, 30, "the warn landed on the reading that crossed the count threshold");
+
+    await flushMicrotasks();
+
+    assert.equal(fake.navigations.length, 1, "the warn was followed by exactly one page navigation");
+
+    // The navigation is left pending by the double, so it is failed here and allowed to settle before the monitor is disposed.
+    fake.navigations[0]?.reject(new Error("net::ERR_ABORTED"));
+
+    await flushMicrotasks();
+
+    handle.dispose();
   });
 
   test("bounds a read issued during a timeout streak by the short confirmation probe", async (t) => {

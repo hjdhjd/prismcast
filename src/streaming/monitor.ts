@@ -2,14 +2,15 @@
  *
  * monitor.ts: Playback health monitoring for PrismCast.
  */
-import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
+import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, ResolutionPeak, TabReplacementResult } from "./recovery.ts";
 import { EvaluateTimeoutError, LOG, capitalize, formatError, formatResolution, getAbortSignal, isPageDeathError, isSessionClosedError,
   runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
-import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth, formatIssueType,
-  formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, recordRecoveryAttempt, recordRecoverySuccess,
-  resetCircuitBreaker, shouldTriggerRecovery } from "./recovery.ts";
+import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth,
+  describeResolutionOutcome, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, isResolutionDegraded,
+  recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
+  updateResolutionPeak } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
@@ -122,13 +123,22 @@ interface RecoveryState {
 }
 
 /**
- * Resolution degradation monitoring state. Tracks ABR quality relative to the configured viewport.
+ * Resolution degradation monitoring state. Tracks ABR quality relative to the best resolution the stream has delivered.
  */
 interface ResolutionState {
 
   consecutiveDegradedReadings: number;
   graceEnd: number;
-  recoveryAttempt: number;
+
+  /* The largest-area intrinsic reading seen while playback was progressing, null until the first such reading and growing only, because the page's rendition ladder
+   * is fixed for the stream and a drop below half of it is what "degraded" means. The record's accepted flag says the ladder already ran to acceptance at this
+   * size; it clears when the picture returns to the peak (the episode is over) or when a larger reading replaces the record (the source proved more), and never
+   * through the recovery resets, so an unrelated recovery cannot re-run the ladder inside one degraded episode.
+   */
+  peak: Nullable<ResolutionPeak>;
+
+  // The ladder step in flight: none, page reload issued, or tab replacement issued.
+  recoveryAttempt: 0 | 1 | 2;
 }
 
 /**
@@ -294,15 +304,17 @@ export function monitorPlaybackHealth(
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;
 
-  // The capture surface: the size capture encodes at, reported beside the source's own size in the status the monitor emits, and the size the resolution detector
-  // measures a reading against. Read once for the monitor's lifetime, because the quality preset is restart-gated and cannot change while a stream is running, so
-  // re-deriving it on every two-second tick would be work that can only ever produce the same answer.
+  // The capture surface: the size capture encodes at, reported beside the source's own size in the status the monitor emits. Read once for the monitor's lifetime,
+  // because the quality preset is restart-gated and cannot change while a stream is running, so re-deriving it on every two-second tick would be work that can only
+  // ever produce the same answer.
   const presetViewport = getPresetViewport(CONFIG);
 
-  // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the capture surface, the service's ABR is delivering
-  // low-quality content. The threshold is expressed as a ratio - if either dimension is below this fraction of the surface, the resolution is considered degraded.
-  // 50% catches clear ABR degradation (768x432 on 1080p = 40%) while allowing legitimate 720p content on 1080p (67% > 50%).
-  const RESOLUTION_RATIO_THRESHOLD = 0.5;
+  // Resolution degradation detection. When the video element's intrinsic resolution falls well below the best the stream has delivered, the service's ABR is stuck
+  // on a low rendition. The threshold is a fraction of that best reading by pixel area. The field's stuck renditions read 16 to 27 percent of their peaks, while
+  // an ordinary one-rung adaptive downshift - 1600x900 to 1024x576 on CNN, 41 percent by area - is a service pacing its own bitrate and heals on its own. A third
+  // sits between the two: every stuck rendition on record fails it, a one-rung dip passes it, and a source whose best is 720p is never judged against a surface
+  // it cannot fill. Each recovery this detector drives is a capture restart, so the line is drawn where the picture has actually collapsed, not merely shrunk.
+  const RESOLUTION_RATIO_THRESHOLD = 1 / 3;
 
   // Grace period in milliseconds after stream start and after each recovery action. Gives ABR time to ramp up before flagging degradation.
   const RESOLUTION_GRACE_PERIOD = 30000;
@@ -373,11 +385,12 @@ export function monitorPlaybackHealth(
   };
 
   // Resolution degradation monitoring. Separate from the recovery escalation (L1-L3 plus tab replacement) which handles broken playback. Resolution degradation is a
-  // quality issue - the stream works but at lower-than-expected resolution. Uses its own tracking and two-step escalation: page reload, then tab replacement.
+  // quality issue - the stream works but at lower than the best it has delivered. Uses its own tracking and two-step escalation: page reload, then tab replacement.
   const resolutionState: ResolutionState = {
 
     consecutiveDegradedReadings: 0,
     graceEnd: Date.now() + RESOLUTION_GRACE_PERIOD,
+    peak: null,
     recoveryAttempt: 0
   };
 
@@ -863,7 +876,9 @@ export function monitorPlaybackHealth(
   }
 
   /**
-   * Resets resolution monitoring state. Called when resolution reaches expected levels or after any recovery action that restarts ABR negotiation.
+   * Resets the resolution monitoring a recovery action makes stale: the degraded-reading count, the grace window, and the ladder step. Deliberately not the peak
+   * record - the source's rendition ladder does not change with a reload or a tab replacement, and the record's accepted flag is what keeps an unrelated recovery
+   * from re-running the resolution ladder inside one degraded episode.
    */
   function resetResolutionState(): void {
 
@@ -1521,9 +1536,10 @@ export function monitorPlaybackHealth(
   }
 
   /**
-   * Monitors video resolution against the configured viewport and triggers recovery for sustained ABR degradation. Uses a two-step escalation: page reload (forces ABR
-   * restart), then tab replacement (fresh page with new network connections). Accepts the resolution after both attempts to avoid infinite loops on legitimately
-   * low-resolution content. Also detects and logs resolution restoration after successful recovery.
+   * Monitors video resolution against the best resolution the stream has delivered and triggers recovery for sustained ABR degradation. Uses a two-step escalation:
+   * page reload (forces ABR restart), then tab replacement (fresh page with new network connections). Acceptance after both attempts is recorded on the peak record
+   * and ends with the episode, so the ladder runs at most once per level the source has demonstrated rather than looping on content that is simply low-resolution.
+   * Also detects and logs resolution restoration after successful recovery.
    *
    * @param now - Current timestamp for timing calculations.
    * @param state - Current video state with intrinsic resolution.
@@ -1539,18 +1555,49 @@ export function monitorPlaybackHealth(
       return false;
     }
 
-    const widthRatio = state.videoWidth / presetViewport.width;
-    const heightRatio = state.videoHeight / presetViewport.height;
+    const reading = { height: state.videoHeight, width: state.videoWidth };
+    const peak = updateResolutionPeak({ peak: resolutionState.peak, reading });
 
-    const isDegraded = (widthRatio < RESOLUTION_RATIO_THRESHOLD) || (heightRatio < RESOLUTION_RATIO_THRESHOLD);
+    resolutionState.peak = peak;
 
-    if(isDegraded && (now >= resolutionState.graceEnd)) {
+    const isDegraded = isResolutionDegraded({ peak, reading, threshold: RESOLUTION_RATIO_THRESHOLD });
+
+    /* The picture is back at or near its peak: the episode is over, whatever the ladder had reached. Say so once, then clear every trace of the episode - the
+     * accepted flag included - so a later drop starts a fresh ladder. The method the message names is read from the ladder step, which an unrelated recovery may
+     * have zeroed while the acceptance stood, so the sentence stays truthful in every case.
+     */
+    if(!isDegraded) {
+
+      if(peak.accepted || (resolutionState.recoveryAttempt > 0)) {
+
+        const method = (resolutionState.recoveryAttempt === 1) ? "page reload" :
+          ((resolutionState.recoveryAttempt === 2) ? "tab replacement" : "an unrelated recovery");
+        const verb = describeResolutionOutcome({ peak, reading });
+
+        LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
+
+        resolutionState.consecutiveDegradedReadings = 0;
+        resolutionState.graceEnd = 0;
+        resolutionState.peak = { ...peak, accepted: false };
+        resolutionState.recoveryAttempt = 0;
+      }
+
+      return false;
+    }
+
+    // A ladder that already ran to acceptance at this peak does not run again inside the same episode: the source has shown nothing better since.
+    if(peak.accepted) {
+
+      return false;
+    }
+
+    if(now >= resolutionState.graceEnd) {
 
       resolutionState.consecutiveDegradedReadings++;
 
-      LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (viewport: %s\u00d7%s, ratio: %s%%\u00d7%s%%, consecutive: %s/%s).",
-        String(state.videoWidth), String(state.videoHeight), String(presetViewport.width), String(presetViewport.height),
-        String(Math.round(widthRatio * 100)), String(Math.round(heightRatio * 100)),
+      LOG.debug("recovery:resolution", "Video resolution: %s\u00d7%s (peak: %s\u00d7%s, area: %s%%, consecutive: %s/%s).",
+        String(state.videoWidth), String(state.videoHeight), String(peak.width), String(peak.height),
+        String(Math.round(100 * resolutionAreaRatio({ peak, reading }))),
         String(resolutionState.consecutiveDegradedReadings), String(RESOLUTION_DEGRADED_COUNT_THRESHOLD));
     } else {
 
@@ -1563,9 +1610,9 @@ export function monitorPlaybackHealth(
 
       const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
-      LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s in %s\u00d7%s viewport). Attempting recovery via %s.",
+      LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s against a %s\u00d7%s peak). Attempting recovery via %s.",
         String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
-        String(presetViewport.width), String(presetViewport.height), RECOVERY_METHODS.pageNavigation);
+        String(peak.width), String(peak.height), RECOVERY_METHODS.pageNavigation);
 
       recoveryState.inProgress = true;
 
@@ -1651,28 +1698,16 @@ export function monitorPlaybackHealth(
       resolutionState.recoveryAttempt = 2;
     }
 
-    // Acceptance: resolution still degraded after both recovery attempts. Log once and stop retrying.
+    /* Acceptance: still degraded after both recovery attempts. Log once and record the acceptance on the peak record, which is what holds the ladder for the rest
+     * of this episode. The ladder step stays at 2 so the eventual restoration names the tab replacement, and the reading count is zeroed so no further step fires.
+     */
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 2)) {
 
-      LOG.warn("Video resolution remains degraded (%s\u00d7%s in %s\u00d7%s viewport) after recovery attempts. The stream will continue at reduced quality.",
-        String(state.videoWidth), String(state.videoHeight), String(presetViewport.width), String(presetViewport.height));
-
-      resolutionState.recoveryAttempt = 3;
-    }
-
-    // Resolution is good: clear tracking state so future degradation starts fresh. Use "restored" when resolution matches the viewport, "improved" when it's
-    // above the degradation threshold but below the viewport. Include the recovery method so this single message tells the complete story.
-    if(!isDegraded && (resolutionState.recoveryAttempt > 0)) {
-
-      const isFullQuality = (state.videoWidth >= presetViewport.width) && (state.videoHeight >= presetViewport.height);
-      const verb = isFullQuality ? "restored" : "improved";
-      const method = (resolutionState.recoveryAttempt === 1) ? "page reload" : "tab replacement";
-
-      LOG.info("Video resolution %s to %s\u00d7%s after %s.", verb, String(state.videoWidth), String(state.videoHeight), method);
+      LOG.warn("Video resolution remains degraded (%s\u00d7%s against a %s\u00d7%s peak) after recovery attempts. The stream will continue at reduced quality.",
+        String(state.videoWidth), String(state.videoHeight), String(peak.width), String(peak.height));
 
       resolutionState.consecutiveDegradedReadings = 0;
-      resolutionState.recoveryAttempt = 0;
-      resolutionState.graceEnd = 0;
+      resolutionState.peak = { ...peak, accepted: true };
     }
 
     return false;

@@ -5,8 +5,9 @@
  * recovery.circuitBreaker.test.ts.
  */
 import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./setup.ts";
-import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, formatIssueType, getIssueCategory, getIssueDescription,
-  getRecoveryMethod, isCaptureInfrastructureError, shouldTriggerRecovery } from "./recovery.ts";
+import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, describeResolutionOutcome, formatIssueType,
+  getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError, isResolutionDegraded, resolutionAreaRatio, shouldTriggerRecovery,
+  updateResolutionPeak } from "./recovery.ts";
 import { describe, test } from "node:test";
 import { CaptureTurnTimeoutError } from "./captureLock.ts";
 import type { VideoState } from "../types/index.ts";
@@ -406,5 +407,123 @@ describe("classifyNativeSegmentHealth", () => {
     // escalates to the L3 capture fallback.
     assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 1, stalenessMs: 5000, targetDurationMs }),
       { action: "l3", health: "stalled", issueType: "segment stall" });
+  });
+});
+
+describe("updateResolutionPeak", () => {
+
+  test("establishes the peak from the first reading, unaccepted", () => {
+
+    // Before the first reading there is nothing to measure against, so the reading itself becomes the standard. It starts unaccepted because no ladder has run.
+    assert.deepEqual(updateResolutionPeak({ peak: null, reading: { height: 720, width: 1280 } }), { accepted: false, height: 720, width: 1280 });
+  });
+
+  test("a larger-area reading replaces the record and clears an acceptance", () => {
+
+    /* The source proving it can do better than the level the ladder settled for is exactly the case where the ladder should be allowed to run again. Clearing
+     * accepted along with the dimensions is what makes that happen, and it is why the two facts share one record rather than living in separate fields.
+     */
+    const peak = updateResolutionPeak({ peak: { accepted: true, height: 450, width: 800 }, reading: { height: 1080, width: 1920 } });
+
+    assert.deepEqual(peak, { accepted: false, height: 1080, width: 1920 });
+  });
+
+  test("a smaller-area reading leaves the record untouched, acceptance included", () => {
+
+    // The drop is the thing the peak exists to measure, so it must not move the standard. An acceptance granted at this peak survives the drop that follows it.
+    const peak = { accepted: true, height: 450, width: 800 };
+
+    assert.deepEqual(updateResolutionPeak({ peak, reading: { height: 234, width: 416 } }), peak);
+  });
+
+  test("a wider but smaller-area reading does not grow the peak", () => {
+
+    /* 1600x600 is 960000 pixels against 1280x1080's 1382400 - wider, but less picture. A per-dimension maxima would synthesize a 1600x1080 record equal to neither
+     * input, so the deepEqual against the original record is what tells the two implementations apart.
+     */
+    const peak = { accepted: false, height: 1080, width: 1280 };
+
+    assert.deepEqual(updateResolutionPeak({ peak, reading: { height: 600, width: 1600 } }), peak);
+  });
+
+  test("a reading equal in area leaves the record in place", () => {
+
+    // The boundary. Replacing on equality would clear an acceptance every time the picture merely held steady at its peak, re-arming the ladder for no reason.
+    const peak = { accepted: true, height: 720, width: 1280 };
+
+    assert.deepEqual(updateResolutionPeak({ peak, reading: { height: 1280, width: 720 } }), peak);
+  });
+});
+
+describe("resolutionAreaRatio", () => {
+
+  test("reports the reading's share of the peak by area", () => {
+
+    /* The field's stuck rendition: 416x234 against an 800x450 peak is 27 percent of the picture. The same pair read per-dimension is 52 percent, which is the
+     * number a threshold at one half would let through, so pinning the area reading is what pins the whole detector's sensitivity.
+     */
+    const ratio = resolutionAreaRatio({ peak: { accepted: false, height: 450, width: 800 }, reading: { height: 234, width: 416 } });
+
+    assert.equal(Number(ratio.toFixed(2)), 0.27);
+  });
+
+  test("reports one for a reading back at its peak", () => {
+
+    assert.equal(resolutionAreaRatio({ peak: { accepted: false, height: 720, width: 1280 }, reading: { height: 720, width: 1280 } }), 1);
+  });
+});
+
+describe("isResolutionDegraded", () => {
+
+  test("calls the field's stuck rendition degraded where a per-dimension test would not", () => {
+
+    // 27 percent by area is well under half; 52 percent by either dimension is not. This row is the reason the helper measures area at all.
+    const degraded = isResolutionDegraded({ peak: { accepted: false, height: 450, width: 800 }, reading: { height: 234, width: 416 }, threshold: 0.5 });
+
+    assert.equal(degraded, true);
+  });
+
+  test("a reading at exactly half the peak's area is not degraded", () => {
+
+    // The strict-less-than boundary. 1280x720 is 921600 pixels and 640x720 is 460800 - exactly half - so the threshold reads as the floor of healthy, not the
+    // ceiling of degraded.
+    const degraded = isResolutionDegraded({ peak: { accepted: false, height: 720, width: 1280 }, reading: { height: 720, width: 640 }, threshold: 0.5 });
+
+    assert.equal(degraded, false);
+  });
+
+  test("a modest drop from the peak is not degraded", () => {
+
+    // 800x450 against a 1024x576 peak is 61 percent by area: visibly less picture, but not the collapse the ladder exists to recover, and the one field case the
+    // peak rule deliberately forgoes.
+    const degraded = isResolutionDegraded({ peak: { accepted: false, height: 576, width: 1024 }, reading: { height: 450, width: 800 }, threshold: 0.5 });
+
+    assert.equal(degraded, false);
+  });
+});
+
+describe("describeResolutionOutcome", () => {
+
+  test("a reading back at the peak's area is restored", () => {
+
+    const outcome = describeResolutionOutcome({ peak: { accepted: true, height: 720, width: 1280 }, reading: { height: 720, width: 1280 } });
+
+    assert.equal(outcome, "restored");
+  });
+
+  test("a reading above the peak's area is also restored", () => {
+
+    // A reading larger than the record can only happen on the tick that also replaces the peak, and calling that "improved" would understate it.
+    const outcome = describeResolutionOutcome({ peak: { accepted: true, height: 720, width: 1280 }, reading: { height: 1080, width: 1920 } });
+
+    assert.equal(outcome, "restored");
+  });
+
+  test("a reading short of the peak's area is improved", () => {
+
+    // Above the degradation threshold but below the best the stream has shown: the episode is over, but the picture is not all the way back.
+    const outcome = describeResolutionOutcome({ peak: { accepted: true, height: 720, width: 1280 }, reading: { height: 576, width: 1024 } });
+
+    assert.equal(outcome, "improved");
   });
 });

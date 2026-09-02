@@ -740,3 +740,81 @@ export function classifyNativeSegmentHealth(inputs: {
 
   return { action: "none", health: "stalled", issueType: "segment stall" };
 }
+
+/**
+ * The largest-area intrinsic reading a stream has delivered, and whether the resolution recovery ladder has already run to acceptance at that size. The two facts
+ * live on one record so an acceptance can never outlive the peak it was granted at: a larger reading replaces the record whole, accepted included.
+ */
+export interface ResolutionPeak {
+
+  // Whether the ladder has already run to acceptance at this size, which is what keeps it from running again inside the same degraded episode.
+  readonly accepted: boolean;
+
+  // The height in pixels of the peak reading.
+  readonly height: number;
+
+  // The width in pixels of the peak reading.
+  readonly width: number;
+}
+
+/**
+ * The pixel area of a size. Every comparison below runs through it so "bigger" means one thing across the resolution helpers.
+ * @param size - The size to measure.
+ * @returns The area in pixels.
+ */
+function resolutionArea(size: { height: number; width: number }): number {
+
+  return size.width * size.height;
+}
+
+/**
+ * Folds a fresh intrinsic reading into the peak record, returning the record the stream should carry from here. This is the single source of truth for what "the
+ * best this stream has delivered" means: the first reading establishes the peak, a larger-area reading replaces it whole - clearing any acceptance, because the
+ * source has just proved it can do better than the level the ladder settled for - and anything smaller leaves the record alone. Area rather than per-dimension,
+ * because a rendition ladder changes both dimensions together and a wider-but-shorter reading must not read as growth.
+ * @param inputs - The current peak record, or null before the first reading, and the reading to fold in.
+ * @returns The peak record to carry forward.
+ */
+export function updateResolutionPeak(inputs: { peak: Nullable<ResolutionPeak>; reading: { height: number; width: number } }): ResolutionPeak {
+
+  if(!inputs.peak || (resolutionArea(inputs.reading) > resolutionArea(inputs.peak))) {
+
+    return { accepted: false, height: inputs.reading.height, width: inputs.reading.width };
+  }
+
+  return inputs.peak;
+}
+
+/**
+ * The reading's share of the peak by pixel area, where 1 means the picture is back at its best and 0.25 means a quarter of it. Every caller that reports or
+ * judges a degradation reads the ratio from here rather than recomputing it, so the number in a log line and the number a threshold is tested against agree.
+ * @param inputs - The peak record and the reading to measure against it.
+ * @returns The reading's area over the peak's area.
+ */
+export function resolutionAreaRatio(inputs: { peak: ResolutionPeak; reading: { height: number; width: number } }): number {
+
+  return resolutionArea(inputs.reading) / resolutionArea(inputs.peak);
+}
+
+/**
+ * Whether a reading counts as degraded against the stream's own peak. Judging by area rather than by either dimension is what makes the test catch the case it
+ * exists for: a 416x234 rendition against an 800x450 peak is 27 percent of the picture but 52 percent of either dimension, so a per-dimension test at the same
+ * threshold would call the field's stuck renditions healthy.
+ * @param inputs - The peak record, the reading to judge, and the area fraction below which a reading is degraded.
+ * @returns True when the reading's area is below the threshold share of the peak's.
+ */
+export function isResolutionDegraded(inputs: { peak: ResolutionPeak; reading: { height: number; width: number }; threshold: number }): boolean {
+
+  return resolutionAreaRatio(inputs) < inputs.threshold;
+}
+
+/**
+ * The verb for a reading that has climbed back above the degradation threshold: "restored" once it is back at the peak's area, "improved" while it is short of
+ * the best the stream has shown. This is what lets one message tell the whole story of an episode ending.
+ * @param inputs - The peak record and the reading that ended the episode.
+ * @returns The verb describing the outcome.
+ */
+export function describeResolutionOutcome(inputs: { peak: ResolutionPeak; reading: { height: number; width: number } }): "improved" | "restored" {
+
+  return (resolutionArea(inputs.reading) >= resolutionArea(inputs.peak)) ? "restored" : "improved";
+}
