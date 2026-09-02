@@ -91,7 +91,7 @@ function makeOptions(overrides: { skipDirectUrl?: boolean } = {}): Parameters<ty
 
   const profile: ResolvedSiteProfile = makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" });
 
-  return { numericStreamId: 11, profile, skipManifestInterception: true, streamId: "direct-url-fallback", url: GUIDE_URL, ...overrides };
+  return { profile, skipManifestInterception: true, streamId: "direct-url-fallback", url: GUIDE_URL, ...overrides };
 }
 
 let originalCaptureMode: CaptureMode;

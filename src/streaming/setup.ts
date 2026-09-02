@@ -353,9 +353,6 @@ export interface CreatePageWithCaptureOptions {
   // Comment to embed in FFmpeg output metadata (channel name or domain).
   comment?: string;
 
-  // The stream's numeric id, supplied by both call sites. createPageWithCapture carries it without reading it.
-  numericStreamId: number;
-
   // Callback invoked on FFmpeg process errors (only used in ffmpeg capture mode).
   onFFmpegError?: (error: Error) => void;
 
@@ -1299,7 +1296,6 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       const attemptOptions: CreatePageWithCaptureOptions = {
 
         comment: metadataComment,
-        numericStreamId,
         onFFmpegError: onCircuitBreak,
         persistResolution,
         profile,

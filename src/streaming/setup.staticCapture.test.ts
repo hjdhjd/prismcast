@@ -134,7 +134,7 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     const profile = makeProfile({ staticCapture: true });
 
     const result = await createPageWithCapture(
-      { numericStreamId: 1, profile, skipManifestInterception: true, streamId: "static-test", url: "https://static.example/page" }, deps);
+      { profile, skipManifestInterception: true, streamId: "static-test", url: "https://static.example/page" }, deps);
 
     // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
     result.captureSession.dispose();
@@ -157,7 +157,7 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     // unconditionally rather than gated on profile.staticCapture, this run would record a staticCapture call regardless.
     const profile = makeProfile({ staticCapture: false });
 
-    await assert.rejects(createPageWithCapture({ numericStreamId: 2, profile, skipManifestInterception: true, streamId: "tune-test", url: "https://tune.example/live" },
+    await assert.rejects(createPageWithCapture({ profile, skipManifestInterception: true, streamId: "tune-test", url: "https://tune.example/live" },
       deps), "the tune path fails against the stub page rather than reaching a static poll");
 
     assert.equal(overlayCalls.filter((call) => call.phase === "staticCapture").length, 0, "no staticCapture poll runs for a non-static profile");
@@ -182,7 +182,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
     const profile = makeProfile({ staticCapture: true });
 
     const result = await createPageWithCapture(
-      { numericStreamId: 3, profile, skipManifestInterception: true, streamId: "order-test", url: "https://static.example/page" }, deps);
+      { profile, skipManifestInterception: true, streamId: "order-test", url: "https://static.example/page" }, deps);
 
     // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
     result.captureSession.dispose();

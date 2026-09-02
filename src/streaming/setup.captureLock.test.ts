@@ -58,7 +58,7 @@ describe("createPageWithCapture - closed-page turn recursion", () => {
     const profile = makeProfile({ staticCapture: true });
 
     await assert.rejects(
-      createPageWithCapture({ numericStreamId: 7, profile, skipManifestInterception: true, streamId: "closed-test", url: "https://closed.example/live" }, deps),
+      createPageWithCapture({ profile, skipManifestInterception: true, streamId: "closed-test", url: "https://closed.example/live" }, deps),
       (error: unknown) => (error instanceof Error) && (error.message === "Browser crashed too many times during capture initialization."),
       "the closed-page recursion exhausts the retry cap and throws the terminal error"
     );
