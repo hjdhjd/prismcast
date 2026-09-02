@@ -380,3 +380,32 @@ describe("generateChannelsPanel - custom (user-defined) profile groups", () => {
       "the bare custom profile lists the No description provided. fallback in the reference");
   });
 });
+
+describe("generateChannelsPanel - prose elements render as single lines", () => {
+
+  test("no paragraph or definition in the panel carries a newline inside its own text", async () => {
+
+    /* The panel is assembled as an array of lines joined with "\n", so a sentence pushed as two array elements renders with a newline through its middle. A
+     * browser collapses that to a space when it lays the paragraph out, but the text a copy, a search, or a screen reader reads is broken across it, and the
+     * same string placed in a title or aria-label attribute would show the break directly. Every prose element is therefore pushed as one element, however
+     * many source lines its string is concatenated across.
+     *
+     * The check runs over the whole panel rather than the profile reference alone, so a paragraph split anywhere in the generator is caught, and it reads the
+     * rendered output rather than the source, which is the only place the join actually happens.
+     */
+    await using ctx = await createIntegrationContext();
+
+    void ctx;
+    await initializePersistence(ctx);
+
+    const panel = generateChannelsPanel();
+    const elements = Array.from(panel.matchAll(/<(p|dd)\b[^>]*>[\s\S]*?<\/\1>/g), (match) => match[0]);
+
+    // Sanity: a pattern that matched nothing would make the filter below vacuously empty.
+    assert.ok(elements.length > 10, "the panel should render many paragraphs and definitions (sanity check); got " + String(elements.length));
+
+    const broken = elements.filter((element) => element.includes("\n")).map((element) => element.slice(0, 80));
+
+    assert.deepEqual(broken, [], "no <p> or <dd> may carry a newline inside its text; offenders: " + JSON.stringify(broken));
+  });
+});

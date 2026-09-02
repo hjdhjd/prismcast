@@ -240,8 +240,8 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
   lines.push("<button type=\"button\" class=\"profile-reference-close\" aria-label=\"Close\" data-click-action=\"" +
     ACTIONS.toggleProfileReference + "\">\u2715</button>");
   lines.push("</div>");
-  lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined ");
-  lines.push("profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
+  lines.push("<p class=\"reference-intro\">Profiles configure how PrismCast interacts with different video players. Autodetect uses predefined " +
+    "profiles for known sites. If video doesn't play or fullscreen fails, use this reference to experiment with different profiles.</p>");
 
   // One block per category, in the table's display order, each rendering the table's own title and description. An empty category renders nothing.
   for(const category of PROFILE_CATEGORIES) {
@@ -271,34 +271,34 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 
       // Per-strategy guidance for finding Channel Selector values. Organized by strategy type since the same strategy can be used across multiple profiles.
       lines.push("<h4 class=\"selector-guide-heading\">Finding Your Channel Selector</h4>");
-      lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the ");
-      lines.push("profile's strategy type:</p>");
+      lines.push("<p class=\"category-desc\">Predefined channels already have Channel Selector values set. For custom channels, the value depends on the " +
+        "profile's strategy type:</p>");
       lines.push("<dl class=\"profile-list\">");
       lines.push("<dt>apiMultiVideo, disneyPlus, keyboardDynamicMultiVideo (element selector)</dt>");
-      lines.push("<dd>These profiles use a <code>matchSelector</code> CSS template to find the channel element. The default pattern matches image URLs: ");
-      lines.push("right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion ");
-      lines.push("of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\"). ");
-      lines.push("Custom <code>matchSelector</code> patterns can match any attribute (aria-label, data-testid, title, etc.).</dd>");
+      lines.push("<dd>These profiles use a <code>matchSelector</code> CSS template to find the channel element. The default pattern matches image URLs: " +
+        "right-click the channel's image on the site \u2192 Inspect Element \u2192 find the &lt;img&gt; tag \u2192 copy a unique portion " +
+        "of the <code>src</code> URL that identifies the channel (e.g., \"espn\" from a URL containing \"poster_linear_espn_none\"). " +
+        "Custom <code>matchSelector</code> patterns can match any attribute (aria-label, data-testid, title, etc.).</dd>");
       lines.push("<dt>foxLive (station code)</dt>");
-      lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use ");
-      lines.push("the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
+      lines.push("<dd>Inspect a channel logo in the guide \u2192 find the <code>&lt;button&gt;</code> inside <code>GuideChannelLogo</code> \u2192 use " +
+        "the <code>title</code> attribute value (e.g., BTN, FOXD2C, FS1, FS2, FWX).</dd>");
       lines.push("<dt>hboMax (channel name)</dt>");
-      lines.push("<dd>Inspect a channel tile in the HBO rail \u2192 find the <code>&lt;p aria-hidden=\"true\"&gt;</code> element \u2192 use the text ");
-      lines.push("content (e.g., HBO, HBO Comedy, HBO Drama, HBO Hits, HBO Movies).</dd>");
+      lines.push("<dd>Inspect a channel tile in the HBO rail \u2192 find the <code>&lt;p aria-hidden=\"true\"&gt;</code> element \u2192 use the text " +
+        "content (e.g., HBO, HBO Comedy, HBO Drama, HBO Hits, HBO Movies).</dd>");
       lines.push("<dt>huluLive (channel name)</dt>");
-      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with ");
-      lines.push("<code>live-guide-channel-kyber-</code> \u2192 use the portion after that prefix. The name may differ from the logo shown ");
-      lines.push("(e.g., the full name rather than an abbreviation). For local affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast ");
-      lines.push("resolves the local station automatically.</dd>");
+      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with " +
+        "<code>live-guide-channel-kyber-</code> \u2192 use the portion after that prefix. The name may differ from the logo shown " +
+        "(e.g., the full name rather than an abbreviation). For local affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast " +
+        "resolves the local station automatically.</dd>");
       lines.push("<dt>slingLive (channel name)</dt>");
-      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with <code>channel-</code> ");
-      lines.push("\u2192 use the portion after that prefix. The name may differ from the logo shown (e.g., \"FOX Sports 1\" not \"FS1\"). For local ");
-      lines.push("affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast resolves the local station automatically.</dd>");
+      lines.push("<dd>Inspect a channel entry in the guide \u2192 find the <code>data-testid</code> attribute starting with <code>channel-</code> " +
+        "\u2192 use the portion after that prefix. The name may differ from the logo shown (e.g., \"FOX Sports 1\" not \"FS1\"). For local " +
+        "affiliates (ABC, CBS, FOX, NBC), use the network name \u2014 PrismCast resolves the local station automatically.</dd>");
       lines.push("<dt>youtubeTV (channel name)</dt>");
-      lines.push("<dd>Inspect a channel thumbnail in the guide \u2192 find the <code>aria-label</code> attribute on the ");
-      lines.push("<code>ytu-endpoint</code> element \u2192 use the name after \"watch \" (e.g., <code>aria-label=\"watch CNN\"</code> \u2192 CNN). ");
-      lines.push("For locals, use the network name (e.g., NBC) \u2014 affiliates like \"NBC 5\" are resolved automatically. PBS resolves to the ");
-      lines.push("local affiliate in major markets.</dd>");
+      lines.push("<dd>Inspect a channel thumbnail in the guide \u2192 find the <code>aria-label</code> attribute on the " +
+        "<code>ytu-endpoint</code> element \u2192 use the name after \"watch \" (e.g., <code>aria-label=\"watch CNN\"</code> \u2192 CNN). " +
+        "For locals, use the network name (e.g., NBC) \u2014 affiliates like \"NBC 5\" are resolved automatically. PBS resolves to the " +
+        "local affiliate in major markets.</dd>");
       lines.push("</dl>");
     }
 
@@ -1480,9 +1480,9 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // Panel description.
   lines.push("<div class=\"settings-panel-description\">");
   lines.push("<p>Define and manage streaming channels for the playlist. Customized channels are highlighted.</p>");
-  lines.push("<p class=\"description-hint\">Tip: Use the <strong>service filter</strong> above to show only channels from services you subscribe to &mdash; ",
-    "this also controls which channels Channels DVR sees in the playlist. Use the <strong>service dropdown</strong> on any multi-service channel to choose ",
-    "which streaming service delivers it (e.g., Comedy Central via Hulu vs Sling). Click the <strong>edit icon</strong> to customize any channel's name, ",
+  lines.push("<p class=\"description-hint\">Tip: Use the <strong>service filter</strong> above to show only channels from services you subscribe to &mdash; " +
+    "this also controls which channels Channels DVR sees in the playlist. Use the <strong>service dropdown</strong> on any multi-service channel to choose " +
+    "which streaming service delivers it (e.g., Comedy Central via Hulu vs Sling). Click the <strong>edit icon</strong> to customize any channel's name, " +
     "Gracenote station ID, URL, or other properties.</p>");
   lines.push("</div>");
 
