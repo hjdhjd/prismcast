@@ -7,7 +7,7 @@
  * the typed error into exactly one more establishment, down the guide path.
  *
  * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup.captureLock.test.ts already uses: a stub browser hands back a recording
- * page whose goto rejects with the failure each case wants, and the capture launcher returns a plain Readable, so no Chrome and no CDP are involved. The direct
+ * page whose goto rejects with the failure each case wants, and the capture acquisition returns a plain Readable, so no Chrome and no CDP are involved. The direct
  * URL under test comes from the persisted lineup store rather than a live provider cache, which is the cold-boot shape the feature exists for - the store is
  * pointed at a temp data directory so nothing is written outside it.
  */
@@ -17,9 +17,9 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { evictPersistedWatchUrl, persistProviderLineup } from "../config/providerLineups.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureMode } from "../types/index.ts";
+import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
-import type { PuppeteerStream } from "puppeteer-stream";
 import { Readable } from "node:stream";
 import type { ResolvedSiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
@@ -68,13 +68,14 @@ function makeStubPage(): Page {
   } as unknown as Page;
 }
 
-// The injected browser-boundary collaborators. Capture initialization has to succeed for the establishment to reach navigation at all, so getStream hands back a
-// plain Readable - the capture session only ever destroys it on the unwind.
+// The injected browser-boundary collaborators. Capture initialization has to succeed for the establishment to reach navigation at all, so the acquisition hands
+// back a plain Readable carrying the two capture controls - the capture session only ever destroys it on the unwind.
 const deps: CreatePageWithCaptureDeps = {
 
+  acquireCaptureStream: async (): Promise<CaptureStream> => Object.assign(new Readable({ read: (): void => { /* Nothing is read from the stub capture. */ } }),
+    { stop: async (): Promise<void> => undefined, stopped: Promise.resolve() }),
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
-  getStream: async (): Promise<PuppeteerStream> => new Readable({ read: (): void => { /* Nothing is ever read from the stub capture. */ } }) as PuppeteerStream,
   installCaptureFocusHook: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },

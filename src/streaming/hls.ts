@@ -761,8 +761,9 @@ function createTabReplacementHandler(
     const currentTrackTimestamps = oldSegmenter?.getTrackTimestamps();
 
     // Dispose the OLD capture pipeline. The CaptureSession kills the FFmpeg child first (setting its shuttingDown flag before the capture stream's EOF can reach
-    // FFmpeg's stdin), then destroys the capture stream (which MUST happen before the old page is closed below, so chrome.tabCapture releases the capture and the
-    // new getStream() does not hang with "Cannot capture a tab with an active stream"), then stops the segmenter. The new pipeline is constructed fresh further down.
+    // FFmpeg's stdin), then destroys the capture stream (which MUST happen before the old page is closed below, so chrome.tabCapture releases the capture and a
+    // later capture acquisition does not fail with "Cannot capture a tab with an active stream"), then stops the segmenter. The new pipeline is constructed fresh
+    // further down.
     if(stream.captureSession) {
 
       LOG.debug("recovery:tab", "Disposing old capture pipeline for tab replacement.");

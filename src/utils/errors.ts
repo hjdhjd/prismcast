@@ -83,16 +83,3 @@ export function isPageDeathError(error: unknown): boolean {
   return contextDeathPatterns.some((pattern) => message.includes(pattern));
 }
 
-/**
- * Checks whether an error is the stale-capture-mutex signal: Chrome's tabCapture extension rejects a second concurrent getStream() with "Cannot capture a tab with
- * an active stream", and that rejection leaks puppeteer-stream's module-level mutex permanently, so the only recovery is a full process restart. This is the single
- * home for that one literal - every site that must decide the process-exit escalation reads it from here. The predicate is deliberately narrow: session-closed-shaped
- * rejections are common and benign, so widening it would exit the process on ordinary browser crashes. The related, broader capture-infrastructure classifier
- * (isCaptureInfrastructureError in recovery.ts) matches this message too, but the process-exit decision this predicate gates stays its own distinct check.
- * @param error - The error or message to check.
- * @returns True if the error carries the stale-capture-mutex signature.
- */
-export function isStaleCaptureMutexError(error: unknown): boolean {
-
-  return formatError(error).includes("Cannot capture a tab with an active stream");
-}

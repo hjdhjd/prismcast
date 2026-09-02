@@ -635,8 +635,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   killStaleChrome();
 
   // Warm up the browser. getCurrentBrowser() launches Chrome through the capture-readiness supervisor, whose launch gate runs the real capture probe (the
-  // capability tier) at every launch - including this one. So a successful warm-up already means capture is verified. A stale-capture mutex exits the process from
-  // inside the probe, and any other gate failure rejects here and aborts startup.
+  // capability tier) at every launch - including this one. So a successful warm-up already means capture is verified. A browser that cannot capture rejects the
+  // warm-up and aborts startup.
   try {
 
     await getCurrentBrowser();

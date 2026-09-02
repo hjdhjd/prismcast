@@ -6,7 +6,7 @@
  * what prove the phrase matching is not a word search.
  */
 import { describe, test } from "node:test";
-import { formatError, isPageDeathError, isSessionClosedError, isStaleCaptureMutexError } from "./errors.ts";
+import { formatError, isPageDeathError, isSessionClosedError } from "./errors.ts";
 import { EvaluateTimeoutError } from "./evaluate.ts";
 import assert from "node:assert/strict";
 
@@ -207,23 +207,3 @@ describe("isPageDeathError", () => {
   });
 });
 
-describe("isStaleCaptureMutexError", () => {
-
-  test("matches the stale-capture-mutex signal as an Error, a bare string, or embedded in a larger message", () => {
-
-    // This predicate is the single home for the one literal that gates the process-exit escalation, so it must match the exact tabCapture rejection wherever it
-    // surfaces - the stream catch passes an Error, the probe passes a bare message string.
-    assert.equal(isStaleCaptureMutexError(new Error("Cannot capture a tab with an active stream")), true);
-    assert.equal(isStaleCaptureMutexError("Cannot capture a tab with an active stream"), true);
-    assert.equal(isStaleCaptureMutexError(new Error("Error: Cannot capture a tab with an active stream at getStream")), true, "embedded in a larger message matches");
-  });
-
-  test("stays deliberately narrow: benign and session-closed-shaped errors do not match", () => {
-
-    // Widening this predicate would exit the process on ordinary browser crashes, so a session-closed or navigation error must classify as non-stale.
-    assert.equal(isStaleCaptureMutexError(new Error("Target closed")), false);
-    assert.equal(isStaleCaptureMutexError(new Error("net::ERR_NAME_NOT_RESOLVED")), false);
-    assert.equal(isStaleCaptureMutexError(""), false);
-    assert.equal(isStaleCaptureMutexError(null), false);
-  });
-});

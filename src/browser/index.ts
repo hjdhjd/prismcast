@@ -7,11 +7,12 @@ import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, lis
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../streaming/registry.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
-import { getExtensionPage, getStream, launch } from "puppeteer-stream";
+import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
 import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import type { BrowserLifecycle } from "./browserSupervisor.ts";
 import { CONFIG } from "../config/index.ts";
+import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
 import type { LaunchGovernorPolicy } from "./launchGovernor.ts";
 import type { Nullable } from "../types/index.ts";
@@ -131,16 +132,16 @@ function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecy
   }
 }
 
-/* The capture-readiness probe is the capability tier of the launch gate: a real getStream against a throwaway page on the instance being launched - the authoritative
- * "can this browser actually capture?" predicate that must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which
- * owns getStream and the unrecoverable stale-mutex process.exit precedent) and is injected here via setCaptureProbe, because setup.ts already depends on this module:
+/* The capture-readiness probe is the capability tier of the launch gate: a real capture acquisition against a throwaway page on the instance being launched - the
+ * authoritative "can this browser actually capture?" predicate that must run at every (re)launch, not only boot. It lives in streaming/setup.ts (which owns the
+ * capture lock and the probe policy) and is injected here via setCaptureProbe, because setup.ts already depends on this module:
  * injecting the function rather than importing it keeps the dependency one-directional and breaks the cycle, mirroring the browserAccessors setter/getter
  * injection pattern between login.ts and index.ts. The probe must also take the local instance as a parameter rather than re-entering getCurrentBrowser, since
  * launchReadyBrowser IS the in-flight launch - re-entering acquire() would join its own pending promise and deadlock.
  */
 type CaptureProbe = (browser: Browser) => Promise<void>;
 
-/* The capture-readiness probe (capability tier of the launch gate). Null until streaming/setup.ts injects the real getStream probe at module load, which the import
+/* The capture-readiness probe (capability tier of the launch gate). Null until streaming/setup.ts injects the real capture probe at module load, which the import
  * order guarantees runs before any launch: app.ts imports the streaming layer, whose module bodies evaluate during import resolution, before startServer's warm-up.
  * launchReadyBrowser refuses to publish a browser if it is somehow still null (see the call site), rather than serving an unverified one.
  */
@@ -149,8 +150,7 @@ let captureProbe: Nullable<CaptureProbe> = null;
 /**
  * Injects the capture-readiness probe used as the capability tier of the launch gate. Called once from streaming/setup.ts at module load (which always precedes any
  * launch, since the streaming layer is imported during server startup). Separating the wiring from the call keeps browser/index.ts free of a streaming-layer import.
- * @param probe - The probe to run against a freshly-launched browser; it resolves when the browser can capture and rejects otherwise (or exits the process for the
- *   unrecoverable stale-mutex case).
+ * @param probe - The probe to run against a freshly-launched browser; it resolves when the browser can capture and rejects when it cannot.
  */
 export function setCaptureProbe(probe: CaptureProbe): void {
 
@@ -1517,14 +1517,14 @@ async function launchReadyBrowser(): Promise<Browser> {
     // Readiness gate, handshake tier (cheap, on-suspicion). Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function
     // into its options page context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the
     // extension loads (typically 200-500ms). On failure this THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and
-    // every getStream() would hang, so the instance is not capture-ready and must not be published. We reclassify the raw waitForFunction timeout into a
+    // every capture acquisition would hang, so the instance is not capture-ready and must not be published. We reclassify the raw waitForFunction timeout into a
     // capture-infrastructure error carrying "timed out" so the setup layer maps it to a 503 back-off (the same as the capability-tier probe failure), rather than a
     // 500 the client would not back off from - an unregistered extension is a capture-infrastructure fault, and a fresh relaunch usually clears it.
     try {
 
       const extensionPage = await getExtensionPage(browser);
 
-      await extensionPage.waitForFunction("typeof START_RECORDING === 'function'", { timeout: CONFIG.browser.initTimeout });
+      await extensionPage.waitForFunction(EXTENSION_READY_EXPRESSION, { timeout: CONFIG.browser.initTimeout });
     } catch(handshakeError) {
 
       throw new Error("The capture extension handshake timed out after " + String(CONFIG.browser.initTimeout) + " ms.", { cause: handshakeError });
@@ -1532,10 +1532,10 @@ async function launchReadyBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
 
-    // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real getStream against a throwaway page on THIS instance - so
-    // "ready" means "really captured," not merely "the extension handshake responded." This predicate must run at every (re)launch:
-    // it exercises the exact getStream path that hangs when the extension is unregistered. A probe failure throws, so the supervisor counts the launch failure and the
-    // browser is never published; the unrecoverable stale-mutex case exits the process from inside the probe, since a Chrome restart cannot fix a leaked module mutex.
+    // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real capture acquisition against a throwaway page on THIS
+    // instance - so "ready" means "really captured," not merely "the extension handshake responded." This predicate must run at every (re)launch:
+    // it exercises the exact acquisition path that fails when the extension is unregistered. A probe failure throws, so the supervisor counts the launch failure
+    // and the browser is never published.
     //
     // If the probe is not wired (the injection point left unset by a refactor - impossible in the normal import order, which always wires it before any launch),
     // we reject the launch rather than publish a handshake-only browser: serving an unverified browser would be the "proceed and hope" path this design
@@ -2177,5 +2177,9 @@ export async function prepareExtension(): Promise<void> {
   }
 }
 
-// Re-export getStream from puppeteer-stream for use by the streaming module. This keeps all puppeteer-stream imports centralized in the browser module.
-export { getStream };
+/* Re-export the capture acquisition for the streaming module. The browser directory owns every conversation with puppeteer-stream - index.ts launches it and
+ * tabCapture.ts speaks its extension's protocol - so no other layer imports the library, and the streaming layer asks this module for a capture the same way it
+ * asks it for a browser.
+ */
+export { acquireCaptureStream } from "./tabCapture.ts";
+export type { CaptureStream, CaptureStreamOptions } from "./tabCapture.ts";

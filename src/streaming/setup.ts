@@ -3,12 +3,13 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser, getStream, installCaptureFocusHook,
-  invalidateBrowser, registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser,
+  installCaptureFocusHook, invalidateBrowser, registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
+import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
-import { LOG, delay, extractDomain, formatError, getStreamContext, isStaleCaptureMutexError, maxRetryDuration, realClock, registerAbortController,
+import { LOG, delay, extractDomain, formatError, getStreamContext, maxRetryDuration, realClock, registerAbortController,
   resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, waitWithTimeout } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
@@ -23,7 +24,6 @@ import type { CaptureSession } from "./captureSession.ts";
 import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
-import type { Readable } from "node:stream";
 import { chromeFetch } from "../utils/index.ts";
 import { createCaptureSession } from "./captureSession.ts";
 import { getCachedEncryption } from "../native/probe.ts";
@@ -66,8 +66,8 @@ import { startOverlayHandling } from "../browser/consent.ts";
 // Native fMP4 capture uses MP4/AAC for direct HLS segmentation without transcoding.
 const NATIVE_FMP4_MIME_TYPE = "video/mp4;codecs=avc1,mp4a.40.2";
 
-// Capture initialization is serialized through a task-scoped lock. Chrome's tabCapture extension can only initialize one capture at a time - concurrent getStream()
-// calls fail with "Cannot capture a tab with an active stream" - so every getStream initialization runs as a task on this one process-wide lock, which holds the
+// Capture initialization is serialized through a task-scoped lock. Chrome's tabCapture extension can only initialize one capture at a time - a second start while
+// one is in flight fails with "Cannot capture a tab with an active stream" - so every acquisition runs as a task on this one process-wide lock, which holds the
 // turn until the task's promise settles. Once a capture is established it runs concurrently with other captures without issue.
 
 // The wedge-derivation policy for the capture lock. A task held past max(CAPTURE_WEDGE_FLOOR_MS, deadline + CAPTURE_WEDGE_MARGIN_MS) without settling invokes its
@@ -80,15 +80,22 @@ const CAPTURE_WEDGE_MARGIN_MS = 5000;
 // live CONFIG binding mid-process, so every timing bound is read per call at the call sites instead.
 const captureLock = createCaptureLock({ clock: realClock, wedgeFloorMs: CAPTURE_WEDGE_FLOOR_MS, wedgeMarginMs: CAPTURE_WEDGE_MARGIN_MS });
 
-// The delay puppeteer-stream's fire-and-forget STOP_RECORDING chain needs to settle after a raw capture stream is destroyed, before the owning page is closed.
-// Destroying the stream triggers STOP_RECORDING via the close handler, but the async chain (STOP_RECORDING -> recorder.stop() -> onstop -> track.stop()) must finish
-// while the browser is still connected, or Chrome's tabCapture state lingers and the next getStream() draws "Cannot capture a tab with an active stream".
-const STOP_RECORDING_SETTLE_MS = 500;
+// The bound on how long the capture extension may take to confirm a recording stopped, after a raw capture stream is destroyed and before the owning page is
+// closed. Destroying the stream sends the stop request; the extension answers by closing its socket once the recorder has stopped, its tracks have stopped, and
+// its pending sends have drained, and that answer is what CaptureStream.stopped carries. The stop has to land while the browser is still connected, or Chrome's
+// tabCapture state lingers and the next acquisition draws "Cannot capture a tab with an active stream". The ceiling bounds the case where the answer can never
+// arrive - a browser that is already gone - so a page close is never held hostage to it.
+const STOP_RECORDING_CEILING_MS = 3000;
+const STOP_RECORDING_CEILING_MESSAGE = "The capture extension did not confirm the recording stopped in time.";
 
-// The teardown allowance the mid-life probe's outer lock deadline adds over its getStream criterion bound. The pass/fail criterion times getStream alone; this
-// allowance lets the destroy-plus-STOP_RECORDING-settle teardown complete inside the turn without counting against that criterion. A teardown that hangs past the
-// allowance trips the outer deadline and is reported as a capture-infrastructure failure.
-const PROBE_TEARDOWN_ALLOWANCE_MS = 3000;
+// The slack the probe's teardown gets beyond the stop confirmation itself: the managed-page unregister and the page close that follow it.
+const PAGE_CLOSE_MARGIN_MS = 2000;
+
+// The teardown allowance the mid-life probe's outer lock deadline adds over its acquisition criterion bound. The pass/fail criterion times the acquisition alone;
+// this allowance lets the destroy-and-confirm teardown complete inside the turn without counting against that criterion. It is derived from the stop ceiling it
+// has to outlast rather than written as a second number beside it, so the two cannot drift apart. A teardown that hangs past the allowance trips the outer
+// deadline and is reported as a capture-infrastructure failure.
+const PROBE_TEARDOWN_ALLOWANCE_MS = STOP_RECORDING_CEILING_MS + PAGE_CLOSE_MARGIN_MS;
 
 // The playback-initialization safety-net timeout. Channel selection plus video setup runs after navigation with no outer timeout racing its internal click
 // retries; for guideGrid strategies a selection failure triggers an overlay dismiss and retry, which doubles the channel-selection budget. 45 seconds accommodates
@@ -107,35 +114,28 @@ export const STREAM_INIT_TIMEOUT_MESSAGE = "Stream initialization timed out.";
 export const CAPTURE_PROBE_TIMEOUT_MESSAGE = "Capture probe timed out.";
 
 /**
- * Retires a raw capture stream: destroys it to fire STOP_RECORDING while the browser is still connected, then waits STOP_RECORDING_SETTLE_MS for that fire-and-forget
- * chain to finish before the caller closes the page. This is the destroy-plus-settle core shared by the mid-life probe's success teardown and every path that must
- * retire a capture stream produced after its caller had already abandoned the turn. It is the async sibling of captureSession.ts's disposer, which tears the composed
- * FFmpeg pipeline down synchronously: this helper awaits the settle because a page close follows it directly, and unlike the composed disposer it is used on
- * abandoned paths where the page may already be closed, so the STOP_RECORDING side is then best-effort.
- * @param stream - The raw capture stream to destroy.
- * @param clock - Clock used for the settle delay. Defaults to realClock; tests inject a fake.
+ * Retires a raw capture stream: destroys it so the stop request goes out while the browser is still connected, then waits for the extension to confirm the
+ * recording stopped before the caller closes the page. This is the destroy-and-confirm core shared by the mid-life probe's success teardown and every path that
+ * must retire a capture stream produced after its caller had already abandoned the turn. It is the async sibling of captureSession.ts's disposer, which tears the
+ * composed FFmpeg pipeline down synchronously: this helper awaits the confirmation because a page close follows it directly, and unlike the composed disposer it
+ * is used on abandoned paths where the page may already be closed, so the stop side is then best-effort.
+ *
+ * It never throws. A confirmation that does not arrive inside the ceiling is warned about and then stepped past, because holding a page open for a browser that
+ * has stopped answering helps nobody.
+ * @param stream - The raw capture stream to retire.
+ * @param clock - Clock bounding the stop confirmation. Defaults to realClock; tests inject a fake.
  */
-async function retireRawStream(stream: Readable, clock: Clock = realClock): Promise<void> {
+export async function retireRawStream(stream: CaptureStream, clock: Clock = realClock): Promise<void> {
 
   stream.destroy();
 
-  await clock.sleep(STOP_RECORDING_SETTLE_MS);
-}
+  try {
 
-/**
- * Escalates the stale-capture-mutex condition from a single home. A "Cannot capture a tab with an active stream" rejection leaks puppeteer-stream's module-level
- * mutex permanently - a Chrome restart cannot clear module state, so only a fresh process recovers. This logs the one canonical diagnostic with the failing site as
- * structured context, then schedules a deferred process exit. The exit is deferred briefly so the error log flushes to disk first; an immediate exit can truncate the
- * buffered file write and lose the diagnostic that explains the restart. Every caller throws or exits its own path right after, so no further capture work runs in the
- * interim.
- * @param siteContext - A short phrase naming where the stale mutex surfaced, attached as structured log context.
- */
-function escalateStaleCaptureMutex(siteContext: string): void {
+    await clock.waitWithTimeout(stream.stopped, STOP_RECORDING_CEILING_MS, new Error(STOP_RECORDING_CEILING_MESSAGE));
+  } catch {
 
-  LOG.error("Stale capture state detected. puppeteer-stream's internal capture mutex is now permanently locked and the capture system is unrecoverable. Exiting so " +
-    "the service manager can restart with a clean module state.", { site: siteContext });
-
-  setTimeout(() => process.exit(1), 100);
+    LOG.warn("The capture extension did not confirm the recording stopped within %dms; closing the page regardless.", STOP_RECORDING_CEILING_MS);
+  }
 }
 
 /**
@@ -173,12 +173,12 @@ export class DirectUrlEstablishmentError extends Error {
 // browser crash). An explicit guard prevents unbounded recursion.
 const MAX_PAGE_CLOSED_RETRIES = 3;
 
-// Maximum time in milliseconds to wait for a single capture probe's getStream() to respond. Shared by the launch-gate verification (verifyCaptureSystem) and the
+// Maximum time in milliseconds to wait for a single capture probe's acquisition to respond. Shared by the launch-gate verification (verifyCaptureSystem) and the
 // mid-life re-verification, so both tiers exercise the capture path with the same bound.
 const CAPTURE_PROBE_TIMEOUT_MS = 5000;
 
-// Wire the capture-readiness probe into the browser launch gate. setup.ts owns getStream and the unrecoverable stale-mutex process.exit decision; browser/index.ts
-// owns the launch lifecycle. Injecting verifyCaptureSystem here (setup.ts already depends on browser/index.ts) keeps the dependency one-directional and breaks the
+// Wire the capture-readiness probe into the browser launch gate. setup.ts owns the capture lock and the readiness probe; browser/index.ts owns the launch
+// lifecycle. Injecting verifyCaptureSystem here (setup.ts already depends on browser/index.ts) keeps the dependency one-directional and breaks the
 // cycle, mirroring the browserAccessors boundary between login.ts and index.ts. It runs once at module load, before any browser launch.
 setCaptureProbe(verifyCaptureSystem);
 
@@ -523,7 +523,7 @@ function disposePage(page: Page): void {
 }
 
 /* CreatePageWithCaptureDeps is the cross-module collaborator set createPageWithCapture composes on at the browser boundary: the shared-browser accessor, the
- * puppeteer-stream capture launcher, and the overlay-handling poll the static-capture branch fires. It is injected as a default parameter, mirroring VideoTuneDeps in
+ * capture acquisition, and the overlay-handling poll the static-capture branch fires. It is injected as a default parameter, mirroring VideoTuneDeps in
  * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same collaborator-injection boundary - no loader mock -
  * while production uses the real
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
@@ -536,16 +536,16 @@ function disposePage(page: Page): void {
  */
 export interface CreatePageWithCaptureDeps {
 
+  readonly acquireCaptureStream: typeof acquireCaptureStream;
   readonly emulateCaptureSurface: typeof emulateCaptureSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
-  readonly getStream: typeof getStream;
   readonly installCaptureFocusHook: typeof installCaptureFocusHook;
   readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { emulateCaptureSurface, getCurrentBrowser, getStream, installCaptureFocusHook,
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, emulateCaptureSurface, getCurrentBrowser, installCaptureFocusHook,
   reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
 
 /**
@@ -564,7 +564,7 @@ const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { emulateCap
  *
  * @param options - Options for page and capture creation.
  * @param deps - The injected browser and overlay-poll collaborators; defaults to defaultCreatePageWithCaptureDeps. Threaded so a test drives this function without a
- * live Chrome by substituting the shared-browser accessor, the capture launcher, and the static-capture overlay poll.
+ * live Chrome by substituting the shared-browser accessor, the capture acquisition, and the static-capture overlay poll.
  * @returns The page, context, and capture session (which owns the raw capture stream and any FFmpeg child).
  * @throws Error if page creation, capture initialization, or navigation fails.
  */
@@ -628,7 +628,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // while every other failure unwinds through the DisposableStack.
   try {
 
-    const streamOptions = {
+    const streamOptions: CaptureStreamOptions = {
 
       audio: true,
       audioBitsPerSecond: CONFIG.streaming.audioBitsPerSecond,
@@ -641,7 +641,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
        *
        * The frame rate is constrained to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower
        * rate. The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but
-       * never drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its getStream() fails or succeeds at the
+       * never drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its acquisition fails or succeeds at the
        * tabCapture API level before encoding matters, so a representative-but-minimal constraint set suffices there.
        */
       videoConstraints: {
@@ -656,11 +656,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
           minWidth: surface.width
         }
       }
-    } as unknown as Parameters<typeof getStream>[1];
+    };
 
-    // Acquire the raw capture stream through the capture lock. The lock serializes getStream against every other capture init process-wide and holds the turn until
-    // this task's promise settles, so no two inits collide. Every timing bound is read here, at the call, because the module-scope lock captured nothing from CONFIG.
-    const stream = await captureLock.run(async (signal: AbortSignal): Promise<Readable> => {
+    // Acquire the raw capture stream through the capture lock. The lock serializes acquisition against every other capture init process-wide and holds the turn
+    // until this task's promise settles, so no two inits collide. Every timing bound is read here, at the call, because the module-scope lock captured nothing
+    // from CONFIG.
+    const stream = await captureLock.run(async (signal: AbortSignal): Promise<CaptureStream> => {
 
       // If Chrome crashed while this task waited for its turn, the page is dead. Throw a typed error so the turn releases at once and the closed-page recursion runs
       // OUTSIDE the lock, on a fresh page.
@@ -669,25 +670,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
         throw new PageClosedDuringTurnError();
       }
 
-      // Initialize capture. On a stale-mutex rejection - including one that arrives after this task was abandoned at the caller deadline - escalate from the single
-      // home before rethrowing, so the process-exit safety net fires even on the abandoned path, where a late stale-mutex rejection would otherwise go unescalated.
-      let raw: Readable;
+      // Initialize capture. The acquisition carries this task's own abort signal, so the one retry it may make can never begin after the caller's deadline has
+      // fired and the caller has stopped waiting for the result.
+      const raw = await deps.acquireCaptureStream(page, streamOptions, { signal });
 
-      try {
-
-        raw = await deps.getStream(page, streamOptions);
-      } catch(error) {
-
-        if(isStaleCaptureMutexError(error)) {
-
-          escalateStaleCaptureMutex("stream initialization");
-        }
-
-        throw error;
-      }
-
-      // The caller deadline fired while getStream was still running: retire the stream this task just produced - destroy plus the STOP_RECORDING settle - inside the
-      // turn, then reject, so no path strands a live capture on a closing page or mistakes a retired stream for a usable one.
+      // The caller deadline fired while the acquisition was still running: retire the stream this task just produced - destroy plus the stop confirmation - inside
+      // the turn, then reject, so no path strands a live capture on a closing page or mistakes a retired stream for a usable one.
       if(signal.aborted) {
 
         await retireRawStream(raw, realClock);
@@ -812,7 +800,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       return await createPageWithCapture({ ...options, _pageClosedRetries: retryCount + 1 }, deps);
     }
 
-    // Every other rejection - a stale-mutex escalation already fired inside the task, a caller-deadline CaptureDeadlineError, or any other capture-init failure - just
+    // Every other rejection - a caller-deadline CaptureDeadlineError, or any other capture-init failure - just
     // unwinds. Resource teardown (page, interceptor, and the capture session once built) is handled by the DisposableStack as this throw unwinds the function scope.
     throw error;
   }
@@ -822,7 +810,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   let strategyDirectTune = false;
   let usedDirectUrl = false;
 
-  // Install the CDP manifest interceptor immediately before the navigate-and-tune fork, so its observation window opens after the capture-lock and getStream phase
+  // Install the CDP manifest interceptor immediately before the navigate-and-tune fork, so its observation window opens after the capture-lock and acquisition
   // (which the observer would otherwise idle through) and spans exactly the phases that produce manifests: navigation with retry, channel selection, and video
   // setup. The install decision is gated on tab replacement and the skip flag only - static-capture profiles install too, since they stay native-HLS eligible
   // through the interception's presence, so the guard sits upstream of the fork and both branches inherit it. The navigation allowance handed to the budget is
@@ -1636,19 +1624,17 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
 // Capture Readiness Verification.
 
 /**
- * Verifies that a freshly-launched Chrome instance can actually capture, by running a real getStream against a throwaway page on it. This is the capability tier of
- * the browser launch gate: browser/index.ts injects it via setCaptureProbe and runs it inside launchReadyBrowser, so a browser is published as ready only after its
- * capture capability is verified - at boot AND at every relaunch, not just startup. It exercises the exact getStream path that hangs when the puppeteer-stream
- * extension is unregistered, so a dead extension is detected immediately rather than causing every subsequent stream request to hang.
+ * Verifies that a freshly-launched Chrome instance can actually capture, by running a real capture acquisition against a throwaway page on it. This is the
+ * capability tier of the browser launch gate: browser/index.ts injects it via setCaptureProbe and runs it inside launchReadyBrowser, so a browser is published as
+ * ready only after its capture capability is verified - at boot AND at every relaunch, not just startup. It exercises the exact acquisition path that fails when
+ * the capture extension is unregistered, so a dead extension is detected immediately rather than causing every subsequent stream request to fail.
  *
- * Each attempt creates a temporary page, attempts a short capture, and tears down both cleanly. A 500ms delay after destroying the capture stream allows
- * puppeteer-stream's fire-and-forget STOP_RECORDING chain to complete before closing the page, preventing a stale capture cascade on the first real request.
+ * Each attempt creates a temporary page, attempts a short capture, and tears down both cleanly. The teardown waits for the extension to confirm the recording
+ * stopped, bounded by a ceiling, before closing the page, so Chrome's tabCapture state is released rather than lingering into the first real request.
  *
  * After a system reboot or a fresh relaunch, Chrome's display stack or capture extension may not be ready immediately. The probe retries up to PROBE_MAX_ATTEMPTS
  * times with a delay between attempts, giving the system time to settle before giving up. At boot this prevents a rapid restart storm where the service manager
  * relaunches PrismCast repeatedly, each attempt orphaning a Chrome process; at relaunch it provides in-launch settling before the supervisor counts a launch failure.
- *
- * If stale capture state is detected, the process exits immediately - a Chrome restart cannot fix the leaked module-level mutex, only a fresh process can.
  * @param browser - The Chrome instance to verify (the local instance being launched, passed in rather than re-acquired to avoid re-entering the launch in flight).
  */
 export async function verifyCaptureSystem(browser: Browser): Promise<void> {
@@ -1659,7 +1645,7 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
   for(let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt++) {
 
     // The launch gate runs its capture probe OFF the capture lock, deliberately: it fires pre-publish, when supervisor.current() is null, so a wedged gate task would
-    // have no recovery target and would jam the shared lock. GATE mode keeps the internal getStream bound, and this path keeps its own poison exit below.
+    // have no recovery target and would jam the shared lock. GATE mode keeps the acquisition bounded internally instead.
     // eslint-disable-next-line no-await-in-loop -- Sequential retries are intentional; each probe must complete before deciding whether to retry.
     const result = await attemptCaptureProbe(browser, { boundMs: CAPTURE_PROBE_TIMEOUT_MS, kind: "gate" });
 
@@ -1667,16 +1653,6 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
     if(result === null) {
 
       return;
-    }
-
-    // Stale capture state is unrecoverable: puppeteer-stream's second lock section has no try/finally, so the mutex is permanently leaked and every subsequent
-    // getStream() hangs. Chrome restart cannot fix module-level state, so escalate from the single home (which logs and schedules the deferred exit), then throw so no
-    // further probe attempts run before the process exits.
-    if(isStaleCaptureMutexError(result)) {
-
-      escalateStaleCaptureMutex("the launch-gate capture probe");
-
-      throw new Error("Capture system verification failed: stale capture state detected.");
     }
 
     // If we have retries remaining, log a warning and wait before the next attempt.
@@ -1705,20 +1681,21 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
 }
 
 /**
- * The capture probe's operating mode. The launch gate bounds getStream with an internal race (a pre-publish bypass off the capture lock); the mid-life path runs on
- * the capture lock, which owns the outer bounds, so its getStream is awaited raw and SELF-TIMED against the criterion: the pass/fail judgment counts getStream's own
- * latency alone, never the teardown settle that follows it. boundMs is the getStream criterion in both arms; the mid-life arm also carries the lock's AbortSignal so a
- * probe abandoned at the outer deadline retires the stream it produced.
+ * The capture probe's operating mode. The launch gate bounds the acquisition with an internal race (a pre-publish bypass off the capture lock); the mid-life path
+ * runs on the capture lock, which owns the outer bounds, so its acquisition is awaited raw and SELF-TIMED against the criterion: the pass/fail judgment counts the
+ * acquisition's own latency alone, never the teardown that follows it. That span covers the acquisition whole, retry included - a browser whose capture needs a
+ * retry to start is exactly a browser worth reverifying. boundMs is the criterion in both arms; the mid-life arm also carries the lock's AbortSignal so a probe
+ * abandoned at the outer deadline retires the stream it produced.
  */
 type CaptureProbeMode = { boundMs: number; kind: "gate" } | { boundMs: number; kind: "midlife"; signal: AbortSignal };
 
 /**
  * Executes a single capture probe attempt. Creates a temporary page on the given browser, tries to start a capture stream, and tears everything down cleanly. It
  * NEVER throws in either mode: it returns null on success or an error-message string on failure, so callers branch on the string. The two modes differ only in how
- * getStream is bounded - see CaptureProbeMode.
+ * the acquisition is bounded - see CaptureProbeMode.
  * @param browser - The Chrome instance to probe.
- * @param mode - The operating mode: gate (internal getStream race) or midlife (self-timed getStream on the lock).
- * @param clock - Clock used for the mid-life self-timing and the teardown settle. Defaults to realClock.
+ * @param mode - The operating mode: gate (internal acquisition race) or midlife (self-timed acquisition on the lock).
+ * @param clock - Clock used for the mid-life self-timing and the teardown confirmation. Defaults to realClock.
  * @returns Null on success, or an error message string on failure.
  */
 async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clock: Clock = realClock): Promise<Nullable<string>> {
@@ -1727,9 +1704,9 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
   registerManagedPage(page);
 
-  // Tears the probe page down cleanly: retire the raw capture stream (destroy plus the STOP_RECORDING settle) while the browser is still connected, unregister the
+  // Tears the probe page down cleanly: retire the raw capture stream (destroy plus the stop confirmation) while the browser is still connected, unregister the
   // managed page, then close it. Shared by every success and self-timed-failure path in both modes.
-  const teardown = async (stream: Readable): Promise<void> => {
+  const teardown = async (stream: CaptureStream): Promise<void> => {
 
     await retireRawStream(stream, clock);
     unregisterManagedPage(page);
@@ -1743,13 +1720,13 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
   try {
 
     // Use the same capture MIME type and viewport (height/width) as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
-    // so matching those runtime constraints ensures the probe exercises a representative getStream() call. Both read the configured preset, so they agree by
+    // so matching those runtime constraints ensures the probe exercises a representative acquisition. Both read the configured preset, so they agree by
     // construction rather than by two call sites happening to pick the same numbers.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
     const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
     const viewport = getPresetViewport(CONFIG);
 
-    const streamOptions = {
+    const streamOptions: CaptureStreamOptions = {
 
       audio: true,
       mimeType: captureMimeType,
@@ -1766,24 +1743,24 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
           minWidth: viewport.width
         }
       }
-    } as unknown as Parameters<typeof getStream>[1];
+    };
 
-    // GATE mode: bound getStream with an internal timeout. On a lapse the getStream promise is still pending, so attach a both-callback handler that retires a
+    // GATE mode: bound the acquisition with an internal timeout. On a lapse the acquisition is still running, so attach a both-callback handler that retires a
     // late-arriving stream (best-effort; the page may already be closing) and consumes a late rejection. The bounded wait already observes the promise's rejection,
     // so a fulfillment-only handler would create unhandled-rejection noise. This cleans up the orphan without serializing successive gate attempts against one another.
     if(mode.kind === "gate") {
 
-      const streamPromise = getStream(page, streamOptions) as unknown as Promise<Readable>;
+      const streamPromise = acquireCaptureStream(page, streamOptions);
       const timeoutError = new Error(CAPTURE_PROBE_TIMEOUT_MESSAGE);
 
-      let stream: Readable;
+      let stream: CaptureStream;
 
       try {
 
         stream = await waitWithTimeout(streamPromise, mode.boundMs, timeoutError);
       } catch(error) {
 
-        // Only the internal timeout leaves getStream pending; an in-time rejection produced no stream to clean up and is already observed by the bounded wait.
+        // Only the internal timeout leaves the acquisition running; an in-time rejection produced no stream to clean up and is already observed by the bounded wait.
         if(error === timeoutError) {
 
           void streamPromise.then((late) => {
@@ -1805,16 +1782,16 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
       return null;
     }
 
-    // MID-LIFE mode: await getStream raw and self-time it. The turn (owned by the lock) spans the whole task, but the pass/fail CRITERION is getStream's own latency
-    // against boundMs, measured without racing or abandoning anything, so the teardown settle that follows never counts against it.
+    // MID-LIFE mode: await the acquisition raw and self-time it. The turn (owned by the lock) spans the whole task, but the pass/fail CRITERION is the
+    // acquisition's own latency against boundMs, measured without racing or abandoning anything, so the teardown that follows never counts against it.
     const startedAt = clock.now();
-    const stream = (await getStream(page, streamOptions)) as unknown as Readable;
+    const stream = await acquireCaptureStream(page, streamOptions, { signal: mode.signal });
     const elapsed = clock.now() - startedAt;
 
     await teardown(stream);
 
     // Report failure when the caller abandoned this probe at the lock's outer deadline (unobservable in practice - the lock already rejected the caller - but it keeps
-    // the never-throw contract and prevents stranding a capture), or when getStream's own latency exceeded the criterion bound.
+    // the never-throw contract and prevents stranding a capture), or when the acquisition's own latency exceeded the criterion bound.
     if(mode.signal.aborted || (elapsed > mode.boundMs)) {
 
       return CAPTURE_PROBE_TIMEOUT_MESSAGE;
@@ -1845,20 +1822,20 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
  * event, so neither the launch gate nor the disconnect handler would catch it. This detector rides a signal that is already happening: a stream-setup failure
  * carrying a capture-infrastructure signature. It is deliberately conservative. The guard (the failing stream is the only active stream) preserves per-stream
  * isolation - if any other stream is active, the browser is either demonstrably capturing or those streams will trip their own circuit breakers and drain. The probe
- * is the authoritative arbiter, serialized through the capture lock so it can never race a real stream's getStream init, and it runs in the background, single-flight,
- * so it never delays a response or stacks up. On a confirmed failure, the one recovery action runs: invalidate the browser for a governed relaunch.
+ * is the authoritative arbiter, serialized through the capture lock so it can never race a real stream's capture acquisition, and it runs in the background,
+ * single-flight, so it never delays a response or stacks up. On a confirmed failure, the one recovery action runs: invalidate the browser for a governed relaunch.
  */
 
 // At most one mid-life re-verification runs at a time across the process, so a burst of capture-infrastructure failures triggers a single probe, not a storm.
 let captureReverificationInProgress = false;
 
 /**
- * Runs one capture probe as a task on the capture lock, so it cannot race a concurrent getStream initialization (which would draw a spurious "Cannot capture a tab
- * with an active stream"). The lock holds the turn across the probe's full task - getStream plus the STOP_RECORDING settle inside attemptCaptureProbe - so the next
- * initialization does not start until the probe's capture is fully released. The mid-life probe self-times its getStream against `timeout`; the lock's outer deadline
- * adds a teardown allowance over it as a safety net.
+ * Runs one capture probe as a task on the capture lock, so it cannot race a concurrent capture acquisition (which would draw a spurious "Cannot capture a tab
+ * with an active stream"). The lock holds the turn across the probe's full task - the acquisition plus the stop confirmation inside attemptCaptureProbe - so the
+ * next initialization does not start until the probe's capture is fully released. The mid-life probe self-times its acquisition against `timeout`; the lock's
+ * outer deadline adds a teardown allowance over it as a safety net.
  * @param browser - The Chrome instance to probe.
- * @param timeout - Maximum time in milliseconds to wait for the probe's getStream() to respond (the self-timed criterion).
+ * @param timeout - Maximum time in milliseconds to wait for the probe's acquisition to respond (the self-timed criterion).
  * @returns Null when the browser captured successfully, or an error message when it could not (including a wedged-lock timeout).
  */
 async function probeCaptureSerialized(browser: Browser, timeout: number): Promise<Nullable<string>> {
@@ -1871,11 +1848,11 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
       deadlineMs: timeout + PROBE_TEARDOWN_ALLOWANCE_MS,
 
       // The probe's wedge is a loud warning only, never an invalidate: by wedge time the detector has already invalidated this browser via the returned failure
-      // string (the outer deadline fires roughly 22s earlier), so a wedge here means the kill-immune leaked-mutex hang, where a second invalidate is a guaranteed
-      // identity-guard no-op.
+      // string (the outer deadline fires roughly 22s earlier), so a second invalidate here would be a guaranteed identity-guard no-op.
       onWedge: (): void => {
 
-        LOG.warn("A mid-life capture probe has wedged past the recovery bound; the capture mutex is likely leaked and awaiting a process restart.");
+        LOG.warn("A mid-life capture probe has wedged past the recovery bound; the browser was already invalidated when the probe's deadline fired, so this wedge " +
+          "is informational.");
       },
       turnWaitMs: CONFIG.streaming.navigationTimeout
     });
@@ -1952,8 +1929,7 @@ function noteCaptureInfrastructureFailure(failingStreamId: number): void {
         // The probe confirmed the browser cannot capture though it is still connected. invalidateBrowser is the single recovery action - relinquish readiness,
         // terminate the now-doomed streams, and close Chrome - so the next request relaunches a fresh, gate-verified browser. We pass the exact instance we probed:
         // invalidateBrowser no-ops if it was already superseded by a disconnect-and-relaunch during the probe, so we never tear down a healthy replacement. A
-        // genuinely leaked module mutex, if that was the cause, surfaces again at the relaunch's gate probe and exits there; a merely-slow getStream that finally
-        // settles instead lets the relaunch recover.
+        // merely-slow acquisition that finally settles instead lets the relaunch recover.
         await invalidateBrowser(browser, "a capture probe failed after a stream setup failure with no other active streams");
       }
     } catch(error) {

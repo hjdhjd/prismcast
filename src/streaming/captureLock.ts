@@ -2,8 +2,8 @@
  *
  * captureLock.ts: The task-scoped serializer for Chrome capture initialization.
  *
- * Chrome's tabCapture extension allows only one getStream() initialization in flight process-wide; a second concurrent call throws "Cannot capture a tab with an
- * active stream", which poisons puppeteer-stream's module-level mutex. This primitive serializes capture initialization so that collision is impossible by
+ * Chrome's tabCapture extension allows only one capture acquisition in flight process-wide; a second concurrent start throws "Cannot capture a tab with an
+ * active stream". This primitive serializes capture initialization so that collision is impossible by
  * construction: a caller hands the lock the capture-init work, and the lock owns the turn for the whole lifetime of that work. The turn releases only when the
  * work's promise settles - never on a caller timeout, a caller's catch, or a waiter giving up - so no two tasks ever run at once.
  *

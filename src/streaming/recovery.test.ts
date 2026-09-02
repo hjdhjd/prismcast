@@ -192,6 +192,9 @@ describe("isCaptureInfrastructureError", () => {
     assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
     assert.equal(isCaptureInfrastructureError(new Error("Capture queue wait timed out.")), true);
     assert.equal(isCaptureInfrastructureError(new Error("Stream initialization timed out.")), true);
+    assert.equal(isCaptureInfrastructureError(new Error("Could not start video source")), true);
+    assert.equal(isCaptureInfrastructureError(new Error("The capture extension is not ready on this browser.")), true);
+    assert.equal(isCaptureInfrastructureError(new Error("No active tab was found for capture.")), true);
   });
 
   test("accepts either an Error or a bare string", () => {
@@ -209,12 +212,6 @@ describe("isCaptureInfrastructureError", () => {
     assert.equal(isCaptureInfrastructureError(""), false);
   });
 
-  test("the stale-mutex error is also classified capture-infrastructure (layered, not exclusive)", () => {
-
-    // The narrower "Cannot capture a tab with an active stream" stale-mutex case triggers a process exit at its own call sites; it is still a
-    // capture-infrastructure error here, so the two predicates are layered rather than mutually exclusive.
-    assert.equal(isCaptureInfrastructureError(new Error("Cannot capture a tab with an active stream")), true);
-  });
 
   test("the three production capture-timeout messages are exact and classify as capture-infrastructure errors", () => {
 

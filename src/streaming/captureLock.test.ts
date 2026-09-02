@@ -381,27 +381,31 @@ describe("createCaptureLock", () => {
   test("an orphaned late success is retired inside the turn before the successor begins", async () => {
 
     const restore = assertNoUnhandledRejections();
-    const { clock, sleeps } = makeDeadlineFiringClock();
+    const { clock } = makeDeadlineFiringClock();
     const lock = createCaptureLock({ clock, wedgeFloorMs: 30000, wedgeMarginMs: 5000 });
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
     const gotStream = Promise.withResolvers<void>();
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const stopConfirmed = Promise.withResolvers<void>();
     const stubStream = { destroy(): void {
 
       this.destroyed = true;
-    }, destroyed: false };
-    let settleElapsed = false;
+    }, destroyed: false, stopped: stopConfirmed.promise };
+    let retireComplete = false;
     const pA = lock.run(async (signal: AbortSignal): Promise<typeof stubStream> => {
 
       await gotStream.promise;
 
-      // Mirror the real stream task's abandonment branch: on a fired deadline, retire the resource this task produced, then reject so no path uses it.
+      /* Mirror the real stream task's abandonment branch: on a fired deadline, retire the resource this task produced - destroy it, then wait for the capture
+       * extension to confirm the recording stopped - and only then reject, so no path uses it. The confirmation, not a fixed wait, is what the turn is held for.
+       */
       if(signal.aborted) {
 
         stubStream.destroy();
 
-        await clock.sleep(500);
+        await clock.waitWithTimeout(stubStream.stopped, 3000, new Error("The capture extension did not confirm the recording stopped in time."));
 
-        settleElapsed = true;
+        retireComplete = true;
 
         throw new CaptureAbandonedError();
       }
@@ -411,10 +415,10 @@ describe("createCaptureLock", () => {
 
     await assert.rejects(pA, (error: unknown) => error instanceof CaptureDeadlineError);
 
-    let stateAtBStart: { destroyed: boolean; settleElapsed: boolean } | null = null;
+    let stateAtBStart: { destroyed: boolean; retireComplete: boolean } | null = null;
     const pB = lock.run(async (): Promise<string> => {
 
-      stateAtBStart = { destroyed: stubStream.destroyed, settleElapsed };
+      stateAtBStart = { destroyed: stubStream.destroyed, retireComplete };
 
       return "B";
     }, runOpts());
@@ -428,11 +432,17 @@ describe("createCaptureLock", () => {
 
     await flushMicro();
 
+    assert.equal(stateAtBStart, null, "the successor still waits while the retire waits on the stop confirmation");
+
+    // The capture extension confirms the recording stopped, which is what completes the retire and releases the turn.
+    stopConfirmed.resolve();
+
+    await flushMicro();
+
     const observedAtBStart = await expectAt(() => stateAtBStart ?? undefined);
 
     assert.equal(observedAtBStart.destroyed, true, "the orphaned stream was destroyed before the turn released");
-    assert.equal(observedAtBStart.settleElapsed, true, "the STOP_RECORDING settle elapsed before the turn released");
-    assert.ok(sleeps.includes(500), "the retire settle delay was scheduled");
+    assert.equal(observedAtBStart.retireComplete, true, "the stop confirmation completed before the turn released");
     assert.equal(await pB, "B");
 
     await flushMacro();

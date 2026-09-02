@@ -2,7 +2,7 @@
  *
  * captureSession.ts: The capture-pipeline composite for PrismCast.
  *
- * A capture-mode stream is fed by an ordered pipeline of three resources: the raw capture stream from puppeteer-stream (a Matroska feed in FFmpeg mode, a raw
+ * A capture-mode stream is fed by an ordered pipeline of three resources: the raw stream from the tab capture (a Matroska feed in FFmpeg mode, a raw
  * fMP4 feed in native-fMP4 mode), an optional FFmpeg child that remuxes Matroska to fMP4, and the fMP4 segmenter that consumes the pipeline output. These three
  * resources require a specific teardown order that is not simply construction reversed, which is why a flat LIFO stack cannot express it. CaptureSession encapsulates
  * that order behind a single Disposable so every owner that tears a capture pipeline down does so identically, and no owner ever has to know the internal order.
@@ -23,9 +23,9 @@
  *      active misfire: kill() always runs ahead of the capture stream's destroy, so shuttingDown is set before FFmpeg's inherently asynchronous exit event can run
  *      its handler, whatever the exit code. Because that guarantee comes from the fixed step order rather than from destroy and kill happening in the same
  *      synchronous frame, an await inserted between the steps would remain safe - the flush-triggered non-zero exit can never look like a spurious error.
- *   2. Destroy the raw capture stream. destroy() schedules the stream's close emission; puppeteer-stream's close handler then calls STOP_RECORDING in the capture
+ *   2. Destroy the raw capture stream. destroy() schedules the stream's close emission; the capture's own close handler then calls STOP_RECORDING in the capture
  *      extension on a later tick, provided the browser is still connected. That "still connected" guarantee is owned by the CALLER (which must not tear the browser
- *      down before disposing), not by disposal ordering. Without STOP_RECORDING, Chrome's tabCapture state lingers and subsequent getStream() calls hang with
+ *      down before disposing), not by disposal ordering. Without STOP_RECORDING, Chrome's tabCapture state lingers and a later capture acquisition fails with
  *      "Cannot capture a tab with an active stream." Destroying the stream also carries EOF to FFmpeg's stdin (when present), draining the pipeline.
  *   3. Stop the segmenter. Its input is the pipeline output (FFmpeg stdout, or the raw capture stream in native-fMP4 mode), which has now ended; stop() detaches
  *      its listeners and flushes the parser.
@@ -85,7 +85,7 @@ export interface CreateCaptureSessionOptions {
   // The FFmpeg child remuxing Matroska to fMP4, or null in native-fMP4 capture mode where the raw capture stream is already fMP4 and needs no transcoding.
   readonly ffmpegProcess: Nullable<FFmpegProcess>;
 
-  // The raw capture stream from puppeteer-stream. Destroyed during disposal to release Chrome's tabCapture state while the browser is still connected.
+  // The raw stream from the tab capture. Destroyed during disposal to release Chrome's tabCapture state while the browser is still connected.
   readonly rawCaptureStream: Readable;
 }
 

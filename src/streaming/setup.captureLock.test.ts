@@ -3,20 +3,20 @@
  * setup.captureLock.test.ts: Setup-tier test for createPageWithCapture's integration with the capture lock. It pins the closed-page recursion: when the page is found
  * already closed at the instant its capture turn is granted (a browser crash during the turn-wait), the lock task throws a typed PageClosedDuringTurnError, the caller
  * recurses on a fresh page outside the lock, and after MAX_PAGE_CLOSED_RETRIES it fails with the terminal message. The test drives createPageWithCapture through its
- * CreatePageWithCaptureDeps collaborators with a stub browser whose pages report isClosed() true, so getStream is never reached and no real Chrome runs. The wedge and
- * deadline mechanics are covered at the primitive tier in captureLock.test.ts; this test asserts only the setup-side wiring.
+ * CreatePageWithCaptureDeps collaborators with a stub browser whose pages report isClosed() true, so the acquisition is never reached and no real Chrome runs. The
+ * wedge and deadline mechanics are covered at the primitive tier in captureLock.test.ts; this test asserts only the setup-side wiring.
  */
 import type { Browser, Page } from "puppeteer-core";
 import { before, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
-import type { PuppeteerStream } from "puppeteer-stream";
 import assert from "node:assert/strict";
 import { createPageWithCapture } from "./setup.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
 // A minimal page that reports itself already closed. setBypassCSP and evaluateOnNewDocument are the only calls createPageWithCapture makes before the lock task, and
-// the task's first statement is the isClosed() check, so a true here routes straight to the typed closed-page throw without ever reaching getStream.
+// the task's first statement is the isClosed() check, so a true here routes straight to the typed closed-page throw without ever reaching the acquisition.
 function makeClosedStubPage(): Page {
 
   return {
@@ -28,13 +28,16 @@ function makeClosedStubPage(): Page {
   } as unknown as Page;
 }
 
-// The injected browser-boundary collaborators. Each newPage hands back a fresh closed stub page, so every recursion sees a dead page. getStream must never be reached;
-// it throws to make a regression that skipped the isClosed() check surface loudly.
+// The injected browser-boundary collaborators. Each newPage hands back a fresh closed stub page, so every recursion sees a dead page. The acquisition must never be
+// reached; it throws to make a regression that skipped the isClosed() check surface loudly.
 const deps: CreatePageWithCaptureDeps = {
 
+  acquireCaptureStream: async (): Promise<CaptureStream> => {
+
+    throw new Error("The capture acquisition must not run when the page is already closed at turn grant.");
+  },
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeClosedStubPage() } as unknown as Browser),
-  getStream: async (): Promise<PuppeteerStream> => { throw new Error("getStream must not run when the page is already closed at turn grant."); },
   installCaptureFocusHook: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   reaffirmCaptureSurface: async (): Promise<void> => { /* The closed-page path never reaches the establishment's re-affirmation. */ },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },

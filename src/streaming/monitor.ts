@@ -1129,7 +1129,7 @@ export function monitorPlaybackHealth(
     } catch(error) {
 
       // Unexpected error (not from onTabReplacement - those are caught internally by the handler in hls.ts and return null). Guard against registry corruption,
-      // getStream failures, or other unexpected errors.
+      // capture-acquisition failures, or other unexpected errors.
       LOG.debug("recovery:tab", "Tab replacement attempt 1/2 failed: %s. Retrying...", formatError(error));
 
       try {

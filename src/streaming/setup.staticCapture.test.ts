@@ -14,9 +14,9 @@
 import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import { PassThrough } from "node:stream";
-import type { PuppeteerStream } from "puppeteer-stream";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
 import assert from "node:assert/strict";
 import { createPageWithCapture } from "./setup.ts";
@@ -64,15 +64,22 @@ function makeStubPage(): Page {
   } as unknown as Page;
 }
 
-/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome), getStream
- * yields a real PassThrough so the real createCaptureSession has a stream to own (no puppeteer-stream), startOverlayHandling records each poll's phase and abort
- * signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the density step and
- * answers with a fixed surface so the capture constraints it feeds stay total, and installCaptureFocusHook and reaffirmCaptureSurface record the two
- * surface-re-affirmation steps in place of page injection and raw CDP. createPageWithCapture defaults every one of these to the real functions; substituting them
- * here is what keeps the call off a live browser, and recording getStream alongside the rest is what makes their order observable.
+/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome),
+ * acquireCaptureStream yields a real PassThrough so the real createCaptureSession has a stream to own (no extension protocol), startOverlayHandling records each
+ * poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the
+ * density step and answers with a fixed surface so the capture constraints it feeds stay total, and installCaptureFocusHook and reaffirmCaptureSurface record the
+ * two surface-re-affirmation steps in place of page injection and raw CDP. createPageWithCapture defaults every one of these to the real functions; substituting
+ * them here is what keeps the call off a live browser, and recording the acquisition alongside the rest is what makes their order observable.
  */
 const deps: CreatePageWithCaptureDeps = {
 
+  // The acquisition hands back a real PassThrough carrying the two capture controls, so createCaptureSession owns a genuine stream and destroys a real one.
+  acquireCaptureStream: async (): Promise<CaptureStream> => {
+
+    depsCalls.push("acquireCaptureStream");
+
+    return Object.assign(new PassThrough(), { stop: async (): Promise<void> => undefined, stopped: Promise.resolve() });
+  },
   emulateCaptureSurface: async (page: Page): Promise<{ height: number; width: number }> => {
 
     depsCalls.push("emulateCaptureSurface");
@@ -81,15 +88,6 @@ const deps: CreatePageWithCaptureDeps = {
     return { height: 1080, width: 1920 };
   },
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
-
-  // getStream returns a real PassThrough augmented with a no-op stop so it satisfies puppeteer-stream's PuppeteerStream type, which requires a stop method, while
-  // still handing createCaptureSession a genuine stream to own and destroy.
-  getStream: async (): Promise<PuppeteerStream> => {
-
-    depsCalls.push("getStream");
-
-    return Object.assign(new PassThrough(), { stop: (): Promise<void> => Promise.resolve() });
-  },
   installCaptureFocusHook: async (page: Page): Promise<void> => {
 
     depsCalls.push("installCaptureFocusHook");
@@ -171,7 +169,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
   test("brings the window on screen before acquiring capture, and hands the established page to the closing pass", async () => {
 
     /* Tab capture consumes the compositor's output for the shared window, and that output is only composed for capture to read while the window is presented - so
-     * the sync has to land before getStream, never alongside or after it. The capture surface is emulated in the same window, between the two: the page has to
+     * the sync has to land before the acquisition, never alongside or after it. The capture surface is emulated in the same window, between the two: the page has to
      * carry the preset's dimensions and the display's density before capture acquires it, or the track is acquired against a surface nobody declared. The recorded
      * call order is the pin: moving either step below capture acquisition reorders these entries and fails here. The closing entry is the pass that ends the
      * establishment, which carries the page it just built so the executor can use that tab's CDP session rather than hunting for an open page.
@@ -190,7 +188,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
     result.captureSession.dispose();
 
     assert.deepEqual(depsCalls,
-      [ "syncWindowVisibility", "emulateCaptureSurface", "installCaptureFocusHook", "getStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
+      [ "syncWindowVisibility", "emulateCaptureSurface", "installCaptureFocusHook", "acquireCaptureStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
       "the window sync leads the establishment and closes it, with the surface emulated, the activation heal installed, capture acquired, and the surface " +
       "re-affirmed in between");
     assert.equal(syncPages[0], undefined, "the leading pass has no page yet - it runs before the capture page exists");

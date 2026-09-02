@@ -543,8 +543,10 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
   return "other";
 }
 
-/* Capture-infrastructure error signatures. These indicate a fault in Chrome's capture pipeline itself - the puppeteer-stream tabCapture extension, the capture
- * lock's turn wait, or stream initialization - rather than a site- or stream-specific problem. They are the faults that warrant backing a client off (HTTP 503) and,
+/* Capture-infrastructure error signatures. These indicate a fault in Chrome's capture pipeline itself - the tabCapture extension, the capture lock's turn wait,
+ * or stream initialization - rather than a site- or stream-specific problem. The acquisition's own terminal messages sit here alongside the collision and the
+ * timeouts, because a capture Chrome refuses on both attempts, a browser with no loaded extension, and a browser reporting no active tab are all faults of the
+ * capture system rather than of the site being tuned. They are the faults that warrant backing a client off (HTTP 503) and,
  * for the browser supervisor, treating a setup failure as evidence the browser itself may no longer be capture-ready.
  *
  * The "timed out" entry is deliberately a broad substring rather than one literal string per message: it covers every timeout raised within
@@ -554,14 +556,13 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
  * navigateToPage and reloadPage swallow Puppeteer's own navigation timeouts as warnings instead of throwing, and the evaluate-call timeout path (EvaluateTimeoutError)
  * belongs to the health monitor's own call chain, never this one.
  */
-const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", "timed out" ] as const;
+const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", "Could not start video source", "No active tab", "capture extension",
+  "timed out" ] as const;
 
 /**
  * Classifies whether an error originates in Chrome's capture infrastructure (the extension, the capture lock, or stream initialization) rather than in a specific
  * site or stream. This is the single source of truth for that judgment: the stream-setup path uses it to decide a 503 back-off, and the browser supervisor uses it
- * to decide whether a setup failure is evidence the browser may no longer be capture-ready. It is layered with, not exclusive of, the narrower isStaleCaptureMutexError
- * predicate (utils/errors.ts), which matches only the stale-mutex string: a stale-mutex error is also a capture-infrastructure error (so this matches it too), but the
- * process-exit decision that the stale-mutex case alone warrants stays a distinct check at that predicate's own call sites.
+ * to decide whether a setup failure is evidence the browser may no longer be capture-ready.
  * @param error - The error or message to classify.
  * @returns True when the message carries a capture-infrastructure signature.
  */
