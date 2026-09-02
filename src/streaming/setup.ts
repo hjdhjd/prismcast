@@ -3,9 +3,10 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser,
-  installCaptureFocusHook, invalidateBrowser, registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
-import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, getBrowserInstance,
+  getCaptureImpairment, getCurrentBrowser, installCaptureFocusHook, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe, syncWindowVisibility,
+  unregisterManagedPage } from "../browser/index.ts";
+import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
@@ -14,7 +15,6 @@ import { LOG, delay, extractDomain, formatError, getStreamContext, maxRetryDurat
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, TuneResult, UrlValidationResult } from "../types/index.ts";
-import { getAllStreams, getNextStreamId } from "./registry.ts";
 import { getAuthDomainForChannel, getServiceDisplayName, resolveServiceKey } from "../config/services.ts";
 import { getBuiltinProfile, getProfileForChannel, getProfileForUrl, resolveProfile } from "../config/profiles.ts";
 import { getProviderByStrategy, invalidateDirectUrl, resolveDirectUrl } from "../browser/channelSelection.ts";
@@ -30,6 +30,7 @@ import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
+import { getNextStreamId } from "./registry.ts";
 import { getPresetViewport } from "../config/presets.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
@@ -352,8 +353,7 @@ export interface CreatePageWithCaptureOptions {
   // Comment to embed in FFmpeg output metadata (channel name or domain).
   comment?: string;
 
-  // The stream's numeric id, threaded through so a wedged capture init can exclude its own already-registered pending entry from the isolation guard that decides
-  // whether the wedge may invalidate the browser. Required at both call sites.
+  // The stream's numeric id, supplied by both call sites. createPageWithCapture carries it without reading it.
   numericStreamId: number;
 
   // Callback invoked on FFmpeg process errors (only used in ffmpeg capture mode).
@@ -572,7 +572,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<CreatePageWithCaptureResult> {
 
   const captureElapsed = startTimer();
-  const { comment, numericStreamId, onFFmpegError, profile, streamId, url } = options;
+  const { comment, onFFmpegError, profile, streamId, url } = options;
 
   /* Bring the window on screen before anything else. Capture reads the compositor's output for the shared window, and that output is only composed correctly for a
    * window the desktop is presenting, so the sync has to land ahead of capture acquisition rather than alongside it. The pending registry entry is already in
@@ -586,8 +586,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // would otherwise be repeated in each failure path, and closes the navigation-path leak of the manifest interceptor.
   using resources = new DisposableStack();
 
-  // Create browser page.
-  const browser = await deps.getCurrentBrowser();
+  // Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists.
+  const browser = await deps.getCurrentBrowser("capture");
   const page = await browser.newPage();
 
   // Register in-flight: the registry does not record this page against the stream until setup finishes, so the mark is what keeps stale page cleanup from closing
@@ -689,28 +689,14 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       deadlineMessage: STREAM_INIT_TIMEOUT_MESSAGE,
       deadlineMs: CONFIG.streaming.navigationTimeout,
 
-      // A wedged capture init is decisive only when no OTHER stream is active - the same judgment, from the same predicate, as the mid-life detector: any other
-      // active stream means the browser is demonstrably capturing, so tearing it down would violate per-stream failure isolation. reverificationInProgress is passed
-      // as the literal false because an in-flight mid-life probe is itself queued BEHIND this wedged task on the same lock, so deferring to it would double the
-      // recovery bound, and a redundant invalidate is identity-guarded and converges harmlessly.
+      /* A capture initialization that holds the lock this long is evidence about the browser rather than about the stream: the wedge fires only after this task's
+       * own deadline has already failed the tune, so the tune is lost either way and what is left to decide is what the browser can still be trusted with.
+       * Recording it marks the instance this task ran against, which refuses later capture starts at once and relaunches the browser when nothing depends on it -
+       * the same response the probe's verdict takes, reached from the other direction.
+       */
       onWedge: (): void => {
 
-        if(shouldReverifyCapture({ activeStreamIds: getAllStreams().map((entry) => entry.id), failingStreamId: numericStreamId, hasBrowser: true,
-          reverificationInProgress: false })) {
-
-          // Route the wedge into the existing browser-recovery ladder, targeting the exact instance this task ran against; invalidateBrowser no-ops if it was already
-          // superseded. A rejection is warn-logged rather than rethrown out of the wedge callback.
-          void invalidateBrowser(browser, "capture initialization wedged past the recovery bound").catch((error: unknown) => {
-
-            LOG.warn("Invalidating a wedged capture browser failed: %s.", formatError(error));
-          });
-        } else {
-
-          // Other streams are active, so hold rather than tear the browser down: waiters fail fast on their own turn-wait bounds, the wedged operation settles at
-          // worst at Puppeteer's protocolTimeout, and once the other streams drain a later wedge or setup failure reaches the zero-other case.
-          LOG.warn("Capture initialization has wedged past the recovery bound, but other streams are active; holding rather than invalidating the browser.",
-            { failingStreamId: numericStreamId });
-        }
+        noteBrowserCaptureImpaired(browser, "capture initialization wedged past the recovery bound");
       },
       turnWaitMs: CONFIG.streaming.navigationTimeout
     });
@@ -1364,6 +1350,15 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         throw new StreamSetupError("Browser temporarily unavailable.", 503, "The capture system is recovering. Please retry shortly.", { cause: error });
       }
 
+      // The browser is alive and still serving the captures it started, but it can no longer start another, so this tune is refused before a page is even opened.
+      // Quiet like its sibling above, because the alarm fired once when the mark was recorded. The message differs because the wait ends differently: the client is
+      // waiting on the browser's own streams to end rather than on a cooldown to elapse.
+      if(error instanceof BrowserCaptureImpairedError) {
+
+        throw new StreamSetupError("Browser temporarily unavailable.", 503, "The browser can no longer start captures and will relaunch once its current streams " +
+          "end. Please retry shortly.", { cause: error });
+      }
+
       // createPageWithCapture handles its own cleanup on failure (closes page, kills FFmpeg).
       const errorMessage = formatError(error);
       const lowerMessage = errorMessage.toLowerCase();
@@ -1380,12 +1375,12 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       // (recovery.ts) is the single source of truth for this classification, shared with the browser supervisor's readiness detection.
       const isCaptureError = isCaptureInfrastructureError(errorMessage);
 
-      // A capture-infrastructure failure may mean the browser, though still connected, can no longer capture. Hand it to the passive mid-life detector, which (guarded
-      // and single-flight, in the background) re-verifies capture readiness and invalidates the browser for a governed relaunch if confirmed. Fire-and-forget: it must
-      // never delay this response.
+      // A capture-infrastructure failure may mean the browser, though still connected, can no longer start captures. Hand it to the passive mid-life detector, which
+      // (guarded and single-flight, in the background) re-verifies capture readiness and marks the browser impaired if confirmed - its running captures continue, new
+      // capture starts are refused at acquire(), and the adapter relaunches it once no stream depends on it. Fire-and-forget: it must never delay this response.
       if(isCaptureError) {
 
-        noteCaptureInfrastructureFailure(numericStreamId);
+        noteCaptureInfrastructureFailure();
       }
 
       // A failed tune on a service currently marked needs-sign-in most likely failed AT the auth wall, so the user-facing message leads with the remedy.
@@ -1818,16 +1813,45 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
 // Passive Mid-Life Capture-Death Detection.
 
-/* A browser can be capture-ready at launch and lose its capture capability later - the extension wedges, tabCapture stalls - without ever firing a "disconnected"
- * event, so neither the launch gate nor the disconnect handler would catch it. This detector rides a signal that is already happening: a stream-setup failure
- * carrying a capture-infrastructure signature. It is deliberately conservative. The guard (the failing stream is the only active stream) preserves per-stream
- * isolation - if any other stream is active, the browser is either demonstrably capturing or those streams will trip their own circuit breakers and drain. The probe
- * is the authoritative arbiter, serialized through the capture lock so it can never race a real stream's capture acquisition, and it runs in the background,
- * single-flight, so it never delays a response or stacks up. On a confirmed failure, the one recovery action runs: invalidate the browser for a governed relaunch.
+/* A browser can be capture-ready at launch and lose its capture capability later - the extension wedges, tabCapture stalls, a display reconfiguration leaves the
+ * process unable to start another capture while the captures already running continue - without ever firing a "disconnected" event, so neither the launch gate nor
+ * the disconnect handler would catch it. This detector rides a signal that is already happening: a stream-setup failure carrying a capture-infrastructure
+ * signature. The probe is the arbiter, serialized through the capture lock so it can never race a real stream's capture acquisition, and it runs in the background,
+ * single-flight, so it never delays a response or stacks up. A probe that never obtained a turn is no verdict at all, because a busy lock is evidence about load
+ * rather than about the browser. On a confirmed failure the one recovery action runs: mark the browser, which leaves its running captures alone, refuses new
+ * capture starts at acquire(), and leaves the adapter to decide when the relaunch is safe.
  */
 
 // At most one mid-life re-verification runs at a time across the process, so a burst of capture-infrastructure failures triggers a single probe, not a storm.
 let captureReverificationInProgress = false;
+
+/**
+ * What one mid-life capture probe established about the browser. A `captured` outcome is the browser proving it can still start a capture; `failed` is the verdict
+ * the mark rests on; `inconclusive` is the probe never having run, which is evidence of neither.
+ */
+type CaptureProbeOutcome =
+  { readonly kind: "captured" } |
+  { readonly kind: "failed"; readonly reason: string } |
+  { readonly kind: "inconclusive"; readonly reason: string };
+
+/**
+ * Classifies a throw from the probe's run on the capture lock into a verdict or the absence of one. A turn-wait timeout means the probe never got to run: with
+ * other streams tuning at the same moment it queued behind their legitimate acquisitions, and a lock that is busy says something about load, not about the browser
+ * - a holder that is genuinely hung marks the browser through its own wedge. Every other value, the outer deadline above all, means the probe held its turn and its
+ * own acquisition did not settle, which is exactly the failure the mark exists for. Pure and total, so the distinction the detector rests on is pinnable without a
+ * browser.
+ * @param error - The value the lock run threw.
+ * @returns The outcome the detector acts on.
+ */
+export function classifyCaptureProbeFailure(error: unknown): CaptureProbeOutcome {
+
+  if(error instanceof CaptureTurnTimeoutError) {
+
+    return { kind: "inconclusive", reason: formatError(error) };
+  }
+
+  return { kind: "failed", reason: formatError(error) };
+}
 
 /**
  * Runs one capture probe as a task on the capture lock, so it cannot race a concurrent capture acquisition (which would draw a spurious "Cannot capture a tab
@@ -1836,81 +1860,62 @@ let captureReverificationInProgress = false;
  * outer deadline adds a teardown allowance over it as a safety net.
  * @param browser - The Chrome instance to probe.
  * @param timeout - Maximum time in milliseconds to wait for the probe's acquisition to respond (the self-timed criterion).
- * @returns Null when the browser captured successfully, or an error message when it could not (including a wedged-lock timeout).
+ * @returns Captured when the browser started a capture, failed when it could not, inconclusive when the probe never obtained its turn.
  */
-async function probeCaptureSerialized(browser: Browser, timeout: number): Promise<Nullable<string>> {
+async function probeCaptureSerialized(browser: Browser, timeout: number): Promise<CaptureProbeOutcome> {
 
   try {
 
-    return await captureLock.run((signal: AbortSignal): Promise<Nullable<string>> => attemptCaptureProbe(browser, { boundMs: timeout, kind: "midlife", signal }), {
+    const failure = await captureLock.run((signal: AbortSignal): Promise<Nullable<string>> => attemptCaptureProbe(browser, { boundMs: timeout, kind: "midlife",
+      signal }), {
 
       deadlineMessage: CAPTURE_PROBE_TIMEOUT_MESSAGE,
       deadlineMs: timeout + PROBE_TEARDOWN_ALLOWANCE_MS,
 
-      // The probe's wedge is a loud warning only, never an invalidate: by wedge time the detector has already invalidated this browser via the returned failure
-      // string (the outer deadline fires roughly 22s earlier), so a second invalidate here would be a guaranteed identity-guard no-op.
+      // The probe's wedge is a loud warning only, never a second verdict: by wedge time the detector has already marked this browser from the returned failure
+      // (the outer deadline fires roughly 22s earlier), so a mark raised here would land on an instance that already carries one.
       onWedge: (): void => {
 
-        LOG.warn("A mid-life capture probe has wedged past the recovery bound; the browser was already invalidated when the probe's deadline fired, so this wedge " +
+        LOG.warn("A mid-life capture probe has wedged past the recovery bound; the browser was already marked when the probe's deadline fired, so this wedge " +
           "is informational.");
       },
       turnWaitMs: CONFIG.streaming.navigationTimeout
     });
+
+    return (failure === null) ? { kind: "captured" } : { kind: "failed", reason: failure };
   } catch(error) {
 
-    // The only throw here is a lock failure - a turn-wait timeout or the outer deadline; attemptCaptureProbe returns its own failures as strings. A jammed capture
-    // lock is itself evidence the browser cannot capture, so surface it as a probe failure the detector routes into invalidateBrowser.
-    return formatError(error);
+    return classifyCaptureProbeFailure(error);
   }
 }
 
 /**
- * Pure decision for whether a mid-life capture-infrastructure failure warrants re-verifying the browser. Re-verification is warranted iff no other re-verification
- * is already in flight, a browser is published to probe, and the failing stream is the only active stream - any other active stream means either the browser is
- * demonstrably capturing (so this failure is stream-specific - never invalidate) or those streams will trip their own circuit breakers and drain, after which a
- * later failure reaches the zero-other case. An empty registry (setup failed before the stream was registered) satisfies the isolation check vacuously and is the
- * common real-world shape of this failure.
- * @param inputs - The decision inputs.
- * @param inputs.activeStreamIds - The ids of every stream currently in the registry.
- * @param inputs.failingStreamId - The id of the stream whose setup just failed, excluded from the isolation check.
- * @param inputs.hasBrowser - Whether a browser instance is currently published to probe.
- * @param inputs.reverificationInProgress - Whether a re-verification is already deciding the browser's fate.
- * @returns True when the failure should trigger a re-verification probe.
+ * Passive mid-life capture-death detection, called from the stream-setup failure path when the failure carries a capture-infrastructure signature. It re-verifies
+ * the browser's capture capability with a lock-serialized probe in the background and, on a confirmed failure, marks the browser: its running captures continue,
+ * new capture starts are refused at acquire(), and the adapter relaunches it once nothing depends on it. Any refused start is worth a probe - a browser that is
+ * demonstrably capturing for someone else can still be unable to start another - while a browser that already carries a mark needs no second verdict.
+ * Fire-and-forget so the failing request's response is not delayed; single-flight so a burst of failures triggers at most one probe.
  */
-export function shouldReverifyCapture(inputs: {
-  activeStreamIds: readonly number[];
-  failingStreamId: number;
-  hasBrowser: boolean;
-  reverificationInProgress: boolean;
-}): boolean {
-
-  return !inputs.reverificationInProgress && inputs.hasBrowser && inputs.activeStreamIds.every((id) => id === inputs.failingStreamId);
-}
-
-/**
- * Passive mid-life capture-death detection, called from the stream-setup failure path when the failure carries a capture-infrastructure signature. If the failing
- * stream is the only active stream, it re-verifies the browser's capture capability with a lock-serialized probe in the background and, on confirmed failure,
- * invalidates the browser for a governed relaunch - catching a browser that is still connected (no "disconnected" event) but can no longer capture. Fire-and-forget
- * so the failing request's response is not delayed; single-flight so a burst of failures triggers at most one probe.
- * @param failingStreamId - The numeric id of the stream whose setup just failed, excluded from the active-stream guard.
- */
-function noteCaptureInfrastructureFailure(failingStreamId: number): void {
+function noteCaptureInfrastructureFailure(): void {
 
   // Single-flight: a re-verification is already deciding the browser's fate; do not stack another. Read first so a re-verify already in flight short-circuits
-  // before the registry and browser lookups below are even performed.
+  // before the browser lookup below is even performed.
   if(captureReverificationInProgress) {
 
     return;
   }
 
-  // A readiness probe needs a connected browser to exercise. If none is published, a disconnect already handled the readiness loss. The !browser check is
-  // combined into this one condition (rather than a separate guard) so TypeScript narrows browser from Nullable<Browser> to Browser for the probe and
-  // invalidateBrowser calls below. hasBrowser and reverificationInProgress are passed as the values their guards already guarantee here - true (the !browser
-  // guard has passed) and false (the single-flight guard above already returned if it were true).
+  // A readiness probe needs a connected browser to exercise. If none is published, a disconnect already handled the readiness loss.
   const browser = getBrowserInstance();
 
-  if(!browser || !shouldReverifyCapture({ activeStreamIds: getAllStreams().map((entry) => entry.id), failingStreamId, hasBrowser: true,
-    reverificationInProgress: false })) {
+  if(!browser) {
+
+    return;
+  }
+
+  // A refused start against a browser that is already marked belongs to a tune that acquired it an instant before the mark landed. The verdict is recorded and the
+  // relaunch is scheduled, so a probe here would spend the capture lock re-establishing what is already known.
+  if(getCaptureImpairment() !== null) {
 
     return;
   }
@@ -1922,19 +1927,32 @@ function noteCaptureInfrastructureFailure(failingStreamId: number): void {
 
     try {
 
-      const failure = await probeCaptureSerialized(browser, CAPTURE_PROBE_TIMEOUT_MS);
+      const outcome = await probeCaptureSerialized(browser, CAPTURE_PROBE_TIMEOUT_MS);
 
-      if(failure !== null) {
+      switch(outcome.kind) {
 
-        // The probe confirmed the browser cannot capture though it is still connected. invalidateBrowser is the single recovery action - relinquish readiness,
-        // terminate the now-doomed streams, and close Chrome - so the next request relaunches a fresh, gate-verified browser. We pass the exact instance we probed:
-        // invalidateBrowser no-ops if it was already superseded by a disconnect-and-relaunch during the probe, so we never tear down a healthy replacement. A
-        // merely-slow acquisition that finally settles instead lets the relaunch recover.
-        await invalidateBrowser(browser, "a capture probe failed after a stream setup failure with no other active streams");
+        case "failed": {
+
+          // The probe confirmed the browser cannot start a capture though it is still connected. We pass the exact instance we probed, so a disconnect and relaunch
+          // during the probe leaves the fresh browser unmarked.
+          noteBrowserCaptureImpaired(browser, outcome.reason);
+
+          break;
+        }
+
+        case "inconclusive": {
+
+          LOG.debug("streaming:setup", "Mid-life capture re-verification could not obtain a turn on the capture lock (%s); no verdict.", outcome.reason);
+
+          break;
+        }
+
+        case "captured": {
+
+          // The browser started a capture, so it is healthy and the setup failure that brought us here belonged to the stream rather than to the browser.
+          break;
+        }
       }
-    } catch(error) {
-
-      LOG.debug("streaming:setup", "Mid-life capture re-verification aborted: %s.", formatError(error));
     } finally {
 
       captureReverificationInProgress = false;

@@ -14,12 +14,15 @@
  * capture pipeline, and stay with the e2e tier. The pure decision helpers they rest on - checkCircuitBreaker, getIssueCategory, formatIssueType,
  * recordRecoveryAttempt/Success, getRecoveryMethod - live in recovery.ts and are covered by recovery.test.ts.
  */
+import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import { closePuppeteerStreamWssOnIdle, flushMicrotasks, makeFakePage } from "../testing.helpers.ts";
 import { describe, test } from "node:test";
 import { emitStreamAdded, emitStreamRemoved, subscribeToStatus } from "./statusEmitter.ts";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureImpairment } from "../browser/index.ts";
 import { LOG } from "../utils/index.ts";
-import type { MonitorHandle } from "./recovery.ts";
+import type { MonitorDeps } from "./monitor.ts";
+import type { Nullable } from "../types/index.ts";
 import type { StreamStatus } from "./statusEmitter.ts";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -103,14 +106,36 @@ async function advance(t: TestContext, totalMs: number): Promise<void> {
   }
 }
 
+// The impairment a marked browser reports, and the deps object that reports it. The recovery ladder consults this read before offering tab replacement, so
+// substituting it is what lets a pin drive the ladder's availability decision with no browser anywhere in the picture.
+const IMPAIRED: CaptureImpairment = { reason: "Could not start video source", since: 0 };
+
+const IMPAIRED_DEPS: MonitorDeps = {
+
+  getCaptureImpairment: (): Nullable<CaptureImpairment> => IMPAIRED,
+  syncWindowVisibility: async (): Promise<void> => undefined
+};
+
+const HEALTHY_DEPS: MonitorDeps = {
+
+  getCaptureImpairment: (): Nullable<CaptureImpairment> => null,
+  syncWindowVisibility: async (): Promise<void> => undefined
+};
+
 /**
  * Starts a monitor against a Page double, with the minimal profile that keeps the tune path shallow: no channel selection, no iframe search, no click-to-play.
  * @param page - The Page double to monitor.
  * @param streamId - The stream id string for log context and abort lookup.
  * @param numericStreamId - The numeric stream id the status and registry lookups use.
+ * @param options - The collaborators a pin substitutes: a tab-replacement handler, a circuit-break stub, and the browser-boundary deps. Each defaults to what the
+ *                  monitor sees in the pins written before they existed - no handler, a no-op break, and the real defaults.
  * @returns The monitor handle.
  */
-function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: string, numericStreamId: number): MonitorHandle {
+function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: string, numericStreamId: number, options: {
+  deps?: MonitorDeps;
+  onCircuitBreak?: () => void;
+  onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>;
+} = {}): MonitorHandle {
 
   return monitorPlaybackHealth(page, page, makeProfile(), "https://monitor.test/watch", streamId, {
 
@@ -118,7 +143,7 @@ function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: s
     numericStreamId,
     serviceName: "monitor-test",
     startTime: new Date()
-  }, () => { /* The circuit-break callback is not what these pins exercise. */ });
+  }, options.onCircuitBreak ?? ((): void => { /* The circuit-break callback is not what these pins exercise. */ }), options.onTabReplacement, options.deps);
 }
 
 /**
@@ -583,5 +608,212 @@ describe("monitorPlaybackHealth", () => {
     assert.equal(countMessages(messages, "Failed to reinitialize video after page navigation"), 1, "the recovery resumed and reported its own failure");
     assert.equal(countMessages(messages, "Page navigation did not restore playback"), 0, "the resumption applied nothing after the stream was gone");
     assert.equal(handle.getMetrics().pageNavigationSuccesses, 0, "no recovery success was recorded");
+  });
+});
+
+describe("monitorPlaybackHealth: tab replacement on a browser that can no longer start captures", () => {
+
+  /* Drives a tab that has stopped answering evaluates past three timeout strikes. The first strike lapses at the full-length bound; the two that follow lapse at
+   * the short confirmation probe, which is the cadence the streak pin above bracket-proves.
+   * @param t - The test context owning the mock timers.
+   * @param fake - The Page double whose evaluates are left pending.
+   */
+  async function driveToThirdTimeout(t: TestContext, fake: ReturnType<typeof makeFakePage>): Promise<void> {
+
+    await advance(t, MONITOR_INTERVAL);
+    await advance(t, DEFAULT_EVALUATE_TIMEOUT);
+    await advance(t, MONITOR_INTERVAL);
+    await advance(t, UNRESPONSIVE_PROBE_TIMEOUT);
+    await advance(t, MONITOR_INTERVAL);
+    await advance(t, UNRESPONSIVE_PROBE_TIMEOUT);
+
+    assert.ok(fake.evaluations.length >= 3, "three reads were issued, one per strike");
+  }
+
+  test("terminates a hung tab through the breaker rather than replacing it", async (t) => {
+
+    /* The branch the mark makes reachable. A hung tab in a marked browser cannot be replaced - the replacement would start a capture the browser refuses - and
+     * leaving it in the registry would hold open the very relaunch that would cure the browser. So the stream terminates: the recovering line is never logged, the
+     * handler is never called, the breaker fires once, and the monitor stops issuing reads.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let replacements = 0;
+    let breaks = 0;
+
+    const handle = startMonitor(fake.page, "impaired-unresponsive-1", 9101, {
+
+      deps: IMPAIRED_DEPS,
+      onCircuitBreak: (): void => { breaks++; },
+      onTabReplacement: async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }
+    });
+
+    await driveToThirdTimeout(t, fake);
+
+    const readsAtTermination = fake.evaluations.length;
+
+    assert.equal(replacements, 0, "the replacement handler was never called on a marked browser");
+    assert.equal(countMessages(messages, "Tab unresponsive - recovering via"), 0, "and no recovery was announced");
+    assert.equal(countMessages(messages, "Tab unresponsive and tab replacement is unavailable"), 1, "the termination was announced exactly once");
+    assert.equal(breaks, 1, "and the breaker fired exactly once");
+
+    await advance(t, MONITOR_INTERVAL * 5);
+
+    assert.equal(fake.evaluations.length, readsAtTermination, "no further read was issued after the stop");
+
+    handle.dispose();
+  });
+
+  test("replaces the hung tab as usual when the browser can still start captures", async (t) => {
+
+    // The mutation half. The identical drive against an unmarked browser takes the replacement path, which is what makes the pin above a statement about the mark
+    // rather than about the drive.
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let replacements = 0;
+
+    const handle = startMonitor(fake.page, "healthy-unresponsive-1", 9102, {
+
+      deps: HEALTHY_DEPS,
+      onTabReplacement: async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }
+    });
+
+    await driveToThirdTimeout(t, fake);
+
+    assert.ok(replacements >= 1, "the replacement handler was called");
+    assert.equal(countMessages(messages, "Tab unresponsive - recovering via"), 1, "and the recovery was announced once");
+    assert.equal(countMessages(messages, "Tab unresponsive and tab replacement is unavailable"), 0, "with no termination line");
+
+    handle.dispose();
+  });
+});
+
+describe("monitorPlaybackHealth: resolution escalation on a browser that can no longer start captures", () => {
+
+  /* Builds a Page double that answers every read itself: the first sixteen readings at full size to establish the peak, every reading after them at 480x270, which
+   * is fourteen percent of that peak by area. Navigations reject, so the ladder's first step completes as a failed reload and the second step becomes reachable.
+   * @param establishing - How many readings report the peak size before the drop begins.
+   * @returns The Page double.
+   */
+  function makeDegradingPage(establishing = 16): ReturnType<typeof makeFakePage> {
+
+    let reads = 0;
+
+    return makeFakePage({
+
+      onEvaluate: (call): void => {
+
+        const index = reads++;
+
+        call.resolve((index < establishing) ? resolutionReadableState(index + 1) : { ...readableState(index + 1), videoHeight: 270, videoWidth: 480 });
+      },
+      onGoto: (call): void => call.reject(new Error("net::ERR_ABORTED")),
+      onWaitForSelector: (call): void => call.resolve(null)
+    });
+  }
+
+  /* Runs the monitor until the ladder announces its second step or the tick budget runs out. The budget covers the first step's count threshold, the grace window
+   * it arms afterwards, and the second count threshold that follows.
+   * @param t - The test context owning the mock timers.
+   * @param messages - The captured log messages.
+   * @returns How many ticks ran.
+   */
+  async function runUntilSecondStep(t: TestContext, messages: string[]): Promise<number> {
+
+    for(let tick = 0; tick < 120; tick++) {
+
+      // Sequential by definition: each tick's work must settle before the next firing.
+      // eslint-disable-next-line no-await-in-loop
+      await advance(t, MONITOR_INTERVAL);
+
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+
+      if(countMessages(messages, "Video resolution is still degraded after") > 0) {
+
+        return tick;
+      }
+    }
+
+    return -1;
+  }
+
+  test("skips the ladder's tab-replacement step on a marked browser", async (t) => {
+
+    /* The ladder's second step is a tab replacement, so on a marked browser it is unavailable and the ladder skips to acceptance. The first step still runs - the
+     * page reload is unaffected by the mark - which is what makes the absence of the second step a decision rather than a stalled drive.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeDegradingPage();
+
+    let replacements = 0;
+
+    const handle = startMonitor(fake.page, "impaired-resolution-1", 9103, {
+
+      deps: IMPAIRED_DEPS,
+      onTabReplacement: async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }
+    });
+
+    const reached = await runUntilSecondStep(t, messages);
+
+    assert.equal(reached, -1, "the ladder never announced its second step");
+    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 1, "though its first step ran, so the drive did reach the ladder");
+    assert.equal(countMessages(messages, "Video resolution remains degraded"), 1, "and it skipped to acceptance, which is what proves the decision point was reached");
+    assert.equal(replacements, 0, "and the replacement handler was never called");
+
+    handle.dispose();
+  });
+
+  test("takes the ladder's tab-replacement step when the browser can still start captures", async (t) => {
+
+    // The mutation half: the identical drive against an unmarked browser reaches the second step and calls the handler.
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+    const fake = makeDegradingPage();
+
+    let replacements = 0;
+
+    const handle = startMonitor(fake.page, "healthy-resolution-1", 9104, {
+
+      deps: HEALTHY_DEPS,
+      onTabReplacement: async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }
+    });
+
+    const reached = await runUntilSecondStep(t, messages);
+
+    assert.notEqual(reached, -1, "the ladder announced its second step");
+    assert.equal(countMessages(messages, "Video resolution is still degraded after"), 1, "exactly once");
+    assert.ok(replacements >= 1, "and the replacement handler was called");
+
+    handle.dispose();
   });
 });

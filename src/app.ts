@@ -639,7 +639,7 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // warm-up and aborts startup.
   try {
 
-    await getCurrentBrowser();
+    await getCurrentBrowser("page");
   } catch(error) {
 
     LOG.error("Failed to initialize browser during startup: %s.", formatError(error));

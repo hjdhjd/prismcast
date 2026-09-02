@@ -7,27 +7,51 @@ import { canAttemptLaunch, createLaunchGovernorState, noteLaunchFailure, noteLau
 import type { Browser } from "puppeteer-core";
 import type { Nullable } from "../types/index.ts";
 
-/* The supervisor models the browser as a fallible external dependency whose single guarantee is: a published browser is capture-ready. It is deliberately pure of
- * Chrome I/O - the actual launch (spawn Chrome, verify the capture extension, capture display/version) is injected as the `launch` port, and the impure adapter in
- * browser/index.ts provides it. That inversion makes the riskiest logic - the gate, the loop-safe governor, and the lifecycle transitions - fully unit-testable
- * with a fake launch and a fake clock, which is exactly the logic the original outage proved must be tested. The supervisor never reads the wall clock, never logs,
- * and never touches Chrome directly; it threads an injected now() and reports transitions through an optional callback so the adapter can log and alarm.
+/* The supervisor models the browser as a fallible external dependency whose single guarantee is: a published browser is capture-ready, or carries the record that
+ * says it can no longer start one. It is deliberately pure of Chrome I/O - the actual launch (spawn Chrome, verify the capture extension, capture display/version)
+ * is injected as the `launch` port, and the impure adapter in browser/index.ts provides it. That inversion makes the riskiest logic - the gate, the loop-safe
+ * governor, and the lifecycle transitions - fully unit-testable with a fake launch and a fake clock, which is exactly the logic the original outage proved must be
+ * tested. The supervisor never reads the wall clock, never logs, and never touches Chrome directly; it threads an injected now() and reports transitions through an
+ * optional callback so the adapter can log and alarm.
  *
  * The lifecycle is one explicit discriminated union (no parallel booleans or scattered nullables): the breaker's OPEN/HALF-OPEN are the `degraded`/`trialing`
  * states, so there is exactly one state machine. acquire() is the single entry point that lazily launches and gates: it returns a ready browser, joins an in-flight
- * launch, or - while the governor is cooling - rejects fast WITHOUT launching, which is what decouples relaunch from request arrival and bounds the loop.
+ * launch, or - while the governor is cooling - rejects fast WITHOUT launching, which is what decouples relaunch from request arrival and bounds the loop. It also
+ * takes the caller's purpose, so a browser that can no longer start a capture refuses a capture acquire outright while still serving the callers that only need a
+ * page to open.
  */
+
+/**
+ * The record of a browser that can no longer start a capture while the captures it is already running continue. `reason` is the text of the failure that produced
+ * the verdict - the probe's message or the description of the wedge - and `since` is the supervisor's clock at the moment the mark was recorded.
+ */
+export interface CaptureImpairment {
+
+  readonly reason: string;
+  readonly since: number;
+}
+
+/**
+ * What a caller needs the browser for. A "page" caller opens a tab and drives it - precaching, the startup warm-up, the relaunch that follows a restart - while a
+ * "capture" caller goes on to start a tab capture for a stream. Naming the purpose at acquire() is what lets a browser that can no longer start captures keep
+ * serving the work it can still do.
+ */
+export type BrowserPurpose = "capture" | "page";
 
 /**
  * The browser lifecycle. The Browser reference lives inside the `ready` variant, so "is it ready" cannot desync from "do we have a browser" the way a separate
  * boolean flag could, and illegal states (ready-and-launching) are unrepresentable. `degraded` is the governor's OPEN state (cooling, not serving); `trialing` is
  * its HALF-OPEN state (one launch in flight after the cooldown elapsed). `closing` is a teardown of a still-running Chrome draining to completion, and its `until`
  * is the conservative bound that requests rejected mid-drain carry as their retry horizon.
+ *
+ * The `ready` variant's `impairment` is the guarantee's second half: a published browser is capture-ready, or it carries the record that says it no longer is.
+ * Because only `ready` can hold that member, the mark cannot outlive the instance it describes - a relaunch publishes a fresh `ready` whose impairment is null, and
+ * no state reached in between can carry one forward.
  */
 export type BrowserLifecycle =
   { readonly kind: "absent" } |
   { readonly kind: "launching"; readonly promise: Promise<Browser> } |
-  { readonly kind: "ready"; readonly browser: Browser; readonly launchTime: number } |
+  { readonly kind: "ready"; readonly browser: Browser; readonly impairment: Nullable<CaptureImpairment>; readonly launchTime: number } |
   { readonly kind: "degraded"; readonly reason: string; readonly until: number } |
   { readonly kind: "trialing"; readonly promise: Promise<Browser> } |
   { readonly kind: "closing"; readonly teardown: Promise<void>; readonly until: number };
@@ -57,8 +81,13 @@ export interface BrowserSupervisorPorts {
 export interface BrowserSupervisor {
 
   // Returns a capture-ready browser, joining any in-flight launch. Launches lazily when absent or when a cooldown has elapsed (a trial). Rejects without launching
-  // while the governor is cooling - the loop-safety property - and rejects with the underlying error when a launch fails.
-  readonly acquire: () => Promise<Browser>;
+  // while the governor is cooling - the loop-safety property - and rejects with the underlying error when a launch fails. On a marked browser a "capture" purpose
+  // rejects without launching - a second Chrome against the profile lock is never the answer to a browser that is still serving the captures it started - while a
+  // "page" purpose returns it.
+  readonly acquire: (purpose: BrowserPurpose) => Promise<Browser>;
+
+  // The impairment recorded on the ready browser, or null when nothing is published or the published browser carries no mark. Does not launch.
+  readonly captureImpairment: () => Nullable<CaptureImpairment>;
 
   // The ready browser, or null when not ready. Does not launch.
   readonly current: () => Nullable<Browser>;
@@ -68,6 +97,10 @@ export interface BrowserSupervisor {
 
   // The current lifecycle state. For the adapter (to map degraded -> 503 / alarm) and for tests.
   readonly inspect: () => BrowserLifecycle;
+
+  // Records that the ready browser can no longer start a capture, against the exact instance the caller verified. Records nothing when that instance is no longer
+  // the published one, when nothing is published, or when a mark is already held; returns whether this call is the one that recorded it.
+  readonly noteCaptureImpaired: (browser: Browser, reason: string) => boolean;
 
   // Records that readiness was lost - an unexpected disconnect or an intentional close (scheduled restart). Transitions to absent and clears the governor's health
   // anchor. Not a launch failure: failures are counted only when a launch attempt fails, never on a disconnect.
@@ -112,6 +145,23 @@ export class BrowserSupersededError extends Error {
     super("The browser launch was superseded before it completed.");
 
     this.name = "BrowserSupersededError";
+  }
+}
+
+/**
+ * Thrown by acquire() for a capture purpose on a browser that can no longer start captures. The caller maps it to the same 503 back-off class as
+ * BrowserUnavailableError, and it carries no retry horizon because the relaunch that cures it waits on the browser's own streams draining rather than on a clock.
+ */
+export class BrowserCaptureImpairedError extends Error {
+
+  public readonly impairment: CaptureImpairment;
+
+  constructor(impairment: CaptureImpairment) {
+
+    super("The browser can no longer start captures and is waiting to relaunch.");
+
+    this.impairment = impairment;
+    this.name = "BrowserCaptureImpairedError";
   }
 }
 
@@ -191,7 +241,7 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
     }
 
     noteLaunchSuccess(governor, ports.now());
-    transition({ browser, kind: "ready", launchTime: ports.now() });
+    transition({ browser, impairment: null, kind: "ready", launchTime: ports.now() });
 
     return browser;
   }
@@ -211,11 +261,18 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
     return promise;
   }
 
-  async function acquire(): Promise<Browser> {
+  async function acquire(purpose: BrowserPurpose): Promise<Browser> {
 
     switch(state.kind) {
 
       case "ready": {
+
+        // A marked browser still opens pages, so only a capture purpose is refused. Refusing here rather than launching is what keeps a second Chrome away from the
+        // profile lock this instance still holds while it serves the captures it started; the relaunch is the adapter's to schedule once nothing depends on it.
+        if((purpose === "capture") && state.impairment) {
+
+          throw new BrowserCaptureImpairedError(state.impairment);
+        }
 
         return state.browser;
       }
@@ -262,6 +319,30 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
         return assertNever(state);
       }
     }
+  }
+
+  function captureImpairment(): Nullable<CaptureImpairment> {
+
+    return (state.kind === "ready") ? state.impairment : null;
+  }
+
+  /* Records the capture impairment against the published ready browser, and reports whether this call is the one that recorded it.
+   *
+   * The identity guard is what makes a verdict safe to act on late: the caller confirmed a specific instance, and a disconnect plus relaunch during that
+   * confirmation can have replaced it, so a mark aimed at a superseded instance is dropped rather than applied to the healthy browser that took its place. The
+   * first mark wins for a reason of its own - the adapter's alarm and its status emit both ride this transition, so a second verdict against the same instance
+   * must not fire either of them again.
+   */
+  function handleCaptureImpaired(browser: Browser, reason: string): boolean {
+
+    if((state.kind !== "ready") || (state.browser !== browser) || (state.impairment !== null)) {
+
+      return false;
+    }
+
+    transition({ ...state, impairment: { reason, since: ports.now() } });
+
+    return true;
   }
 
   function current(): Nullable<Browser> {
@@ -331,8 +412,8 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
     return noteSustainedHealth(governor, ports.now(), ports.policy());
   }
 
-  return { acquire, current, currentLaunchTime, inspect: () => state, noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick,
-    noteTeardownBegun: handleTeardownBegun };
+  return { acquire, captureImpairment, current, currentLaunchTime, inspect: () => state, noteCaptureImpaired: handleCaptureImpaired,
+    noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick, noteTeardownBegun: handleTeardownBegun };
 }
 
 /**

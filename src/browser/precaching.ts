@@ -418,7 +418,7 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
   deps: PrecachingDeps = defaultPrecachingDeps): Promise<DiscoveredChannel[]> {
 
   const { afterWalk, signal } = options;
-  const browser = await deps.getCurrentBrowser();
+  const browser = await deps.getCurrentBrowser("page");
 
   // The guide page opens behind whatever the window is already showing. A walk never needs its tab selected, while the tab it would otherwise take the foreground
   // from is either the blank tab that keeps running captures composing their emulated surface or a login page the user is working in.

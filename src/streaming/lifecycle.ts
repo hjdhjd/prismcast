@@ -7,7 +7,7 @@ import { LOG, formatDuration, formatError, getAbortController, unregisterAbortCo
 import { cancelPrerollTimer, getStream, unregisterStream } from "./registry.ts";
 import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
-import { isGracefulShutdown, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { isGracefulShutdown, restartBrowserIfImpairedAndIdle, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -206,6 +206,11 @@ export function terminateStream(streamId: number, channelName: string, reason: s
    * travels the module edge this file already has to browser/index.ts.
    */
   void syncWindowVisibility();
+
+  // With the entry gone, a browser that can no longer start captures may have nothing left to wait for, and this is the one line every termination path passes -
+  // the same reason the window sync above lives here. The call reads the mark and the registry itself and returns at once when either says the moment has not
+  // arrived, so an ordinary stream end pays nothing beyond those reads.
+  restartBrowserIfImpairedAndIdle();
 
   clearClients(streamId);
   clearPretuneSafetyTimer(streamId);

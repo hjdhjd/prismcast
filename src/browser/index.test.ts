@@ -8,7 +8,7 @@
  *   - isGracefulShutdown / setGracefulShutdown (the boolean flag the disconnect handler reads)
  *   - registerManagedPage / unregisterManagedPage (the WeakMap-backed page-registration tracker)
  *   - getChromeVersion (the cached version string accessor)
- *   - getBrowserInstance / isBrowserConnected (the synchronous status accessors)
+ *   - getBrowserInstance / getCaptureImpairment / isBrowserConnected (the synchronous status accessors)
  *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
  *   - getUndersizedDisplayBounds (the pure decision the display advisory composes)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
@@ -23,8 +23,8 @@
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance,
-  getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback, registerManagedPage,
-  seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+  getCaptureImpairment, getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback,
+  registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
@@ -255,6 +255,15 @@ describe("getBrowserInstance", () => {
 
     // Like getChromeVersion, the instance reference is null until a launch completes.
     assert.equal(getBrowserInstance(), null, "no launched browser -> null instance");
+  });
+});
+
+describe("getCaptureImpairment", () => {
+
+  test("returns null when no browser has been launched", () => {
+
+    // The read derives from the supervisor's ready state, which holds the only place an impairment can live, so with nothing published there is nothing to report.
+    assert.equal(getCaptureImpairment(), null, "no launched browser -> no impairment");
   });
 });
 

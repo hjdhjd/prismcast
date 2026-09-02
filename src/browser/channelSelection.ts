@@ -162,8 +162,8 @@ export function invalidateDirectUrl(profile: ResolvedSiteProfile, cause: unknown
 }
 
 /**
- * Clears all channel selection caches. Called by relinquishBrowserReadiness() in browser/index.ts (shared by the disconnect handler and invalidateBrowser)
- * whenever the browser is torn down, since cached state (guide row positions, discovered page URLs, watch URLs) may be stale in a new browser session.
+ * Clears all channel selection caches. Called by browser/index.ts wherever a browser session ends - the disconnect handler's readiness relinquish and the restart
+ * routine's relaunch - since cached state (guide row positions, discovered page URLs, watch URLs) may be stale in a new browser session.
  */
 export function clearChannelSelectionCaches(): void {
 

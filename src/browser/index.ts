@@ -3,6 +3,7 @@
  * index.ts: Browser lifecycle management for PrismCast.
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
+import type { BrowserLifecycle, BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
 import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../streaming/registry.ts";
@@ -10,7 +11,6 @@ import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.t
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
 import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
-import type { BrowserLifecycle } from "./browserSupervisor.ts";
 import { CONFIG } from "../config/index.ts";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
@@ -102,8 +102,10 @@ const supervisor = createBrowserSupervisor({ close: closeBrowserInstance, launch
 
 /**
  * Observes supervisor lifecycle transitions purely for operator-visible signals; it never affects the transition (the supervisor treats it as best-effort, so a
- * throwing logger cannot corrupt the lifecycle). It raises the loud degraded alarm when the relaunch governor trips, an info notice when capture readiness is
- * restored after a degraded period, and emits the SSE system status whenever a ready browser is published.
+ * throwing logger cannot corrupt the lifecycle). It raises the loud degraded alarm when the relaunch governor trips, the capture-impairment alarm when a published
+ * browser is marked as unable to start captures, an info notice when capture readiness is restored after a degraded period, and emits the SSE system status
+ * whenever a ready browser is published. It reports rather than acts: the caller holding a verdict is what drives any recovery from it, because a restart begun
+ * from inside this observer would re-enter the supervisor while the transition that notified it is still on the stack.
  * @param next - The state being entered.
  * @param previous - The state being left.
  */
@@ -122,6 +124,13 @@ function onSupervisorStateChange(next: BrowserLifecycle, previous: BrowserLifecy
     // Capture readiness was restored by a successful trial after a degraded period. The ordinary first launch (absent -> launching -> ready) is intentionally
     // silent; only a recovery from trialing/degraded is worth an operator notice.
     LOG.info("The browser capture system has recovered and is serving captures again.");
+  } else if((next.kind === "ready") && (next.impairment !== null) && ((previous.kind !== "ready") || (previous.impairment === null))) {
+
+    // The published browser has been marked as unable to start captures. The transition carrying the mark happens once per instance, so the alarm fires once per
+    // instance too, and it says what an operator watching a stalled tune needs: the running captures are unaffected, new requests back off, and the cure arrives
+    // on its own once the registry empties.
+    LOG.error("The browser can no longer start captures (%s). Its running captures continue, new stream requests receive a 503 back-off, and it will relaunch as " +
+      "soon as no stream is active.", next.impairment.reason);
   }
 
   // The browser's connectivity is part of the SSE system status, so emit when a ready browser is published. Readiness-loss emits are owned by handleBrowserDisconnect
@@ -175,9 +184,26 @@ const BROWSER_RESTART_QUIET_PERIOD = 5 * 60 * 1000;
 // How often to check whether the browser qualifies for a restart (30 seconds).
 const BROWSER_RESTART_CHECK_INTERVAL = 30000;
 
+// Why a restart is running. The maintenance cause is the age-driven one the quiet period gates; the impairment cause is the relaunch of a browser that can no
+// longer start captures, which waits on an empty registry instead of on age. The routine's log line and its trigger differ by cause; everything else it does is
+// shared.
+type BrowserRestartCause = "impairment" | "maintenance";
+
 // Timer handle for the quiet period countdown. When set, the browser has exceeded BROWSER_MAX_AGE and we are waiting for BROWSER_RESTART_QUIET_PERIOD to
 // elapse with zero active streams. Cancelled if a stream starts during the quiet period.
 let restartQuietTimer: Nullable<ReturnType<typeof setTimeout>> = null;
+
+/**
+ * Cancels the scheduled-restart quiet period if one is pending, so the countdown it was running cannot fire against a browser it no longer describes.
+ */
+function cancelRestartQuietTimer(): void {
+
+  if(restartQuietTimer) {
+
+    clearTimeout(restartQuietTimer);
+    restartQuietTimer = null;
+  }
+}
 
 // Interval handle for the periodic restart eligibility check.
 let restartCheckInterval: Nullable<ReturnType<typeof setInterval>> = null;
@@ -238,9 +264,12 @@ export type { LoginStatus } from "./login.ts";
 export { endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, startLoginMode } from "./login.ts";
 
 // Re-export the supervisor's acquire() rejection classes through the browser surface so the stream-setup layer can map them to a 503 back-off without reaching into
-// the supervisor module directly. Both signal a transient "retry me" condition: BrowserUnavailableError while the relaunch governor is cooling, BrowserSupersededError
-// when a launch was abandoned mid-flight by a readiness-loss.
-export { BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
+// the supervisor module directly. Each signals a transient "retry me" condition: BrowserUnavailableError while the relaunch governor is cooling,
+// BrowserSupersededError when a launch was abandoned mid-flight by a readiness-loss, and BrowserCaptureImpairedError when the published browser can no longer start
+// captures and is waiting for its streams to end. The purpose and impairment types cross the same boundary, so a caller declares what it needs the browser for and
+// reads the mark without importing the supervisor.
+export { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
+export type { BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
 
 /* The blank tab the presentation policy keeps in front of the capture tabs whenever captures run outside login mode. It is held by reference rather than found by
  * URL, because the pages that would match an about:blank search include ones this application must never front: the capability probe parks its own temporary page
@@ -1372,10 +1401,11 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
 
 /**
  * Relinquishes the current browser's capture readiness and tears down everything that depended on it. This is the single source of truth for "the published browser
- * is no longer usable" - shared by the disconnect handler (the browser crashed) and by invalidateBrowser (the browser is alive but capture-dead). It drops the
+ * is no longer usable", and the disconnect handler is its one caller: the browser is gone, so nothing that depended on it can be salvaged. It drops the
  * supervisor's readiness first (which supersedes any launch in flight, clears the governor's health anchor, and transitions the lifecycle to absent so the next
  * request relaunches through the gate and governor), clears the adapter-held metadata and caches, ends login mode, terminates every active stream (they were
- * capturing on the now-unusable browser), and emits status. Callers log the specific cause; the alive-but-dead caller additionally closes the Chrome instance.
+ * capturing on the now-unusable browser), and emits status. The caller logs the specific cause. A browser that is still connected but can no longer start captures
+ * takes the far gentler noteBrowserCaptureImpaired path instead, which keeps its running captures.
  * @param streamTerminationReason - The reason recorded against each terminated stream, for the stream-end logs.
  */
 function relinquishBrowserReadiness(streamTerminationReason: string): void {
@@ -1389,11 +1419,7 @@ function relinquishBrowserReadiness(streamTerminationReason: string): void {
   setChromeUserAgent(null);
 
   // Cancel any pending scheduled-restart quiet timer since the browser this readiness applied to is gone.
-  if(restartQuietTimer) {
-
-    clearTimeout(restartQuietTimer);
-    restartQuietTimer = null;
-  }
+  cancelRestartQuietTimer();
 
   // Clear all channel selection caches. Cached state (guide row positions, discovered page URLs) belongs to the old browser session.
   clearChannelSelectionCaches();
@@ -1441,38 +1467,27 @@ function handleBrowserDisconnect(): void {
 }
 
 /**
- * Invalidates a specific browser that is still connected but can no longer capture - a mid-life capture death that no "disconnected" event would surface. This is the
- * single recovery action generalized to the alive-but-incapable case: relinquish readiness and terminate the browser's streams (exactly as a disconnect does),
- * then additionally close the still-running Chrome so a leaked process is not left behind. The lifecycle is already absent after relinquish, so the next request
- * relaunches a fresh, gate-verified browser through the supervisor. Exported for the streaming layer's passive mid-life detector to call once its probe confirms the
- * browser cannot capture. noteReadinessLost stays internal: callers signal intent through this function, never the supervisor directly.
+ * Records that a still-connected browser can no longer start captures - a mid-life capture death that no "disconnected" event would surface - and schedules the
+ * relaunch that cures it. This is the single recovery action for a browser that is alive and still serving: the mark rides on the supervisor's ready state, so its
+ * running captures continue untouched, new stream requests are refused at acquire() with a 503 back-off, the recovery ladder stops offering tab replacement, and
+ * the relaunch waits for the registry to empty. Exported for the streaming layer to call once its probe or its wedge has produced the verdict.
  *
- * The caller passes the exact instance it verified, and we invalidate only if it is still the published browser. The detector's probe runs in the background for
- * seconds, during which the verified browser could have disconnected and been replaced by a fresh relaunch; without this identity guard we would tear down that
- * new, healthy browser on the strength of a probe against the old, dead one.
- * @param browser - The specific browser instance the caller verified as unable to capture.
- * @param reason - A short description of why the browser is being invalidated, for the alarm log.
+ * The restart trigger rides this function's return value rather than the supervisor's transition observer, deliberately. The observer runs inside transition(), so a
+ * restart begun there would call noteReadinessLost re-entrantly while the marking transition's notification is still on the stack. The observer stays a reporter -
+ * the alarm and the status emit - and the caller that holds the verdict acts on it once the transition has completed.
+ * @param browser - The specific browser instance the caller verified as unable to start captures.
+ * @param reason - A short description of the evidence behind the verdict, carried in the alarm log and the impairment record.
  */
-export async function invalidateBrowser(browser: Browser, reason: string): Promise<void> {
+export function noteBrowserCaptureImpaired(browser: Browser, reason: string): void {
 
-  // Only invalidate if this is still the published browser. If it was already superseded (a disconnect plus relaunch raced the caller's probe), there is nothing to
-  // do - the readiness loss was handled, and tearing down the current browser would wrongly disrupt a healthy, freshly-relaunched one.
-  if(supervisor.current() !== browser) {
+  // A false answer means the verdict landed on nothing: the instance was superseded by a disconnect and relaunch while the caller was confirming it, or the browser
+  // already carries a mark whose alarm and status emit have already fired. Either way there is no new state to act on.
+  if(!supervisor.noteCaptureImpaired(browser, reason)) {
 
     return;
   }
 
-  LOG.error("The browser is connected but can no longer capture (%s). Invalidating it for a governed relaunch.", reason);
-
-  relinquishBrowserReadiness("capture system failure");
-
-  // Readiness was relinquished first, because that is what supersedes an in-flight launch; publishing the teardown synchronously, before any await, then keeps the
-  // launch window shut for the whole drain so nothing spawns a second Chrome against the profile lock this one still holds.
-  const teardown = closeBrowserInstance(browser);
-
-  supervisor.noteTeardownBegun(teardown, BROWSER_TEARDOWN_DRAIN_BOUND_MS);
-
-  await teardown;
+  restartBrowserIfImpairedAndIdle();
 }
 
 /**
@@ -1480,13 +1495,17 @@ export async function invalidateBrowser(browser: Browser, reason: string): Promi
  * supervisor's acquire(), which returns the ready browser, joins an in-flight launch (single-flight, so concurrent callers never contend on Chrome's profile lock),
  * lazily launches when absent, or - while the relaunch governor is cooling after repeated failures - rejects fast with a BrowserUnavailableError WITHOUT spawning
  * Chrome (the loop bound). The launch it drives runs the readiness gate, so a returned browser is verified capture-ready, not merely connected.
+ *
+ * The purpose is what the caller intends to do with the browser, and it is the gate on a marked one: a "capture" caller is refused, because that is precisely the
+ * operation the browser can no longer perform, while a "page" caller - precaching, the startup warm-up, the relaunch itself - is served as usual.
+ * @param purpose - Whether the caller goes on to start a capture or only needs a page to open.
  * @returns The capture-ready browser instance.
- * @throws BrowserUnavailableError while the governor is cooling, BrowserSupersededError if an in-flight launch was abandoned by a readiness-loss, or the underlying
- *   launch error when a launch attempt fails.
+ * @throws BrowserUnavailableError while the governor is cooling, BrowserCaptureImpairedError when a capture purpose meets a browser that can no longer start
+ *   captures, BrowserSupersededError if an in-flight launch was abandoned by a readiness-loss, or the underlying launch error when a launch attempt fails.
  */
-export async function getCurrentBrowser(): Promise<Browser> {
+export async function getCurrentBrowser(purpose: BrowserPurpose): Promise<Browser> {
 
-  return supervisor.acquire();
+  return supervisor.acquire(purpose);
 }
 
 /**
@@ -1616,6 +1635,17 @@ export function getChromeVersion(): Nullable<string> {
 export function getBrowserInstance(): Nullable<Browser> {
 
   return supervisor.current();
+}
+
+/**
+ * Returns the impairment recorded on the published browser, or null when nothing is published or the published browser can still start captures. Like
+ * getBrowserInstance this does not launch, so callers that only need to know whether captures can be started - the recovery ladder, the status composition, the
+ * health endpoint - read it without touching the lifecycle.
+ * @returns The impairment record, or null.
+ */
+export function getCaptureImpairment(): Nullable<CaptureImpairment> {
+
+  return supervisor.captureImpairment();
 }
 
 /**
@@ -1935,16 +1965,47 @@ export function stopStalePageCleanup(): void {
   }
 }
 
-/* Opportunistic browser restart functions. The check runs on a 30-second interval and, when the browser exceeds BROWSER_MAX_AGE with zero active streams, starts
- * a quiet period timer. The quiet timer is cancelled if a stream starts, ensuring active viewers are never disrupted. When the timer expires, the browser is
- * closed and immediately re-launched.
+/* Browser restart functions. One routine performs the restart; what differs is the cause that reaches it.
+ *
+ * The maintenance cause is opportunistic and age-driven: the check runs on a 30-second interval and, when the browser exceeds BROWSER_MAX_AGE with zero active
+ * streams, starts a quiet period timer. The quiet timer is cancelled if a stream starts, ensuring active viewers are never disrupted. When the timer expires, the
+ * browser is closed and immediately re-launched.
+ *
+ * The impairment cause is a repair rather than hygiene: a browser that can no longer start captures is unusable for new tunes no matter how young it is, so age and
+ * the quiet period do not apply to it. It relaunches the moment the registry empties, which the mark itself, every stream end, and the periodic tick each check
+ * for.
  */
 
 /**
- * Checks whether the browser qualifies for an opportunistic restart. Called periodically by the restart check interval. The check skips when any of these
- * conditions hold: graceful shutdown in progress, login mode active, browser not ready, browser age below threshold. On every eligible tick it also drives the
- * supervisor's health-gated governor reset. If active streams exist, any pending quiet timer is cancelled (streams started during the quiet period reset the
- * countdown). Otherwise a quiet timer is started if one is not already running.
+ * Relaunches a browser that can no longer start captures, as soon as nothing depends on it. Every trigger routes here - the mark itself, each stream termination,
+ * and the periodic restart check as the backstop for a moment when the other two could not act (login mode above all) - so the decision lives in one place rather
+ * than being re-derived by each. Idleness rather than age is the condition, because the mark makes the browser useless for new tunes immediately while its running
+ * captures are still worth finishing, so the earliest safe moment is exactly the moment the last of them ends.
+ */
+export function restartBrowserIfImpairedAndIdle(): void {
+
+  if(supervisor.captureImpairment() === null) {
+
+    return;
+  }
+
+  // A marked browser's restart belongs to this path, so a maintenance quiet period pending from before the mark is retired the first time any trigger observes the
+  // mark - whether or not the registry is idle yet - rather than being left to fire against the browser the relaunch will have replaced.
+  cancelRestartQuietTimer();
+
+  if(getStreamCount() > 0) {
+
+    return;
+  }
+
+  void executeBrowserRestart("impairment");
+}
+
+/**
+ * Checks whether the browser qualifies for a restart. Called periodically by the restart check interval. The check skips when any of these conditions hold:
+ * graceful shutdown in progress, login mode active, browser not ready. A marked browser is handed to the impairment path and the tick ends there. Otherwise the
+ * tick drives the supervisor's health-gated governor reset and applies the maintenance rules: skip below the age threshold, cancel any pending quiet timer while
+ * active streams exist (streams started during the quiet period reset the countdown), and otherwise start a quiet timer if one is not already running.
  */
 function checkBrowserRestart(): void {
 
@@ -1960,6 +2021,18 @@ function checkBrowserRestart(): void {
   const launchTime = supervisor.currentLaunchTime();
 
   if(!browser?.connected || (launchTime === null)) {
+
+    return;
+  }
+
+  /* A marked browser waits for idleness rather than for age, so the maintenance rules below have nothing to say about it. It is not evidence of sustained health
+   * either - the governor's reset waits for the fresh browser - so this tick neither feeds the health hold nor logs the recovery notice for it. The stream-end
+   * trigger normally restarts it well before this tick runs; the tick is the backstop for a trigger that could not act, a login session active at the time above
+   * all. The quiet period this tick would otherwise cancel below is retired inside the call, so the early return leaves no timer unobserved.
+   */
+  if(supervisor.captureImpairment() !== null) {
+
+    restartBrowserIfImpairedAndIdle();
 
     return;
   }
@@ -1985,10 +2058,9 @@ function checkBrowserRestart(): void {
     if(restartQuietTimer) {
 
       LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled - streams are active.");
-
-      clearTimeout(restartQuietTimer);
-      restartQuietTimer = null;
     }
+
+    cancelRestartQuietTimer();
 
     return;
   }
@@ -2001,19 +2073,22 @@ function checkBrowserRestart(): void {
 
     restartQuietTimer = setTimeout(() => {
 
-      void executeBrowserRestart();
+      void executeBrowserRestart("maintenance");
     }, BROWSER_RESTART_QUIET_PERIOD);
   }
 }
 
 /**
- * Executes the opportunistic browser restart after the quiet period has elapsed. Performs a final guard check before proceeding, then closes the browser and
- * immediately re-launches a fresh instance.
+ * Executes a browser restart: a final guard check, then the current instance is retired and torn down and a fresh one is launched in its place. Every cause shares
+ * that whole sequence; only the log line that announces the restart differs, since only the cause knows why the browser is being replaced.
+ * @param cause - Why the restart is running, for the announcement.
  */
-async function executeBrowserRestart(): Promise<void> {
+async function executeBrowserRestart(cause: BrowserRestartCause): Promise<void> {
 
-  // Clear the timer handle.
-  restartQuietTimer = null;
+  // Retire any pending quiet period. For a maintenance restart this is the timer that just fired, and clearing a fired handle costs nothing. For an impairment
+  // restart it may be a countdown started before the mark, which has to go: the browser it was measured against is about to be replaced, and letting it fire would
+  // restart the fresh instance a second time.
+  cancelRestartQuietTimer();
 
   // Final guard: re-check all preconditions. Conditions may have changed during the quiet period (e.g., a stream started just before the timer fired, login mode
   // was activated, or the browser disconnected on its own). Reading current()/currentLaunchTime() together keeps the ready-state check and the age source consistent.
@@ -2031,7 +2106,13 @@ async function executeBrowserRestart(): Promise<void> {
   const hours = Math.floor(age / 3600000);
   const minutes = Math.floor((age % 3600000) / 60000);
 
-  LOG.info("Restarting browser for scheduled maintenance (uptime: %sh %sm).", hours, minutes);
+  if(cause === "impairment") {
+
+    LOG.info("Restarting the browser because it can no longer start captures (uptime: %sh %sm).", hours, minutes);
+  } else {
+
+    LOG.info("Restarting browser for scheduled maintenance (uptime: %sh %sm).", hours, minutes);
+  }
 
   try {
 
@@ -2051,6 +2132,13 @@ async function executeBrowserRestart(): Promise<void> {
 
     await teardown;
 
+    /* The relaunch ends the browser session the channel-selection caches describe (guide row positions, discovered page URLs, watch URLs), exactly as the
+     * disconnect path ends it, so they are cleared here for the same reason. The clear waits for the process to be gone rather than running beside the teardown,
+     * because a page of the retiring session can still deliver a response event while Chrome drains - the Comcast channelmap listener writes its caches from
+     * exactly such an event - and a clear issued ahead of the drain would be undone by it.
+     */
+    clearChannelSelectionCaches();
+
     // The preconditions were checked before the teardown, but a shutdown can begin during the seconds it takes, and relaunching then would spawn Chrome into a
     // dying process. Re-check on the far side of the await, for the same reason the guard above re-checks on the far side of the quiet period.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the shutdown path sets this while the teardown is awaited; TS cannot see that.
@@ -2061,8 +2149,9 @@ async function executeBrowserRestart(): Promise<void> {
       return;
     }
 
-    // Launch a fresh browser instance so it is ready for the next stream request.
-    await getCurrentBrowser();
+    // Launch a fresh browser instance so it is ready for the next stream request. The relaunch needs nothing but the browser itself, and the instance it replaces
+    // may be refusing captures, so it acquires for a page.
+    await getCurrentBrowser("page");
 
     // Bring the fresh window into agreement with the policy. A scheduled restart only runs against an idle registry, so this settles it minimized; a stream
     // arriving while the relaunch is in flight triggers its own sync during establishment.
@@ -2096,11 +2185,7 @@ export function stopBrowserRestartChecking(): void {
     restartCheckInterval = null;
   }
 
-  if(restartQuietTimer) {
-
-    clearTimeout(restartQuietTimer);
-    restartQuietTimer = null;
-  }
+  cancelRestartQuietTimer();
 }
 
 /* When running as a packaged executable (created by the `pkg` tool), the application is bundled into a single binary. Node modules like puppeteer-stream are

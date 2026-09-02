@@ -5,7 +5,7 @@
  * clock, without ever spawning Chrome. The headline guarantees pinned below: single-flight launches, and NO launch attempt while the governor is cooling (the
  * loop bound).
  */
-import { BrowserSupersededError, BrowserUnavailableError, createBrowserSupervisor } from "./browserSupervisor.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, createBrowserSupervisor } from "./browserSupervisor.ts";
 import { describe, test } from "node:test";
 import type { Browser } from "puppeteer-core";
 import type { BrowserSupervisorPorts } from "./browserSupervisor.ts";
@@ -17,6 +17,10 @@ const POLICY: LaunchGovernorPolicy = { cooldownLadderMs: [ 1000, 5000 ], failure
 
 // The supervisor never calls any Browser method, so an opaque stub suffices as the "launched" instance.
 const stubBrowser = {} as unknown as Browser;
+
+// A second, distinct instance. The identity guard on the mark compares by reference, so telling it apart from the published browser needs a different object and
+// nothing else.
+const otherBrowser = {} as unknown as Browser;
 
 /* Test harness: a controllable launch port and clock. `env.launchImpl` is the per-test launch behavior (resolve a stub, reject, or return a deferred promise for
  * single-flight); `env.launchCalls` counts how many times the port was actually invoked - the assertion that proves the loop bound; `env.clock` is the injected now.
@@ -41,7 +45,12 @@ function makeHarness(policy: LaunchGovernorPolicy = POLICY): {
       return env.launchImpl();
     },
     now: (): number => env.clock,
-    onStateChange: (next): void => { transitions.push(next.kind); },
+    onStateChange: (next): void => {
+
+      // A marked ready state records as its own marker, so a pin can count the transition that carries the mark without reading the state back. Every other
+      // transition records as its bare kind, which is what the pins written before the mark existed read.
+      transitions.push(((next.kind === "ready") && (next.impairment !== null)) ? "ready:impaired" : next.kind);
+    },
     policy: (): LaunchGovernorPolicy => policy
   };
 
@@ -58,7 +67,7 @@ describe("browserSupervisor: acquire happy path", () => {
 
     assert.equal(h.sup.inspect().kind, "absent");
 
-    const browser = await h.sup.acquire();
+    const browser = await h.sup.acquire("page");
 
     assert.equal(browser, stubBrowser);
     assert.equal(h.sup.inspect().kind, "ready");
@@ -70,8 +79,8 @@ describe("browserSupervisor: acquire happy path", () => {
 
     const h = makeHarness();
 
-    await h.sup.acquire();
-    const again = await h.sup.acquire();
+    await h.sup.acquire("page");
+    const again = await h.sup.acquire("page");
 
     assert.equal(again, stubBrowser);
     assert.equal(h.env.launchCalls, 1, "a ready browser is reused, not relaunched");
@@ -82,7 +91,7 @@ describe("browserSupervisor: acquire happy path", () => {
     const h = makeHarness();
 
     h.env.clock = 4242;
-    await h.sup.acquire();
+    await h.sup.acquire("page");
 
     assert.equal(h.sup.currentLaunchTime(), 4242);
   });
@@ -97,8 +106,8 @@ describe("browserSupervisor: single-flight", () => {
 
     h.env.launchImpl = (): Promise<Browser> => promise;
 
-    const a = h.sup.acquire();
-    const b = h.sup.acquire();
+    const a = h.sup.acquire("page");
+    const b = h.sup.acquire("page");
 
     assert.equal(h.env.launchCalls, 1, "only one launch is started for concurrent acquirers");
     assert.equal(h.sup.inspect().kind, "launching");
@@ -118,14 +127,14 @@ describe("browserSupervisor: failure handling and the loop bound", () => {
     const h = makeHarness();
 
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     assert.equal(h.sup.inspect().kind, "absent", "below the threshold there is no cooldown");
 
     // The next request relaunches immediately - the common transient costs no cooldown.
     h.env.launchImpl = (): Promise<Browser> => Promise.resolve(stubBrowser);
 
-    const browser = await h.sup.acquire();
+    const browser = await h.sup.acquire("page");
 
     assert.equal(browser, stubBrowser);
     assert.equal(h.env.launchCalls, 2);
@@ -136,8 +145,8 @@ describe("browserSupervisor: failure handling and the loop bound", () => {
     const h = makeHarness();
 
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const degraded = h.sup.inspect();
 
@@ -145,8 +154,8 @@ describe("browserSupervisor: failure handling and the loop bound", () => {
     assert.equal(h.env.launchCalls, 2, "two real launch attempts so far");
 
     // While cooling, acquire must fail fast WITHOUT a third launch - this is what bounds the request-driven relaunch loop.
-    await assert.rejects(h.sup.acquire(), BrowserUnavailableError);
-    await assert.rejects(h.sup.acquire(), BrowserUnavailableError);
+    await assert.rejects(h.sup.acquire("page"), BrowserUnavailableError);
+    await assert.rejects(h.sup.acquire("page"), BrowserUnavailableError);
 
     assert.equal(h.env.launchCalls, 2, "no Chrome is spawned while the governor is cooling, regardless of request volume");
   });
@@ -159,8 +168,8 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
     const h = makeHarness();
 
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const degraded = h.sup.inspect();
 
@@ -170,7 +179,7 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
     h.env.clock = degraded.until;
     h.env.launchImpl = (): Promise<Browser> => Promise.resolve(stubBrowser);
 
-    const browser = await h.sup.acquire();
+    const browser = await h.sup.acquire("page");
 
     assert.equal(browser, stubBrowser);
     assert.equal(h.sup.inspect().kind, "ready");
@@ -182,8 +191,8 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
     const h = makeHarness();
 
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const first = h.sup.inspect();
 
@@ -195,7 +204,7 @@ describe("browserSupervisor: HALF-OPEN trial and escalation", () => {
 
     // Cooldown elapses; the trial also fails -> escalate to the second rung.
     h.env.clock = firstUntil;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const second = h.sup.inspect();
 
@@ -216,10 +225,10 @@ describe("browserSupervisor: HALF-OPEN trial with a cooldown longer than the fai
     const h = makeHarness(TRIAL_POLICY);
 
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     h.env.clock = 100;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const first = h.sup.inspect();
 
@@ -231,7 +240,7 @@ describe("browserSupervisor: HALF-OPEN trial with a cooldown longer than the fai
 
     // The cooldown outlasts the failure window, so the trial's failure arrives after the window has lapsed - the case the trial rule exists for.
     h.env.clock = firstUntil;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const second = h.sup.inspect();
 
@@ -240,7 +249,7 @@ describe("browserSupervisor: HALF-OPEN trial with a cooldown longer than the fai
     assert.equal(h.env.launchCalls, 3, "two initial launches plus the one trial");
 
     // Still cooling: a request arriving before the escalated horizon is rejected without spawning Chrome.
-    await assert.rejects(h.sup.acquire(), BrowserUnavailableError);
+    await assert.rejects(h.sup.acquire("page"), BrowserUnavailableError);
     assert.equal(h.env.launchCalls, 3, "no launch is attempted while the escalated cooldown holds");
   });
 });
@@ -251,7 +260,7 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
 
     const h = makeHarness();
 
-    await h.sup.acquire();
+    await h.sup.acquire("page");
     assert.equal(h.sup.inspect().kind, "ready");
 
     h.sup.noteReadinessLost();
@@ -259,7 +268,7 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
     assert.equal(h.sup.inspect().kind, "absent");
     assert.equal(h.sup.current(), null);
 
-    const browser = await h.sup.acquire();
+    const browser = await h.sup.acquire("page");
 
     assert.equal(browser, stubBrowser);
     assert.equal(h.env.launchCalls, 2);
@@ -274,7 +283,7 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
 
     h.env.launchImpl = (): Promise<Browser> => promise;
 
-    const acquired = h.sup.acquire();
+    const acquired = h.sup.acquire("page");
 
     assert.equal(h.sup.inspect().kind, "launching");
 
@@ -297,8 +306,8 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
 
     // Trip to degraded, then recover via a trial.
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     const degraded = h.sup.inspect();
 
@@ -306,7 +315,7 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
 
     h.env.clock = degraded.until;
     h.env.launchImpl = (): Promise<Browser> => Promise.resolve(stubBrowser);
-    await h.sup.acquire();
+    await h.sup.acquire("page");
     assert.equal(h.sup.inspect().kind, "ready");
 
     // Before the hold elapses, the health tick does not reset.
@@ -319,7 +328,7 @@ describe("browserSupervisor: readiness loss and health-gated reset", () => {
     // Prove the reset: a single subsequent failure no longer trips (fresh window), so we land in absent rather than degraded.
     h.sup.noteReadinessLost();
     h.env.launchImpl = failLaunch;
-    await assert.rejects(h.sup.acquire(), /extension dead/);
+    await assert.rejects(h.sup.acquire("page"), /extension dead/);
 
     assert.equal(h.sup.inspect().kind, "absent", "after the reset a lone failure does not trip the governor");
   });
@@ -331,7 +340,7 @@ describe("browserSupervisor: the teardown drain", () => {
 
     const h = makeHarness();
 
-    await h.sup.acquire();
+    await h.sup.acquire("page");
     assert.equal(h.sup.inspect().kind, "ready");
 
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
@@ -347,7 +356,7 @@ describe("browserSupervisor: the teardown drain", () => {
     assert.equal(closing.kind, "closing");
     assert.equal(closing.until, 9000 + 7000, "the horizon is the drain bound measured from the moment the teardown began");
 
-    await assert.rejects(h.sup.acquire(), (error: unknown) => {
+    await assert.rejects(h.sup.acquire("page"), (error: unknown) => {
 
       assert.ok(error instanceof BrowserUnavailableError, "a request mid-drain gets the retryable rejection, not a second Chrome");
       assert.equal(error.retryAfter, 16000, "and carries the drain's horizon as its retry-after");
@@ -362,7 +371,7 @@ describe("browserSupervisor: the teardown drain", () => {
 
     const h = makeHarness();
 
-    await h.sup.acquire();
+    await h.sup.acquire("page");
 
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
     const { promise: teardown, resolve } = Promise.withResolvers<void>();
@@ -376,7 +385,7 @@ describe("browserSupervisor: the teardown drain", () => {
 
     assert.equal(h.sup.inspect().kind, "absent", "the drain is over, so the launch window reopens");
 
-    const browser = await h.sup.acquire();
+    const browser = await h.sup.acquire("page");
 
     assert.equal(browser, stubBrowser);
     assert.equal(h.env.launchCalls, 2, "the next request launches a fresh browser");
@@ -388,7 +397,7 @@ describe("browserSupervisor: the teardown drain", () => {
     // outlived the close is the stale-process sweep's problem at the next launch, not a reason to hold the launch window shut indefinitely.
     const h = makeHarness();
 
-    await h.sup.acquire();
+    await h.sup.acquire("page");
 
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
     const { promise: teardown, reject } = Promise.withResolvers<void>();
@@ -400,7 +409,7 @@ describe("browserSupervisor: the teardown drain", () => {
     await assert.rejects(teardown, /chrome would not exit/);
 
     assert.equal(h.sup.inspect().kind, "absent");
-    assert.equal(await h.sup.acquire(), stubBrowser);
+    assert.equal(await h.sup.acquire("page"), stubBrowser);
     assert.equal(h.env.launchCalls, 2, "a failed close does not strand the lifecycle in closing");
   });
 
@@ -413,7 +422,7 @@ describe("browserSupervisor: the teardown drain", () => {
 
     h.env.launchImpl = (): Promise<Browser> => launch;
 
-    const acquired = h.sup.acquire();
+    const acquired = h.sup.acquire("page");
 
     assert.equal(h.sup.inspect().kind, "launching");
 
@@ -441,7 +450,7 @@ describe("browserSupervisor: the teardown drain", () => {
     // not own and leaves it alone. The adapter never opens a second teardown over an unsettled one; only a direct call at the contract level reaches this.
     const h = makeHarness();
 
-    await h.sup.acquire();
+    await h.sup.acquire("page");
 
     // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
     const { promise: firstDrain, resolve: settleFirst } = Promise.withResolvers<void>();
@@ -472,5 +481,145 @@ describe("browserSupervisor: the teardown drain", () => {
     await secondDrain;
 
     assert.equal(h.sup.inspect().kind, "absent", "the owning episode's settle returns the lifecycle to absent");
+  });
+});
+
+describe("browserSupervisor: capture impairment", () => {
+
+  test("marks the published browser without disturbing anything else about it", async () => {
+
+    /* The mark is a fact recorded on the instance that earned it, so nothing else about the ready state moves: the same browser is still current, and the launch
+     * time still reads the moment the launch completed rather than the moment the mark landed. The clock is advanced between the two so a `since` that echoed the
+     * launch time, or a hardcoded zero, would fail the reading.
+     */
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    const before = h.transitions.length;
+
+    h.env.clock = 5000;
+
+    assert.equal(h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source"), true, "the first mark on the published browser records");
+    assert.deepEqual(h.sup.captureImpairment(), { reason: "Could not start video source", since: 5000 }, "the record carries the reason and the mark's own clock");
+    assert.equal(h.sup.current(), stubBrowser, "the browser is still published");
+    assert.equal(h.sup.currentLaunchTime(), 0, "and its launch time is untouched by the mark");
+    assert.deepEqual(h.transitions.slice(before), ["ready:impaired"], "the observer fired exactly once, for the transition carrying the mark");
+  });
+
+  test("declines a mark aimed at an instance that is no longer the published one", async () => {
+
+    // The identity guard: a caller confirms a specific browser, and a disconnect plus relaunch during that confirmation can have replaced it. A verdict about the
+    // instance that is gone must never land on the one that took its place.
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    assert.equal(h.sup.noteCaptureImpaired(otherBrowser, "Could not start video source"), false, "a mark aimed elsewhere does not record");
+    assert.equal(h.sup.captureImpairment(), null, "and the published browser stays unmarked");
+  });
+
+  test("declines a second mark on an already-marked instance and keeps the first record", async () => {
+
+    // First mark wins. The adapter's alarm and its status emit both ride the transition that records the mark, so a second verdict against the same instance must
+    // not fire either of them again - which is what the transition count proves - and the record it would have overwritten stays as it was.
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    h.env.clock = 5000;
+    h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source");
+
+    const after = h.transitions.length;
+
+    h.env.clock = 60000;
+
+    assert.equal(h.sup.noteCaptureImpaired(stubBrowser, "a later, different failure"), false, "the second mark does not record");
+    assert.deepEqual(h.sup.captureImpairment(), { reason: "Could not start video source", since: 5000 }, "the first reason and its timestamp survive");
+    assert.equal(h.transitions.length, after, "and no transition fired");
+  });
+
+  test("refuses a capture acquire on a marked browser without launching, and still serves a page acquire", async () => {
+
+    /* The refusal is the loop bound applied to the mark: a second Chrome against the profile lock the still-serving instance holds is never the answer, so the
+     * launch port must not be touched. The page acquire proves the refusal is scoped to the operation the browser can no longer perform.
+     */
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    h.env.clock = 5000;
+    h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source");
+
+    const launches = h.env.launchCalls;
+
+    await assert.rejects(() => h.sup.acquire("capture"), (error: unknown) => (error instanceof BrowserCaptureImpairedError) &&
+      (error.impairment.reason === "Could not start video source") && (error.impairment.since === 5000), "a capture acquire rejects with the recorded impairment");
+
+    assert.equal(h.env.launchCalls, launches, "and no launch was attempted");
+    assert.equal(await h.sup.acquire("page"), stubBrowser, "a page acquire still returns the marked browser");
+    assert.equal(h.env.launchCalls, launches, "and it launched nothing either");
+  });
+
+  test("serves a capture acquire on an unmarked ready browser without launching", async () => {
+
+    // The other half of the guard. A guard that dropped the impairment term, or inverted it, would refuse here - and would pass every pin that only ever asks a
+    // marked browser.
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    const launches = h.env.launchCalls;
+
+    assert.equal(await h.sup.acquire("capture"), stubBrowser, "an unmarked ready browser serves a capture acquire");
+    assert.equal(h.env.launchCalls, launches, "from the published instance, with no launch");
+  });
+
+  test("the mark dies with the instance: a readiness loss and relaunch publishes an unmarked browser", async () => {
+
+    // The member exists only on the ready variant, so there is nowhere for a mark to survive a readiness loss. The relaunch is a real one - the launch count is
+    // what proves the fresh ready state came from the port rather than from a state that was never left.
+    const h = makeHarness();
+
+    await h.sup.acquire("page");
+
+    h.env.clock = 5000;
+    h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source");
+    h.sup.noteReadinessLost();
+
+    assert.equal(h.sup.captureImpairment(), null, "the mark is gone the moment readiness is");
+
+    const launches = h.env.launchCalls;
+
+    await h.sup.acquire("page");
+
+    assert.equal(h.env.launchCalls, launches + 1, "the next acquire launched a fresh instance");
+    assert.equal(h.sup.inspect().kind, "ready", "which is published ready");
+    assert.equal(h.sup.captureImpairment(), null, "carrying no mark");
+  });
+
+  test("declines a mark when nothing is published and while a launch is still in flight", async () => {
+
+    /* A verdict needs a published instance to attach to. From absent there is none, and mid-launch the browser the caller would be describing has not been
+     * published yet - the state holds the launch's promise, not a browser.
+     */
+    const h = makeHarness();
+
+    assert.equal(h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source"), false, "nothing published, nothing to mark");
+
+    const { promise: launched, resolve: finishLaunch } = Promise.withResolvers<Browser>();
+
+    h.env.launchImpl = (): Promise<Browser> => launched;
+
+    const acquiring = h.sup.acquire("page");
+
+    assert.equal(h.sup.inspect().kind, "launching", "the launch is in flight");
+    assert.equal(h.sup.noteCaptureImpaired(stubBrowser, "Could not start video source"), false, "and a mark against it does not record");
+
+    finishLaunch(stubBrowser);
+
+    await acquiring;
+
+    assert.equal(h.sup.captureImpairment(), null, "the browser the launch published is unmarked");
   });
 });

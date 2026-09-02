@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module - StreamSetupError, generateStreamId, shouldReverifyCapture,
+ * setup.test.ts: Unit tests for the synchronous, testable surface of the stream setup module - StreamSetupError, classifyCaptureProbeFailure, generateStreamId,
  * validateStreamUrl, and withSignInGuidance - all of which earn full coverage here, plus verifyManifestSelection, which is async only because its one await is a
  * caller-supplied promise: it touches no browser, so it is covered here rather than deferred. The Chrome-entangled async exports (createPageWithCapture,
  * reestablishChannelManifest, setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require
@@ -8,7 +8,8 @@
  * attached re-mute are diff-read facts, with the consequences a caller can observe pinned in native/index.refresh.test.ts. We cover every throw reachable from
  * the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
-import { StreamSetupError, generateStreamId, shouldReverifyCapture, validateStreamUrl, verifyManifestSelection, withSignInGuidance } from "./setup.ts";
+import { CaptureDeadlineError, CaptureTurnTimeoutError } from "./captureLock.ts";
+import { StreamSetupError, classifyCaptureProbeFailure, generateStreamId, validateStreamUrl, verifyManifestSelection, withSignInGuidance } from "./setup.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -271,47 +272,29 @@ describe("withSignInGuidance", () => {
   });
 });
 
-describe("shouldReverifyCapture", () => {
+describe("classifyCaptureProbeFailure", () => {
 
-  test("returns true when nothing is in flight, a browser is available, and no other stream is active (empty registry)", () => {
+  test("classifies a turn-wait timeout as inconclusive", () => {
 
-    // Traced path: the common real-world shape - setup fails before the stream is even registered, so activeStreamIds is empty. [].every(...) is vacuously
-    // true, and a regression that swapped every for some (or checked length !== 0) would flip this to false.
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), true);
+    /* The distinction the detector rests on. The probe never obtained its turn, so it established nothing about the browser: with other streams tuning at the same
+     * moment it queued behind their legitimate acquisitions, and a busy lock is a fact about load. An implementation that mapped every throw to a failure would
+     * mark a healthy browser on ordinary simultaneous tunes, and this row is what catches it. The reason carries the error's own message with trailing
+     * punctuation normalized away, which is how every reason that reaches a log line or the impairment record is composed.
+     */
+    assert.deepEqual(classifyCaptureProbeFailure(new CaptureTurnTimeoutError()), { kind: "inconclusive", reason: "Capture queue wait timed out" });
   });
 
-  test("returns false when a re-verification is already in progress, even with every other input passing", () => {
+  test("classifies the probe's own deadline as a failure", () => {
 
-    // Traced path: the single-flight guard must win regardless of the isolation and browser checks. A regression that dropped this term (or reordered the
-    // short-circuit incorrectly) would return true here.
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: true, reverificationInProgress: true }), false);
+    // The probe held its turn and its own acquisition did not settle inside the bound, which is exactly the condition the mark exists for. An implementation that
+    // mapped every throw to inconclusive would never mark anything, and this row is what catches that.
+    assert.deepEqual(classifyCaptureProbeFailure(new CaptureDeadlineError("probe deadline")), { kind: "failed", reason: "probe deadline" });
   });
 
-  test("returns false when an active stream id other than the failing stream is present", () => {
+  test("classifies any other error as a failure, carrying its message", () => {
 
-    // Traced path: the isolation check must block re-verification whenever any other stream is active, since that stream is either demonstrably capturing or
-    // will drain on its own. A regression that used some(...) instead of every(...), or dropped the exclusion entirely, would return true here.
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [ 7, 12 ], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), false);
-  });
-
-  test("returns false when no browser is available to probe", () => {
-
-    // Traced path: a readiness probe needs a connected browser to exercise. A regression that dropped this term would return true here.
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 7, hasBrowser: false, reverificationInProgress: false }), false);
-  });
-
-  test("returns true when the only active stream id is the failing stream's own entry", () => {
-
-    // Traced path: the failing stream's own registry entry must not count as "another stream" - the exclusion (id === failingStreamId) is what makes this
-    // the only-active-stream case, not an empty list. A regression that dropped the exclusion (e.g. checking activeStreamIds.length === 0) would return false.
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [7], failingStreamId: 7, hasBrowser: true, reverificationInProgress: false }), true);
-  });
-
-  test("returns true for an empty registry, the common real case where setup fails before the stream is even registered", () => {
-
-    // Traced path: this is the PARITY-critical assertion pinned separately from the general happy-path test above - an empty registry must not regress to
-    // false, since this is the ordinary shape of a capture-infrastructure failure (it fails during setup, before getNextStreamId's entry is registered).
-    assert.equal(shouldReverifyCapture({ activeStreamIds: [], failingStreamId: 42, hasBrowser: true, reverificationInProgress: false }), true);
+    // The refusal Chrome itself raises arrives as a plain error, and it is the canonical failure the whole detector was built around.
+    assert.deepEqual(classifyCaptureProbeFailure(new Error("Could not start video source")), { kind: "failed", reason: "Could not start video source" });
   });
 });
 

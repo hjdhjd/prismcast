@@ -14,6 +14,7 @@ import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, com
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
+import { getCaptureImpairment, syncWindowVisibility } from "../browser/index.ts";
 import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -27,7 +28,6 @@ import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
 import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { refreshNativeManifest } from "../native/index.ts";
-import { syncWindowVisibility } from "../browser/index.ts";
 
 /* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
  * watches for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
@@ -155,6 +155,21 @@ interface SegmentState {
   wasInTinyState: boolean;
 }
 
+/* MonitorDeps is the cross-module collaborator set the monitor reaches the browser boundary through: the capture-impairment read the recovery ladder consults
+ * before offering tab replacement, and the window-visibility sync a mode revert settles the window with. It is injected as a default parameter, mirroring
+ * CreatePageWithCaptureDeps in streaming/setup.ts and VideoTuneDeps in browser/video.ts, so a test can substitute stubs at the same collaborator-injection
+ * boundary - no loader mock - while production uses the real defaultMonitorDeps built from the functions this module already imports. The impairment read belongs
+ * here for a reason of its own: a replacement starts a fresh capture, so whether one can succeed is a fact about the browser, and injecting the read is what lets a
+ * test drive the ladder's availability decision without a live Chrome. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ */
+export interface MonitorDeps {
+
+  readonly getCaptureImpairment: typeof getCaptureImpairment;
+  readonly syncWindowVisibility: typeof syncWindowVisibility;
+}
+
+const defaultMonitorDeps: MonitorDeps = { getCaptureImpairment, syncWindowVisibility };
+
 /**
  * Monitors video playback health and attempts escalating recovery when issues are detected. This function runs on an interval, checking video state and triggering
  * increasingly aggressive recovery actions when playback stalls, pauses, or errors occur.
@@ -178,6 +193,8 @@ interface SegmentState {
  * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
  *                           If null/undefined, tab replacement is not available; sustained evaluate timeouts are only surfaced via status (lastIssueType) with no
  *                           automatic recovery escalation.
+ * @param deps - The injected browser-boundary collaborators; defaults to defaultMonitorDeps. Threaded so a test drives the ladder's availability decision and the
+ *               window sync without a live Chrome.
  * @returns A MonitorHandle exposing the live recovery metrics (getMetrics) and a self-contained dispose that stops the monitor's polling interval.
  */
 export function monitorPlaybackHealth(
@@ -188,7 +205,8 @@ export function monitorPlaybackHealth(
   streamId: string,
   streamInfo: MonitorStreamInfo,
   onCircuitBreak: () => void,
-  onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>
+  onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>,
+  deps: MonitorDeps = defaultMonitorDeps
 ): MonitorHandle {
 
   /* Monitor state. These track the video's behavior over time and control recovery decisions. Mutable variables are organized into typed state objects by subsystem
@@ -357,6 +375,16 @@ export function monitorPlaybackHealth(
     stallCount: 0,
     totalAttempts: 0
   };
+
+  /* Whether the ladder can offer tab replacement at this moment. A replacement starts a fresh capture, which a browser marked as unable to start captures refuses,
+   * and the handler disposes the working pipeline before it asks - so on a marked browser the ladder treats replacement as unavailable and every decline site keeps
+   * the behavior it already has for a stream that was given no handler. The mark is read on each decision rather than captured once, because it can land at any
+   * point in a stream's life.
+   */
+  const canReplaceTab = (): boolean => (onTabReplacement !== undefined) && (deps.getCaptureImpairment() === null);
+
+  // The reason a replacement cannot proceed, put into words in one place so every message that has to explain a decline says the same thing.
+  const tabReplacementUnavailableReason = (): string => (onTabReplacement ? "the browser can no longer start captures" : "no tab replacement handler");
 
   // Segment production state. Tracks both post-recovery segment verification and continuous segment size monitoring. After L2/L3 recovery, we verify segments are
   // actually being produced. Independently, we monitor segment sizes on every tick to detect spontaneous capture pipeline death (dead pipelines produce tiny segments
@@ -665,9 +693,9 @@ export function monitorPlaybackHealth(
    */
   async function executeNativeL3Fallback(entry: StreamRegistryEntry): Promise<void> {
 
-    if(!onTabReplacement) {
+    if(!canReplaceTab()) {
 
-      LOG.warn("Capture fallback not available for %s: no tab replacement handler.", entry.info.storeKey);
+      LOG.warn("Capture fallback not available for %s: %s.", entry.info.storeKey, tabReplacementUnavailableReason());
       onCircuitBreak();
 
       return;
@@ -740,7 +768,7 @@ export function monitorPlaybackHealth(
        */
       entry.streamingMode = "native";
 
-      void syncWindowVisibility();
+      void deps.syncWindowVisibility();
 
       LOG.warn("Capture fallback failed for %s: tab replacement unsuccessful.", entry.info.storeKey);
     }
@@ -1076,8 +1104,8 @@ export function monitorPlaybackHealth(
    */
   async function executeTabReplacement(issueType: string): Promise<TabReplacementOutcome> {
 
-    // Guard: caller should ensure onTabReplacement exists, but TypeScript needs explicit narrowing.
-    if(!onTabReplacement) {
+    // Guard: the caller has already consulted canReplaceTab, but TypeScript needs the explicit narrowing for the awaited calls below.
+    if(!onTabReplacement || !canReplaceTab()) {
 
       return { outcome: "failed" };
     }
@@ -1482,12 +1510,12 @@ export function monitorPlaybackHealth(
             segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
 
           // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled.
-          if(onTabReplacement && !recoveryState.inProgress) {
+          if(canReplaceTab() && !recoveryState.inProgress) {
 
             await executeTabReplacement("tiny segments");
 
             return true;
-          } else if(!onTabReplacement) {
+          } else if(!canReplaceTab()) {
 
             segmentState.productionStalled = true;
           }
@@ -1521,12 +1549,12 @@ export function monitorPlaybackHealth(
        */
       LOG.warn("No new segments produced for %ss - capture pipeline may have stalled.", SEGMENT_STALENESS_TIMEOUT / 1000);
 
-      if(onTabReplacement && !recoveryState.inProgress) {
+      if(canReplaceTab() && !recoveryState.inProgress) {
 
         await executeTabReplacement("segment staleness");
 
         return true;
-      } else if(!onTabReplacement) {
+      } else if(!canReplaceTab()) {
 
         segmentState.productionStalled = true;
       }
@@ -1678,7 +1706,7 @@ export function monitorPlaybackHealth(
     // Escalation step 2: tab replacement. Creates a fresh page with new capture pipeline and network connections.
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 1)) {
 
-      if(onTabReplacement) {
+      if(canReplaceTab()) {
 
         const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
@@ -1820,7 +1848,7 @@ export function monitorPlaybackHealth(
 
     // Segment production stall handling. When segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery won't help. Skip the
     // escalation ladder and go directly to tab replacement if available.
-    if(segmentState.productionStalled && onTabReplacement) {
+    if(segmentState.productionStalled && canReplaceTab()) {
 
       LOG.warn("Capture pipeline still stalled - escalating to %s.", RECOVERY_METHODS.tabReplacement);
 
@@ -2417,12 +2445,25 @@ export function monitorPlaybackHealth(
           lastIssueType = "tab timing out";
           lastIssueTime = Date.now();
 
-          // After 3 consecutive timeouts, attempt tab replacement if the callback is available.
-          if((consecutiveTimeouts >= 3) && onTabReplacement) {
+          /* After 3 consecutive timeouts the tab has stopped answering and only a replacement can save the stream. When one cannot be started, the stream is
+           * unrecoverable: the ladder has nothing left to try, and leaving it in the registry would hold open the very relaunch that would cure a marked browser.
+           * So the stream terminates through the breaker, exactly as the zombie case in handleExhaustedTabReplacement does.
+           */
+          if(consecutiveTimeouts >= 3) {
 
-            LOG.warn("Tab unresponsive - recovering via %s.", RECOVERY_METHODS.tabReplacement);
+            if(canReplaceTab()) {
 
-            await executeTabReplacement("tab unresponsive");
+              LOG.warn("Tab unresponsive - recovering via %s.", RECOVERY_METHODS.tabReplacement);
+
+              await executeTabReplacement("tab unresponsive");
+
+              return;
+            }
+
+            LOG.error("Tab unresponsive and tab replacement is unavailable (%s) - terminating stream.", tabReplacementUnavailableReason());
+
+            stopMonitoring();
+            onCircuitBreak();
 
             return;
           }
