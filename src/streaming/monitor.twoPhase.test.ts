@@ -15,6 +15,7 @@ import { makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
 import { makePendingCaptureIdentity, registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
+import type { CaptureImpairment } from "../browser/browserSupervisor.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import { LOG } from "../utils/index.ts";
@@ -340,6 +341,70 @@ describe("monitorPlaybackHealth: a failed replacement throttles the next attempt
     await driveTimeoutStrike(t, false);
 
     assert.equal(episodes(), 2, "the window closing releases exactly one more escalation");
+  });
+
+  test("a failure that marks the browser arms no window, so the hung tab terminates on its next strike", async (t) => {
+
+    /* The condition the window is armed for, absent. A window throttles the next replacement attempt, and on a browser that can start no replacement there is no
+     * next attempt to throttle - every trigger reaches its no-replacement arm instead of the handler. Arming one there only holds the arm that terminates, and
+     * holding that holds every other recording's re-tune behind this stream, because the relaunch that cures the browser waits on the last stream's end.
+     *
+     * The row directly above is the negative control: the same drive on an unmarked browser still waits the window out before it escalates again. The one thing
+     * that differs here is the mark the replacement itself lands, which is why the deps object is mutable rather than one of the file's frozen ones.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    entry = makeEntry(9303);
+    registerStream(entry);
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let impairment: Nullable<CaptureImpairment> = null;
+    let replacements = 0;
+    let breaks = 0;
+
+    // The deps DIVERGENT_DEPS carries, with the impairment read made live so the mark the replacement lands is visible to every later read.
+    const markableDeps: MonitorDeps = {
+
+      getCaptureImpairment: (): Nullable<CaptureImpairment> => impairment,
+      getEffectiveCaptureCodec: (): CaptureCodec => "hevc",
+      isCaptureHardwareAccelerated: (): boolean => true,
+      syncWindowVisibility: async (): Promise<void> => { syncs++; }
+    };
+
+    handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "hung-marked-1", streamInfo(9303),
+      (): void => { breaks++; }, async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        /* Chrome refusing the capture start mid-attempt is what marks the browser, so the mark lands while this attempt is still settling - before the exhaustion
+         * that follows it reads whether another replacement could start.
+         */
+        impairment = { reason: "Could not start video source", since: Date.now() };
+
+        return null;
+      }, markableDeps);
+
+    // Three unanswered reads take the tab past its timeout streak and fire the first replacement.
+    await driveTimeoutStrike(t, true);
+    await driveTimeoutStrike(t, false);
+    await driveTimeoutStrike(t, false);
+
+    assert.equal(countMessages(messages, "Tab unresponsive - recovering via"), 1, "the hung tab was replaced, once");
+    assert.ok(replacements > 0, "and the replacement handler was reached");
+    assert.equal(countMessages(messages, "Tab replacement was unsuccessful"), 1, "the attempt was exhausted, on the browser it had just marked");
+
+    const failedAt = Date.now();
+    const attemptsAtFailure = replacements;
+
+    // The next strike, at an instant a window would still have been covering had one been armed.
+    await driveTimeoutStrike(t, false);
+
+    assert.ok((Date.now() - failedAt) < RECOVERY_GRACE_MS, "the strike landed inside what would have been the window, which is what this row is about");
+    assert.equal(countMessages(messages, "Tab unresponsive and tab replacement is unavailable"), 1, "and the unrecoverable stream terminated on it");
+    assert.equal(breaks, 1, "through the breaker, exactly once");
+    assert.equal(replacements, attemptsAtFailure, "with no further attempt made, because none could start");
   });
 
   /**

@@ -1180,8 +1180,8 @@ export function monitorPlaybackHealth(
 
   /**
    * Handles tab replacement failure after all retry attempts are exhausted. Clears stale recovery metrics (preventing ghost "Recovered" logs from the
-   * deferred-success check), arms the grace window that throttles the next attempt, runs the circuit breaker, and catches the one state that still strands a
-   * stream.
+   * deferred-success check), arms the grace window that throttles the next attempt while one can still start, runs the circuit breaker, and catches the one state
+   * that still strands a stream.
    * @param context - Description of the failure for circuit breaker logging.
    * @returns The tab replacement outcome (failed or terminated).
    */
@@ -1206,8 +1206,16 @@ export function monitorPlaybackHealth(
      * stream spends its life in a replacement loop. With it, the cadence is one real attempt per window (ten seconds at this level, from the monitor's grace
      * table), each true failure counted by the circuit breaker, ending in termination when the breaker's threshold trips. Bounded escalation rather than a tight
      * loop, and no log line per suppressed tick.
+     *
+     * The arming reads whether a replacement can still start, because on a browser that can start none there is no replacement loop here to throttle: every
+     * trigger reaches its no-replacement arm rather than the handler. Holding the arms that terminate for a window holds every other recording's re-tune behind
+     * this stream, because the relaunch that cures the browser waits on the last stream's end. A failure that itself marked the browser lands the mark before the
+     * exhaustion settles, so the read here sees it.
      */
-    setRecoveryGracePeriod(3);
+    if(canReplaceTab()) {
+
+      setRecoveryGracePeriod(3);
+    }
 
     const failureOutcome = handleTabReplacementFailure(context);
 
