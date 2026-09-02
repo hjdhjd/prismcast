@@ -1144,7 +1144,7 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
     executablePath: getExecutablePath(),
 
     // Run Chrome in headed (visible) mode, not headless. The puppeteer-stream extension captures the compositor's output for a real window, which a headless
-    // browser does not have. The window is minimized whenever no capture stream is running, and returns to normal for as long as one is.
+    // browser does not have. The window is on screen while any capture stream runs or a login session is active, and minimized otherwise.
     headless: false,
 
     /* Prevent Puppeteer from adding certain default arguments that would interfere with streaming:
@@ -1261,10 +1261,10 @@ export function mirrorPlacement(placement: WindowPlacement): { height: number; l
 /**
  * Opens a page for a channel guide discovery walk in a browser window of its own, and marks it as belonging to that window.
  *
- * A document renders only while it is the active tab of a window that is not minimized, and the shared window rests minimized whenever nothing is capturing,
- * with its selected tab belonging to the user. A guide walk needs its page to render - an observer-driven channel rail fills its tiles from rendering updates,
- * and a virtualized grid re-renders as the walk scrolls it - yet it is never captured, so it has no claim on the shared window's presentation and no business
- * moving the user's selection. Its own window resolves both: the page is the active tab there from the moment it exists.
+ * A document renders only while it is the active tab of a window that is not minimized, and the shared window rests minimized whenever nothing is capturing and
+ * no sign-in holds it on screen, with its selected tab belonging to the user. A guide walk needs its page to render - an observer-driven channel rail fills its
+ * tiles from rendering updates, and a virtualized grid re-renders as the walk scrolls it - yet it is never captured, so it has no claim on the shared window's
+ * presentation and no business moving the user's selection. Its own window resolves both: the page is the active tab there from the moment it exists.
  *
  * The window is created in the background, so Chrome shows it inactive and moves no focus (measured 2026-08-31), and at the shared window's own placement, so
  * the window placement Chrome persists for the profile never changes - readWindowPlacement carries the reasoning. The caller declares the layout surface on

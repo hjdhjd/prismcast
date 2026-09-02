@@ -231,7 +231,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "persistence:write", description: "File store writes: per-mutation save to disk after successful atomic temp+rename and integrity check." },
   { category: "precache", description: "Channel lineup precaching: deferred runs, service filter skips." },
   { category: "recovery:context", description: "Video context: frame detachment, re-search." },
-  { category: "recovery:general", description: "General recovery: browser re-minimize, monitor abort." },
+  { category: "recovery:general", description: "General recovery: playback buffering, monitor abort." },
   { category: "recovery:nav", description: "Page navigation recovery: new tab detection, URL validation." },
   { category: "recovery:resolution", description: "Video resolution monitoring: ABR degradation detection, grace periods, recovery escalation." },
   { category: "recovery:segments", description: "Segment production: self-heal detection." },

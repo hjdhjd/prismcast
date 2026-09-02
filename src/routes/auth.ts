@@ -14,10 +14,10 @@ import { getDomainConfig } from "../config/sites.ts";
  * The login flow works as follows:
  * 1. User clicks "Login" on a channel in the web UI.
  * 2. POST /auth/login opens a browser tab with the channel's URL.
- * 3. The browser window is un-minimized so the user can interact with it.
+ * 3. The browser window is kept on screen so the user can interact with it.
  * 4. User completes TV provider authentication.
  * 5. User clicks "Done" in the web UI (POST /auth/done) or closes the browser tab.
- * 6. The browser tab is closed and the window is re-minimized.
+ * 6. The browser tab is closed and the window settles where the visibility policy puts it: on screen while any capture stream runs, minimized otherwise.
  *
  * During login mode, new stream requests are blocked to prevent interference.
  */
