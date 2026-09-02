@@ -78,7 +78,7 @@ export function generateChannelsSubtabScript(): string {
     "        if(wf.type === 'boolean') { if(p[wf.id]) flags[wf.id] = true; }",
     "        else if(p[wf.id]) { fieldValues[wf.id] = p[wf.id]; }",
     "      }",
-    // Each domain row keeps its full raw config so unrendered domain-level fields (videoTimeout, loginUrl, maxContinuousPlayback, dismissSelector) ride through a
+    // Each domain row keeps its full raw config so unrendered domain-level fields (videoTimeout, loginUrl, maxContinuousPlayback, dismissSelector) survive a
     // resave; service and serviceTag drive the rendered inputs.
     "      const domains = (match.domains && match.domains.length > 0) ?",
     "        match.domains.map((d) => ({ config: d.config || {}, domain: d.domain, service: d.service || '', serviceTag: d.serviceTag || '' })) :",
@@ -555,7 +555,7 @@ export function generateChannelsSubtabScript(): string {
     // matching the server's whole-replace semantics. The profile is a copy of the full fetched profile (empty for a new one) with only the wizard's rendered vocabulary
     // deleted and
     // re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server's whole-replace
-    // semantics are unchanged; a field outside the SiteProfile allowlist that rode through here surfaces as an explicit validation error, which is the honest outcome.
+    // semantics are unchanged; a field outside the SiteProfile allowlist that passes through here surfaces as an explicit validation error, which is the honest outcome.
     "  window.saveProfile = async (andTest) => {",
     "    const s = profileWizard.state;",
     // The wizard's rendered vocabulary: every field id it renders plus the structural keys it owns. Deleting these from the base copy is what makes a cleared field a
@@ -588,7 +588,7 @@ export function generateChannelsSubtabScript(): string {
     "      else { const tv = (s.fieldValues[f.id] || '').trim(); if(tv) profile[f.id] = tv; }",
     "    }",
     "    if(s.description) profile.description = s.description;",
-    // Each domain entry preserves its full raw config (unrendered fields ride through), then re-applies the profile key and the rendered service/serviceTag - deleting
+    // Each domain entry preserves its full raw config (unrendered fields survive), then re-applies the profile key and the rendered service/serviceTag - deleting
     // them when the inputs are cleared. A row whose domain string was edited carries its config to the new domain key (rename semantics).
     "    const domains = {};",
     "    for(const d of s.domains) {",

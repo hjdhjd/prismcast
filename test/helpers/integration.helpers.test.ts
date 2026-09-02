@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * integration.helpers.test.ts: Tests for the integration test harness itself. Every integration suite depends on its disposal contract holding correctly,
- * so a regression here cascades into every dependent suite. The tests below pin the language-level guarantees we
+ * so a regression here cascades into every dependent suite. The tests below assert the language-level guarantees we
  * rely on (Symbol.asyncDispose runs exactly once at scope exit, propagates body errors, surfaces cleanup errors) plus the harness-level guarantees we add on
  * top (LIFO cleanup ordering, AggregateError on multiple cleanup failures, temp dir removed at disposal, production resolvers point at the temp dir).
  *
@@ -190,7 +190,7 @@ describe("createIntegrationContext - error surfacing", () => {
   test("body failure + cleanup failure both surface (language wraps in SuppressedError)", async () => {
 
     /* The language disposal protocol wraps body+disposer dual failures in SuppressedError. Per the ECMAScript spec, the disposer's error is the "new" error
-     * that suppresses the body's "previously-pending" error - so .error holds the cleanup failure and .suppressed holds the body failure. The test pins the
+     * that suppresses the body's "previously-pending" error - so .error holds the cleanup failure and .suppressed holds the body failure. The test asserts the
      * spec-correct mapping so a future refactor does not silently invert it.
      */
     let captured: unknown;

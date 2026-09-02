@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cleanup.helpers.test.ts: Tests for the puppeteer-stream WebSocketServer cleanup helpers. The integration with puppeteer-stream is exercised at scale by every
- * dependent test file - if the close path regressed, the runner would hang at suite end. The unit tests below pin the contract that matters to direct callers:
+ * dependent test file - if the close path regressed, the runner would hang at suite end. The unit tests below assert the contract that matters to direct callers:
  * the awaitable form returns a Promise that always resolves (best-effort), is safe to call more than once, and never throws synchronously; the on-idle form
  * returns void without throwing.
  */
@@ -14,7 +14,7 @@ describe("closePuppeteerStreamWss", () => {
   /* The function awaits the wss promise from puppeteer-stream and closes it. We can't easily observe "the upstream WebSocketServer is now closed" without
    * actually loading puppeteer-stream and inspecting it - and loading it here would spawn a real WebSocketServer in the test process just to test the close.
    *
-   * Instead, the tests pin the contract that matters to consumers: the function returns a Promise that always resolves (best-effort cleanup), resolves the same way
+   * Instead, the tests assert the contract that matters to consumers: the function returns a Promise that always resolves (best-effort cleanup), resolves the same way
    * whether called once or repeatedly, and never throws synchronously. The integration is exercised at scale by every test file that calls this helper - if the dynamic
    * import or close path regressed, the test runner would hang at suite end across the dozens of dependent test files.
    */
@@ -27,7 +27,7 @@ describe("closePuppeteerStreamWss", () => {
     await assert.doesNotReject(() => result, "the promise resolves without rejection");
   });
 
-  test("is idempotent - calling twice in succession resolves both calls without throwing", async () => {
+  test("calling twice in succession resolves both calls without throwing", async () => {
 
     // Calling close() on an already-closed WebSocketServer is a no-op upstream. The helper's try/catch absorbs any underlying error regardless, so consecutive
     // calls must both resolve cleanly.

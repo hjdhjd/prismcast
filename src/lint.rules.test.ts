@@ -2,7 +2,7 @@
  *
  * lint.rules.test.ts: Unit tests for the project-local ESLint rules defined in eslint.config.mjs. The rules enforce conventions that have caused regressions
  * (test helpers under src/types/, direct submodule imports of testing helpers); a regression in the rule logic itself - a typo in the regex, a path-handling
- * mistake - would silently re-open the door. These tests pin each rule's expected behavior against representative valid and invalid inputs via ESLint's
+ * mistake - would silently re-open the door. These tests assert each rule's expected behavior against representative valid and invalid inputs via ESLint's
  * RuleTester, the standard testing harness for custom rules.
  */
 import { describe, test } from "node:test";

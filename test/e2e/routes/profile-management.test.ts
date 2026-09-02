@@ -5,12 +5,12 @@
  * the concentrated entry point for every user-facing profile and domain change; a 4afa8a0-equivalent regression in any of them (POST that wholesale-replaces
  * profile state instead of merging, DELETE that orphans domain mappings) would slip past Phase 1's per-mutator coverage entirely.
  *
- * What's pinned:
+ * What's asserted:
  *
  *   1. POST /config/profiles creates a profile and its domain mappings together as one transaction - both land on disk in the right shape, and the domain's
  *      `profile` reference points at the just-created key (no orphan domain entries).
  *   2. POST /config/profiles is a per-key partial update - posting an update to one profile leaves the other profiles' on-disk bytes byte-identical. This is
- *      the cross-profile analog of cross-store-isolation (which pinned the cross-FILE rule; this suite pins the cross-PROFILE rule inside one file).
+ *      the cross-profile analog of cross-store-isolation (which asserted the cross-FILE rule; this suite asserts the cross-PROFILE rule inside one file).
  *   3. DELETE /config/profiles/:key cascades to every domain mapping that referenced that profile - no orphan domain entries remain, and other profiles'
  *      domain mappings are untouched.
  *   4. POST /config/profiles with an invalid profile body produces a 400 envelope and zero on-disk state mutation - profiles.json is byte-identical pre/post.
@@ -299,9 +299,9 @@ describe("POST /config/profiles - per-store mutator queue under contention", () 
      * serialized state under the per-store queue's lock. Two concurrent POSTs to different keys serialize correctly: the first mutator writes profile A,
      * the second's callback then sees profiles = { A: ... } as its starting state and adds B alongside it. Both keys land on disk; neither overwrites the other.
      *
-     * This pins the rule that any read-modify-write against profiles.json must happen inside the mutator's callback. A regression that lifts the
+     * This asserts the rule that any read-modify-write against profiles.json must happen inside the mutator's callback. A regression that lifts the
      * read out of the callback - even partially, e.g., by capturing a snapshot of `data.profiles` before mutating - reintroduces the lost-update bug because the
-     * snapshot freezes a baseline that may already be stale by the time the mutate function returns. Pinned here so any such regression fails loud immediately.
+     * snapshot freezes a baseline that may already be stale by the time the mutate function returns. Asserted here so any such regression fails loud immediately.
      */
     await using ctx = await createIntegrationContext();
 

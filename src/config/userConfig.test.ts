@@ -28,7 +28,7 @@ describe("DEFAULTS", () => {
 
   test("declares the documented baseline values for the most-checked fields", () => {
 
-    // These are the values production code asserts against in many places; pinning them prevents subtle drift.
+    // These are the values production code asserts against in many places; asserting them prevents subtle drift.
     assert.equal(DEFAULTS.server.port, 5589);
     assert.equal(DEFAULTS.streaming.qualityPreset, "720p-high");
     assert.equal(DEFAULTS.streaming.captureMode, "ffmpeg");
@@ -38,9 +38,9 @@ describe("DEFAULTS", () => {
     assert.equal(DEFAULTS.hdhr.enabled, true);
   });
 
-  test("declares the load-bearing recovery and HLS defaults that downstream invariants depend on", () => {
+  test("declares the recovery and HLS defaults whose specific values downstream behavior depends on", () => {
 
-    /* Pinning these explicitly catches a regression where a release upgrade silently changes a numeric tuning constant. The ones called out here are the
+    /* Asserting these explicitly catches a regression where a release upgrade silently changes a numeric tuning constant. The ones called out here are the
      * defaults consumed by streaming/recovery.ts, streaming/monitor.ts, and streaming/hls.ts; their behavior depends on the specific values rather than just "any
      * positive number".
      */
@@ -176,7 +176,7 @@ describe("setNestedValue", () => {
 
     /* Boundary: setNestedValue traverses via `current[part] ??= {}`, which keeps any defined non-nullish intermediate. When that intermediate is a primitive
      * (a string here), `??=` is a no-op (the string is already truthy) and the subsequent `(current as Record<string, unknown>)[part]` cast tries to set a
-     * property on the boxed primitive. Strict mode (which ESM source files run under) refuses the assignment with TypeError. Pinning the throw documents the
+     * property on the boxed primitive. Strict mode (which ESM source files run under) refuses the assignment with TypeError. Asserting the throw documents the
      * actual contract and protects against a regression that would silently swallow the assignment on a non-strict primitive boxing path.
      */
     const obj: Record<string, unknown> = { a: "primitive" };
@@ -244,7 +244,7 @@ describe("getSettingByPath", () => {
 
   test("looks up a setting in a non-server category by dotted path", () => {
 
-    /* Pins that the lookup walks every category, not just the first. Picking hls.segmentDuration covers a category beyond the server group and the
+    /* Asserts that the lookup walks every category, not just the first. Picking hls.segmentDuration covers a category beyond the server group and the
      * configuration metadata loop runs through every entry until match.
      */
     const result = getSettingByPath("hls.segmentDuration");
@@ -276,7 +276,7 @@ describe("getSettingsTabSections", () => {
 
     /* The contract documented in the source comment: a path in SETTINGS_TAB_SECTIONS that does not resolve to a CONFIG_METADATA entry is dropped during
      * derivation rather than throwing. Verified indirectly by confirming each returned setting has a matching path - any entry whose getSettingByPath
-     * returned undefined would have been filtered out, and we observe no holes. This pins the silent-filter contract.
+     * returned undefined would have been filtered out, and we observe no holes. This asserts the silent-filter contract.
      */
     const sections = getSettingsTabSections();
 

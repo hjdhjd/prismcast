@@ -291,7 +291,7 @@ describe("clearChannelSelectionCaches", () => {
     }, "clearing empty caches must not throw");
   });
 
-  test("is safely idempotent across multiple back-to-back invocations", () => {
+  test("tolerates multiple back-to-back invocations", () => {
 
     // Boundary: browser/index.ts calls this from relinquishBrowserReadiness, which handleBrowserDisconnect and other crash-recovery paths invoke, so it may be
     // called multiple times back to back. Each call must succeed independently.
@@ -535,7 +535,7 @@ describe("resolveDirectUrl persisted fallback", () => {
   test("never crosses providers: a hint persisted under another slug is invisible", async () => {
 
     /* The guard that keeps the fallback honest. A lineup seeded under a real but different provider proves the slug lookup is doing work - without it, a
-     * selector-only match would hand an HBO tune a YouTube TV address, and the pin would pass vacuously against an empty store.
+     * selector-only match would hand an HBO tune a YouTube TV address, and the assertion would pass vacuously against an empty store.
      */
     await withTempDir(async (dir) => {
 

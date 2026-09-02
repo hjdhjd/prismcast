@@ -59,7 +59,7 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
 
     /* The doubling is invisible to a write-then-parse round trip: the reader collapses %% and $$ back to single characters and passes a lone % or $ through
      * unchanged, so identity holds whether or not the writer doubles at all. Only systemd itself observes the difference, expanding %n as a specifier and
-     * $PATH as a variable inside a quoted field. That makes the emitted text the only place this half of the grammar can be pinned.
+     * $PATH as a variable inside a quoted field. That makes the emitted text the only place this half of the grammar can be asserted.
      */
     const installPath = "/Users/test/.config/systemd/user/prismcast.service";
     const { io, writes } = makeFakeIO({
@@ -189,7 +189,7 @@ describe("createSystemdGenerator (via getServiceGenerator on linux)", () => {
  * (encoding: "buffer") - trims it, and folds it into a new Error whose message starts with the supplied description. The original Error becomes the new
  * Error's .cause so programmatic consumers retain access to the structured failure details (.code, .signal, .stdout, .stderr).
  *
- * The tests below pin every branch of that contract: string stderr surfaced, Buffer stderr surfaced via .toString("utf8"), empty stderr falling back to the
+ * The tests below assert every branch of that contract: string stderr surfaced, Buffer stderr surfaced via .toString("utf8"), empty stderr falling back to the
  * error.message, and the .cause chain preserved. We exercise this through systemd start/stop which are thin wrappers over runAndSurfaceStderr-execFile pairs.
  */
 describe("runAndSurfaceStderr - error message enrichment", () => {

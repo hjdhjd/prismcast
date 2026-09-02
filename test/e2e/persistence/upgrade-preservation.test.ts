@@ -10,7 +10,7 @@
  *   - 1c549e8 (v1.9.1): user-set channel numbers and station IDs on local-affiliate variants were lost across upgrades. Cause: an upgrade migration normalized
  *     variant entries against the predefined base too aggressively, treating user-authored identity fields on variants as redundant overrides.
  *
- * The 4afa8a0 and 1c549e8 describe blocks below pin these guarantees from different angles. The 4afa8a0 block seeds non-form config state, drives the production
+ * The 4afa8a0 and 1c549e8 describe blocks below assert these guarantees from different angles. The 4afa8a0 block seeds non-form config state, drives the production
  * config save path that historically broke it, and asserts the non-form state survives the merge. The 1c549e8 block verifies cross-store isolation: it
  * seeds a user customization in the channels store, drives a config-store save, and asserts the channels file is byte-for-byte unchanged - a config save
  * must never reach into and mutate the channels store. The suite is a regression net: a future refactor that reintroduces either failure mode fails here loudly.
@@ -105,8 +105,8 @@ describe("settings-save preservation (catches the 4afa8a0 family)", () => {
   test("a partial config update does not wipe the auto-discovered channelsDvr.host field", async () => {
 
     /* channelsDvr.host is auto-discovered at runtime by showInfo.ts. The settings form does not manage it - it is not in CONFIG_METADATA, so a
-     * wholesale-overwrite save would drop it without the explicit-preservation block in filterDefaults. This test pins that the merge-save path keeps it.
-     * The host invariant is host-only, post-v3-migration; the embedded-port form does not appear in steady state.
+     * wholesale-overwrite save would drop it without the explicit-preservation block in filterDefaults. This test asserts that the merge-save path keeps it.
+     * The host rule is host-only, post-v3-migration; the embedded-port form does not appear in steady state.
      */
     await using ctx = await createIntegrationContext();
 

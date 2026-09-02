@@ -138,7 +138,7 @@ describe("generateSharedUtilitiesScript", () => {
   test("installs the single client-escape SSOT as window.escapeHtml", () => {
 
     // The shared utilities script emits the one client-side escapeHtml (generateClientEscapeAssignment) that every client script - including this file's
-    // channelDisplayHtml/serviceIconHtml renderers - routes through. Its byte-parity with markup.escapeHtml is pinned in clientEscape.test.ts.
+    // channelDisplayHtml/serviceIconHtml renderers - routes through. Its byte-parity with markup.escapeHtml is asserted in clientEscape.test.ts.
     const script = generateSharedUtilitiesScript();
 
     assert.match(script, /window\.escapeHtml\s*=\s*escapeHtml;/);

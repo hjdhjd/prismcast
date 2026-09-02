@@ -144,7 +144,7 @@ describe("isGracefulShutdown / setGracefulShutdown", () => {
     assert.equal(isGracefulShutdown(), false, "false after setting to false");
   });
 
-  test("is idempotent on repeated identical writes", () => {
+  test("repeated identical writes change nothing", () => {
 
     setGracefulShutdown(true);
     setGracefulShutdown(true);
@@ -165,7 +165,7 @@ describe("isGracefulShutdown / setGracefulShutdown", () => {
 
 describe("registerManagedPage / unregisterManagedPage", () => {
 
-  test("registering a page does not throw and is idempotent for the same page reference", () => {
+  test("registering a page does not throw and a repeat registration of the same page reference changes nothing", () => {
 
     // The registry uses a WeakMap with monotonically increasing IDs. Registering the same page twice produces two IDs, which is a quirk worth locking - the
     // newer ID wins and the older ID is orphaned in the managedPageIds set. Since unregisterManagedPage uses the WeakMap lookup to find the current ID, it
@@ -207,7 +207,7 @@ describe("registerManagedPage / unregisterManagedPage", () => {
     });
   });
 
-  test("a second unregister on the same page is a no-op (idempotent cleanup)", () => {
+  test("a second unregister on the same page is a no-op (repeat-safe cleanup)", () => {
 
     // After the first unregister removes the entry, the second call's WeakMap.get returns undefined and the early-exit guard fires. Locks the contract.
     const page = fakePage();
@@ -225,7 +225,7 @@ describe("registerManagedPage / unregisterManagedPage", () => {
 
     // Stream setup registers its page with the in-flight option so stale page cleanup leaves it alone until the registry records the ownership. The option adds
     // membership in the in-flight collection; what we lock here is that the flagged registration and its unregister are non-throwing, since the collections are
-    // private and the behavioral pins for the exemption live in pageStaleness.test.ts.
+    // private and the behavioral assertions for the exemption live in pageStaleness.test.ts.
     const page = fakePage();
 
     assert.doesNotThrow(() => {
@@ -604,7 +604,7 @@ describe("emulateLayoutSurface", () => {
 
     /* The layout declaration is the whole surface a page that is laid out but never captured needs: the preset's dimensions, with the density left at Chrome's
      * disable value so the display's own is what the page renders at. The declaration is read back rather than assumed, because the returned dimensions are what
-     * the capture probe pins its constraints to.
+     * the capture probe holds its constraints to.
      */
     const { declared, page } = makeCapturePage(async (): Promise<number> => 2);
     const viewport = getPresetViewport(CONFIG);
@@ -642,7 +642,7 @@ describe("emulateLayoutSurface", () => {
 
 /* The two doubles the discovery-window rows share. A page here answers only what the carrier rule and the placement read actually call - whether it is closed,
  * and a CDP session serving the two commands readWindowPlacement issues - and it counts the bounds reads that session served, which is how a row tells the page
- * a placement was read from apart from the pages it was not. What the reader makes of a given response is pinned in cdp.test.ts; the count here is only about
+ * a placement was read from apart from the pages it was not. What the reader makes of a given response is asserted in cdp.test.ts; the count here is only about
  * which page was asked. A browser records the options of every creation and the pages it handed back.
  */
 interface WindowPageStub {
@@ -1073,7 +1073,7 @@ describe("makeFocusReaffirmCallback", () => {
   test("runs the full interleaved ladder from one invocation, every shot against its own page", async () => {
 
     /* The ladder's whole purpose is that its shots straddle the compositor's switch, and only the interleaving of waits and re-issues shows that: an immediate
-     * shot, then a wait for each rung's remaining distance from the activation with a shot behind it. The page identity rides along because a callback that
+     * shot, then a wait for each rung's remaining distance from the activation with a shot behind it. The page identity is carried along because a callback that
      * ignored its page would re-issue against whatever page the caller happened to hold, which on a multi-stream browser is somebody else's capture.
      */
     const page = {} as unknown as Page;

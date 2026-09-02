@@ -268,7 +268,7 @@ describe("initializeFileLogger - existing-file branch", () => {
   test("preserves existing file content when the log file already exists", async () => {
 
     // Boundary: when the log file already has content from a previous run, init must NOT truncate it - it should stat the existing size and append new entries
-    // alongside what was already there. This pins the stat-existing-file branch of initializeFileLogger in fileLogger.ts (the case where stat succeeds and
+    // alongside what was already there. This asserts the stat-existing-file branch of initializeFileLogger in fileLogger.ts (the case where stat succeeds and
     // approximateSize is seeded from the existing file size rather than the ENOENT create-empty path).
     await withTempDir(async (dir) => {
 
@@ -341,7 +341,7 @@ describe("trim/flush write-ordering (interleave race)", () => {
   /* trimLogFile reads the log file, computes a trimmed snapshot, then renames a temp file over the original. flushLogBuffer appends to the same file. Without
    * serialization, an appendFile that lands between the trim's readFile and its rename is silently discarded: the rename overwrites the file with the snapshot
    * taken before the append, dropping those log lines. The fix routes both paths through a single write-ordering chain so a flush can never interleave with an
-   * in-flight trim. These tests pin that a flush issued concurrently with a trim is not lost.
+   * in-flight trim. These tests assert that a flush issued concurrently with a trim is not lost.
    */
 
   afterEach(() => {
@@ -420,7 +420,7 @@ describe("trim/flush write-ordering (interleave race)", () => {
 
   test("serialized trim and flush both land regardless of enqueue order", async () => {
 
-    // Complementary pin: explicitly enqueue a flush and let a trim fire from the size check, then assert both the trimmed shape and the appended content coexist.
+    // Complementary assertion: explicitly enqueue a flush and let a trim fire from the size check, then assert both the trimmed shape and the appended content coexist.
     // This guards the write-ordering guarantee rather than a single timing arrangement.
     initDebugFilter("");
 

@@ -352,7 +352,7 @@ describe("handleUpgradeCommand - successful upgrade execution", () => {
     assert.equal(cap.performUpgradeCalls[0]!.info.packageDir, undefined, "non-npm-local methods must not carry a packageDir");
   });
 
-  test("npm-local upgrades pin cwd to the resolved packageDir", async () => {
+  test("npm-local upgrades hold cwd at the resolved packageDir", async () => {
 
     // The lifecycle (and the in-process runner it delegates to) needs to run from the consumer's project directory so npm resolves the workspace correctly.
     const cap = makeUpgradeContext({

@@ -226,7 +226,7 @@ describe("launchGovernor: a failed HALF-OPEN trial", () => {
 
   test("an ordinary failure after the window lapses is still forgiven and leaves the ladder and cooldown untouched", () => {
 
-    // The counterpart pin: the same lapsed-window arithmetic without the trial flag must keep today's forgiveness, so the trial rule cannot be mistaken for a
+    // The counterpart assertion: the same lapsed-window arithmetic without the trial flag must keep today's forgiveness, so the trial rule cannot be mistaken for a
     // blanket "any failure after a trip re-trips". Like every sibling here this drives the functions on literal inputs; production reaches this state when a trial
     // succeeds, readiness is lost before the health hold elapses, and the fresh launch that follows fails.
     const state = createLaunchGovernorState();

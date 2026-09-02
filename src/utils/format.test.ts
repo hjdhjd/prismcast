@@ -219,7 +219,7 @@ describe("formatResolutionLabel", () => {
 
   test("maps the 2160 height to the 4K label rather than a 2160p one", () => {
 
-    // The one entry whose label is not the height plus a "p". Pinning it separately is what keeps a mechanical rewrite of the map from quietly renaming 4K.
+    // The one entry whose label is not the height plus a "p". Asserting it separately is what keeps a mechanical rewrite of the map from quietly renaming 4K.
     assert.equal(formatResolutionLabel("3840x2160"), "4K");
   });
 
@@ -399,7 +399,7 @@ describe("stringifySorted", () => {
     assert.match(result, /^\{"[aA]":/, "first key is one of a/A under locale comparison");
   });
 
-  test("produces stable output across two calls on the same data (idempotent serialization)", () => {
+  test("produces stable output across two calls on the same data (repeat-safe serialization)", () => {
 
     const data = { z: 1, m: { y: 2, b: 3 }, a: [ 4, 5 ] };
 

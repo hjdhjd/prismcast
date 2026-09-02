@@ -2,10 +2,10 @@
  *
  * monitor.test.ts: Unit tests for the playback health monitor's tick discipline. monitorPlaybackHealth offers no injection point for its recovery actions - they
  * drive a real Chrome through the browser layer - so the coverage here is the part that is drivable without one: how the monitor schedules and bounds its health
- * reads, and what it does with a read that fails or a recovery that finishes after the stream is already gone. The pins run the real module against a Page double
+ * reads, and what it does with a read that fails or a recovery that finishes after the stream is already gone. The assertions run the real module against a Page double
  * and node:test's mock clock, so what they exercise is the shipped code path, not a re-implementation of it.
  *
- * Two mechanics make that possible and are baked into every pin below. The clock advances in steps no larger than one monitor interval, because a single large
+ * Two mechanics make that possible and are baked into every assertion below. The clock advances in steps no larger than one monitor interval, because a single large
  * step fires the interval once and silently skips the nested timer firings a real run would see. And microtasks are flushed between a settlement and the next
  * step, because a rejection surfacing through the evaluate wrapper, the tick's catch, and the dispatcher's finally needs one turn per link before the next tick
  * can observe the result.
@@ -33,14 +33,14 @@ import { monitorPlaybackHealth } from "./monitor.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// The cadence the monitor ticks at. Read from configuration rather than hard-coded, so a pin that depends on the cadence steps in true intervals.
+// The cadence the monitor ticks at. Read from configuration rather than hard-coded, so an assertion that depends on the cadence steps in true intervals.
 const MONITOR_INTERVAL = CONFIG.playback.monitorInterval;
 
 // The evaluate wrapper's default bound, which is what detects a hung tab on the first read of a streak.
 const DEFAULT_EVALUATE_TIMEOUT = 15000;
 
 // The bound the monitor issues confirmation probes under once a timeout streak is open. Held here as a literal on purpose: the monitor's own constant is closure
-// scoped, so pinning the contracted value from outside is what makes a change to it visible.
+// scoped, so asserting the contracted value from outside is what makes a change to it visible.
 const UNRESPONSIVE_PROBE_TIMEOUT = 2000;
 
 // A video state with no video element present, which is what sends the tick down the video-not-found ladder.
@@ -54,7 +54,7 @@ const NOT_VALIDATED = { found: false };
 
 /* A readable video state that costs the tick exactly one evaluate. The intrinsic dimensions are zero so resolution monitoring returns before it measures, and
  * readyState sits below the ready threshold so the fullscreen reinforcement block - the tick's other evaluate - is skipped. That keeps evaluate counts in the
- * pins a direct reading of how many health reads the monitor issued.
+ * assertions a direct reading of how many health reads the monitor issued.
  * @param currentTime - The playback position to report, so successive reads can show progression.
  * @returns The state object a getVideoState read resolves with.
  */
@@ -108,7 +108,7 @@ async function advance(t: TestContext, totalMs: number): Promise<void> {
 }
 
 // The impairment a marked browser reports, and the deps object that reports it. The recovery ladder consults this read before offering tab replacement, so
-// substituting it is what lets a pin drive the ladder's availability decision with no browser anywhere in the picture.
+// substituting it is what lets an assertion drive the ladder's availability decision with no browser anywhere in the picture.
 const IMPAIRED: CaptureImpairment = { reason: "Could not start video source", since: 0 };
 
 const IMPAIRED_DEPS: MonitorDeps = {
@@ -132,8 +132,8 @@ const HEALTHY_DEPS: MonitorDeps = {
  * @param page - The Page double to monitor.
  * @param streamId - The stream id string for log context and abort lookup.
  * @param numericStreamId - The numeric stream id the status and registry lookups use.
- * @param options - The collaborators a pin substitutes: a tab-replacement handler, a circuit-break stub, and the browser-boundary deps. Each defaults to what the
- *                  monitor sees in the pins written before they existed - no handler, a no-op break, and the real defaults.
+ * @param options - The collaborators an assertion substitutes: a tab-replacement handler, a circuit-break stub, and the browser-boundary deps. Each defaults to what the
+ *                  monitor sees in the assertions written before they existed - no handler, a no-op break, and the real defaults.
  * @returns The monitor handle.
  */
 function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: string, numericStreamId: number, options: {
@@ -148,7 +148,7 @@ function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: s
     numericStreamId,
     serviceName: "monitor-test",
     startTime: new Date()
-  }, options.onCircuitBreak ?? ((): void => { /* The circuit-break callback is not what these pins exercise. */ }), options.onTabReplacement, options.deps);
+  }, options.onCircuitBreak ?? ((): void => { /* The circuit-break callback is not what these assertions exercise. */ }), options.onTabReplacement, options.deps);
 }
 
 /**
@@ -189,7 +189,7 @@ describe("monitorPlaybackHealth", () => {
 
   test("runs one health read at a time: interval firings during an outstanding read are skipped", async (t) => {
 
-    /* The incident this pin exists for: a hung tab left one read outstanding for the full evaluate bound while the interval kept firing, and every firing that
+    /* The incident this assertion exists for: a hung tab left one read outstanding for the full evaluate bound while the interval kept firing, and every firing that
      * landed in that window started another tick body against the same counters. Here the read is never answered, so any firing that dispatched a body would
      * show up as a second evaluate.
      */
@@ -216,7 +216,7 @@ describe("monitorPlaybackHealth", () => {
   test("reads the capture surface once for the monitor's lifetime rather than once per tick", async (t) => {
 
     /* The quality preset is restart-gated, so a stream's capture surface cannot change while that stream runs. Re-deriving it on every two-second tick would
-     * spend work to reach the same answer forever. The values alone cannot tell a once-per-lifetime read from a once-per-tick one, so the pin counts reads: a
+     * spend work to reach the same answer forever. The values alone cannot tell a once-per-lifetime read from a once-per-tick one, so the assertion counts reads: a
      * counting accessor stands in front of the configured preset, which is the single property the viewport getter consults.
      */
     t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
@@ -371,11 +371,11 @@ describe("monitorPlaybackHealth", () => {
     assert.equal(fake.navigations.length, 0, "and no recovery navigation was issued");
   });
 
-  test("rides out a one-rung adaptive downshift without recovering against it", async (t) => {
+  test("tolerates a one-rung adaptive downshift without recovering against it", async (t) => {
 
     /* The exposure this threshold closes: sixteen readings at 1600x900 establish the peak, then the service steps one rung down to 1024x576 - 41 percent of
      * that peak by area, the ordinary pacing of an adaptive stream rather than a collapse. Every recovery the detector drives is a capture restart, so a dip of
-     * this size has to ride: no degradation warning and no recovery navigation across the same forty ticks that fire for a genuine collapse.
+     * this size has to be tolerated: no degradation warning and no recovery navigation across the same forty ticks that fire for a genuine collapse.
      */
     t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
 
@@ -450,7 +450,7 @@ describe("monitorPlaybackHealth", () => {
 
   test("bounds a read issued during a timeout streak by the short confirmation probe", async (t) => {
 
-    /* Both bounds are pinned here. The first read carries the full-length bound, which is what detects the hang. The read that follows carries the probe bound:
+    /* Both bounds are asserted here. The first read carries the full-length bound, which is what detects the hang. The read that follows carries the probe bound:
      * the streak is still open at that point, and a tab that answers evaluates at all answers well inside it. The two assertions bracket the contracted value -
      * a shorter bound would strike before the first assertion, and the full-length default would not have struck by the second.
      */
@@ -513,7 +513,7 @@ describe("monitorPlaybackHealth", () => {
 
   test("does not route an unrelated failure into a context re-search, even when it carries a page-death word", async (t) => {
 
-    /* The narrowing this pins: "destroyed" on its own describes plenty of failures that have nothing to do with a dead page, and treating them as page death
+    /* The narrowing this asserts: "destroyed" on its own describes plenty of failures that have nothing to do with a dead page, and treating them as page death
      * sends real errors into recovery machinery built for something else. Such a failure belongs to the tick's general error handling instead, which is what
      * the single read and the failure log together show.
      */
@@ -619,7 +619,7 @@ describe("monitorPlaybackHealth", () => {
 describe("monitorPlaybackHealth: tab replacement on a browser that can no longer start captures", () => {
 
   /* Drives a tab that has stopped answering evaluates past three timeout strikes. The first strike lapses at the full-length bound; the two that follow lapse at
-   * the short confirmation probe, which is the cadence the streak pin above bracket-proves.
+   * the short confirmation probe, which is the cadence the streak assertion above bracket-proves.
    * @param t - The test context owning the mock timers.
    * @param fake - The Page double whose evaluates are left pending.
    */
@@ -679,7 +679,7 @@ describe("monitorPlaybackHealth: tab replacement on a browser that can no longer
 
   test("replaces the hung tab as usual when the browser can still start captures", async (t) => {
 
-    // The mutation half. The identical drive against an unmarked browser takes the replacement path, which is what makes the pin above a statement about the mark
+    // The mutation half. The identical drive against an unmarked browser takes the replacement path, which is what makes the assertion above a statement about the mark
     // rather than about the drive.
     t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
 

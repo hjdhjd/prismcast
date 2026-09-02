@@ -67,9 +67,9 @@ describe("validatePositiveInt", () => {
 
   test("max-only bound (min undefined) accepts a value within range and rejects values above max", () => {
 
-    /* Pins the asymmetric checkBounds path where only the max bound is supplied. The first guard (min === undefined) takes the early-return branch; the second
+    /* Asserts the asymmetric checkBounds path where only the max bound is supplied. The first guard (min === undefined) takes the early-return branch; the second
      * guard (max defined) is the active gate. validatePositiveInt with explicit undefined min and a numeric max is the canonical way to reach this path through
-     * the public surface, so checkBounds stays private without test-only seams.
+     * the public surface, so checkBounds stays private without test-only hooks.
      */
     assert.equal(validatePositiveInt("X", 5, undefined, 10), null, "value below max-only bound is valid");
     assert.match(validatePositiveInt("X", 11, undefined, 10) ?? "", /at most 10/, "value above max-only bound is rejected");
@@ -77,7 +77,7 @@ describe("validatePositiveInt", () => {
 
   test("both bounds undefined returns null after the positive-integer gate (no bound check fires)", () => {
 
-    /* Pins the both-undefined branch of checkBounds: when neither min nor max is supplied, the helper's two guards both fall through and it returns null. The
+    /* Asserts the both-undefined branch of checkBounds: when neither min nor max is supplied, the helper's two guards both fall through and it returns null. The
      * public-surface call validatePositiveInt("X", value) reaches this branch only after the positive-integer gate accepts the value, so we pass a valid value
      * to isolate the bound-check behavior from the gate's behavior.
      */
@@ -234,7 +234,7 @@ describe("validateConfiguration", () => {
   test("forces captureMode to ffmpeg even when set to native (Chrome bug guard)", () => {
 
     /* The contract has two halves: the value mutation AND the operator-visible warning. A regression that silently swapped the value without logging would
-     * leave operators wondering why their explicit "native" choice was ignored, so we pin both sides. Spying on LOG.warn rather than capturing every log line
+     * leave operators wondering why their explicit "native" choice was ignored, so we assert both sides. Spying on LOG.warn rather than capturing every log line
      * keeps the assertion narrow - only the captureMode warning needs to fire here, not the unrelated DEFAULTS warnings other validation branches might emit.
      */
     const warn = mock.method(LOG, "warn", () => undefined);
@@ -330,7 +330,7 @@ describe("displayConfiguration", () => {
 
   /* The function emits a startup block through displayLine / printConfigRow (the structured-display escape hatch). That path routes through the same SSE emitter
    * every log line does, so we capture every emitted entry via subscribeToLogs and assert against the emission stream - that decouples the test from which
-   * internal API the function uses (LOG.info vs displayLine) and pins the actual observable output instead. The LOG.warn spy stays in place to assert the block
+   * internal API the function uses (LOG.info vs displayLine) and asserts the actual observable output instead. The LOG.warn spy stays in place to assert the block
    * is purely informational: the configuration it reports is the configuration that will be used, so there is nothing for it to warn about.
    */
   let captured: LogEntry[];
@@ -412,14 +412,14 @@ describe("displayConfiguration", () => {
 describe("configParseError exported state", () => {
 
   /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by both initializeConfiguration and reloadConfiguration on every load.
-   * Tests that reach either function would leak into this assertion, so we only pin the type contract here - the values themselves are produced by the
+   * Tests that reach either function would leak into this assertion, so we only assert the type contract here - the values themselves are produced by the
    * persistence layer and covered through the integration tier where load failures are exercised end-to-end.
    */
   test("module exports the parse-error pair with the documented types", () => {
 
     assert.equal(typeof configParseError, "boolean", "configParseError is a boolean (default false)");
 
-    /* configParseErrorMessage is exported as string | undefined; we pin the runtime shape via typeof. The compile-time check is sufficient on its own, but
+    /* configParseErrorMessage is exported as string | undefined; we assert the runtime shape via typeof. The compile-time check is sufficient on its own, but
      * runtime assertion documents the public contract for readers of this test.
      */
     const messageType = typeof configParseErrorMessage;

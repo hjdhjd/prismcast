@@ -173,7 +173,7 @@ describe("buildDiscoveredChannelsFromCache", () => {
 
     /* DirecTV keys its cache by the normalized display name and aliases a bare network name onto an affiliate's own entry object. Two entries therefore cannot
      * share a display name - equal names normalize to equal keys, so the second write replaces the first - and an alias is always the same object rather than a
-     * copy. Those two facts are what make deduplicating on entry identity and deduplicating on the display-name string report the same rows, which this pins on
+     * copy. Those two facts are what make deduplicating on entry identity and deduplicating on the display-name string report the same rows, which this asserts on
      * a cache carrying both an alias and a plain entry.
      */
     const wabc = { displayName: "ABC WABC" };

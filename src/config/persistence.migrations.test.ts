@@ -94,13 +94,13 @@ describe("FileStore.read - migrations", () => {
 
   test("no-op middle path: file already at currentSchemaVersion with migrations declared applies zero migrations", async () => {
 
-    /* This pins the gap between "no migrations declared" (an unversioned store - the runner returns early via the !options.migrations guard) and the
+    /* This asserts the gap between "no migrations declared" (an unversioned store - the runner returns early via the !options.migrations guard) and the
      * forward-compatible newer-than-current case. The middle path is when migrations ARE declared, the file IS versioned, and the file's version equals (not
      * exceeds) currentSchemaVersion. The while-loop's condition (currentVersion < options.currentSchemaVersion) immediately fails, no migrations apply, and
      * the result reports applied=[] with fromVersion === toVersion === the current schema version.
      *
      * The upgrade test keeps the file below currentSchemaVersion and the forward-compatible test declares no migrations at all, so neither exercises the exact
-     * boundary where the file's version equals currentSchemaVersion with a migration declared at that version. This test is the one that directly pins the no-op:
+     * boundary where the file's version equals currentSchemaVersion with a migration declared at that version. This test is the one that directly asserts the no-op:
      * a migration keyed at the current version is not re-executed once the file already sits there, and the result reports a clean pass-through (applied empty,
      * fromVersion === toVersion).
      */

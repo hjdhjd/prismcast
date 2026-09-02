@@ -119,7 +119,7 @@ describe("validateChannelName", () => {
 
     // The validator measures the raw string length, not the trimmed length. This matters because forms may include incidental trailing spaces that the user
     // didn't intend to add - if those push the name over 100 chars, the validator rejects it. Documented here so a future "should we trim first?" question has
-    // an authoritative test pinning current behavior.
+    // an authoritative test asserting current behavior.
 
     // 98 X's plus two spaces = 100 chars total, exactly at the boundary - passes.
     assert.equal(validateChannelName("X".repeat(98) + "  "), undefined, "100-char trailing-space name passes");
@@ -252,9 +252,9 @@ describe("validateChannelKey - pure branches (isNew=false short-circuits the dup
     assert.equal(validateChannelKey("abc hulu", false), "Channel key must contain only lowercase letters, numbers, and hyphens.");
   });
 
-  test("accepts a leading hyphen (the regex /^[a-z0-9-]+$/ permits it; pinned to catch a future tightening)", () => {
+  test("accepts a leading hyphen (the regex /^[a-z0-9-]+$/ permits it; asserted to catch a future tightening)", () => {
 
-    // The regex allows leading hyphens by construction; this test pins the current behavior so a future tightening of the regex (e.g., to require a leading
+    // The regex allows leading hyphens by construction; this test asserts the current behavior so a future tightening of the regex (e.g., to require a leading
     // alphanumeric) is detected immediately rather than silently breaking imports.
     assert.equal(validateChannelKey("-abc", false), undefined, "current regex permits leading hyphen - documented");
   });
@@ -586,7 +586,7 @@ describe("validateImportedChannels", () => {
 
     assert.equal(result.valid, true);
     /* The sanitize helper normalizes non-printable to nothing or whitespace; we just assert the null byte didn't survive verbatim. The exact behavior is the
-     * sanitize helper's contract, not this validator's, so we don't pin the post-sanitize string shape.
+     * sanitize helper's contract, not this validator's, so we don't assert the post-sanitize string shape.
      */
     assert.equal((result.channels["valid-key"] as { name?: string }).name?.includes("\x00"), false);
   });

@@ -5,7 +5,7 @@
  * caller-supplied promise: it touches no browser, so it is covered here rather than deferred. The Chrome-entangled async exports (createPageWithCapture,
  * reestablishChannelManifest, setupStream, verifyCaptureSystem) drive a real Chrome browser via Puppeteer and FFmpeg subprocess; their happy paths require
  * integration fixtures and are deferred to e2e - for the re-establishment that means its step bounds, its conditional log-context wrap, and its settlement-
- * attached re-mute are diff-read facts, with the consequences a caller can observe pinned in native/index.refresh.test.ts. We cover every throw reachable from
+ * attached re-mute are diff-read facts, with the consequences a caller can observe asserted in native/index.refresh.test.ts. We cover every throw reachable from
  * the synchronous surface (StreamSetupError construction and validateStreamUrl rejections).
  */
 import { CaptureDeadlineError, CaptureTurnTimeoutError } from "./captureLock.ts";

@@ -140,7 +140,7 @@ describe("persistence cross-store isolation", () => {
     }
   });
 
-  test("concurrent mutations across different stores complete cleanly with each store's invariants intact", async () => {
+  test("concurrent mutations across different stores complete cleanly with each store's guarantees intact", async () => {
 
     /* Each store's own queue serializes its own writes, but writes to DIFFERENT stores have no shared queue - they run in parallel. The framework's atomic
      * write (temp + rename) plus per-store .bak isolation must be sufficient to handle this without interleaving artifacts.
@@ -227,12 +227,12 @@ describe("health.json cross-store isolation", () => {
    * (FLUSH_DELAY = 2000ms in src/config/health.ts). The original cross-store-isolation suite excluded it because its debounce makes byte-comparison timing
    * tricky; this block adds the missing coverage by waiting on the documented flush window.
    *
-   * Two rules are pinned:
+   * Two rules are asserted:
    *   1. A mutation to channels / config / profiles must leave health.json byte-identical. A regression that mis-routes a write into health.json (e.g., a path
    *      resolver bug) would silently break the health indicators with no test failure today.
    *   2. A mutation to health.json must leave the other three stores byte-identical. The same routing failure mode in the other direction.
    *
-   * Together they pin health.json's place in the file-store ecosystem: each file is owned exclusively by its module, and no module's writes leak across.
+   * Together they assert health.json's place in the file-store ecosystem: each file is owned exclusively by its module, and no module's writes leak across.
    */
 
   test("mutations to channels, config, and profiles leave health.json byte-identical", async () => {
@@ -302,7 +302,7 @@ describe("provider-lineups.json cross-store isolation", () => {
    * name a single provider slice rather than serializing whole in-memory state, which is what makes a routing failure here quiet - a lineup write that landed in
    * channels.json would corrupt the user's own lineup while the tune it belonged to went on working.
    *
-   * Both directions are pinned, mirroring the health.json block above. The writes here are undebounced, so the awaited mutator is itself the settle point.
+   * Both directions are asserted, mirroring the health.json block above. The writes here are undebounced, so the awaited mutator is itself the settle point.
    */
 
   test("mutations to channels, config, and profiles leave provider-lineups.json byte-identical", async () => {

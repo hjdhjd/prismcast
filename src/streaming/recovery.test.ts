@@ -224,7 +224,7 @@ describe("isCaptureInfrastructureError", () => {
 
   test("the three production capture-timeout messages are exact and classify as capture-infrastructure errors", () => {
 
-    // Pin the actual production constants (not restated literals) so a message change that would silently break the "timed out" classification is caught here. The
+    // Assert the actual production constants (not restated literals) so a message change that would silently break the "timed out" classification is caught here. The
     // turn-timeout message lives on its error class in captureLock.ts; the stream-init and probe messages live on their setup.ts constants.
     assert.equal(new CaptureTurnTimeoutError().message, "Capture queue wait timed out.");
     assert.equal(STREAM_INIT_TIMEOUT_MESSAGE, "Stream initialization timed out.");
@@ -466,7 +466,7 @@ describe("resolutionAreaRatio", () => {
   test("reports the reading's share of the peak by area", () => {
 
     /* The field's stuck rendition: 416x234 against an 800x450 peak is 27 percent of the picture. The same pair read per-dimension is 52 percent, which is the
-     * number a threshold at one half would let through, so pinning the area reading is what pins the whole detector's sensitivity.
+     * number a threshold at one half would let through, so asserting the area reading is what proves the whole detector's sensitivity.
      */
     const ratio = resolutionAreaRatio({ peak: { accepted: false, height: 450, width: 800 }, reading: { height: 234, width: 416 } });
 

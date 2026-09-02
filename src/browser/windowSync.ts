@@ -209,7 +209,7 @@ export function createWindowVisibilitySync(deps: WindowSyncDeps): (page?: Page) 
     pending = true;
 
     /* Wait across settle boundaries rather than attaching to whichever run happens to be live. A run that has already taken its last look at the outstanding flag
-     * is still assigned for the microtask it takes to clear itself, and a request landing in that window would ride it and resolve with nothing having acted on
+     * is still assigned for the microtask it takes to clear itself, and a request landing in that window would join it and resolve with nothing having acted on
      * it. Re-reading the flag after each settled run closes that window: this returns only at a boundary where no request is outstanding, which is the guarantee
      * every awaiting caller is entitled to - createPageWithCapture awaits this before acquiring capture, and a false resolution there hands the compositor a
      * window that was never brought on screen.

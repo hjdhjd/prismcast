@@ -151,7 +151,7 @@ describe("initializePlayback - the guide-unavailable retry", () => {
 
   test("declines a guide-grid failure that carries no guide-unavailable signal", async () => {
 
-    /* The narrowing, pinned at the coordinator rather than by the absence of a provider's own wrapper. A guideGrid provider whose channel is simply not in the
+    /* The narrowing, asserted at the coordinator rather than by the absence of a provider's own wrapper. A guideGrid provider whose channel is simply not in the
      * rendered lineup gets no second attempt from this slot: it is the typed signal that decides, not the strategy the profile names. A blanket retry keyed on the
      * strategy would spend a full second selection here to fail at the same missing name.
      */

@@ -319,7 +319,7 @@ describe("clearClients", () => {
     });
   });
 
-  test("is idempotent on repeated calls", () => {
+  test("is a no-op on repeated calls", () => {
 
     registerClient(streamId, "10.0.0.1", "hls");
     clearClients(streamId);

@@ -6,7 +6,7 @@
  * profile in one operation. The unit suite at src/config/servicePacks.test.ts covers parse + import + export in isolation; this suite drives the same logic
  * end-to-end through Express so the route layer's body parsing, validation rejection envelope, and bytes-on-disk pre/post snapshots are all under test.
  *
- * What's pinned:
+ * What's asserted:
  *
  *   1. Round-trip identity. Seed profiles + domain mappings + channels referencing those profiles, GET /config/profiles/export, wipe state, POST
  *      /config/profiles/import with the exported body, and assert profiles.json and channels.json are byte-identical to the pre-export snapshots. The import
@@ -30,7 +30,7 @@
  * Merge contract investigation: src/config/servicePacks.ts:209-265 reads cleanly. Profiles and domains are merged via Object.assign(data.profiles, pack.profiles)
  * inside mutateProfiles (servicePacks.ts:225-226); channels via Object.assign(data.channels, packChannels) inside mutateChannels (servicePacks.ts:249).
  * Import-takes-precedence on key collision; pre-existing keys not in the pack survive. The contract is documented through the code shape,
- * not through a doc comment; pinning it here makes the contract explicit and catches a regression that flipped the merge to a wholesale replace.
+ * not through a doc comment; asserting it here makes the contract explicit and catches a regression that flipped the merge to a wholesale replace.
  */
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -262,9 +262,9 @@ describe("service pack import - validation rejection", () => {
 
     await seedFixture();
 
-    // Snapshot the two stores the import path touches. We do NOT also snapshot config.json or health.json: cross-store-isolation already pins that mutations
+    // Snapshot the two stores the import path touches. We do NOT also snapshot config.json or health.json: cross-store-isolation already asserts that mutations
     // to one store leave the others untouched, and config.json need not exist on disk after a fresh initializePersistence (it is only created on first write).
-    // This pins the rule that the import handler does not partial-write profiles.json before rejecting on validation, and does not write channels.json at all
+    // This asserts the rule that the import handler does not partial-write profiles.json before rejecting on validation, and does not write channels.json at all
     // when the primary validation fails.
     const profilesBefore = await readFile(pathInDataDir(ctx, "profiles.json"), "utf-8");
     const channelsBefore = await readFile(pathInDataDir(ctx, "channels.json"), "utf-8");
@@ -410,7 +410,7 @@ describe("importServicePack and exportServicePack - direct orchestrator coverage
   test("importServicePack with options.skipChannels=true imports profiles but skips channels", async () => {
 
     /* The skipChannels branch lets a caller import a pack's profiles and domains while leaving channels untouched. This is used by the UI when the user wants
-     * to bring in a friend's profiles without taking their channel customizations. Pin: profilesAdded > 0, channelsAdded === 0, success === true.
+     * to bring in a friend's profiles without taking their channel customizations. Assertion: profilesAdded > 0, channelsAdded === 0, success === true.
      */
     await using ctx = await createIntegrationContext();
 

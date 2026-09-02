@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * migration-failure.test.ts: Pins the file-store framework's contract under migration failure - what happens when a declarative schema migration's `apply`
- * callback throws. The framework runs migrations in memory before any disk write, so a throwing migration cannot corrupt the on-disk file; this suite pins
+ * migration-failure.test.ts: Asserts the file-store framework's contract under migration failure - what happens when a declarative schema migration's `apply`
+ * callback throws. The framework runs migrations in memory before any disk write, so a throwing migration cannot corrupt the on-disk file; this suite asserts
  * that behavior so a future migration that crashes (logic bug, type error, programmer mistake on a fresh schema bump) cannot silently corrupt user data.
  *
  * INVESTIGATION. Read of src/config/persistence.ts (runMigrations, read, doMutate, mutate, ensureMigrated). We cite these by function name rather than line
@@ -18,7 +18,7 @@
  * Conclusion: the framework's behavior on migration throw is correct by construction. The migration runs in memory before any disk write; a throw inside the
  * runner means the disk write never happens; the file's schemaVersion and migrationsApplied therefore cannot advance, and the data on disk is the pre-attempt
  * state. There is no rollback to perform because there was nothing to roll back - the framework's separation of "in-memory upgrade" from "persist the upgrade"
- * is what makes failure transparent. This suite pins that contract end-to-end so a future regression that, say, moved the version stamp ahead of the apply
+ * is what makes failure transparent. This suite asserts that contract end-to-end so a future regression that, say, moved the version stamp ahead of the apply
  * call, or that swallowed the throw and persisted partial state, fails loud.
  *
  * Approach choice. mock.module is the right tool for mocking exported FUNCTIONS that production
@@ -26,7 +26,7 @@
  * createFileStore with a custom migration map; that surface IS the production API for declaring a store, and the test using it exercises the same code path
  * production stores (config, channels, profiles) traverse on every boot. A mock.module call to swap a real production migration would test "would the
  * production foxcom-rename-migration crash gracefully if it threw" - a narrower assertion than "does the framework's runMigrations contract handle any
- * throwing migration correctly," which is what this suite pins.
+ * throwing migration correctly," which is what this suite asserts.
  *
  * Why this is the architecturally correct boundary to test at (not a workaround): createFileStore IS a public, exported, framework-level constructor. A
  * test that uses it to instantiate a fresh store with synthetic migrations is using the framework's documented surface to test the framework's documented
@@ -147,7 +147,7 @@ describe("file-store framework - migration failure rollback contract", () => {
      * applying the migration body, or that recorded the migration in migrationsApplied before checking apply() succeeded, would surface here as the post-throw
      * file showing schemaVersion=2 (with the apply that never ran) and migrationsApplied containing the failed migration's description.
      *
-     * This is the negative pair to test 1's positive byte-identity. Test 1 pins "the bytes do not change"; this test pins "specifically, schemaVersion does
+     * This is the negative pair to test 1's positive byte-identity. Test 1 asserts "the bytes do not change"; this test asserts "specifically, schemaVersion does
      * not advance and migrationsApplied does not gain an entry." Together they triangulate any regression that subtly altered the failure path.
      */
     await using ctx = await createIntegrationContext();

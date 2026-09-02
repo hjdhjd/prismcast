@@ -22,7 +22,7 @@ import { realClock } from "../utils/index.ts";
 // Error classes. The messages of the turn-timeout and deadline errors are part of the compatibility contract: isCaptureInfrastructureError (recovery.ts) classifies
 // by substring, so callers rely on the exact text. Each class carries its narrative comment above it.
 
-// Raised when a waiter's turn-wait bound elapses before its predecessor settles. The message is fixed here so both the primitive and its pin test read from one
+// Raised when a waiter's turn-wait bound elapses before its predecessor settles. The message is fixed here so both the primitive and its assertion test read from one
 // place; "queue" remains accurate vocabulary because the lock still maintains a FIFO of waiting turns.
 export class CaptureTurnTimeoutError extends Error {
 
@@ -34,7 +34,7 @@ export class CaptureTurnTimeoutError extends Error {
 }
 
 // Raised when a task holds its turn past the caller-supplied deadline. The message is supplied per call site (CaptureRunOptions.deadlineMessage) because the stream
-// path and the probe path surface different, individually-pinned strings, both of which must keep matching the capture-infrastructure classifier.
+// path and the probe path surface different, individually-asserted strings, both of which must keep matching the capture-infrastructure classifier.
 export class CaptureDeadlineError extends Error {
 
   public constructor(message: string) {
@@ -79,7 +79,7 @@ export interface CaptureLockOptions {
  */
 export interface CaptureRunOptions {
 
-  // The message the CaptureDeadlineError carries when the task deadline fires. Supplied per site so each call's timeout keeps its own pinned, classifier-matching text.
+  // The message the CaptureDeadlineError carries when the task deadline fires. Supplied per site so each call's timeout keeps its own asserted, classifier-matching text.
   readonly deadlineMessage: string;
 
   // The maximum time the task itself may run once it holds the turn, before the caller is rejected with a CaptureDeadlineError. The turn is not released on this

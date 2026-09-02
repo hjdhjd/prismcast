@@ -416,7 +416,7 @@ describe("fMP4 relay: MAP parsing, naming, and playlist emission", () => {
 
   test("derives MEDIA-SEQUENCE from an .m4s filename rather than yielding NaN (T9)", async () => {
 
-    /* The regression this pins: deriving the index by stripping a hardcoded ".ts" leaves "0.m4s", and Number() of that is NaN, which serializes into the
+    /* The regression this asserts: deriving the index by stripping a hardcoded ".ts" leaves "0.m4s", and Number() of that is NaN, which serializes into the
      * playlist as "#EXT-X-MEDIA-SEQUENCE:NaN". The assertion is on the exact integer - a typeof-number or truthiness check would pass against NaN, which is
      * precisely the failure mode.
      */
@@ -686,7 +686,7 @@ describe("fMP4 relay: init fetch failure handling", () => {
 
   test("escalates through the shared tracker threshold, and not before it (T4 threshold polarity)", async () => {
 
-    /* The init fetch rides the track's existing segment tracker, so its failures escalate through the one threshold the file already has. Both polarities are
+    /* The init fetch uses the track's existing segment tracker, so its failures escalate through the one threshold the file already has. Both polarities are
      * asserted from a single run: the error callback fires, and the count of attempts at the point of escalation shows the threshold was neither early nor
      * missing. The loop needs no external pacing because crossing the threshold sets the stopped flag itself.
      */
@@ -1304,7 +1304,7 @@ describe("segment pipeline: bounded-parallel fetching, in-order commit, and canc
 
   test("counts a failure when the item commits and clears it on a later success (P4)", async () => {
 
-    /* Accounting rides the commit rather than the fetch. The first cycle ends on a failing segment, so the consecutive-error reading the monitor takes is 1;
+    /* Accounting goes through the commit rather than the fetch. The first cycle ends on a failing segment, so the consecutive-error reading the monitor takes is 1;
      * the second cycle succeeds and clears it. Both readings are taken at a moment when the count is unambiguous - the first while the second cycle's manifest
      * is held open, which is after the first cycle's walk finished and before the second's began.
      */

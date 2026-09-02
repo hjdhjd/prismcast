@@ -6,7 +6,7 @@
  * together, for a caller opening a second window in the same spot), and reaffirmCaptureSurface (the raw re-issue of a capture page's declared device metrics).
  * The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's dimensions enter the picture
  * only through the placement read, because the two window primitives drive presentation state alone. Which state the window should be in is decided in
- * windowSync.ts and pinned there; these tests cover only the commands each primitive issues, the confirmation the restore waits on, and what each read makes of
+ * windowSync.ts and asserted there; these tests cover only the commands each primitive issues, the confirmation the restore waits on, and what each read makes of
  * the report it gets.
  */
 import type { CDPSession, Page } from "puppeteer-core";
@@ -238,7 +238,7 @@ describe("minimizeWindow", () => {
   test("issues exactly one setWindowBounds call, carrying windowState: minimized and no dimensions", async () => {
 
     /* The window's size is not this function's business: pages render at the emulated preset viewport, so a dimension write here would be asking the OS for a
-     * size nothing reads. The pin is both halves - one bounds call, and that call carrying state alone.
+     * size nothing reads. The assertion is both halves - one bounds call, and that call carrying state alone.
      */
     const cdpStub = makeCdpStub();
 
@@ -250,7 +250,7 @@ describe("minimizeWindow", () => {
 
     const bounds = (setBoundsCalls[0]?.params as { bounds?: { height?: number; width?: number; windowState?: string } }).bounds;
 
-    // Comparing the whole bounds object pins both halves at once: the state that was asked for, and the absence of any dimension key beside it.
+    // Comparing the whole bounds object asserts both halves at once: the state that was asked for, and the absence of any dimension key beside it.
     assert.deepEqual(bounds, { windowState: "minimized" }, "the call carries the minimized state and nothing else");
   });
 
@@ -293,7 +293,7 @@ describe("minimizeWindow", () => {
 
   test("resolves the window ID once before issuing the state change", async () => {
 
-    // Every CDP entry through withCDPSession resolves the window ID first. The pin catches a minimize that reached for a window it never looked up.
+    // Every CDP entry through withCDPSession resolves the window ID first. The assertion catches a minimize that reached for a window it never looked up.
     const cdpStub = makeCdpStub();
 
     await minimizeWindow(makePageStub({ cdpStub }));

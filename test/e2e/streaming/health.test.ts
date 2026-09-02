@@ -89,7 +89,7 @@ describe("channel health state", () => {
     assert.ok("channels" in snapshot, "snapshot has channels field");
     assert.ok("domains" in snapshot, "snapshot has domains field");
 
-    // The marks above should be reflected; we don't pin the exact key shape because that's an internal serialization detail.
+    // The marks above should be reflected; we don't assert the exact key shape because that's an internal serialization detail.
     assert.ok(Object.keys(snapshot.channels).length >= 2, "at least 2 channel entries in snapshot");
     assert.ok(Object.keys(snapshot.domains).length >= 1, "at least 1 domain entry in snapshot");
   });

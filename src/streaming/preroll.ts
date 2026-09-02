@@ -305,7 +305,7 @@ export async function spawnAndCollect(ffmpegBin: string, args: string[], timeout
     }
   });
 
-  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener pins the success/failure of the spawn itself,
+  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener decides the success/failure of the spawn itself,
   // and the abort deadline settles the pair when FFmpeg hangs.
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
   const { promise: exitPromise, resolve: signalExit, reject: signalExitFailure } = Promise.withResolvers<void>();

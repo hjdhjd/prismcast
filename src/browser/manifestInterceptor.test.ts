@@ -5,7 +5,7 @@
  * channel-selection epoch and membership/liveness override, the epoch-free timeout, dispose paths, and TC39 using-syntax integration. The pure
  * selectInterceptedManifest helper that backs finalize()'s resolution is tested in the companion file manifestInterceptor.selection.test.ts.
  *
- * How the observer is substituted. The orchestrators sit one layer above hlsPlaylistObserver.observeHlsPlaylists(), which itself rides on the tab network
+ * How the observer is substituted. The orchestrators sit one layer above hlsPlaylistObserver.observeHlsPlaylists(), which itself is built on the tab network
  * observer + CDP; driving the real lower layers would require a Puppeteer browser. Both orchestrators accept the observer factory as an injected parameter
  * (default observeHlsPlaylists), so we pass a controlled factory that captures the onPlaylist callback and lets tests synthesize playlist observations on
  * demand. The factory is typed as observeHlsPlaylists' own contract, so the double cannot drift from the real signature.
@@ -161,7 +161,7 @@ describe("installManifestInterceptor", () => {
   test("finalize(true) with a master URL already captured resolves immediately with that URL", async () => {
 
     // The direct-tune fast path: when the navigated URL itself selects the channel and the player has already loaded the master manifest, finalize(true) must
-    // settle the promise without waiting the FINALIZE_SETTLE_DELAY. The first-master-URL-wins selection rule is what this test pins.
+    // settle the promise without waiting the FINALIZE_SETTLE_DELAY. The first-master-URL-wins selection rule is what this test asserts.
     const interceptor = await install();
 
     assert.ok(interceptor, "interceptor installed");
@@ -369,7 +369,7 @@ describe("installManifestInterceptor", () => {
     assert.equal(observer.disposed, true, "underlying observer disposed");
   });
 
-  test("dispose() after finalize is a safe no-op (idempotent lifecycle)", async () => {
+  test("dispose() after finalize is a safe no-op (repeat-safe lifecycle)", async () => {
 
     // Boundary: the cleanup paths in PrismCast can invoke dispose from multiple code paths. After finalize has already settled the promise, dispose must not
     // throw, must not re-resolve, and must not re-dispose the observer.
@@ -462,7 +462,7 @@ describe("installManifestInterceptor", () => {
 
 /* Epoch, membership, and liveness orchestration. These drive the full state machine through the injected observer and mock.timers, exercising the guide-tune
  * three-signal rule end-to-end: the mark plumbing, wire-ordered slot updates, and the epoch-free timeout. Each scenario asserts selectedKind on the resolved
- * result so the kind the verifier gate depends on is pinned, not inferred.
+ * result so the kind the verifier gate depends on is asserted, not inferred.
  */
 describe("installManifestInterceptor epoch and membership orchestration", () => {
 
@@ -475,7 +475,7 @@ describe("installManifestInterceptor epoch and membership orchestration", () => 
     // The flagship fix. The page-load default channel's master is captured first, the channel-selection epoch is stamped, then the click's live non-member media
     // arrives after the mark. finalize(false) plus the settle tick resolves the media - the clicked channel's playlist - rather than the stale master. This same
     // observation sequence resolves the master under a categorical master-preference and the media under the three-signal epoch rule; the opposite resolution from
-    // one sequence is the behavioral pin, since no executable red-before compiles against the widened signature.
+    // one sequence is the behavioral assertion, since no executable red-before compiles against the widened signature.
     mock.timers.enable({ apis: ["setTimeout"] });
 
     try {
@@ -680,7 +680,7 @@ describe("installManifestInterceptor epoch and membership orchestration", () => 
 
     // A master arrives, the epoch is stamped, a second master arrives, then the epoch is re-stamped past it, then a post-mark live foreign media arrives. Under
     // latest-stamp-wins the second master is pre-epoch and the media wins; a set-once-mark bug would leave the second master post-epoch and resolve it instead,
-    // so the outcomes diverge and this pins the re-mark semantics.
+    // so the outcomes diverge and this asserts the re-mark semantics.
     mock.timers.enable({ apis: ["setTimeout"] });
 
     try {
@@ -716,7 +716,7 @@ describe("installManifestInterceptor epoch and membership orchestration", () => 
   test("the epoch-free timeout resolves the master on a record where finalize would have resolved the media", async () => {
 
     // The defensive timeout resolves epoch-free, so on a diverging record - a pre-epoch master plus a post-epoch live non-member media - it resolves the MASTER,
-    // whereas finalize(false) with the epoch present would resolve the media. The two resolutions differ, which is what makes this discriminate the epoch-free
+    // whereas finalize(false) with the epoch present would resolve the media. The two resolutions differ, which is what makes this distinguish the epoch-free
     // path (a direct tune the timeout may be guarding must never reach the epoch rule).
     mock.timers.enable({ apis: ["setTimeout"] });
 

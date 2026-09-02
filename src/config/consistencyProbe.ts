@@ -181,7 +181,7 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
     const message = "Consistency probe (" + issue.category + ", " + issue.severity + "): " + issue.description;
 
     // Defensive: no current checker emits severity:"error" - every check returns "warning" issues. The branch exists so a future check that needs operator
-    // attention rather than auto-cleanup can mark itself error and surface accordingly. Add a test to pin this behavior once an error-severity check exists.
+    // attention rather than auto-cleanup can mark itself error and surface accordingly. Add a test to assert this behavior once an error-severity check exists.
     if(issue.severity === "error") {
 
       LOG.error(message);

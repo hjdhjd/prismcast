@@ -267,7 +267,7 @@ export async function suppressPageAudio(page: Page): Promise<void> {
   } catch {
 
     // Best-effort, exactly like the immediate mute below. The page may be mid-navigation or tearing down as the stream switches to native delivery, and a failed
-    // override must not abort the switch it rides along with. Future navigations on this page then play unmuted until the next suppression pass runs, which is
+    // override must not abort the switch it accompanies. Future navigations on this page then play unmuted until the next suppression pass runs, which is
     // the cost the best-effort contract accepts.
   }
 
@@ -1875,7 +1875,7 @@ export async function tuneToChannel(page: Page, url: string, profile: ResolvedSi
 
   LOG.debug("timing:tune", "Navigation complete. (+%sms)", tuneElapsed());
 
-  // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen. The guide URL rides
+  // Perform all post-navigation initialization: channel selection, video context resolution, click to play, video readiness, and fullscreen. The guide URL is carried
   // along so a failed tune can diagnose the blocked page; the cached-direct attempt above deliberately does not pass it, since its failure is swallowed and retried
   // through this authoritative path.
   const result = await initializePlayback(page, profile, { requestedUrl: url });

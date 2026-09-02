@@ -85,7 +85,7 @@ describe("emitLogEntry and subscribeToLogs", () => {
     assert.equal(received.length, 1, "second emit not delivered after unsubscribe");
   });
 
-  test("unsubscribe is idempotent and safe to call twice", () => {
+  test("unsubscribe is safe to call twice", () => {
 
     // Negative test: calling unsubscribe a second time must not throw and must not affect other subscribers.
     const received: LogEntry[] = [];

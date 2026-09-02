@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * streaming.test.ts: Unit tests for the runtime exports of streaming.ts. The module's only runtime export is RECOGNIZED_CODECS - a readonly tuple that drives
- * the CaptureCodec union, the MIME type lookup in codec.ts, and the captureCodecs allowlist validation in CONFIG. The tests pin literal membership, ordering,
+ * the CaptureCodec union, the MIME type lookup in codec.ts, and the captureCodecs allowlist validation in CONFIG. The tests assert literal membership, ordering,
  * and disjointness, plus the type-level relationship between the array and the derived CaptureCodec union via @ts-expect-error.
  */
 import { describe, test } from "node:test";
@@ -46,7 +46,7 @@ describe("CaptureCodec (type-level)", () => {
 
   test("accepts every literal member of RECOGNIZED_CODECS", () => {
 
-    // CaptureCodec is `typeof RECOGNIZED_CODECS[number]`, so the literal types of each array entry must be assignable to it. We pin both members.
+    // CaptureCodec is `typeof RECOGNIZED_CODECS[number]`, so the literal types of each array entry must be assignable to it. We assert both members.
     const baseline: CaptureCodec = "h264";
     const accelerated: CaptureCodec = "hevc";
 

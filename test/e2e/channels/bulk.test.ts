@@ -31,7 +31,7 @@ describe("POST /config/channels/auto-number", () => {
 
     assert.equal(response.status, 200, "auto-number should succeed; body: " + (await response.clone().text()).slice(0, 200));
 
-    /* The first visible channel by name (alphabetical) should have channelNumber: 100. We don't pin a specific channel because the predefined catalog evolves;
+    /* The first visible channel by name (alphabetical) should have channelNumber: 100. We don't assert a specific channel because the predefined catalog evolves;
      * we just confirm at least one entry has the assigned number.
      */
     const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown>;
@@ -116,7 +116,7 @@ describe("POST /config/channels/hdhr-bulk", () => {
 
     assert.equal(response.status, 200, "hdhr-bulk disable should succeed; body: " + (await response.clone().text()).slice(0, 200));
 
-    /* At least one channel should now carry hdhrEnabled: false. We don't pin all channels because the override may write only those that DIFFER from the
+    /* At least one channel should now carry hdhrEnabled: false. We don't assert all channels because the override may write only those that DIFFER from the
      * predefined default, but the change should land somewhere.
      */
     const persisted = await readPersistedJson(ctx, "channels.json") as Record<string, unknown>;
@@ -274,7 +274,7 @@ describe("bulk operations × service filter scoping", () => {
 
     /* Run an auto-number under a hulu-only filter, then clear the filter and inspect the listing. The visible channels (abcnews) carry the assigned numbers;
      * the previously-filtered-out channels (amcthrillers) carry no number. No orphan or duplicate entries appear - the bulk's filter scope was the only thing
-     * limiting its reach. This pins the cross-cutting state-consistency guarantee: filter scoping is a soft window into a coherent global state, not a way to
+     * limiting its reach. This asserts the cross-cutting state-consistency guarantee: filter scoping is a soft window into a coherent global state, not a way to
      * fork the state into two divergent halves.
      */
     await using ctx = await createIntegrationContext();

@@ -79,7 +79,7 @@ describe("PREDEFINED_CHANNELS / CHANNELS exports", () => {
   });
 });
 
-describe("flattened channel structural invariants", () => {
+describe("flattened channel structural guarantees", () => {
 
   test("every entry has a non-empty url", () => {
 

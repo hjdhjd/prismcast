@@ -489,7 +489,7 @@ describe("saveResumeState", () => {
 
   test("round-trips a non-null initSegment Buffer through save -> load -> peek with bytewise equality", () => {
 
-    /* This test pins the base64 encode/decode path with a non-null initSegment. A regression in the encode side, the decode side, or the Map-key
+    /* This test asserts the base64 encode/decode path with a non-null initSegment. A regression in the encode side, the decode side, or the Map-key
      * stringification could silently corrupt the segment without affecting any other test. We seed a 256-byte Buffer with distinguishable content (sequential
      * byte values mod 256) so any byte slip surfaces as a mismatch.
      */
@@ -523,7 +523,7 @@ describe("saveResumeState", () => {
 
     /* The carry-forward branch in saveResumeState filters in-memory entries by `(now - entry.timestamp) <= RESUME_TTL` so a multi-restart scenario does not
      * resurrect entries that have been stale for more than 90 seconds. The "active stream wins" test exercises the merge with a fresh-timestamp carryforward;
-     * this case pins the negative branch where the carryforward is older than TTL.
+     * this case asserts the negative branch where the carryforward is older than TTL.
      */
     await makeResumeFile(tempDir, {
 

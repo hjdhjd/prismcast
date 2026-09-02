@@ -16,7 +16,7 @@ describe("computeTrimmedLogContent", () => {
 
   /* The pure cut-at-newline algorithm extracted from trimLogFile. Given the current file content and the configured maxSize, it returns the trimmed content
    * (keeping complete lines from the tail) or null when no trim is needed. The surrounding I/O orchestration in trimLogFile (read + write + rename) is small
-   * enough to be exercised at the integration level; pinning the cut algorithm here is where the architectural value is.
+   * enough to be exercised at the integration level; asserting the cut algorithm here is where the architectural value is.
    */
 
   test("returns null when content is at or below half maxSize (no trim needed)", () => {
@@ -175,7 +175,7 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
   test("does NOT trim when isAnyDebugEnabled() is true (debug session preserves history)", async () => {
 
     // Boundary: a tiny maxSize would normally trim immediately, but the debug-active gate suppresses the trim so the session's high-volume output is retained
-    // for diagnosis. We pin this by enabling wildcard debug, writing 100 entries to fire the size check, and asserting the file was NOT trimmed (every entry
+    // for diagnosis. We assert this by enabling wildcard debug, writing 100 entries to fire the size check, and asserting the file was NOT trimmed (every entry
     // remains).
     initDebugFilter("*");
 

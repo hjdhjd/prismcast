@@ -314,7 +314,7 @@ describe("observeTabResponses", () => {
     assert.ok(childRemoveAll.length > 0, "removeAllListeners called on child session");
   });
 
-  test("dispose() is idempotent - a second call is a safe no-op", async () => {
+  test("dispose() can be called more than once - a second call is a safe no-op", async () => {
 
     // Boundary: cleanup paths in PrismCast often call dispose from multiple code paths (success, error, parent disposal). The observer must tolerate that without
     // double-disabling or double-detaching. We invoke dispose twice and verify the command count does not grow.
@@ -469,7 +469,7 @@ describe("observeTabResponses", () => {
 
     // Lifecycle boundary: a Target.detachedFromTarget can arrive for a sessionId the observer never tracked (e.g., a target filtered out at attach time, or a
     // duplicate detach). connection.session() returns null and onChildDetached() must return early rather than calling removeAllListeners on a null session. The
-    // emit is synchronous, so assert.doesNotThrow directly pins the guard: were it removed, null.removeAllListeners would throw synchronously through the emit.
+    // emit is synchronous, so assert.doesNotThrow directly asserts the guard: were it removed, null.removeAllListeners would throw synchronously through the emit.
     const { root: rootSession } = buildFixture();
 
     const observed: ObservedResponse[] = [];

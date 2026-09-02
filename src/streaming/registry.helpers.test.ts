@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * registry.helpers.test.ts: Tests for the makeRegistryEntry factory in registry.helpers.ts. The factory is consumed across streaming/ and hdhr/ test files;
- * a bug in defaults or override-merging here would silently affect every dependent suite. Tests pin: default-shape correctness, id auto-allocation, streamIdStr
+ * a bug in defaults or override-merging here would silently affect every dependent suite. Tests assert: default-shape correctness, id auto-allocation, streamIdStr
  * derivation, override merge semantics, hls always being a fresh HLSState (not a shared mutable reference), and the pending-capture identity default.
  */
 import { STREAM_REGISTRY_ENTRY_KEYS, makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";

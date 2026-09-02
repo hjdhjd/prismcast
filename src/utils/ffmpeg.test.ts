@@ -136,7 +136,7 @@ describe("probePrerollFFmpegPath", () => {
 
     // The rule that separates this resolver from probeFFmpegPath. Channels DVR ships a minimal encoder set, and preroll encodes from scratch with libx264 or
     // libx265 plus filters, so a Channels DVR binary would fail the encode later and less legibly than not being offered at all. probeFFmpegPath would return
-    // this exact path for this exact context, which is what makes the divergence worth pinning.
+    // this exact path for this exact context, which is what makes the divergence worth asserting.
     const channelsDvrPath = "/Users/test/Library/Application Support/ChannelsDVR/latest/ffmpeg";
     const { context, probeCalls } = makeFFmpegContext({
 
@@ -362,7 +362,7 @@ describe("probeFFmpegPath", () => {
 describe("classifyFfmpegExit", () => {
 
   /* The classifier is pure and receives only (code, signal, label) - the caller's shuttingDown gate is applied before this function is ever invoked, so it is
-   * not part of what these tests exercise. Each case is synthetic and pins the exact precedence and message shape a regression could silently break.
+   * not part of what these tests exercise. Each case is synthetic and asserts the exact precedence and message shape a regression could silently break.
    */
 
   test("SIGTERM outranks a non-zero code (kill() during shutdown reports normal)", () => {
@@ -404,7 +404,7 @@ describe("classifyFfmpegExit", () => {
 
 describe("buildSpawnFFmpegArgs", () => {
 
-  /* The argv builder is pure. We pin the exact flag positions and values that production FFmpeg invocations depend on; if any of these shift, the tests catch it
+  /* The argv builder is pure. We assert the exact flag positions and values that production FFmpeg invocations depend on; if any of these shift, the tests catch it
    * before the spawn happens at runtime. The aac_at vs aac selection is platform-conditional and is documented separately.
    */
 
@@ -471,7 +471,7 @@ describe("buildSpawnFFmpegArgs", () => {
 
   test("defaults the platform to process.platform when no override is supplied", () => {
 
-    // Without an explicit platform option, the function reads process.platform. This lets production callers stay terse while tests pin both branches.
+    // Without an explicit platform option, the function reads process.platform. This lets production callers stay terse while tests assert both branches.
     const args = buildSpawnFFmpegArgs(256000);
     const encoderIndex = args.indexOf("-c:a");
     const expected = process.platform === "darwin" ? "aac_at" : "aac";
@@ -524,7 +524,7 @@ describe("buildSpawnFFmpegArgs", () => {
 
   test("places the metadata flag before pipe:1 so the metadata applies to output", () => {
 
-    // Order matters: -metadata before pipe:1 attaches the metadata to the output stream. Pinning this here so a future refactor can't reorder them silently.
+    // Order matters: -metadata before pipe:1 attaches the metadata to the output stream. Asserting this here so a future refactor can't reorder them silently.
     const args = buildSpawnFFmpegArgs(256000, { comment: "test" });
 
     assert.ok(args.indexOf("-metadata") < args.indexOf("pipe:1"));
@@ -589,7 +589,7 @@ describe("buildMpegTsRemuxerArgs", () => {
 
   test("returns the same argv on each call (no hidden state)", () => {
 
-    // The function is pure; consecutive calls produce structurally equal arrays. Tests pin this to lock the contract for production callers that may cache the
+    // The function is pure; consecutive calls produce structurally equal arrays. Tests assert this to lock the contract for production callers that may cache the
     // result locally.
     assert.deepEqual(buildMpegTsRemuxerArgs(), buildMpegTsRemuxerArgs());
   });

@@ -165,7 +165,7 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
    * lazy load is still filling in tiles, so an extraction taken at that moment can be non-empty yet partial - and the cache population downstream trusts this
    * read to BE the current rail, so a partial read would shrink the cache on ordinary tuning traffic. Two consecutive equal, nonzero counts mean the tiles have
    * stopped arriving. The count reads through evaluateWithAbort, the same abort-aware primitive the extraction below uses, so a stream termination mid-wait
-   * short-circuits the loop rather than riding Puppeteer's default protocol timeout. At the iteration cap we extract whatever is present, which is what an
+   * short-circuits the loop rather than relying on Puppeteer's default protocol timeout. At the iteration cap we extract whatever is present, which is what an
    * immediate extraction would have returned anyway, only later. The budget sits inside its outer bound: a tune races the whole playback initialization against
    * setup.ts's 45-second deadline, and this read's worst case - the section wait, the five-second anchor wait, and this loop's roughly three seconds - leaves
    * that deadline ample room.

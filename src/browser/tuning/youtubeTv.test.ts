@@ -6,7 +6,7 @@
  * The describes split by behavior surface rather than by export: the module exports a single provider object, so a per-export organization would collapse into
  * one undifferentiated block. The tune flow, the discovery path, and the channel-cache lifecycle each get their own.
  *
- * The lifecycle block carries the pin that matters most. Every guide read is complete, so the cache mirrors the read it was built from rather than accumulating
+ * The lifecycle block carries the assertion that matters most. Every guide read is complete, so the cache mirrors the read it was built from rather than accumulating
  * every lineup a browser session has ever seen: a channel dropped from the lineup has to be gone from discovery output after the next read. The tiered lookup's
  * alias keys are collateral of that replacement, which is why the affiliate resolve is asserted on both sides of a repopulation - the eviction has to stay
  * invisible to callers.
@@ -160,7 +160,7 @@ describe("durable lineup export", () => {
 
     /* The tiered lookup files an entry under the caller's own spelling when a non-exact tier matches, so tuning to "NBC" leaves two keys pointing at the single
      * "NBC 5" entry object. Projecting the map's values without reducing them to distinct entries would persist that channel twice, and the duplicate would then
-     * ride into the channel-form suggestion list and every later boot's fallback.
+     * carry into the channel-form suggestion list and every later boot's fallback.
      */
     const guide = makeGuidePage(FULL_LINEUP);
 

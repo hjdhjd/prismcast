@@ -662,7 +662,7 @@ export function generateLandingPageStyles(): string {
     ".browse-channel-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); }",
 
     // Individual channel row. Scoped under .browse-channel-list for specificity (0,2,0) to beat ui.ts's .form-row label (0,1,1), which sets display:block
-    // on labels inside form rows. The name takes all remaining space (flex: 1) and truncates with ellipsis, keeping the metadata pinned right.
+    // on labels inside form rows. The name takes all remaining space (flex: 1) and truncates with ellipsis, keeping the metadata anchored at the right edge.
     ".browse-channel-list .browse-channel-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; ",
     "color: var(--text-primary); cursor: pointer; transition: background 0.15s; border-bottom: 1px solid var(--border-light, var(--border-default)); ",
     "margin-bottom: 0; }",

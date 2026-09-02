@@ -57,13 +57,13 @@ interface ProxyStubHooks {
   isStopped: boolean;
 
   // The delay (in milliseconds) the most recently scheduled token-refresh timer was created with, or null when no refresh has been scheduled. Populated by the
-  // setTokenRefreshTimer hook by looking the received timer up in scheduledTimerDelays. Tests use this to pin the refresh CADENCE - whether the reschedule aims at
+  // setTokenRefreshTimer hook by looking the received timer up in scheduledTimerDelays. Tests use this to assert the refresh CADENCE - whether the reschedule aims at
   // the expiry boundary or degenerates into a tight MIN_REFRESH_DELAY poll.
   lastRefreshDelayMs: number | null;
 
   // The compatibility envelope this stub reports as the running pipeline's, which the refresh probe selects within. Each test names the shape its own fixtures
   // describe: a stub claiming a topology its manifests do not serve would have every candidate skipped as ineligible, which is a different outcome from the one
-  // the test means to pin.
+  // the test means to assert.
   pipelineShape: PipelineShape;
 
   setTokenRefreshTimerCalls: number;
@@ -122,7 +122,7 @@ function spyScheduledTimers(): void {
  */
 function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
 
-  /* The single-flight slot and the consecutive-failure count live inside the stub, the way the real proxy holds them, rather than on the hooks: no pin reads
+  /* The single-flight slot and the consecutive-failure count live inside the stub, the way the real proxy holds them, rather than on the hooks: no assertion reads
    * either one directly. What the tests watch is what the coordinator does with them - one master fetch for two concurrent callers, a retry armed at a delay the
    * count sizes - and those are already visible through the fetch router and the timer spy.
    */
@@ -154,7 +154,7 @@ function makeFakeProxy(hooks: ProxyStubHooks): NativeProxy {
 
       hooks.setTokenRefreshTimerCalls++;
 
-      // Recover the delay this timer was scheduled with (populated by spyScheduledTimers, if installed) so tests can pin the refresh cadence. Falls back to null
+      // Recover the delay this timer was scheduled with (populated by spyScheduledTimers, if installed) so tests can assert the refresh cadence. Falls back to null
       // when the spy is not active for this test.
       hooks.lastRefreshDelayMs = scheduledTimerDelays.get(timer) ?? null;
 
@@ -591,7 +591,7 @@ describe("refreshNativeManifest", () => {
      * schedule at the ceiling, where the refresh fires early and re-derives the boundary from the URLs it holds.
      */
 
-    // Mirrors MAX_TIMER_DELAY_MS in index.ts, which is module-private, so the pin restates the same ceiling. The expiry sits roughly 34 days out, well past it.
+    // Mirrors MAX_TIMER_DELAY_MS in index.ts, which is module-private, so the assertion restates the same ceiling. The expiry sits roughly 34 days out, well past it.
     const MAX_TIMER_DELAY_MS = 2147483647;
     const expirySeconds = Math.floor(Date.now() / 1000) + 3000000;
     const masterUrl = "https://cdn.test/far-future-master.m3u8?exp=" + String(expirySeconds);
@@ -670,7 +670,7 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.lastRefreshDelayMs, MIN_REFRESH_DELAY, "and it waits the floor delay rather than the past-due boundary's negative distance");
   });
 
-  test("pins the refresh boundary to the variant expiry when the variant token expires before the master token", async () => {
+  test("ties the refresh boundary to the variant expiry when the variant token expires before the master token", async () => {
 
     /* The variant URL the proxy polls rotates independently of the master and can expire first. The boundary must be the earlier of the two so the proxy never holds
      * a dead variant. With a master valid for ~900s but a variant expiring in ~120s, the boundary is the variant's 120s; the single reschedule must fire near 120s,
@@ -713,7 +713,7 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.setTokenRefreshTimerCalls, 1, "exactly one refresh scheduled");
 
     // The 120s variant boundary is inside the margin, so no lead is applied and the reschedule fires at ~120s. A 2-second tolerance absorbs the wall-clock read.
-    assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 120000) <= 2000, "reschedule is pinned to the earlier variant expiry, not the master expiry");
+    assert.ok(Math.abs((hooks.lastRefreshDelayMs!) - 120000) <= 2000, "reschedule is tied to the earlier variant expiry, not the master expiry");
   });
 
   test("discards a direct-fetched variant whose token expires within MIN_USABLE_TOKEN_LIFETIME and falls through to page reload", async () => {
@@ -828,18 +828,18 @@ describe("refreshNativeManifest", () => {
      * stub's pipeline reports - so it is eligible, and binding it is the whole point: the alternative would strand the stream on a dying token because one rung
      * of the ladder went bad. The page is closed, so the page-reload strategy short-circuits and the direct-fetch outcome is what the return value reports.
      */
-    const masterUrl = "https://cdn.test/pin-master.m3u8";
-    const topUrl = "https://cdn.test/pin-top.m3u8";
-    const siblingUrl = "https://cdn.test/pin-sibling.m3u8";
+    const masterUrl = "https://cdn.test/held-master.m3u8";
+    const topUrl = "https://cdn.test/held-top.m3u8";
+    const siblingUrl = "https://cdn.test/held-sibling.m3u8";
 
     makeFetchRouter({
 
       [masterUrl]: () => new Response([
         "#EXTM3U",
         "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
-        "pin-top.m3u8",
+        "held-top.m3u8",
         "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
-        "pin-sibling.m3u8",
+        "held-sibling.m3u8",
         ""
       ].join("\n"), { status: 200 }),
       [siblingUrl]: () => new Response("#EXTM3U\n#EXTINF:2,\nseg.ts\n", { status: 200 }),
@@ -849,17 +849,17 @@ describe("refreshNativeManifest", () => {
     const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
       setTokenRefreshTimerCalls: 0, variantUrl: "" };
 
-    clearProbeCache("pin-channel");
+    clearProbeCache("held-channel");
 
     const result = await refreshNativeManifest({
 
-      channelName: "pin-channel",
+      channelName: "held-channel",
       masterUrl,
       page: makeFakePage(true),
-      probeIdentity: refreshIdentity("pin-channel"),
+      probeIdentity: refreshIdentity("held-channel"),
       proxy: makeFakeProxy(hooks),
       reestablishManifest: declineReestablishment,
-      streamIdStr: "pin-stream",
+      streamIdStr: "held-stream",
       url: "https://example.test/channel"
     });
 
@@ -868,7 +868,7 @@ describe("refreshNativeManifest", () => {
     assert.equal(hooks.audioVariantUrl, "", "and no audio URL is applied, since this pipeline's audio is muxed");
 
     // Neither of these fixture URLs carries an expiry token, so the boundary computation finds nothing to aim at and no timer is armed. The cadence tests above
-    // own that behavior; what this pin owns is which variant the walk binds.
+    // own that behavior; what this assertion owns is which variant the walk binds.
     assert.equal(hooks.setTokenRefreshTimerCalls, 0, "no boundary exists to schedule against on these tokenless fixtures");
   });
 
@@ -917,7 +917,7 @@ describe("refreshNativeManifest", () => {
     /* The refresh path is where a probe is furthest from the tune that established the stream: the only URL in scope is the master, whose token rotates on
      * every refresh, and stamping with it would mint a new cache slot each time - the cache would never answer, and the entry it did write would describe
      * nothing durable. So the refresh probes under the stream's own identity, stamped from the configured binding. The two-sided assertion is what gives this
-     * pin teeth: the classification is readable under the threaded identity AND absent under an identity stamped from the master URL.
+     * assertion teeth: the classification is readable under the threaded identity AND absent under an identity stamped from the master URL.
      */
     const expirySeconds = Math.floor(Date.now() / 1000) + 600;
     const masterUrl = "https://cdn.test/stamp-master.m3u8?token=rotates-every-refresh&exp=" + String(expirySeconds);
@@ -1214,7 +1214,7 @@ describe("refreshNativeManifest", () => {
 
     /* Each refresh schedules the next one, so the callback the caller supplied has to survive every hop of that chain rather than only the first. The chain's
      * weak point is the timer callback, which rebuilds the options for the cycle it starts: a member dropped there would go unnoticed, since the stream keeps
-     * refreshing perfectly well while its reported quality quietly freezes at whatever the tune bound. This pin fires the scheduled timer and watches the second
+     * refreshing perfectly well while its reported quality quietly freezes at whatever the tune bound. This assertion fires the scheduled timer and watches the second
      * cycle report.
      */
     const expirySeconds = Math.floor(Date.now() / 1000) + 600;
@@ -1331,7 +1331,7 @@ describe("refreshNativeManifest", () => {
      * is briefly unreachable is retried promptly while one that is genuinely gone is not hammered.
      */
 
-    // Mirrors MIN_REFRESH_DELAY in index.ts, which is module-private, so the pin restates the same floor.
+    // Mirrors MIN_REFRESH_DELAY in index.ts, which is module-private, so the assertion restates the same floor.
     const MIN_REFRESH_DELAY = 30000;
     const masterUrl = "https://cdn.test/rearm-master.m3u8";
 
@@ -1588,7 +1588,7 @@ describe("refreshNativeManifest", () => {
   test("declines a closed page before invoking the capability, so no tune runs against a dead page", async () => {
 
     // The page-closed guard sits ahead of the re-establishment for a reason: every primitive the capability composes would throw on a closed page, and the
-    // counter is what pins the ordering rather than merely the outcome.
+    // counter is what asserts the ordering rather than merely the outcome.
     const hooks: ProxyStubHooks = { audioVariantUrl: "", isStopped: false, lastRefreshDelayMs: null, pipelineShape: MUXED_TS_PIPELINE,
       setTokenRefreshTimerCalls: 0, variantUrl: "" };
     const capability = makeReestablishStub({ manifestUrl: "https://cdn.test/never-read.m3u8", selectedKind: "master" });

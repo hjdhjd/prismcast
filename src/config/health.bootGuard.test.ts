@@ -3,9 +3,9 @@
  * health.bootGuard.test.ts: Unit tests for the load gate on health-state persistence in health.ts. The gate is what stops a shutdown signal that arrives between
  * the signal handlers being installed and the initial load completing from serializing the still-empty in-memory maps over a populated health.json.
  *
- * These pins live apart from health.test.ts because they need module state that has NEVER seen loadHealthState, and health.test.ts loads in its earlier tests.
+ * These assertions live apart from health.test.ts because they need module state that has NEVER seen loadHealthState, and health.test.ts loads in its earlier tests.
  * Node runs each test file in its own process, so a separate file is what buys a never-loaded module...within a single process the gate arms on the first load
- * and stays armed for the rest of the run, which would mask the very behavior the opening tests exist to pin.
+ * and stays armed for the rest of the run, which would mask the very behavior the opening tests exist to assert.
  *
  * That standing gate state also fixes the order below: every test needing an unarmed gate comes first, ahead of the ones that load and arm it. A loading test
  * inserted among them makes the tests after it fail loudly on their byte comparison rather than pass while measuring nothing.
@@ -93,7 +93,7 @@ describe("health state persistence load gate", () => {
       initializeDataDir(dir);
 
       // An empty directory loads as defaults, and completing that load is what arms persistence. The mark below must then reach disk exactly as it does on a
-      // normal boot, which is the other half of the pin above: the gate has to open, not merely close.
+      // normal boot, which is the other half of the assertion above: the gate has to open, not merely close.
       await loadHealthState();
 
       const channelKey = "boot-guard-armed-" + String(Math.random());

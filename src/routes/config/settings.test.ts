@@ -123,7 +123,7 @@ describe("generateSettingsTabContent", () => {
     assert.match(html, /value="12345"/, "submitted port value is rendered");
   });
 
-  test("returns a deterministic string across two calls with no overrides (idempotent renderer)", () => {
+  test("returns a deterministic string across two calls with no overrides (repeat-safe renderer)", () => {
 
     // Locks renderer determinism: callers comparing rendered HTML across edits should see diffs only from data changes, not renderer flakiness.
     const a = generateSettingsTabContent();
@@ -474,7 +474,7 @@ describe("setupSettingsRoutes", () => {
 
   test("registers exactly the documented number of routes (no extras, no drops)", () => {
 
-    // Pin the count so a route added or removed forces an explicit test update.
+    // Assert the count so a route added or removed forces an explicit test update.
     const { app, calls } = makeExpressStub();
 
     setupSettingsRoutes(app as never);

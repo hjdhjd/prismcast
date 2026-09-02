@@ -62,7 +62,7 @@ describe("handleMpegTsStream", () => {
   test("returns 404 'Channel is disabled.' when the channel is in disabledPredefined and no stream exists", async () => {
 
     /* The handler delegates to validateChannel(). For a predefined channel name in CONFIG.channels.disabledPredefined, validateChannel returns
-     * { statusCode: 404, body: "Channel is disabled.", valid: false } and sendValidationError surfaces it. This pins the disabled-channel rejection arm of
+     * { statusCode: 404, body: "Channel is disabled.", valid: false } and sendValidationError surfaces it. This asserts the disabled-channel rejection arm of
      * the shared validation path (mirrors the hls.ts disabled-channel rejection through the same shared validation code path).
      */
     CONFIG.channels.disabledPredefined = ["abc"];
@@ -78,9 +78,9 @@ describe("handleMpegTsStream", () => {
   /* The "Channel not available." 404 from the service-filter rejection arm is NOT unit-tested here because the predicate (isChannelAvailableByService) flows
    * through getChannelServiceTags, which depends on serviceGroups - a Map populated only by buildServiceGroups during persistence boot. Without that boot,
    * standalone channels fall back to the "direct" tag which is always-enabled, so the rejection arm never fires from a synthetic seed. The integration tier
-   * already pins the rejection end-to-end via test/e2e/streaming/pretune.test.ts ("scheduled job for a channel filtered out by enabledServices does NOT
+   * already asserts the rejection end-to-end via test/e2e/streaming/pretune.test.ts ("scheduled job for a channel filtered out by enabledServices does NOT
    * trigger pretune"); a unit-tier test here would have to import the full persistence harness and would not catch any failure mode the integration test does
-   * not. Pinning the disabled-channel and unknown-channel rejection arms here is sufficient because they share the same sendValidationError downstream.
+   * not. Asserting the disabled-channel and unknown-channel rejection arms here is sufficient because they share the same sendValidationError downstream.
    */
 
   test("existing-stream fast path bypasses validateChannel even for a disabled channel", async () => {
@@ -176,7 +176,7 @@ describe("resolveMpegTsInitSource (T14)", () => {
     }
   });
 
-  test("returns null for a native ts stream, which rides the pass-through instead", () => {
+  test("returns null for a native ts stream, which uses the pass-through instead", () => {
 
     const entry = makeRegistryEntry({ identity: makeNativeIdentity({ nativeContainer: "ts" }) });
 

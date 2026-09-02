@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userProfiles.accessors.test.ts: Unit tests for the user-profile module's snapshot accessors. Pins the shallow-copy contract for getUserProfiles / getUserDomains
+ * userProfiles.accessors.test.ts: Unit tests for the user-profile module's snapshot accessors. Asserts the shallow-copy contract for getUserProfiles / getUserDomains
  * (callers can mutate the returned record without affecting module-internal state) and the boolean shape of hasProfilesParseError.
  */
 import { describe, test } from "node:test";
@@ -19,7 +19,7 @@ describe("getUserProfiles", () => {
 
   test("mutating the returned record (adding a key) does not affect a subsequent call's result", () => {
 
-    /* Pins the shallow-copy contract: callers can mutate the returned record freely without affecting module state. Adding a key on the first snapshot must
+    /* Asserts the shallow-copy contract: callers can mutate the returned record freely without affecting module state. Adding a key on the first snapshot must
      * not surface in the second snapshot. A regression to a returned-by-reference implementation would fail here.
      */
     const a = getUserProfiles();

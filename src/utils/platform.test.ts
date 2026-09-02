@@ -200,13 +200,13 @@ describe("isRunningInContainer", () => {
 
   test("returns false when the env var is unset and /.dockerenv is absent (default-host case)", () => {
 
-    // Without the mock, on a typical dev host, /.dockerenv does not exist. The function returns false. This pins the behavior that survives even when no
+    // Without the mock, on a typical dev host, /.dockerenv does not exist. The function returns false. This asserts the behavior that survives even when no
     // mocking is in play - and complements the mocked tests above which lock the explicit branches.
     delete process.env["PRISMCAST_CONTAINER"];
 
     const result = isRunningInContainer();
 
-    // On a CI host that happens to be containerized, the result is true; on dev machines it is false. We can't pin the exact value without knowing the host,
+    // On a CI host that happens to be containerized, the result is true; on dev machines it is false. We can't assert the exact value without knowing the host,
     // so we lock the structural contract: returns a boolean and does not throw.
     assert.equal(typeof result, "boolean", "returns a boolean even on hosts without /.dockerenv");
   });

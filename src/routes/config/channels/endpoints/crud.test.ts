@@ -329,7 +329,7 @@ describe("handlePredefinedEdit (PUT /config/channels/:key)", () => {
 
   test("forceCapture round-trip: a checked box stores the flag on the canonical entry and a later unchecked save removes it", async () => {
 
-    // A rename rides along with the flag so the second save still carries a change of its own. That keeps the clear on the delta path rather than emptying the
+    // A rename goes along with the flag so the second save still carries a change of its own. That keeps the clear on the delta path rather than emptying the
     // delta and routing through the revert branch, which would prove nothing about how the field itself is stored.
     const setBody = makeFormBody({ forceCapture: "true", name: "ABC Renamed", tags: "Local", url: "https://abc.com/watch-live" });
     const set = makeReqRes({ body: setBody, params: { key: "abc" } });
@@ -868,7 +868,7 @@ describe("forceCapture on the user-channel path (POST /config/channels, PUT /con
   test("create with the box checked stores the flag, and a later save with the box clear removes it", async () => {
 
     /* A channel with no predefined base never reaches the delta machinery: buildUserChannelFromForm hand-enumerates each field onto a fresh record, and both
-     * the create and the standalone-channel replace go through it. No predefined-path test exercises that builder, so this is the pin that covers it.
+     * the create and the standalone-channel replace go through it. No predefined-path test exercises that builder, so this is the assertion that covers it.
      */
     const createBody = makeFormBody({ forceCapture: "true", key: "forced-user", name: "Forced", url: "https://example.com/live.m3u8" });
     const created = makeReqRes({ body: createBody });

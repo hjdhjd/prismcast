@@ -75,7 +75,7 @@ describe("markChannelSuccess", () => {
 
   test("emits exactly one channel-scoped event per call, on both the markAuth and non-markAuth paths", () => {
 
-    /* Event-contract pin for the verified write chokepoint: the markAuth branch routes through setDomainVerified, which emits the channel-scoped event on the
+    /* Event-contract assertion for the verified write chokepoint: the markAuth branch routes through setDomainVerified, which emits the channel-scoped event on the
      * caller's behalf, while the non-markAuth branch emits directly. If the chokepoint refactor ever double-emitted (markChannelSuccess emitting its own event in
      * addition to the chokepoint's) the markAuth count below would read 2; if the chokepoint dropped the channelKey the payload assertion would catch it. Traced
      * path: markChannelSuccess -> setDomainVerified -> healthEmitter.emit (markAuth), markChannelSuccess -> healthEmitter.emit (non-markAuth).
@@ -105,7 +105,7 @@ describe("markChannelSuccess", () => {
 
   test("overwrites a needs-sign-in entry to verified (success evidence clears the flag)", () => {
 
-    /* Tri-state transition pin: needsLogin -> verified through markChannelSuccess's markAuth path. The scenario enters setDomainVerified with an existing
+    /* Tri-state transition assertion: needsLogin -> verified through markChannelSuccess's markAuth path. The scenario enters setDomainVerified with an existing
      * needsLogin entry in the map; the domainAuth.set there is the mutation under test - if it stopped overwriting (e.g., a guard that skipped existing entries),
      * the read below would still see needsLogin.
      */
@@ -145,7 +145,7 @@ describe("markChannelFailure", () => {
 
   test("leaves an existing needs-sign-in entry untouched (failures never mutate domain auth)", () => {
 
-    /* Behavior-contract pin: markChannelFailure must not touch domain auth in either direction. The scenario seeds a needsLogin entry so a regression that made
+    /* Behavior-contract assertion: markChannelFailure must not touch domain auth in either direction. The scenario seeds a needsLogin entry so a regression that made
      * failures delete or overwrite domain entries (the mutation would live in markChannelFailure's body) is observable - the entry must read back unchanged.
      */
     markDomainAuthRequired("failure-preserves.com");
@@ -285,7 +285,7 @@ describe("getDomainAuthState", () => {
 
   test("returns a needs-sign-in entry past the TTL window (needsLogin is exempt from expiry)", () => {
 
-    /* TTL-exemption pin for the single-key read path. The scenario ages a needsLogin entry past HEALTH_TTL and reads it: the read enters getDomainAuthState's
+    /* TTL-exemption assertion for the single-key read path. The scenario ages a needsLogin entry past HEALTH_TTL and reads it: the read enters getDomainAuthState's
      * isDomainAuthExpired guard, whose status === "verified" conjunct is the mutation under test - if the predicate dropped the status check (expiring every
      * entry by age alone), the read would return null and delete the entry.
      */
@@ -323,7 +323,7 @@ describe("markDomainAuthRequired", () => {
 
   test("overwrites an existing verified entry (a fresh auth wall trumps stale verification)", () => {
 
-    /* Tri-state transition pin: verified -> needsLogin. The scenario enters markDomainAuthRequired with a verified entry already in the map; the unconditional
+    /* Tri-state transition assertion: verified -> needsLogin. The scenario enters markDomainAuthRequired with a verified entry already in the map; the unconditional
      * domainAuth.set there is the mutation under test - a guard that preserved existing verified entries would leave the read below green.
      */
     markDomainAuth("wall-after-verified.com");
@@ -369,9 +369,9 @@ describe("clearDomainAuthRequirement", () => {
 
   test("removes a needs-sign-in entry, returning the domain to unknown, and emits a change event", () => {
 
-    /* Tri-state transition pin: needsLogin -> unknown (the unproven-access clearing). The scenario enters clearDomainAuthRequirement with a needsLogin entry, so
+    /* Tri-state transition assertion: needsLogin -> unknown (the unproven-access clearing). The scenario enters clearDomainAuthRequirement with a needsLogin entry, so
      * the status guard passes and removeDomainAuth's domainAuth.delete is the mutation under test - without the delete, the read below would still see the flag.
-     * The event assertion pins the removal notification the health bridge relies on to re-render affected rows.
+     * The event assertion locks in the removal notification the health bridge relies on to re-render affected rows.
      */
     const captured: { channelKey: string; domain: string; status: string }[] = [];
     const unsubscribe = subscribeToHealth((event) => {
@@ -477,7 +477,7 @@ describe("getHealthSnapshot", () => {
 
   test("includes a needs-sign-in entry past the TTL window (needsLogin is exempt from the snapshot prune)", () => {
 
-    /* TTL-exemption pin for the bulk prune path. getHealthSnapshot calls pruneExpiredEntries before serializing; the domains loop's isDomainAuthExpired call is
+    /* TTL-exemption assertion for the bulk prune path. getHealthSnapshot calls pruneExpiredEntries before serializing; the domains loop's isDomainAuthExpired call is
      * the mutation under test - an age-only predicate there would delete the aged needsLogin entry and the snapshot below would omit it.
      */
     const domain = "snap-needs-login-" + String(Math.random());
@@ -576,10 +576,10 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
   test("an expired single-key read returns null, and the expired entry is never persisted", async () => {
 
-    /* Pins the observable contract for the single-key read path: an entry aged past the TTL reads back as null and does not survive to disk. We mark, expire,
+    /* Asserts the observable contract for the single-key read path: an entry aged past the TTL reads back as null and does not survive to disk. We mark, expire,
      * read, then mark a separate fresh key and flush. Whether the touched-expired key is dropped by the read-path delete (getChannelHealth) or by the write-path
      * prune at flush is not independently observable here - with a monotonic clock, anything expired at read time is still expired at flush time, so an on-disk read
-     * cannot isolate the two - but both enforce the same no-persist-expired guarantee. The write-path prune is pinned on its own by the flush test below.
+     * cannot isolate the two - but both enforce the same no-persist-expired guarantee. The write-path prune is asserted on its own by the flush test below.
      */
     await withTempDir(async (dir) => {
 
@@ -641,7 +641,7 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
   test("a needs-sign-in entry aged past the TTL still persists through the flush prune (needsLogin is exempt)", async () => {
 
-    /* TTL-exemption pin for the write-chokepoint prune path. writeHealthState calls pruneExpiredEntries before serializing; the domains loop's isDomainAuthExpired
+    /* TTL-exemption assertion for the write-chokepoint prune path. writeHealthState calls pruneExpiredEntries before serializing; the domains loop's isDomainAuthExpired
      * call is the mutation under test - an age-only predicate there would shed the aged needsLogin entry and the on-disk readback below would miss it. A verified
      * entry aged identically is asserted absent in the same write, proving the exemption branches on status rather than skipping the prune entirely.
      */

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * setup.retire.test.ts: Unit tests for retireRawStream, the destroy-and-confirm core every capture teardown that precedes a page close runs through. Two
- * outcomes are pinned because both matter to a caller: the ordinary one, where the capture extension confirms the recording stopped and the page may be closed
+ * outcomes are asserted because both matter to a caller: the ordinary one, where the capture extension confirms the recording stopped and the page may be closed
  * safely, and the lapse, where the confirmation never arrives and the function warns and returns rather than holding the page open for a browser that has
  * stopped answering. The stub capture is a real PassThrough carrying the two capture controls, so the destroy under test is a genuine one.
  */
@@ -59,7 +59,7 @@ describe("retireRawStream", () => {
 
   test("warns and returns when the confirmation never arrives, rather than holding the page open", async () => {
 
-    /* A browser that is already gone will never close the socket the confirmation rides on, so waiting for it would strand every teardown behind a dead
+    /* A browser that is already gone will never close the socket the confirmation arrives on, so waiting for it would strand every teardown behind a dead
      * process. The clock's bound is what ends the wait, and the function's own contract is that it never throws - a caller mid-teardown has nothing to do with
      * a rejection here.
      */

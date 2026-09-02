@@ -11,7 +11,7 @@
  *
  * TypeScript already catches required-field drift at compile time (the factory's return type would no longer satisfy T). The two failure modes that remain
  * are (a) optional fields that production always populates but the factory doesn't, and (b) value-shape drift where the factory's default for a field uses a
- * placeholder that production would never write. The first is caught at runtime by assertSameShape; the second is caught by pinning factory defaults to
+ * placeholder that production would never write. The first is caught at runtime by assertSameShape; the second is caught by tying factory defaults to
  * production formatters (see makeRegistryEntry's use of generateStreamId for an example).
  *
  * Two utilities live here:

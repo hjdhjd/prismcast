@@ -240,14 +240,14 @@ describe("startUpdateChecking and stopUpdateChecking", () => {
     assert.doesNotThrow(() => { stopUpdateChecking(); });
   });
 
-  test("stopUpdateChecking is idempotent (safe to call when nothing is running)", () => {
+  test("stopUpdateChecking is safe to call when nothing is running", () => {
 
     // Negative test: stopping a never-started checker must be a no-op.
     assert.doesNotThrow(() => { stopUpdateChecking(); });
     assert.doesNotThrow(() => { stopUpdateChecking(); });
   });
 
-  test("startUpdateChecking is idempotent on repeated calls (does not stack timers)", () => {
+  test("startUpdateChecking does not stack timers on repeated calls", () => {
 
     // The implementation uses ??=, so a second start is a no-op while the first is running. Stop cleans both - locking the contract that callers cannot leak timers.
     assert.doesNotThrow(() => {

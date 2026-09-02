@@ -289,7 +289,7 @@ describe("handleHLSSegment: named init segments (T5)", () => {
 
   test("serves .m4s media segments as video/mp4 and .ts media segments as video/MP2T", () => {
 
-    // Container-true naming only helps if the Content-Type follows it, so both extensions are pinned on the same route.
+    // Container-true naming only helps if the Content-Type follows it, so both extensions are asserted on the same route.
     const entry = makeRegistryEntry({ channelName: "content-type-channel" });
 
     registerStream(entry);

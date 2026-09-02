@@ -157,7 +157,7 @@ describe("generateTabScript", () => {
   test("carries a subtab id in the hash only when the switch stays on the same tab", () => {
 
     // A subtab id in a parsed hash belongs to the tab it was parsed from, so a cross-tab switch must drop it rather than graft it onto the destination. The
-    // script has exactly one emission site for the carry, so asserting the same-tab expression and rejecting the tab-enumerating one pins both polarities.
+    // script has exactly one emission site for the carry, so asserting the same-tab expression and rejecting the tab-enumerating one covers both polarities.
     const js = generateTabScript();
 
     assert.match(js, /var subtab = \(category === parsed\.tab\) \? parsed\.subtab : null;/, "same-tab switches carry the parsed subtab");

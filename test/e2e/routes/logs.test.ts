@@ -8,7 +8,7 @@
  *
  * The file logger (src/utils/fileLogger.ts) is initialized only by app.ts's startup path via initializeFileLogger(); bootApp deliberately does not call it, so
  * isInitialized stays false and no runtime log lines are appended to the seeded file during the test. That makes the parsed set exactly the fixture, so the
- * total / filter / slice assertions can be exact rather than lower-bounds. We still pin setConsoleLogging(false) at the top so console mode (which would short-
+ * total / filter / slice assertions can be exact rather than lower-bounds. We still assert setConsoleLogging(false) at the top so console mode (which would short-
  * circuit readLogEntries to mode:"console" with no file read) cannot leak in from another suite sharing the module singleton and flip the response shape.
  *
  * The 500 branch is fault-injected without touching production: mkdir'ing a directory at the log path makes readFile throw EISDIR (not the ENOENT the handler
@@ -65,7 +65,7 @@ describe("GET /logs - file-mode parse contract", () => {
 
     await using ctx = await createIntegrationContext();
 
-    // Console mode would short-circuit readLogEntries to mode:"console" and never read the file; pin file mode so the fixture is what the handler parses.
+    // Console mode would short-circuit readLogEntries to mode:"console" and never read the file; assert file mode so the fixture is what the handler parses.
     setConsoleLogging(false);
 
     await initializePersistence(ctx);

@@ -448,7 +448,7 @@ describe("CdpProxySession - lifecycle", () => {
 
   test("browser 'disconnected' triggers session teardown (per-session lifecycle ownership)", async () => {
 
-    // The session subscribes to its own browser's "disconnected" event in start() and unsubscribes in cleanup(). This pins the contract that a disconnected
+    // The session subscribes to its own browser's "disconnected" event in start() and unsubscribes in cleanup(). This asserts the contract that a disconnected
     // browser tears down its attached session without any module-level broadcast or shared registry.
     const { browser, ws } = await makeProxy();
 

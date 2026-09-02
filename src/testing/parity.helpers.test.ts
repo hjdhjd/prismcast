@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * parity.helpers.test.ts: Tests for the factory-parity utilities. assertSameShape and declareKeysOf together form the runtime + compile-time pair that
- * catches silent drift between a fixture factory and its target type. The test file pins assertSameShape's reporting contract (asymmetric difference, descriptive
+ * catches silent drift between a fixture factory and its target type. The test file asserts assertSameShape's reporting contract (asymmetric difference, descriptive
  * label embedding, no-op on equal sets); declareKeysOf's contract is fundamentally compile-time so we exercise it with a representative type and verify the
  * runtime return-as-passed-through behavior.
  */
@@ -98,7 +98,7 @@ describe("assertSameShape", () => {
 describe("declareKeysOf", () => {
 
   /* The primary contract is compile-time: a const array passed to declareKeysOf<T>() must exhaust every key of T or the call fails to compile. This suite does
-   * not exercise that failure path directly. The codebase's established @ts-expect-error convention (as used in src/types/channels.test.ts) could pin the
+   * not exercise that failure path directly. The codebase's established @ts-expect-error convention (as used in src/types/channels.test.ts) could assert the
    * missing-key compile error here too, but is omitted so this suite stays focused on the runtime contract below. The runtime tests below verify the
    * pass-through behavior - the function returns the array unchanged - which is the contract this suite actually verifies.
    */

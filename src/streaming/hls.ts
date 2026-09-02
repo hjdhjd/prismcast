@@ -203,7 +203,7 @@ export function sendValidationError(validation: { body: Record<string, string> |
 
 /**
  * Pure predicate for the concurrent-stream capacity decision. Returns true when a new stream may be admitted given the current active count and the configured
- * limit. Extracted as a standalone function so the boundary arithmetic is pinned by a unit test without driving a browser. The count passed in must be the count
+ * limit. Extracted as a standalone function so the boundary arithmetic is asserted by a unit test without driving a browser. The count passed in must be the count
  * BEFORE the new stream's pending entry is registered, so the new stream is naturally excluded from its own capacity check; admitting the final slot
  * (active === maxConcurrent - 1) returns true.
  * @param activeCount - Number of streams currently registered, excluding the stream being admitted.

@@ -2,7 +2,7 @@
  *
  * userConfig.migrations.test.ts: Focused coverage for the schema-migration apply functions exported from userConfig.ts - one-time correctness rules applied
  * at read time. If a migration gets a transformation wrong, every subsequent session sees corrupted state, so each architectural choice gets a test
- * that pins it explicitly: tests document the design via the assertions, not via comments alone.
+ * that asserts it explicitly: tests document the design via the assertions, not via comments alone.
  *
  * v2 (applyChannelsProviderRenameMigration): renames legacy provider-themed channel fields and the foxcom service tag.
  * v3 (applyDvrHostNamespaceMigration): moves top-level dvrHost into channelsDvr.host, splitting any embedded host:port form at the LAST colon so bracketed
@@ -98,7 +98,7 @@ describe("v3 dvrHost namespace migration - host:port splitting", () => {
   test("a bracketed IPv6 host:port form splits at the LAST colon so the brackets survive on the host portion", () => {
 
     /* The architectural reason last-colon split was chosen over first-colon split: bracketed IPv6 forms like [::1]:8089 are the canonical IPv6+port wire
-     * format, and a first-colon split would fragment the address. This test pins the choice - a future refactor to split-on-first-colon would fail loudly here
+     * format, and a first-colon split would fragment the address. This test asserts the choice - a future refactor to split-on-first-colon would fail loudly here
      * with the host portion truncated to "[" or similar. The bracketed form is unlikely in production (auto-discovery feeds IPv4), but disk files may carry
      * hand-edited content the framework cannot vet, so the migration handles it correctly.
      */
@@ -133,7 +133,7 @@ describe("v3 dvrHost namespace migration - host:port splitting", () => {
   test("a value with an out-of-range numeric port suffix falls back to host-only", () => {
 
     /* Boundary on the port-validation side of the same defensive contract: a trailing portion that parses as a number but falls outside the valid TCP port
-     * range (1..65535) is rejected - the migration treats the whole input as host-only. Pins the validation gate so a future refactor that drops the range
+     * range (1..65535) is rejected - the migration treats the whole input as host-only. Asserts the validation gate so a future refactor that drops the range
      * check (just Number.isInteger or just typeof === "number") cannot quietly migrate bogus port values.
      */
     const data = makePreV3({ dvrHost: "host:99999" });
@@ -150,7 +150,7 @@ describe("v3 dvrHost namespace migration - host:port splitting", () => {
 
     /* The clean upgrade case: a v2 config from a user who never had a DVR host discovered has no dvrHost field at all. The migration must early-return without
      * creating an empty channelsDvr block - filterDefaults at write time would prune an empty object, but a half-populated `{ host: "" }` would survive and
-     * mislead the next session into thinking discovery had run. Pin: missing legacy field means no migration-side mutation.
+     * mislead the next session into thinking discovery had run. Assertion: missing legacy field means no migration-side mutation.
      */
     const data = makePreV3({});
 
@@ -180,7 +180,7 @@ describe("v2 channels provider->service rename migration", () => {
 
   test("renames channels.precacheProviders to channels.precacheServices verbatim", () => {
 
-    /* Companion rename to enabledProviders. Same shape, same outcome. Pinning both renames separately catches a regression where one is preserved but the other
+    /* Companion rename to enabledProviders. Same shape, same outcome. Asserting both renames separately catches a regression where one is preserved but the other
      * is silently dropped during a refactor.
      */
     const data = { channels: { precacheProviders: ["sling"] } } as unknown as UserConfig;
@@ -210,7 +210,7 @@ describe("v2 channels provider->service rename migration", () => {
   test("a name collision (both legacy and current keys present) keeps the current value and deletes the legacy key", () => {
 
     /* The hand-edited collision: an operator added enabledServices manually before the migration ran, but the legacy enabledProviders is also still there. The
-     * current name reflects deliberate operator intent, so the migration preserves it and discards the legacy. Pin: current wins, legacy deleted regardless.
+     * current name reflects deliberate operator intent, so the migration preserves it and discards the legacy. Assertion: current wins, legacy deleted regardless.
      */
     const data = { channels: { enabledProviders: ["old"], enabledServices: ["new"] } } as unknown as UserConfig;
 
@@ -222,10 +222,10 @@ describe("v2 channels provider->service rename migration", () => {
     assert.equal(channels["enabledProviders"], undefined, "legacy key is deleted regardless of which side won");
   });
 
-  test("an already-migrated config is a no-op (idempotent on the field-rename side)", () => {
+  test("an already-migrated config is a no-op (repeat-safe on the field-rename side)", () => {
 
     /* The schema-migration framework runs migrations in order from the file's stored version up to current. If something replays this migration on already-v2
-     * data (no legacy keys, only current names), the migration must not corrupt or duplicate state. Pin: input shape == output shape when no legacy keys are
+     * data (no legacy keys, only current names), the migration must not corrupt or duplicate state. Assertion: input shape == output shape when no legacy keys are
      * present and the foxcom remap has nothing to do.
      */
     const data = { channels: { enabledServices: [ "hulu", "foxone" ], precacheServices: ["yttv"] } } as unknown as UserConfig;
@@ -256,7 +256,7 @@ describe("v2 channels provider->service rename migration", () => {
     /* Defensive contract for the cast at the top of the function: the type system declares data.channels as UserChannelsConfig | undefined, but disk files
      * may carry hand-edited content the framework cannot vet. If a user pasted `"channels": []` (a valid JSON array but a wrong shape), the cast through
      * Record<string, unknown> | undefined still succeeds and the per-key Array.isArray guards skip every legacy field because none of them exist as numeric
-     * indices on the array. The migration must complete without throwing and must not mutate the array. Pinning this prevents a regression that adds an
+     * indices on the array. The migration must complete without throwing and must not mutate the array. Asserting this prevents a regression that adds an
      * unguarded property write to the array (which JS would silently accept, corrupting the on-disk shape further).
      */
     const data = { channels: [] } as unknown as UserConfig;

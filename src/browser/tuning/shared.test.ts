@@ -8,13 +8,13 @@
  * page.removeScriptToEvaluateOnNewDocument) - so both are unit-testable with a plain object stub standing in for the Page reference.
  *
  * normalizeChannelName, resolveMatchSelector, and logAvailableChannels are pure functions the tuning strategies and the channel-selection coordinator rely on for
- * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are pinned directly below. The remaining export,
+ * name matching, selector resolution, and the "channels you must configure manually" diagnostic; they are asserted directly below. The remaining export,
  * scrollAndClick, drives Puppeteer through page.mouse and page.evaluate and is deferred to the e2e tier; the locate-style helpers that call it live in the
  * individual provider modules.
  *
  * createEmptyDiscoveryGuard and attemptGuideRecovery are the shared guide-recovery chassis that the virtualized-guide providers (Spectrum, YouTube TV) drive: the
  * guard counts a provider's consecutive zero-channel guide loads and reports when that streak warrants recovery, and the recovery routine clears the provider's
- * cached site data via CDP, reloads the guide, and re-runs the provider's own discovery. Both are exercised here against page and CDP-session stubs, which pins
+ * cached site data via CDP, reloads the guide, and re-runs the provider's own discovery. Both are exercised here against page and CDP-session stubs, which asserts
  * the choreography, the counter semantics, and every failure-path return. What no test tier can reach is a genuinely degraded provider guide, so whether clearing
  * site data actually revives one remains a field observation rather than something asserted here.
  */
@@ -188,7 +188,7 @@ describe("installOrReplaceOnNewDocument", () => {
 
   test("removes the prior script before installing a fresh one on each subsequent call (never stacks)", async () => {
 
-    // This pins the critical Hulu guarantee: re-tuning the same page with drifting arguments must run exactly one interceptor carrying current values. Each call
+    // This asserts the critical Hulu guarantee: re-tuning the same page with drifting arguments must run exactly one interceptor carrying current values. Each call
     // removes the script installed by the previous call, then installs anew. A regression that dropped the removal would let stale interceptor scripts stack and
     // run competing window.fetch patches frozen at old argument values.
     const { page, removed } = makeReplacePage();
@@ -252,7 +252,7 @@ describe("normalizeChannelName", () => {
     assert.equal(normalizeChannelName("Cartoon\u00A0Network"), "cartoon network");
   });
 
-  test("is idempotent - normalizing an already-normalized name returns it unchanged", () => {
+  test("normalizing an already-normalized name returns it unchanged", () => {
 
     // Callers on both sides of a match (the predefined channelSelector and the discovered name) normalize independently, so the function must be a fixed point:
     // running it twice yields the same string it produced once, or matching would depend on how many times each side happened to be normalized.
@@ -292,7 +292,7 @@ describe("resolveMatchSelector", () => {
 describe("logAvailableChannels", () => {
 
   // logAvailableChannels calls the module-singleton LOG, whose formatted output is broadcast to the SSE emitter that subscribeToLogs taps. Asserting on the
-  // formatted message pins what the operator sees (which channels are reported, and the covered/uncovered count) rather than a pre-format implementation detail.
+  // formatted message asserts what the operator sees (which channels are reported, and the covered/uncovered count) rather than a pre-format implementation detail.
   // The subscription is installed per test and reset so one test's output cannot leak into another's assertions.
   let captured: LogEntry[];
 
@@ -657,7 +657,7 @@ describe("attemptGuideRecovery", () => {
     return { calls, discover };
   }
 
-  // runRecovery drives the routine with one fixed set of provider options so each test reads as the single thing it is pinning rather than repeating the
+  // runRecovery drives the routine with one fixed set of provider options so each test reads as the single thing it is asserting rather than repeating the
   // options object six times.
   async function runRecovery(page: Page, discover: (page: Page) => Promise<{ name: string }[]>): Promise<{ name: string }[]> {
 
@@ -794,7 +794,7 @@ describe("attemptGuideRecovery", () => {
   test("attempts no release when the session was never created, and reports the clear failure once", async () => {
 
     // There is nothing to detach when creation itself failed, so the guarded release has to stay quiet rather than reaching through an empty binding. The single
-    // warning pins the other half of that path: a creation failure is caught and reported as a clear failure exactly once, not propagated and not double-logged.
+    // warning asserts the other half of that path: a creation failure is caught and reported as a clear failure exactly once, not propagated and not double-logged.
     const session = new FakeCdpSession(null);
     const { page } = makeRecoveryPage({ createFails: true, session });
     const { discover } = makeDiscover(twoChannels);

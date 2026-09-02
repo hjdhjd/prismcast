@@ -98,7 +98,7 @@ describe("readConfig adapter shape", () => {
    *   - "migrationResult" (which the framework returns alongside data) is intentionally dropped from the wrapper's return shape so callers can't accidentally
    *     act on framework metadata that's already been applied to the data.
    *
-   * The drop-migrationResult contract is the part not exercised elsewhere - the surrounding fields are pinned by backup-recovery.test.ts. We seed a plain
+   * The drop-migrationResult contract is the part not exercised elsewhere - the surrounding fields are asserted by backup-recovery.test.ts. We seed a plain
    * current-shape config (a single server.port override), run readConfig, and assert the returned keyset matches the documented shape with no migrationResult
    * leakage. The contract is independent of whether a migration actually ran, so no legacy field is needed to exercise it.
    */

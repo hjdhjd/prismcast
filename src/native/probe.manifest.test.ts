@@ -413,7 +413,7 @@ describe("probeManifest", () => {
 
     // Boundary: descriptive-only #EXT-X-MEDIA tags (no URI) indicate muxed audio. The probe must report null, not the URL of a non-existent rendition. The
     // fixture's variant declares AUDIO="audio", so this exercises resolveAudioRendition's declared-group-with-no-URI-bearing-rendition tail path; the
-    // no-AUDIO-attribute early return has its own pin in the fallback describe block below.
+    // no-AUDIO-attribute early return has its own assertion in the fallback describe block below.
     const masterUrl = "https://cdn.test/muxed-master.m3u8";
     const videoVariantUrl = "https://cdn.test/muxed-video.m3u8";
 
@@ -710,7 +710,7 @@ describe("probeManifest: uncovered branches", () => {
 
     // Boundary distinct from the "unknown" branch: this body DOES classify as "master" because #EXT-X-STREAM-INF is present, but the line after it is a comment
     // (#EXT-X-ENDLIST) rather than a variant URL. selectVariants collects no candidate from that entry and returns an empty list, so resolveMasterPlaylist returns
-    // null and the probe surfaces null. The existing "no variant streams" test hits the "unknown" classification branch instead, so this pins the
+    // null and the probe surfaces null. The existing "no variant streams" test hits the "unknown" classification branch instead, so this asserts the
     // master-classified-but-no-candidates path.
     const masterUrl = "https://cdn.test/dangling-stream-inf.m3u8";
 
@@ -1227,13 +1227,13 @@ describe("probeManifest: variant fallback and audio group binding", () => {
     assert.equal(result.audioVariantUrl, null, "an undeclared group yields no audio rather than another group's rendition");
   });
 
-  test("attempts only the top-ranked variant when the caller pins a single attempt", async () => {
+  test("attempts only the top-ranked variant when the caller holds it to a single attempt", async () => {
 
-    // The token-refresh path pins one attempt so a refresh cannot reselect a different variant underneath a running proxy. A healthy sibling sits below the broken
-    // top variant, so an ignored or mis-threaded option shows up as a successful probe instead of a null.
-    const masterUrl = "https://cdn.test/pinned-master.m3u8";
-    const topUrl = "https://cdn.test/pinned-top.m3u8";
-    const siblingUrl = "https://cdn.test/pinned-sibling.m3u8";
+    // The token-refresh path fixes the attempt count at one so a refresh cannot reselect a different variant underneath a running proxy. A healthy sibling
+    // sits below the broken top variant, so an ignored or mis-threaded option shows up as a successful probe instead of a null.
+    const masterUrl = "https://cdn.test/fixed-master.m3u8";
+    const topUrl = "https://cdn.test/fixed-top.m3u8";
+    const siblingUrl = "https://cdn.test/fixed-sibling.m3u8";
     const fetched: string[] = [];
 
     makeFetchRouter({
@@ -1241,9 +1241,9 @@ describe("probeManifest: variant fallback and audio group binding", () => {
       [masterUrl]: () => new Response([
         "#EXTM3U",
         "#EXT-X-STREAM-INF:BANDWIDTH=4000000",
-        "pinned-top.m3u8",
+        "fixed-top.m3u8",
         "#EXT-X-STREAM-INF:BANDWIDTH=2000000",
-        "pinned-sibling.m3u8",
+        "fixed-sibling.m3u8",
         ""
       ].join("\n"), { status: 200 }),
       [topUrl]: recordFetch(fetched, () => new Response("server error", { status: 500 })),
@@ -1252,7 +1252,7 @@ describe("probeManifest: variant fallback and audio group binding", () => {
 
     const result = await probeManifest(masterUrl, PROBE_IDENTITY, { maxVariantAttempts: 1 });
 
-    assert.equal(result, null, "the pinned probe gives up with the top variant rather than falling back");
+    assert.equal(result, null, "the single-attempt probe gives up with the top variant rather than falling back");
     assert.deepEqual(fetched, [topUrl], "exactly one variant fetch, aimed at the top-ranked candidate");
   });
 
@@ -1361,7 +1361,7 @@ describe("probeManifest: pipeline-constrained selection", () => {
     assert.equal(constrained.audioVariantUrl, null, "and it carries no separate rendition");
     assert.deepEqual(fetched, [ masterUrl, muxedUrl ], "the ineligible top variant was never fetched");
 
-    // The other side of the pin: with no pipeline to be compatible with, the same master resolves through its top-ranked variant exactly as a tune would.
+    // The other side of the assertion: with no pipeline to be compatible with, the same master resolves through its top-ranked variant exactly as a tune would.
     fetched.length = 0;
 
     const unconstrained = await probeManifest(masterUrl, CONSTRAINED_IDENTITY);
@@ -1613,7 +1613,7 @@ describe("probeManifest: container classification (T1)", () => {
 
 /* The observed session-bumper shape: a master whose selected variant is a live-tagged CMAF playlist carrying one segment, an initialization segment, and no
  * ENDLIST. A service serves this in front of the real channel for the duration of a session, and its window never advances. The with-flag and without-flag cases
- * below share these bytes, so the opt-in pin provably exercises the same playlist the guard refuses rather than a lookalike.
+ * below share these bytes, so the opt-in assertion provably exercises the same playlist the guard refuses rather than a lookalike.
  */
 const BUMPER_MASTER_URL = "https://cdn.test/bumper-master.m3u8";
 const BUMPER_VARIANT_URL = "https://cdn.test/bumper-variant.m3u8";
@@ -1648,7 +1648,7 @@ function routeBumper(): void {
 }
 
 /* Returns the arguments of the one recorded LOG.debug call whose message matches the pattern. A probe run emits several debug lines, so the guard's line is
- * selected by its message rather than by call index, and requiring exactly one match keeps the pin from passing on a coincidental second line.
+ * selected by its message rather than by call index, and requiring exactly one match keeps the assertion from passing on a coincidental second line.
  */
 function soleDebugCall(calls: readonly { arguments: readonly unknown[] }[], pattern: RegExp): readonly unknown[] {
 
@@ -1676,7 +1676,7 @@ describe("probeManifest: static-playlist tune admission", () => {
 
   test("declines a master whose selected variant is a one-segment session bumper", async (t) => {
 
-    /* The primary case, shaped like the observed capture. The count pin is what distinguishes a guard reading the resolved variant body - one segment - from one
+    /* The primary case, shaped like the observed capture. The count assertion is what distinguishes a guard reading the resolved variant body - one segment - from one
      * reading the master body, which carries no #EXTINF at all and would report zero.
      */
     const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
@@ -1697,8 +1697,8 @@ describe("probeManifest: static-playlist tune admission", () => {
 
   test("probes the same bumper bytes exactly as the flag-less path does", async () => {
 
-    // The opt-in pin. Without the flag the identical bytes resolve to the full MediaFeed - clear fMP4 carrying the master's metadata - and the probe writes its
-    // encryption fact as usual. Every refresh call site takes this path, so this case is also what pins refresh immunity at the probe level.
+    // The opt-in assertion. Without the flag the identical bytes resolve to the full MediaFeed - clear fMP4 carrying the master's metadata - and the probe writes its
+    // encryption fact as usual. Every refresh call site takes this path, so this case is also what asserts refresh immunity at the probe level.
     routeBumper();
 
     const result = await probeManifest(BUMPER_MASTER_URL, STATIC_IDENTITY);
@@ -1767,7 +1767,7 @@ describe("probeManifest: static-playlist tune admission", () => {
 
   test("declines a one-segment window carrying a decoy #EXTINF inside another tag's quoted value", async () => {
 
-    /* The counter is line-anchored, so an #EXTINF token riding inside another tag's quoted attribute value is not a segment. A substring counter would read two
+    /* The counter is line-anchored, so an #EXTINF token sitting inside another tag's quoted attribute value is not a segment. A substring counter would read two
      * here and admit the playlist, which is what makes this fixture distinguish the anchored discipline from a naive scan. Same shape as the container decoy above.
      */
     const playlistUrl = "https://cdn.test/static-decoy.m3u8";

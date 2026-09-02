@@ -816,7 +816,7 @@ async function directvGridStrategy(page: Page, profile: ChannelSelectionProfile)
 
   if(tuneState) {
 
-    // Bound the tune wait. The three outcomes ride the result value directly: true is a tune the interceptor confirmed, false is one it reported as failed,
+    // Bound the tune wait. The three outcomes are carried by the result value directly: true is a tune the interceptor confirmed, false is one it reported as failed,
     // and null is no signal at all. Keeping "reported failure" separate from "nothing arrived" is what tells us whether the interceptor ran and failed or
     // stalled silently.
     const tuned = await boundedWait(tuneState.promise, TUNE_TIMEOUT);

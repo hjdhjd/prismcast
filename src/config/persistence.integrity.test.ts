@@ -5,7 +5,7 @@
  * fallback. This file covers tryRecoverFromBackup's own restore-write-failure contract as exercised through read() (which is what doMutate calls internally
  * before applying a mutation); the mutate-specific recovery-guard behavior - the corrupt-main rotation guard and the distinct temp-path contract between a
  * read-triggered recovery and an in-flight mutate - is covered separately in persistence.test.ts. Each branch is a safety net the framework relies on but the
- * user-facing happy path never visits; the tests pin them so a refactor that breaks the sequence (e.g., dropping the .bak restore on integrity failure,
+ * user-facing happy path never visits; the tests assert them so a refactor that breaks the sequence (e.g., dropping the .bak restore on integrity failure,
  * ENOENT-misclassifying a permission error) surfaces here rather than as user data loss.
  *
  * The tests use the in-memory storage backend with override hooks to drive failure modes deterministically. Real-fs reproduction of "writeFile lies about what
@@ -44,7 +44,7 @@ describe("FileStore.mutate - validator severity routing", () => {
 
   test("warning-severity issues are emitted at warn level (not error)", async () => {
 
-    /* The validator's contract: returned issues are routed by severity. A warning emits at LOG.warn; an error emits at LOG.error. This test pins the warning route -
+    /* The validator's contract: returned issues are routed by severity. A warning emits at LOG.warn; an error emits at LOG.error. This test asserts the warning route -
      * a warning-severity issue must surface through LOG.warn and never through LOG.error.
      */
     const backend = makeMemoryStorageBackend();

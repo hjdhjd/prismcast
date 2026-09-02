@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * setup.establishment.test.ts: Unit tests for the shared channel-establishment composition - establishmentBudgetMs, computeDirectTuneKind,
- * establishChannelPlayback, and adjudicateChannelSelection - the pieces the tune path and the native token-refresh capability both run. What these rows pin is
+ * establishChannelPlayback, and adjudicateChannelSelection - the pieces the tune path and the native token-refresh capability both run. What these rows assert is
  * the choreography rather than any one step's mechanics: which step runs before which, whether the settlement hook fires and how many times, and that the
  * interception is finalized before anything reads its promise. establishChannelPlayback composes on the browser boundary through its EstablishChannelPlaybackDeps
  * collaborator, so playback initialization is a recording stub and the page is a bare reference no stub ever dereferences - no Chrome, no CDP, no real timers.
@@ -112,7 +112,7 @@ interface RecordingInitOptions {
 }
 
 /* A recording playback initializer. Each call appends its step, records the options it received, and then settles the way the row asked. Throwing from inside the
- * stub, rather than handing in an already-rejected promise, keeps the rejection unobservable until the composition attaches to it - so the row that pins the
+ * stub, rather than handing in an already-rejected promise, keeps the rejection unobservable until the composition attaches to it - so the row that asserts the
  * absence of an unhandled rejection is testing the composition rather than the fixture's own timing.
  */
 function makeDeps(options: RecordingInitOptions): EstablishChannelPlaybackDeps {
@@ -199,8 +199,8 @@ describe("establishChannelPlayback", () => {
 
   test("fires the settlement hook exactly once after a resolving initialization", async () => {
 
-    // Traced path: the refresh path's re-mute rides this hook, so it has to fire after the initialization settles and it has to fire once. Recording the hook
-    // into the same step log is what pins the ordering; the length check is what would catch a chain that attached twice.
+    // Traced path: the refresh path's re-mute goes through this hook, so it has to fire after the initialization settles and it has to fire once. Recording the hook
+    // into the same step log is what asserts the ordering; the length check is what would catch a chain that attached twice.
     const steps: string[] = [];
     const result = await establishChannelPlayback(makePage(), makeProfile(), makeHandle(steps), {
 
@@ -225,7 +225,7 @@ describe("establishChannelPlayback", () => {
   test("fires the settlement hook and rejects with the initialization's error, leaving no unhandled rejection", async () => {
 
     /* Traced path: the failing polarity of the hook. A failed initialization still needs the hook (the refresh path's mute must be restored on failure too), the
-     * caller still needs the original error, and the settlement chain the hook rides must not become a second, unowned rejection - the leak class this rig
+     * caller still needs the original error, and the settlement chain the hook runs on must not become a second, unowned rejection - the leak class this rig
      * exists for. The macrotask yield before the restore is what gives Node's unhandledRejection event a chance to have been emitted; a microtask-only tick
      * cannot observe it, so a rig without this yield would pass on a real leak.
      */
@@ -256,7 +256,7 @@ describe("establishChannelPlayback", () => {
 
   test("propagates a navigation failure without initializing playback", async () => {
 
-    // Traced path: the failure polarity of the order pin. Navigation is awaited first, so its rejection has to leave the epoch unstamped and the initializer
+    // Traced path: the failure polarity of the order assertion. Navigation is awaited first, so its rejection has to leave the epoch unstamped and the initializer
     // uninvoked - an establishment that initialized on a page that never loaded would tune against whatever was still on screen.
     const steps: string[] = [];
     const failure = new Error("page navigation for https://example.test/watch failed");
@@ -312,7 +312,7 @@ describe("adjudicateChannelSelection", () => {
   test("finalizes once with the caller's kind and returns null without consulting the interception when nothing can verify", async () => {
 
     /* Traced path: the vacuous half. guideGrid is a registered provider that implements no verifier, so verification returns before it awaits anything - which
-     * makes this row a pin on the finalize and on the absence of an await together: the finalize ran exactly once carrying the boolean it was handed, and the
+     * makes this row an assertion on the finalize and on the absence of an await together: the finalize ran exactly once carrying the boolean it was handed, and the
      * interception promise was never read at all.
      * It deliberately claims nothing about the awaiting path; the verifier-bearing row below covers that.
      */
@@ -353,7 +353,7 @@ describe("establishmentBudgetMs", () => {
 
   test("adds the playback bound, the finalize settle, and the margin to the caller's navigation allowance", () => {
 
-    // A conscious pin of the budget rule: 45000 for the playback bound, 1500 for the settle the interceptor waits out, and 5000 of margin. A term that changed
+    // A conscious assertion of the budget rule: 45000 for the playback bound, 1500 for the settle the interceptor waits out, and 5000 of margin. A term that changed
     // without this row changing with it would silently shrink or stretch every establishment's observation window.
     assert.equal(establishmentBudgetMs(10000), 61500);
     assert.equal(establishmentBudgetMs(0), 51500, "the fixed terms are the floor for a caller with no navigation allowance");

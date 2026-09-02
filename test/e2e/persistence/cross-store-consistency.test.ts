@@ -57,7 +57,7 @@ describe("consistency probe - unknown-service-tag auto-fix", () => {
     assert.deepEqual(persisted.channels.enabledServices, ["hulu"], "config.json should reflect the auto-fix");
   });
 
-  test("is idempotent - a second run with no dirty state is a no-op", async () => {
+  test("a second run with no dirty state is a no-op", async () => {
 
     /* Running the probe against a known-clean (already-consistent) state must be a no-op. With only the recognized "hulu" tag enabled there is nothing to fix,
      * so the probe should find no issues and leave config.json byte-for-byte unchanged across the single call.

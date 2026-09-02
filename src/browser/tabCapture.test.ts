@@ -1,13 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * tabCapture.test.ts: Unit tests for PrismCast's own capture acquisition. The module speaks the capture extension's protocol directly, so what is pinned here is
+ * tabCapture.test.ts: Unit tests for PrismCast's own capture acquisition. The module speaks the capture extension's protocol directly, so what is asserted here is
  * that protocol as a sequence of observable acts: a socket handler registered before the extension is invoked, one tab selection taken ahead of the activeTab
  * keyboard command and released after the start, and a settings object whose fields are exactly the ones the extension destructures.
  *
  * Everything is faked in this file rather than mocked at the loader, following the convention the bespoke page doubles in browser/tuning use: an EventEmitter
  * standing in for the WebSocket server, an emitter-backed socket, an extension page whose evaluate dispatches on the source text of the callback it is handed, a
  * page that records its keyboard traffic, and a tab-selection primitive that records the hold it takes rather than talking to a browser. Two rows reach outside
- * those fakes on purpose - the fingerprint and settings-shape pins read the installed library through import.meta.resolve, because the coupling this module takes
+ * those fakes on purpose - the fingerprint and settings-shape assertions read the installed library through import.meta.resolve, because the coupling this module takes
  * on is only safe while the source it was written against is the source that is installed.
  */
 import { ACTIVE_TAB_GRANT_CEILING_MS, ACTIVE_TAB_GRANT_POLL_MS, CAPTURE_FRAME_SIZE_MS, CAPTURE_START_ATTEMPTS, CAPTURE_STREAM_HIGH_WATER_MARK,
@@ -292,7 +292,7 @@ async function captureWarnings(body: () => Promise<void>): Promise<LogEntry[]> {
 /**
  * Composes the deps an acquisition runs against.
  *
- * The selection primitive is a fake rather than the real one: this file pins what the ACQUISITION does inside a hold, while tabSelection.test.ts pins what a hold
+ * The selection primitive is a fake rather than the real one: this file asserts what the ACQUISITION does inside a hold, while tabSelection.test.ts asserts what a hold
  * itself does. It records the hold's two boundaries and every re-assert into the shared timeline, so a row can assert that exactly one selection spans a poll of
  * several attempts, and hands the body a tab whose url the refusal diagnostics are expected to carry.
  * @param extension - The extension double.
@@ -749,11 +749,11 @@ describe("acquireCaptureStream", () => {
   });
 });
 
-/* The coupling pins. This module was written against a specific version of the library and its extension, and the protocol it speaks lives in files that a
+/* The coupling assertions. This module was written against a specific version of the library and its extension, and the protocol it speaks lives in files that a
  * dependency bump can change silently. These two rows read the INSTALLED files rather than a copy, so a bump fails here with instructions instead of failing a
  * capture in the field.
  */
-describe("the pinned capture-extension protocol", () => {
+describe("the locked capture-extension protocol", () => {
 
   /**
    * Resolves a path inside the installed puppeteer-stream package.
@@ -782,7 +782,7 @@ describe("the pinned capture-extension protocol", () => {
 
     const manifest = JSON.parse(await readFile(libraryPath("package.json"), "utf8")) as { version: string };
 
-    assert.equal(manifest.version, "3.0.23", "the pinned library version moved; re-verify the protocol before updating this pin");
+    assert.equal(manifest.version, "3.0.23", "the locked library version moved; re-verify the protocol before updating this assertion");
   });
 
   test("the settings object carries exactly the fields the extension destructures", async () => {

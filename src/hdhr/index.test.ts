@@ -263,7 +263,7 @@ describe("stopHdhrServer", () => {
     await assert.doesNotReject(stopHdhrServer);
   });
 
-  test("is idempotent when called twice in a row", async () => {
+  test("is a no-op when called twice in a row", async () => {
 
     CONFIG.hdhr.enabled = true;
     CONFIG.hdhr.deviceId = generateDeviceId();

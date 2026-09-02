@@ -264,7 +264,7 @@ describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS"
  * with a stray character fails to launch. The form save routes host, path, and free-string values through the shared data-collection sanitizer, so what lands on
  * disk is the visible content of what was submitted.
  *
- * These pins verify the stored bytes rather than the handler's response, because a pre-I/O assertion cannot tell a trimmed value from a padded one.
+ * These assertions verify the stored bytes rather than the handler's response, because a pre-I/O assertion cannot tell a trimmed value from a padded one.
  */
 describe("POST /config - text settings are sanitized before they are persisted", () => {
 
@@ -295,7 +295,7 @@ describe("POST /config - text settings are sanitized before they are persisted",
 
   test("a padded host value is stored trimmed", async () => {
 
-    // host and path share one arm of the parse switch alongside free strings, so pinning a second type proves the arm rather than a single setting.
+    // host and path share one arm of the parse switch alongside free strings, so asserting a second type proves the arm rather than a single setting.
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);

@@ -161,7 +161,7 @@ describe("PUT /config/channels/:key - user-only channel full replace", () => {
   /* The user-only PUT path (no predefined base for the key) rebuilds the entire stored record from the submitted form and replaces the old one wholesale - it is
    * not a field-merge. A field present on the original record but absent from the edit must vanish from disk. The response's playlist-reload hint is derived from
    * the actual old-to-new M3U-field diff (playlistHintForChange over M3U_FIELDS), so an edit that changes an M3U-visible field carries the hint and an edit that
-   * touches only non-M3U fields does not. These tests pin both halves: full replacement and diff-derived hinting.
+   * touches only non-M3U fields does not. These tests assert both halves: full replacement and diff-derived hinting.
    */
 
   test("replaces the whole record - a field cleared in the edit is removed from disk - and an M3U change yields the reload hint", async () => {
@@ -247,7 +247,7 @@ describe("PUT /config/channels/:key - user-only channel full replace", () => {
 
 describe("PATCH /config/channels/:key - inline cell edits", () => {
 
-  /* PATCH updates exactly one inline-editable cell per request. These tests pin the storage contract for the value-shaping branches on a predefined channel
+  /* PATCH updates exactly one inline-editable cell per request. These tests assert the storage contract for the value-shaping branches on a predefined channel
    * (abcnews ships with stationId "113380" and tags ["News"]), where an override is stored as a delta against the predefined base so an explicit "clear" survives
    * as an on-disk null rather than being dropped:
    *   - stationId "" clears the stored override to null (the predefined base has a stationId, so the null-clear is preserved).

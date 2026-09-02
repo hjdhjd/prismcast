@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * fs.helpers.test.ts: Tests for withTempDir. The contract: a fresh directory exists during the callback, the callback's return value (or rejection) is
- * propagated, and the directory is removed regardless of resolve/reject. Coverage pins each leg of that contract plus a "different dir per call" check so
+ * propagated, and the directory is removed regardless of resolve/reject. Coverage asserts each leg of that contract plus a "different dir per call" check so
  * tests don't accidentally share state via a shared path.
  */
 import { TMPDIR_PREFIX, withTempDir } from "./fs.helpers.ts";

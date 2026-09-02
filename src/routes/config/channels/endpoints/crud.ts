@@ -669,7 +669,7 @@ export function registerCrudRoutes(app: Express): void {
       const stored: ChannelDelta = data.channels[key] ?? {};
       const delta = stored;
 
-      // Each case below casts value to the ChannelDelta type of the field it assigns. The cast is safe because the switch discriminates on the same field
+      // Each case below casts value to the ChannelDelta type of the field it assigns. The cast is safe because the switch branches on the same field
       // that determined body[field]'s actual runtime type, mirroring the presentFields narrowing that established field itself above.
       switch(field) {
 

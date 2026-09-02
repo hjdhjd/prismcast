@@ -2,9 +2,9 @@
  *
  * fmp4Segmenter.offsets.test.ts: Per-track PTS-offset application tests for the fMP4 segmenter's moof handler. The segmenter rewrites each traf's tfdt
  * baseMediaDecodeTime by a constant per-track offset so Chrome's real-content PTS continues from the preroll/resume timeline. The offset for a track is finalized the
- * first moof that track appears in; the risk this file pins is double application, where a moof mixing an already-offset track with a newly initializing track re-walks
- * the whole moof and offsets the known track twice. These tests drive createFMP4Segmenter with synthetic ftyp/moov/moof/mdat boxes and a nonzero initialTrackTimestamps
- * basis, then parse the emitted segment bytes and assert each track's tfdt carries exactly one offset application.
+ * first moof that track appears in; the risk this file asserts is double application, where a moof mixing an already-offset track with a newly initializing track
+ * re-walks the whole moof and offsets the known track twice. These tests drive createFMP4Segmenter with synthetic ftyp/moov/moof/mdat boxes and a nonzero
+ * initialTrackTimestamps basis, then parse the emitted segment bytes and assert each track's tfdt carries exactly one offset application.
  *
  * The moov is deliberately trackless (zero trak children), so state.trackTimescales stays empty and the offset computation engages the initialValue-minus-originalTfdt
  * formula rather than the tab-replacement normalized-reference path - the expected tfdt values are derived from that engaged formula. The box builders are file-local
@@ -169,7 +169,7 @@ describe("fMP4 segmenter per-track offset application", () => {
   let streamId: number;
 
   // A nonzero offset basis for both tracks. Each initial value is chosen to differ from that track's moof tfdt so the finalized offset is nonzero: an absent or
-  // zero audio offset would keep the corrective rewrite from firing, and the mixed-moof pin would pass vacuously even against the unfixed double-application code.
+  // zero audio offset would keep the corrective rewrite from firing, and the mixed-moof assertion would pass vacuously even against the unfixed double-application code.
   const initialTrackTimestamps = new Map<number, bigint>([ [ 1, 90000n ], [ 2, 48000n ] ]);
 
   beforeEach(() => {
@@ -224,7 +224,8 @@ describe("fMP4 segmenter per-track offset application", () => {
   test("applies each track's offset exactly once when both tracks first appear together in the first moof (cold-tune parity)", async () => {
 
     // The common cold-tune shape: Chrome declares both tracks and the first moof carries both. All tracks are new, so the first call is a pure pass-through and the
-    // corrective rewrite offsets both exactly once. This path is byte-identical between the scoped and unscoped rewrite - the pin guards against a regression on it.
+    // corrective rewrite offsets both exactly once. This path is byte-identical between the scoped and unscoped rewrite - the assertion guards against a regression on
+    // it.
     const onError = mock.fn();
     const onStop = mock.fn();
     const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });

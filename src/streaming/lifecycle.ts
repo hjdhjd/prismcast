@@ -40,7 +40,7 @@ import { emitStreamRemoved } from "./statusEmitter.ts";
 const channelToStreamId = new Map<string, number>();
 
 /**
- * Set of stream IDs whose termination is in flight. Serves as the idempotency guard that makes redundant terminateStream() calls a no-op (callers may issue them
+ * Set of stream IDs whose termination is in flight. Serves as the guard that makes redundant terminateStream() calls a no-op (callers may issue them
  * freely), and lets in-flight segmenter and monitor callbacks suppress spurious warnings during cleanup.
  */
 const terminationInitiated = new Set<number>();

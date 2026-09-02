@@ -286,7 +286,7 @@ describe("startLoginMode", () => {
   test("sets the login-state fields before asking for the window, so the policy sees the session as active", async () => {
 
     /* The window-visibility policy reads isLoginModeActive(). If the sync fired before the flag was set, the policy would read no reason to be on screen and could
-     * minimize the window under the user who is about to authenticate in it. The fake accessor records the live flag at invocation, so this pin fails if the
+     * minimize the window under the user who is about to authenticate in it. The fake accessor records the live flag at invocation, so this assertion fails if the
      * assignments move below the sync call rather than merely counting that both happened.
      */
     const pageStub = makePageStub();
@@ -461,7 +461,7 @@ describe("endLoginMode", () => {
     clearLoginState();
   });
 
-  test("is a no-op when login mode is not active (idempotent)", async () => {
+  test("is a no-op when login mode is not active (repeat-safe)", async () => {
 
     // Negative test: callers may invoke endLoginMode unconditionally during cleanup. The function must tolerate that without throwing or running browser
     // operations against an inactive session.
@@ -569,7 +569,7 @@ describe("setLoginModeEndObserver / login-end notification", () => {
   test("fires exactly once with the session URL when endLoginMode tears down an active session", async () => {
 
     /* Traced path: endLoginMode captures loginUrl before the page close, wins the wasActive latch, and invokes the observer inside the latch. Dropping the
-     * pre-close capture would deliver null (no invocation); dropping the latch placement would double-fire on the re-entrant path pinned below.
+     * pre-close capture would deliver null (no invocation); dropping the latch placement would double-fire on the re-entrant path asserted below.
      */
     const pageStub = makePageStub();
 
@@ -583,7 +583,7 @@ describe("setLoginModeEndObserver / login-end notification", () => {
 
   test("fires at most once when the page close re-enters endLoginMode through the close handler", async () => {
 
-    /* Criterion pin: puppeteer emits the page "close" event while endLoginMode's own loginPage.close() is in flight, and that handler calls endLoginMode again
+    /* Criterion assertion: puppeteer emits the page "close" event while endLoginMode's own loginPage.close() is in flight, and that handler calls endLoginMode again
      * (fire-and-forget). The stub reproduces the re-entrancy by dispatching the registered close handlers synchronously from close(). Whichever invocation wins
      * the wasActive latch fires the observer; the other reads the flag as cleared. Two notifications here means the latch no longer guards the observer.
      */
@@ -632,7 +632,7 @@ describe("setLoginModeEndObserver / login-end notification", () => {
     assert.deepEqual(observed, ["https://example.test/tab-close"], "the tab-close path notifies once");
   });
 
-  test("does not fire when endLoginMode runs with no active session (idempotent teardown)", async () => {
+  test("does not fire when endLoginMode runs with no active session (repeat-safe teardown)", async () => {
 
     installAccessors(makeBrowserStub({ pageStub: makePageStub() }));
 
@@ -736,7 +736,7 @@ describe("clearLoginState", () => {
     assert.equal(counters.syncCalls, 0, "no window sync on the crash-cleanup path");
   });
 
-  test("a second call after a successful clear is a no-op (idempotent)", async () => {
+  test("a second call after a successful clear is a no-op (repeat-safe)", async () => {
 
     const pageStub = makePageStub();
 

@@ -3,7 +3,7 @@
  * protocol.ts: HDHomeRun UDP wire-protocol codec for PrismCast.
  *
  * Real HDHomeRun devices speak a small binary protocol on UDP port 65001. Discovery, control, and (legacy) tuner programming all flow through the same packet
- * format. This module is the pure-protocol layer: it parses incoming request packets into discriminated structural records, builds outgoing reply packets from
+ * format. This module is the pure-protocol layer: it parses incoming request packets into tagged structural records, builds outgoing reply packets from
  * structural records, and computes the CRC that brackets every packet. It does no I/O - the transport layer in udp.ts owns sockets, addresses, and CONFIG; the
  * parser/builder pair is fully unit-testable in isolation.
  *
@@ -84,7 +84,7 @@ export interface DiscoverReplyFields {
 }
 
 /**
- * Parses an incoming packet. Returns null when the packet is structurally malformed (too short, length mismatch, bad CRC). Otherwise returns the discriminated
+ * Parses an incoming packet. Returns null when the packet is structurally malformed (too short, length mismatch, bad CRC). Otherwise returns the tagged
  * record describing the packet's intent. Unknown TLVs within a known packet type are silently skipped - the protocol allows extension TLVs that PrismCast does
  * not understand.
  * @param buf - The raw datagram bytes.

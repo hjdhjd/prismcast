@@ -37,7 +37,7 @@ let stubBrowser: Browser;
 let overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 let pageEvents: string[] = [];
 
-// The options each newPage call received, in call order, so the guarded session's tests can pin how the guide page is created rather than only what is done to it.
+// The options each newPage call received, in call order, so the guarded session's tests can assert how the guide page is created rather than only what is done to it.
 let newPageOptions: unknown[] = [];
 
 // The browser each discovery-page creation was handed, in call order. A row reads its length for how many walks opened a page at all, which is what the
@@ -52,9 +52,9 @@ const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] =
  * window-visibility sync, the provider-registry lookups, and the discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so
  * revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state above at call time, so a test shapes the registry
  * and browser behavior by reassigning those lets. createDiscoveryPage records the browser it was handed and then delegates to that browser's own newPage, so
- * every per-row browser double keeps handing back the page double its row wrote, and what the creator itself puts in the creation options is pinned where the
+ * every per-row browser double keeps handing back the page double its row wrote, and what the creator itself puts in the creation options is asserted where the
  * creator lives, in index.test.ts. startOverlayHandling stands in for the real poll, recording each call's options (phase and abort signal) into
- * overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can pin the discovery phase and its abort timing; emulateLayoutSurface
+ * overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can assert the discovery phase and its abort timing; emulateLayoutSurface
  * logs itself into the same record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. Typed as the
  * production port so the doubles cannot drift. The health and login modules stay real.
  */
@@ -344,7 +344,7 @@ describe("precacheService - window sync on discovery-page cleanup", () => {
 
   /* Both login states are exercised at this call site because the call is unconditional: precacheService decides nothing about the window, it asks the policy, and
    * the policy is what accounts for a login session. The login-active arm is the one that proves it - a re-introduced guard would suppress the call there and this
-   * test would fail. What the window then ends up as is decideWindowVisibility's login arm, pinned in windowSync.test.ts, not here.
+   * test would fail. What the window then ends up as is decideWindowVisibility's login arm, asserted in windowSync.test.ts, not here.
    */
   test("asks for a window sync even while login mode is active", async () => {
 
@@ -666,7 +666,7 @@ describe("the deferred discovery re-attempt", () => {
   test("a full-cycle request that arrives while the guard is held runs once the guard is released", async (t) => {
 
     /* The dropped-cycle hand-off. A browser crash relaunch calls startPrecaching while a run still holds the guard, and that run is walking guides for a browser
-     * whose caches the relaunch just cleared - so its result is worth nothing and the request must not be discarded. The pin is the second cycle actually running,
+     * whose caches the relaunch just cleared - so its result is worth nothing and the request must not be discarded. The assertion is the second cycle actually running,
      * which also proves the release ordering: the reentrant call has to find a free guard, or it would record the very request being honored and schedule nothing.
      */
     const gate = Promise.withResolvers<DiscoveredChannel[]>();
@@ -1003,7 +1003,7 @@ describe("precacheService - navigation and cleanup", () => {
 });
 
 /* The lineup write is the durable half of a completed walk, and it reaches the store through the same PrecachingDeps port the browser accessors do. Driving a real
- * walk through precacheService is what makes these rows the port's pin rather than a direct call to the recorder: what is observed is that the walk's own
+ * walk through precacheService is what makes these rows the port's assertion rather than a direct call to the recorder: what is observed is that the walk's own
  * collaborators - not the module's production wiring - are what the write travelled through.
  */
 describe("precacheService - the lineup write through the injection port", () => {
@@ -1114,8 +1114,8 @@ describe("withProviderGuidePage", () => {
 
   test("installs the mute override and launches the discovery poll before navigation, then hands afterWalk a poll-quiet page", async () => {
 
-    /* Traced path: the helper's happy sequence for a caller-navigated provider. The event log pins the mute-before-navigation and poll-before-navigation ordering,
-     * the recorded poll pins the discovery phase, and the abort snapshot taken inside afterWalk pins that the poll is already stopped before any classification runs -
+    /* Traced path: the helper's happy sequence for a caller-navigated provider. The event log asserts the mute-before-navigation and poll-before-navigation ordering, the
+     * recorded poll asserts the discovery phase, and the abort snapshot taken inside afterWalk asserts that the poll is already stopped before any classification runs -
      * a resolved-without-throwing check would prove none of these.
      */
     let signalAbortedInAfterWalk: boolean | null = null;
@@ -1146,8 +1146,8 @@ describe("withProviderGuidePage", () => {
 
   test("takes its page from the discovery-page creator, on the declared layout surface, before it navigates", async () => {
 
-    /* Where the guide page comes from is the pin here. The session asks the browser layer's creator for it exactly once, handing over the browser it acquired,
-     * and passes no creation options of its own - the window, the background, and the placement are the creator's to decide, and they are pinned where the
+    /* Where the guide page comes from is the assertion here. The session asks the browser layer's creator for it exactly once, handing over the browser it acquired,
+     * and passes no creation options of its own - the window, the background, and the placement are the creator's to decide, and they are asserted where the
      * creator lives, in index.test.ts. A session that went back to creating the page itself would leave options here rather than the bare undefined its
      * delegation records.
      *
@@ -1202,7 +1202,7 @@ describe("withProviderGuidePage", () => {
   test("closes the page the instant the caller aborts mid-walk", async () => {
 
     /* Traced path: the close-on-abort listener the helper owns. The walk pends until a gate resolves; aborting while it pends must close the page immediately, before
-     * the walk completes. The pre-abort "not yet closed" check and the post-abort "closed" check pin the close to the abort itself rather than the finally.
+     * the walk completes. The pre-abort "not yet closed" check and the post-abort "closed" check tie the close to the abort itself rather than the finally.
      */
     const controller = new AbortController();
     const gate = Promise.withResolvers<DiscoveredChannel[]>();

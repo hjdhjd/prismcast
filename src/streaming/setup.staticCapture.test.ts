@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.staticCapture.test.ts: Unit tests pinning two contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
+ * setup.staticCapture.test.ts: Unit tests asserting two contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
  * profiles and only for those, and that it brings the browser window on screen, emulates the capture surface, and installs the activation heal before it acquires
  * capture, re-affirming that surface once acquisition has selected the tab. createPageWithCapture
  * composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome launch), a PassThrough
@@ -34,18 +34,18 @@ let overlayCalls: StartOverlayHandlingOptions[] = [];
 // The URLs the stub page navigated to, so a regression that dropped the goto surfaces (the poll only makes sense after the capture page has loaded its content).
 let pageGotos: string[] = [];
 
-// The injected collaborator calls the establishment makes, in order, so the ordering pin can read where the window sync lands relative to capture acquisition.
+// The injected collaborator calls the establishment makes, in order, so the ordering assertion can read where the window sync lands relative to capture acquisition.
 let depsCalls: string[] = [];
 
 // The page argument each window sync received, in call order. The pass at the top of the establishment has no page yet; the pass that closes it hands over the page
 // it just built.
 let syncPages: (Page | undefined)[] = [];
 
-// The page each capture-surface emulation received, in call order, so the pin can check the density step landed on the very page the establishment went on to
+// The page each capture-surface emulation received, in call order, so the assertion can check the density step landed on the very page the establishment went on to
 // capture rather than on some other page.
 let surfacePages: Page[] = [];
 
-// The page each activation-hook install and each surface re-affirmation received, in call order, so the pin can check both landed on the establishment's own page.
+// The page each activation-hook install and each surface re-affirmation received, in call order, so the assertion can check both landed on the establishment's own page.
 let healPages: Page[] = [];
 let reaffirmPages: Page[] = [];
 
@@ -173,7 +173,7 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     assert.equal(call.signal, undefined, "the static poll carries no abort signal - its bounded window is the terminator");
   });
 
-  test("launches no staticCapture-phase poll for a non-static profile (the discriminator)", async () => {
+  test("launches no staticCapture-phase poll for a non-static profile (the deciding field)", async () => {
 
     // The complementary control: a non-static profile takes the tune path, whose channel selection fails fast here (the stub's evaluate rejects), so no
     // startOverlayHandling call is recorded through the injected collaborators - and specifically none under the staticCapture phase. The tune path's own overlay poll
@@ -195,13 +195,13 @@ describe("createPageWithCapture - window visibility ordering", () => {
     /* Tab capture consumes the compositor's output for the shared window, and that output is only composed for capture to read while the window is presented - so
      * the sync has to land before the acquisition, never alongside or after it. The capture surface is emulated in the same window, between the two: the page has to
      * carry the preset's dimensions and the display's density before capture acquires it, or the track is acquired against a surface nobody declared. The recorded
-     * call order is the pin: moving either step below capture acquisition reorders these entries and fails here. The closing entry is the pass that ends the
+     * call order is the assertion: moving either step below capture acquisition reorders these entries and fails here. The closing entry is the pass that ends the
      * establishment, which carries the page it just built so the executor can use that tab's CDP session rather than hunting for an open page.
      *
      * The two re-affirmation steps bracket capture acquisition for a reason of their own. Acquisition selects the capture's tab - the capture extension targets
      * whichever tab is active - so the composition it starts from is the window's fitted view of the page; the re-issue that follows moves it to the emulated
      * surface. The activation heal is installed before all of that, so the page carries its focus listener from its first document onward. The static branch this
-     * test drives reaches both, which is what makes the pin honest here.
+     * test drives reaches both, which is what makes the assertion honest here.
      */
     const profile = makeProfile({ staticCapture: true });
 

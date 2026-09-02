@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.impairment.test.ts: Setup-tier tests for what a tune does when the browser can no longer start captures. Two things are pinned here. The establishment
+ * setup.impairment.test.ts: Setup-tier tests for what a tune does when the browser can no longer start captures. Two things are asserted here. The establishment
  * declares the purpose it needs the browser for, so the refusal happens at acquisition rather than after a page has been opened and a capture attempted. And the
  * refusal reaches the client as its own 503: quiet, because the alarm already fired once when the mark was recorded, and carrying a message that says the wait ends
- * with the browser's own streams rather than with a cooldown - which is what distinguishes it from the governor's back-off, pinned here beside it.
+ * with the browser's own streams rather than with a cooldown - which is what distinguishes it from the governor's back-off, asserted here beside it.
  *
  * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup.directUrlFallback.test.ts uses: the injected browser accessor rejects, so
  * no Chrome, no CDP, and no page are involved at all.
@@ -112,7 +112,7 @@ describe("setupStream - a browser that can no longer start captures", () => {
 
     /* The whole refusal path in one case: the establishment names the capture purpose, the supervisor's rejection travels out of createPageWithCapture untouched,
      * and setupStream's catch turns it into the 503 the client backs off on. The message is asserted as a literal rather than against a shared constant, because
-     * what is being pinned is exactly the text a client reads.
+     * what is being asserted is exactly the text a client reads.
      */
     const errors = captureErrors(t);
 
@@ -127,7 +127,7 @@ describe("setupStream - a browser that can no longer start captures", () => {
 
   test("keeps the recovering-capture-system message for a browser the relaunch governor is cooling", async (t) => {
 
-    // The sibling branch, pinned beside it so the pair is proven distinct. A cooling governor ends on a clock, so its message says to retry shortly and nothing
+    // The sibling branch, asserted beside it so the pair is proven distinct. A cooling governor ends on a clock, so its message says to retry shortly and nothing
     // about streams; collapsing the pair into one message would fail here.
     const errors = captureErrors(t);
 

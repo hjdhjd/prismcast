@@ -122,7 +122,7 @@ describe("generateStatusScript", () => {
 
     /* config.ts's restart dialog and upgrade flow both read the active stream count from this channel, and config.ts's script is emitted first on the page, so
      * the channel has to exist by the time either of them runs. A substring assertion proves the channel is emitted and that it is defined as a getter over
-     * state.streamData rather than a value captured once; it cannot prove the number it yields is right, which is what the dom-runtime consumption pins cover
+     * state.streamData rather than a value captured once; it cannot prove the number it yields is right, which is what the dom-runtime consumption assertions cover
      * from the other side.
      */
     const script = generateStatusScript();

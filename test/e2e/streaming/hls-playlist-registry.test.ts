@@ -2,7 +2,7 @@
  *
  * hls-playlist-registry.test.ts: HTTP-level integration coverage for the playlist served from registry-backed HLS state. The integration boundary tested
  * here is seeded registry state on one side and the m3u8 body emitted by GET /hls/:name/stream.m3u8 on the other - the wire-facing contract that Channels
- * DVR consumes. Two failure classes are pinned by this suite:
+ * DVR consumes. Two failure classes are asserted by this suite:
  *
  *   1. Wire-level drift between buildPlaylist's output and what the route actually serves. Anything that would mangle the body in transit (encoding, header
  *      mismatch, premature truncation, accidental rewrite) shows up here as a body assertion miss.
@@ -22,7 +22,7 @@
  * unconditionally on every pending registration; only its consumption inside the deferred preroll-timer callback is gated on isPrerollReady(codec). Driving
  * registerPendingStream() directly would require a full Express Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the
  * test mirrors the production read - it calls the public getResumeSegmentIndex() accessor (the same function registerPendingStream uses internally) and
- * seeds hls.resumeSegmentIndex on the synthetic entry from that read. This pins the wire-level guarantee ("a saved resume index for channel X causes
+ * seeds hls.resumeSegmentIndex on the synthetic entry from that read. This asserts the wire-level guarantee ("a saved resume index for channel X causes
  * channel X's next playlist to start at MEDIA-SEQUENCE = saved index") without re-implementing any production logic - the resume index flows through the
  * production accessor; the test only asserts what the route emits.
  */
@@ -185,7 +185,7 @@ describe("HLS playlist served from registry-backed state", () => {
 
     /* The 1589811 regression class at the wire layer: after a restart, the next playlist served for a previously-streamed channel must start at the saved
      * sequence so Channels DVR's recording continues from where it left off. The persistence side (save/load round-trip) is covered in hls-resume.test.ts;
-     * this test pins the consumption side - the seed reaches the wire as MEDIA-SEQUENCE.
+     * this test asserts the consumption side - the seed reaches the wire as MEDIA-SEQUENCE.
      *
      * The flow mirrors production: the resume map is populated via saveResumeState/loadResumeState (the persistence path that runs at process startup), and
      * the entry's hls.resumeSegmentIndex is read from the public getResumeSegmentIndex() accessor - the exact same call registerPendingStream() makes
@@ -287,7 +287,7 @@ describe("HLS segment serving from registry-backed state", () => {
   test("an unknown segment, missing init, or unknown stream each yield 404", async () => {
 
     /* The 404 boundary: three distinct not-found conditions must each answer 404. A known stream missing the requested media segment, a known stream that has no
-     * init segment stored yet, and a request for a channel with no registered stream all fail the registry lookup. This pins that none of them leak a 200 with an
+     * init segment stored yet, and a request for a channel with no registered stream all fail the registry lookup. This asserts that none of them leak a 200 with an
      * empty or stale body, and that the unknown-stream path (no channel-to-stream mapping) is distinguished from a mapped stream missing the segment.
      */
     await using ctx = await createIntegrationContext();
@@ -351,7 +351,7 @@ describe("HLS variant playlist serving for separate-audio streams", () => {
   test("video.m3u8 and audio.m3u8 serve their respective stored variant playlists", async () => {
 
     /* Streams with separate audio renditions store two variant playlists; the route resolves which one to serve by parsing the filename from req.path (there is no
-     * :playlist route parameter). We store distinct video and audio variant bodies and assert each URL returns its own body with the HLS MIME type, which pins both
+     * :playlist route parameter). We store distinct video and audio variant bodies and assert each URL returns its own body with the HLS MIME type, which asserts both
      * that the correct playlist is selected and that the filename-from-path parse routes video.m3u8 and audio.m3u8 independently.
      */
     await using ctx = await createIntegrationContext();
@@ -387,7 +387,7 @@ describe("HLS variant playlist serving for separate-audio streams", () => {
   test("a stream without a stored variant playlist, or an unmapped channel, yields 404", async () => {
 
     /* When a stream has no separate-audio renditions, no variant playlist is stored and the route must answer 404 rather than serving an empty body. The same 404
-     * applies when the channel has no registered stream at all. Both branches are pinned so a regression that returned 200 with an empty playlist (which a client
+     * applies when the channel has no registered stream at all. Both branches are asserted so a regression that returned 200 with an empty playlist (which a client
      * would treat as an ended stream) surfaces here.
      */
     await using ctx = await createIntegrationContext();
@@ -428,8 +428,8 @@ describe("cleanupIdleStreams idle reclamation", () => {
      * positive count keeps the stream alive.
      *
      * Note on ordering: getIdleStreams sorts oldest-lastPlaylistRequest first, but that ordering is only observable through reclaimIdleStream (which picks idle[0]),
-     * neither of which is exported; cleanupIdleStreams terminates every idle stream regardless of order, so the ordering invariant is not independently assertable
-     * through the exported surface. This test pins the selection and exclusion branches, which are.
+     * neither of which is exported; cleanupIdleStreams terminates every idle stream regardless of order, so the ordering rule is not independently assertable
+     * through the exported surface. This test asserts the selection and exclusion branches, which are.
      */
     await using ctx = await createIntegrationContext();
 
@@ -466,7 +466,7 @@ describe("handlePlayStream request guards", () => {
   test("answers 400 when the url query parameter is missing or blank", async () => {
 
     /* The ad-hoc /play endpoint requires a non-blank url before it derives the synthetic stream key. A missing parameter and a whitespace-only parameter (which
-     * trims to empty) must both be rejected with 400 before any stream setup is attempted. This pins the entry guard so a regression that proceeded to hash an empty
+     * trims to empty) must both be rejected with 400 before any stream setup is attempted. This asserts the entry guard so a regression that proceeded to hash an empty
      * URL - producing a shared synthetic key across every blank request - surfaces here.
      */
     await using ctx = await createIntegrationContext();

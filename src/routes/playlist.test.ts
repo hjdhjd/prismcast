@@ -122,7 +122,7 @@ describe("resolveBaseUrl", () => {
 
   test("falls back to the configured server host:port when no Host headers are present (boundary)", () => {
 
-    // Boundary: the handler falls back to CONFIG.server.host + ":" + CONFIG.server.port. We don't pin to specific values; we just lock that the result has the
+    // Boundary: the handler falls back to CONFIG.server.host + ":" + CONFIG.server.port. We don't lock to specific values; we just lock that the result has the
     // expected protocol prefix and is a non-empty origin string.
     const { req } = makeReqRes({ protocol: "http" });
     const url = resolveBaseUrl(req);

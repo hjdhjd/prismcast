@@ -40,7 +40,7 @@ const SEGMENT_FETCH_TIMEOUT = 10000;
 const MAX_MANIFEST_FAILURES = 3;
 
 // Maximum consecutive tracked fetch failures before reporting an error. This governs media segments and the initialization segments an fMP4 source's #EXT-X-MAP
-// tags reference, since both ride the same tracker. Those fetches are smaller and far more numerous than manifest polls, so isolated transient failures (a
+// tags reference, since both use the same tracker. Those fetches are smaller and far more numerous than manifest polls, so isolated transient failures (a
 // dropped connection on one segment) are more common here; this higher tolerance than MAX_MANIFEST_FAILURES avoids escalating on blips that would otherwise
 // self-resolve on the next fetch.
 const MAX_SEGMENT_FAILURES = 5;
@@ -955,7 +955,7 @@ function refreshActiveKeyUrls(target: Set<string>, segments: ParsedSegment[]): v
  * Evicts decryption keys whose URL is not in the active working set, mutating the cache in place. The cache is keyed by URL because each token rotation can
  * reference a different key URL; without this prune, the cache accumulates one dead entry per rotation indefinitely. The active set is the union of the URLs the
  * current video and audio manifests reference, so keys still in use survive while keys that rotated out of both manifests are released. Returns the number of
- * entries evicted so the caller can decide whether to log. Extracted as a pure module-level function (no closure capture) so the eviction invariant is unit-testable
+ * entries evicted so the caller can decide whether to log. Extracted as a pure module-level function (no closure capture) so the eviction rule is unit-testable
  * in isolation from the polling loop.
  *
  * @param keysByUrl - The per-URL key cache to prune in place.
@@ -983,7 +983,7 @@ export function pruneKeyCache(keysByUrl: Map<string, Buffer>, activeKeyUrls: Rea
  * implementation regardless of track.
  *
  * The fetch goes through the caller's tracked-fetch function with a null key URL, which makes it a plain fetch (the decrypt path gates on the key, and the
- * sequence argument only feeds keyed-IV derivation). Riding that machinery is deliberate: the initialization fetch inherits the timeout, the consecutive-failure
+ * sequence argument only feeds keyed-IV derivation). Reusing that machinery is deliberate: the initialization fetch inherits the timeout, the consecutive-failure
  * accounting, the reset on any success, and the existing escalation threshold, rather than introducing a second failure counter whose bound-and-reset semantics
  * would have to be re-derived.
  *
@@ -1727,7 +1727,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    * Prunes the per-URL decryption key cache against this stream's live working set - the union of the key URLs the most recently polled video and audio manifests
    * reference - and logs the eviction count. Called at each token-refresh boundary, this bounds the cache to the keys the stream is actually using (typically one or
    * two) rather than retaining one dead entry per rotation. Refresh is the natural point at which the prior CDN session's keys become unreachable, so it runs here
-   * rather than on every poll. The eviction itself lives in the pure module-level pruneKeyCache so the invariant is unit-testable.
+   * rather than on every poll. The eviction itself lives in the pure module-level pruneKeyCache so the rule is unit-testable.
    */
   function pruneStreamKeyCache(): void {
 
@@ -2055,7 +2055,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   /**
    * Fetches a segment with error tracking, for the callers that fetch outside the pipeline's window: the initialization segments an fMP4 source's #EXT-X-MAP
-   * tags reference, which ride the track's own tracker so their failures escalate through the one segment threshold rather than a parallel counter. The fetch
+   * tags reference, which use the track's own tracker so their failures escalate through the one segment threshold rather than a parallel counter. The fetch
    * carries the proxy's cancellation signal and settles through the shared outcome classifier, so a cancelled initialization is discarded rather than counted.
    *
    * @param tracker - Mutable error tracking state with labels for log and error messages.

@@ -165,7 +165,7 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Deleted tag '%s' from vocabulary and %d channel assignments.", tag, affectedKeys.length);
 
-    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    // The hint is included whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
     sendSuccess(res, { affectedKeys, message: "Tag '" + tag + "' deleted.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 
@@ -220,7 +220,7 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Restored predefined tag '%s' on %d channels.", tag, affectedKeys.length);
 
-    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    // The hint is included whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
     sendSuccess(res, { affectedKeys, message: "Tag '" + canonicalTag + "' restored.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 
@@ -305,7 +305,7 @@ export function registerTagRoutes(app: Express): void {
 
     LOG.info("Renamed tag '%s' to '%s' across %d channels.", oldTag, newTag, affectedKeys.length);
 
-    // The hint rides whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
+    // The hint is included whenever the cascade touched a channel: tags render in the playlist, while a vocabulary-only change shows nothing there.
     sendSuccess(res, { affectedKeys, message: "Tag '" + oldTag + "' renamed to '" + newTag + "'.", playlistHint: affectedKeys.length > 0, tags: true });
   }));
 }

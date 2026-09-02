@@ -145,7 +145,7 @@ describe("generateThemeStyles", () => {
     }
   });
 
-  test("produces stable output across two calls (idempotent)", () => {
+  test("produces stable output across two calls", () => {
 
     // Boundary: the function is pure - two calls must produce byte-identical output. Locking this prevents a future change from accidentally including
     // non-deterministic content (e.g., timestamps, random IDs).
@@ -167,7 +167,7 @@ describe("getStreamHealthColorVars", () => {
 
   test("returns the documented set of health states as keys", () => {
 
-    // The exact set of keys is pinned here as a documented API contract, so any addition or removal is a deliberate, visible change.
+    // The exact set of keys is asserted here as a documented API contract, so any addition or removal is a deliberate, visible change.
     const vars = getStreamHealthColorVars();
     const keys = Object.keys(vars).sort();
 

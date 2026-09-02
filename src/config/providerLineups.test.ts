@@ -96,7 +96,7 @@ describe("persistProviderLineup", () => {
 
   test("replaces only the named provider's slice, leaving every other provider untouched", async () => {
 
-    // The pin that catches a whole-record overwrite: two providers in one file, one of them rewritten. A write that replaced the envelope rather than the slice
+    // The assertion that catches a whole-record overwrite: two providers in one file, one of them rewritten. A write that replaced the envelope rather than the slice
     // would silently erase the other provider's lineup, and the failure would only surface on a later boot that needed it.
     await withTempDir(async (dir) => {
 

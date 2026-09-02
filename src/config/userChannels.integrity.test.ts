@@ -108,7 +108,7 @@ describe("detectIdentityFieldLoss", () => {
   test("array-valued identity (tags) post-isDeepStrictEqual swap: equal arrays are recognized as canonical-equivalent (delta minimization)", () => {
 
     /* When the user's stored tags array exactly matches the canonical's tags array, dropping the stored field is delta minimization and must NOT flag. This test
-     * pins that structural equality via isDeepStrictEqual recognizes matched array-valued fields as canonical-equivalent.
+     * asserts that structural equality via isDeepStrictEqual recognizes matched array-valued fields as canonical-equivalent.
      *
      * abc is known to have a tags array in PREDEFINED_CHANNELS; we assert dropping a tags field that matches the canonical's tags is recognized as no-loss.
      */
@@ -133,7 +133,7 @@ describe("detectIdentityFieldLoss", () => {
 
   test("array-valued identity (tags) post-isDeepStrictEqual swap: different arrays are flagged as loss", () => {
 
-    /* The contrapositive: when the user's stored tags do NOT match the canonical's tags exactly, dropping them IS data loss. This test pins that the
+    /* The contrapositive: when the user's stored tags do NOT match the canonical's tags exactly, dropping them IS data loss. This test asserts that the
      * isDeepStrictEqual call correctly distinguishes equal arrays from non-equal arrays.
      */
     const before: StoredChannelMap = { abc: { tags: [ "Custom", "Sports" ] } };
@@ -147,7 +147,7 @@ describe("detectIdentityFieldLoss", () => {
   test("array equality comparison handles different-length arrays without throwing", () => {
 
     /* Boundary case: a stored tags array on a standalone channel with no predefined canonical entry. Since "mychannel" has no canonical fallback, the
-     * comparison never reaches isDeepStrictEqual - the drop is flagged directly through the no-canonical-fallback branch. This test pins that a non-empty
+     * comparison never reaches isDeepStrictEqual - the drop is flagged directly through the no-canonical-fallback branch. This test asserts that a non-empty
      * array loss without a canonical fallback is always flagged, regardless of array length.
      */
     const before: StoredChannelMap = { mychannel: { name: "My Channel", tags: [ "A", "B", "C" ], url: "https://example.com" } };
@@ -160,7 +160,7 @@ describe("detectIdentityFieldLoss", () => {
 
   test("scalar identity field with a canonical fallback that does NOT match still flags as loss", () => {
 
-    /* When the canonical exists but its value differs from the user's, dropping the user's value IS loss. This pins the per-value branch of the canonical-
+    /* When the canonical exists but its value differs from the user's, dropping the user's value IS loss. This asserts the per-value branch of the canonical-
      * fallback check (different from the array-valued branch above).
      */
     const before: StoredChannelMap = { abc: { name: "ABC Custom Renamed" } };
@@ -256,7 +256,7 @@ describe("validateChannelsIntegrity", () => {
 
   test("does NOT flag empty -> empty (a no-op on a wholesale collection)", () => {
 
-    /* The validator's three wholesale-clear checks all guard with "prev > 0 && next === 0" - empty -> empty must not fire. Pins the negative branch.
+    /* The validator's three wholesale-clear checks all guard with "prev > 0 && next === 0" - empty -> empty must not fire. Asserts the negative branch.
      */
     const before = makeData({}, {}, { deletedTags: [], tags: [] });
     const after = makeData({}, {}, { deletedTags: [], tags: [] });
@@ -276,7 +276,7 @@ describe("validateChannelsIntegrity", () => {
 
   test("collects multiple issues across categories in one pass", () => {
 
-    /* A write that both drops an identity field AND wholesale-clears two metadata collections produces three issues. Pins the validator's accumulation behavior.
+    /* A write that both drops an identity field AND wholesale-clears two metadata collections produces three issues. Asserts the validator's accumulation behavior.
      */
     const before = makeData(
       { mychannel: { name: "My", stationId: "99999", url: "https://example.com" } },

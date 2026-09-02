@@ -48,7 +48,7 @@ describe("Nullable<T> (type-level)", () => {
   test("composes with object types", () => {
 
     // Nullable<{ a: number }> must accept either the object or null. The widened tuple below proves both halves of the union are assignable - if the runtime
-    // discriminant says "object", we read the field; if it says "null", we record the null. This avoids narrowing-by-literal that would render the test
+    // tag says "object", we read the field; if it says "null", we record the null. This avoids narrowing-by-literal that would render the test
     // tautological.
     const values: Nullable<{ a: number }>[] = [ { a: 1 }, null ];
 

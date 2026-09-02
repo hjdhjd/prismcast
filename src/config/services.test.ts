@@ -410,7 +410,7 @@ describe("getEnabledServices: defensive copy", () => {
 
   test("mutating the returned array does not leak into module state", () => {
 
-    /* The accessor returns [...enabledServices]. Tests pin the spread - if a future refactor removed it, mutations on the returned array would leak into the
+    /* The accessor returns [...enabledServices]. Tests assert the spread - if a future refactor removed it, mutations on the returned array would leak into the
      * module-level state and corrupt downstream filter behavior.
      */
     setEnabledServices([ "hulu", "yttv" ]);
@@ -429,7 +429,7 @@ describe("getServiceTagForChannel: missing-channel fallback", () => {
 
   /* getServiceTagForChannel first consults the runtime serviceGroups map (returning a variant's pre-computed tag when the key is grouped), then falls back to a
    * direct URL-domain derivation via channelsRef / PREDEFINED_CHANNELS. When the key resolves to no channel in either source, the function does NOT throw - it
-   * returns the "direct" sentinel. We pin that fallback here: rebuild the groups from an empty channel map so channelsRef is empty and no group matches, then
+   * returns the "direct" sentinel. We assert that fallback here: rebuild the groups from an empty channel map so channelsRef is empty and no group matches, then
    * assert an obviously-unknown key yields "direct".
    */
 

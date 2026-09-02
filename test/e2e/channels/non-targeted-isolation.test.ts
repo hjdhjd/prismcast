@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * non-targeted-isolation.test.ts: Per-entry byte-preservation guarantee for channels.json under any mutation. The cross-store-isolation suite pins file-level
- * isolation across stores; this suite pins the within-channels.json analog: a mutation that targets a specific subset of channel keys must leave every other
- * key's on-disk entry byte-identical pre/post. The invariant catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
+ * non-targeted-isolation.test.ts: Per-entry byte-preservation guarantee for channels.json under any mutation. The cross-store-isolation suite asserts file-level
+ * isolation across stores; this suite asserts the within-channels.json analog: a mutation that targets a specific subset of channel keys must leave every other
+ * key's on-disk entry byte-identical pre/post. The check catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
  * re-keys entries, re-orders tag arrays, or rewrites whitespace - because those suites only assert the targeted side of the change.
  *
  * Comparison strategy: parse channels.json, project each channel entry through stringifySorted (the same serializer prepareChannelsForWrite hands to the

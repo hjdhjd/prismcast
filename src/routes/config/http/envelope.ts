@@ -200,7 +200,7 @@ export function sendFormErrors(res: Response, errors: Record<string, string>): v
  *      No log is emitted - the caller has already decided what message and status to ship. Use this when an endpoint needs to attach extension fields
  *      (e.g., `entries: [], filtered, mode, total` for /logs's read-failure response) that don't fit the simple `{ error }` envelope.
  *
- * Discrimination is on the third argument: a string third arg selects form 1 (action label), a number third arg selects form 2 (HTTP status). The two forms
+ * The form is chosen by the third argument: a string third arg selects form 1 (action label), a number third arg selects form 2 (HTTP status). The two forms
  * are distinct in semantic - form 1 is "I caught an exception, log + envelope it"; form 2 is "I have a structured payload, ship it" - and TypeScript's
  * overload resolution surfaces the correct call shape at every call site.
  * @param res - The Express response object.

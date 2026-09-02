@@ -15,8 +15,8 @@
  *      drop, which fails the parser's length/CRC check - and a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so
  *      the HTTP HDHR surface survives a discovery-port conflict.
  *
- *   5. The bind lifecycle: a second ensureUp call is idempotent and returns true without rebinding, ensureDown closes the socket and leaves the surface
- *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is pinned against the canonical SiliconDust value so a refactor cannot silently
+ *   5. The bind lifecycle: a second ensureUp call returns true without rebinding, ensureDown closes the socket and leaves the surface
+ *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is asserted against the canonical SiliconDust value so a refactor cannot silently
  *      change it.
  *
  * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
@@ -293,7 +293,7 @@ describe("UdpSurface - round-trip", () => {
     await assert.rejects(() => sendAndReceive(port, upgrade), /Timed out waiting/);
   });
 
-  test("idempotent ensureUp: calling it twice returns true without rebinding", async () => {
+  test("repeat-safe ensureUp: calling it twice returns true without rebinding", async () => {
 
     await using surface = createUdpSurface();
     const first = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
@@ -306,7 +306,7 @@ describe("UdpSurface - round-trip", () => {
     const second = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
 
     assert.equal(second, true, "second call is a no-op success");
-    assert.equal(surface.boundPort, firstPort, "the bound port is unchanged by the idempotent second call");
+    assert.equal(surface.boundPort, firstPort, "the bound port is unchanged by the second call");
   });
 
   test("ensureDown closes the socket and is reusable: a later ensureUp rebinds", async () => {
@@ -363,7 +363,7 @@ describe("UdpSurface - round-trip", () => {
 
   test("HDHR_DISCOVERY_PORT constant matches the canonical SiliconDust value", () => {
 
-    // Pin the constant so a refactor cannot silently change it. The wire protocol fixes this port; clients hard-code it.
+    // Assert the constant so a refactor cannot silently change it. The wire protocol fixes this port; clients hard-code it.
     assert.equal(HDHR_DISCOVERY_PORT, 65001);
   });
 });

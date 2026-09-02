@@ -9,7 +9,7 @@ import type { Page } from "puppeteer-core";
 import type { RecognizedHlsPlaylistKind } from "../native/probe.ts";
 import { observeHlsPlaylists } from "./hlsPlaylistObserver.ts";
 
-/* This module hosts two consumer-facing state machines built on top of the HLS playlist observer (hlsPlaylistObserver.ts), which in turn rides on the tab-wide
+/* This module hosts two consumer-facing state machines built on top of the HLS playlist observer (hlsPlaylistObserver.ts), which in turn is built on the tab-wide
  * network observer (tabNetworkObserver.ts). The layering:
  *
  *   tabNetworkObserver  -> tab-wide CDP transport (OOPIF-aware via auto-attach + flatten)

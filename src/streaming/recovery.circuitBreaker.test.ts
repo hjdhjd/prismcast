@@ -113,7 +113,7 @@ describe("resetCircuitBreaker", () => {
     assert.equal(state.totalFailureCount, 0);
   });
 
-  test("is idempotent on an already-fresh state", () => {
+  test("is a no-op on an already-fresh state", () => {
 
     const state: CircuitBreakerState = { firstFailureTime: null, totalFailureCount: 0 };
 
@@ -126,7 +126,7 @@ describe("resetCircuitBreaker", () => {
 
 describe("recordFailure (failure-window primitive)", () => {
 
-  // recordFailure is the SSOT the circuit breaker delegates to. These tests pass explicit bounds (not CONFIG) to pin the parameterized contract the browser
+  // recordFailure is the SSOT the circuit breaker delegates to. These tests pass explicit bounds (not CONFIG) to assert the parameterized contract the browser
   // supervisor will rely on - the same primitive must serve consumers with different tolerances. `now` is a parameter, so no timer mocking is needed.
   const OPTIONS = { threshold: 3, windowMs: 1000 };
 

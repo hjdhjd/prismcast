@@ -218,7 +218,7 @@ describe("regression: redundant predefined override collapses to nothing", () =>
 describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", () => {
 
   /* Tag-array equality is structural and order-independent: collectLegacyVariantStamps wraps both sides through sortTags (case-insensitive canonical order)
-   * before isDeepStrictEqual at the comparison site. These tests pin the cases where authoring-order or case-only differences must (or must not) be treated as
+   * before isDeepStrictEqual at the comparison site. These tests assert the cases where authoring-order or case-only differences must (or must not) be treated as
    * shape-compatible for the migration's stamp decision.
    */
 
@@ -287,7 +287,7 @@ describe("collectLegacyVariantStamps: post-isDeepStrictEqual array semantics", (
 describe("channelsMigrations.2 (apply): stamping loop body", () => {
 
   /* The migration iterates collectLegacyVariantStamps' return and writes canonicalKey onto each stamped entry. The previous tests confirm the classifier; this
-   * test pins the apply function's loop body - that the resulting in-memory data has canonicalKey on the stamped entries with the value derived from the key
+   * test asserts the apply function's loop body - that the resulting in-memory data has canonicalKey on the stamped entries with the value derived from the key
    * prefix (substring before the first hyphen).
    */
 

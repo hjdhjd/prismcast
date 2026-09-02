@@ -136,7 +136,7 @@ describe("normalizeEntryAgainstBase", () => {
 /* The three binding-delta helpers (replaceVariantBinding, mergeVariantBinding, intersectBindingDeltas) are public exports consumed by the producer
  * (handlePredefinedEdit) and the storage normalizer (normalizeChannelDeltas). Their semantics are subtle and intentionally distinct - replace vs merge
  * precedence, key-set intersection scoped to the binding partition. The integration tests above exercise them indirectly through full pipeline runs;
- * these focused unit tests pin each function's contract independently so a future refactor that accidentally swaps semantics fails focused, not distant.
+ * these focused unit tests assert each function's contract independently so a future refactor that accidentally swaps semantics fails focused, not distant.
  */
 describe("replaceVariantBinding", () => {
 
@@ -395,7 +395,7 @@ describe("normalizeChannelDeltas: sibling-variant non-overlap rule", () => {
     assert.deepEqual(data.serviceSelections, {}, "no redirect for custom URL");
   });
 
-  test("idempotency: running the heal twice on the same input yields the same result", () => {
+  test("running the heal twice on the same input yields the same result", () => {
 
     const dataOnce = makeChannelsData({ abc: { channelSelector: "ABC", stationId: "20456", url: "https://www.hulu.com/live" } });
 
@@ -518,9 +518,9 @@ describe("buildResolvedCanonicals", () => {
   });
 });
 
-describe("invariants", () => {
+describe("guarantees", () => {
 
-  test("normalizeChannelDeltas is idempotent", () => {
+  test("normalizeChannelDeltas changes nothing on a second pass", () => {
 
     const channels: StoredChannelMap = {
 

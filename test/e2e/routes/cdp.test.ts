@@ -1,17 +1,17 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cdp.test.ts: HTTP-level integration coverage for the CDP proxy discovery endpoints (src/routes/cdp.ts). The proxy exposes a Chrome-compatible surface at
- * /cdp/json, /cdp/json/list, and /cdp/json/version that only materializes when the "cdp" debug category is enabled AND a browser is running. This suite pins the
+ * /cdp/json, /cdp/json/list, and /cdp/json/version that only materializes when the "cdp" debug category is enabled AND a browser is running. This suite asserts the
  * two-stage request-time gate that guards every discovery handler: isCategoryEnabled("cdp") first (404 when off), then getBrowserInstance() (503 when no Chrome).
  *
  * The gate is checked inside each handler at request time - not wired at boot - so the surface appears and disappears in sync with the /debug toggle without a
  * restart. We drive the toggle in-process through initDebugFilter (the same runtime primitive the CLI and the /debug POST handler use) rather than by launching a
  * real browser, which the integration harness never does: getBrowserInstance() returns null here, so the "enabled but no browser" branch is naturally exercised.
  *
- * Scope. Every gate reachable from bootApp is pinned here: the discovery handlers' 404/503 pair over ordinary HTTP, and the WebSocket upgrade
+ * Scope. Every gate reachable from bootApp is asserted here: the discovery handlers' 404/503 pair over ordinary HTTP, and the WebSocket upgrade
  * handler's origin gate, driven by writing a raw upgrade request at the booted listener once attachCdpUpgradeHandler has bound to its server. What stays out of
  * scope is the CdpProxySession multiplexer behind them, which needs a live Puppeteer Browser/Connection the harness never launches; it is recorded here rather
- * than exercised against a fake. This suite is a sibling of streams.test.ts: both pin route-shape rules by seeding the exact state the handler reads (there, the
+ * than exercised against a fake. This suite is a sibling of streams.test.ts: both assert route-shape rules by seeding the exact state the handler reads (there, the
  * stream registry; here, the debug-category filter) instead of launching a real capture.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
@@ -112,7 +112,7 @@ describe("CDP discovery endpoints - category gate (disabled)", () => {
 
     await initializePersistence(ctx);
 
-    // Enabling a different category must not open the cdp surface: the gate matches the exact "cdp" category, not "any debug output". This pins that the gate is
+    // Enabling a different category must not open the cdp surface: the gate matches the exact "cdp" category, not "any debug output". This asserts that the gate is
     // category-specific rather than a coarse isAnyDebugEnabled() check, which would leak the proxy on whenever any debug logging was turned on.
     withDebugFilter(ctx, "tuning:hulu");
 

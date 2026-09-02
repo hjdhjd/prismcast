@@ -13,7 +13,7 @@ import type { Page } from "puppeteer-core";
  */
 
 /**
- * One call the double received, held open for the test to settle. The timestamp is read at issue time, so a test driving mock timers can pin when production
+ * One call the double received, held open for the test to settle. The timestamp is read at issue time, so a test driving mock timers can assert when production
  * code chose to make the call.
  */
 export interface PendingPageCall<T> {

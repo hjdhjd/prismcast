@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * backup-recovery.test.ts: Pins the file-store framework's auto-recovery contract for the worst-case persistence scenario - a corrupt main JSON file. The
+ * backup-recovery.test.ts: Asserts the file-store framework's auto-recovery contract for the worst-case persistence scenario - a corrupt main JSON file. The
  * framework's safety guarantee (src/config/persistence.ts createFileStore docstring): when the main file fails to parse, read() transparently restores from
  * .bak via atomic temp+rename and surfaces recoveredFromBackup on the result; only when both files are unparseable does the result fall back to defaults with
  * parseError=true. Without integration coverage, the next change to the recovery sequencing (e.g., a refactor that touched the order of restore and write,
@@ -12,7 +12,7 @@
  *
  * recoveredFromBackup propagation: the framework's FileStore.read() exposes recoveredFromBackup on the FileStoreReadResult interface and the per-store
  * wrapper read functions (readConfig, readChannels, readProfiles) project it onto their respective UserConfigLoadResult / UserChannelsLoadResult /
- * UserProfilesLoadResult return shapes. Read-path tests (Tests 2 and 3 below) pin the flag directly. Tests 1 and 4 trigger recovery through mutateConfig /
+ * UserProfilesLoadResult return shapes. Read-path tests (Tests 2 and 3 below) assert the flag directly. Tests 1 and 4 trigger recovery through mutateConfig /
  * mutateChannels - the mutate API does not return a read result, so the flag is not observable from those callers. Their assertions cover separate guarantees
  * (post-recovery disk state, runtime CONFIG via initializeConfiguration, no FileStoreParseError thrown, per-store isolation) that remain meaningful regardless
  * of how the flag is surfaced.
@@ -38,7 +38,7 @@ describe("file-store backup recovery from a corrupt main file", () => {
      *   1. Establish two distinct config states via mutateConfig - the second write copies the first to .bak. After this, main carries the v2 host and .bak
      *      carries the v1 host.
      *   2. Snapshot the .bak file's bytes for the pre-corruption sanity check below (Step 1's v1 snapshot lives in .bak). The independent .bak-preservation
-     *      guarantee - that recovery never overwrites .bak with the corrupt main - is pinned by Test 3 using its own separately-captured snapshot, not this one.
+     *      guarantee - that recovery never overwrites .bak with the corrupt main - is asserted by Test 3 using its own separately-captured snapshot, not this one.
      *   3. Overwrite main with garbage that does not parse as JSON.
      *   4. Trigger a read by calling mutateConfig with a no-op. This invokes the framework's read(), which fails to parse main, falls through to .bak, parses
      *      it, atomically restores main from .bak, and returns the parsed v1 data. The mutate then proceeds normally - no FileStoreParseError thrown.
@@ -82,7 +82,7 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
     /* Step 5b: drive the recovered data through the production boot sequence and assert the runtime CONFIG reflects the .bak value. initializeConfiguration()
      * calls readConfig() and feeds the result into mergeConfiguration(); the HYDRATED_FIELDS registry pulls channelsDvr.host through to runtime CONFIG so the
-     * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural pin on registry-driven hydration:
+     * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural assertion on registry-driven hydration:
      * a regression that broke it - so that the inline-block merge path skipped channelsDvr.host and left the field preserved on disk but invisible to runtime
      * CONFIG - would surface here as a mismatch between the disk and runtime views, not a silent drop.
      */
@@ -179,7 +179,7 @@ describe("file-store backup recovery from a corrupt main file", () => {
      * intact). Trigger recovery via mutateChannels with a no-op. Assert: config.json and profiles.json are byte-identical pre/post (their recovery paths were
      * never invoked); channels.json was recovered (parses, contains the bak content).
      *
-     * This is the negative pair to the cross-store-isolation suite's positive guarantee ("each store writes to its own file"). Together they pin the per-store
+     * This is the negative pair to the cross-store-isolation suite's positive guarantee ("each store writes to its own file"). Together they assert the per-store
      * boundary in both directions: writes don't leak across stores, and recoveries don't leak across stores either.
      */
     await using ctx = await createIntegrationContext();

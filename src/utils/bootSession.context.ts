@@ -5,7 +5,7 @@
  * the filesystem, or queries platform helpers; tests construct BootSessionContext literals inline and bypass this file entirely.
  *
  * The snapshot semantics matter. NTP correction or system-clock adjustment mid-process would otherwise let two reads of "host boot minute" disagree by a
- * minute, breaking the guarantee that two calls to getBootSessionId within the same process return equal values. Capturing the math at adapter creation pins
+ * minute, breaking the guarantee that two calls to getBootSessionId within the same process return equal values. Capturing the math at adapter creation locks
  * the value for the process lifetime.
  */
 import type { BootSessionContext } from "./bootSession.ts";

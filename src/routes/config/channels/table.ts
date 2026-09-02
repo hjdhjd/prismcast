@@ -342,7 +342,7 @@ interface AdvancedFieldOptions {
     tags?: string;
   };
 
-  // Whether the channel is pinned to screen capture, skipping native HLS extraction. Defaults to false.
+  // Whether the channel is locked to screen capture, skipping native HLS extraction. Defaults to false.
   forceCapture?: boolean;
 
   // Current guide title value (empty string for none).

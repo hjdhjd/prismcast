@@ -2,7 +2,7 @@
  *
  * ffmpeg.context.test.ts: Smoke tests for the default FFmpegContext adapter. ffmpeg.context.ts is the ports-and-adapters adapter that produces an FFmpegContext
  * literal from real runtime I/O - existsSync, homedir, process.platform, the spawn-based probe, and the bundled FFmpeg path from ffmpeg-for-homebridge. The
- * algorithmic content lives in ffmpeg.ts (probeFFmpegPath) and is exercised against synthetic contexts in ffmpeg.test.ts; this file pins the contract that the
+ * algorithmic content lives in ffmpeg.ts (probeFFmpegPath) and is exercised against synthetic contexts in ffmpeg.test.ts; this file asserts the contract that the
  * default adapter exposes the documented five-field shape and that the private probe helper returns true for a known-good binary and false for a known-missing
  * one. The probe is invoked transitively against /bin/bash (a host binary that exits 0 in response to -version) and a definitely-missing path; we cannot import
  * the private helper, so we exercise it through the context's `probe` field.
@@ -16,7 +16,7 @@ describe("createDefaultFFmpegContext", () => {
   test("returns the documented five-field FFmpegContext shape", () => {
 
     // The context type has exactly five required keys (the bundled path is permitted to be undefined when ffmpeg-for-homebridge fails to resolve, but the field
-    // itself is always present). A future refactor that drops a key would ripple into probeFFmpegPath as a runtime undefined; pin the shape so the regression
+    // itself is always present). A future refactor that drops a key would ripple into probeFFmpegPath as a runtime undefined; assert the shape so the regression
     // surfaces here.
     const ctx = createDefaultFFmpegContext();
 
@@ -29,7 +29,7 @@ describe("createDefaultFFmpegContext", () => {
 
   test("homedir() returns the os.homedir() value", () => {
 
-    // Wires through to node:os.homedir(). We don't pin a specific value (it varies by host); we only verify the field returns a non-empty string consistent
+    // Wires through to node:os.homedir(). We don't assert a specific value (it varies by host); we only verify the field returns a non-empty string consistent
     // with the Node API contract.
     const ctx = createDefaultFFmpegContext();
     const result = ctx.homedir();

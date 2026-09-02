@@ -330,8 +330,8 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
    *
    * The identity guard is what makes a verdict safe to act on late: the caller confirmed a specific instance, and a disconnect plus relaunch during that
    * confirmation can have replaced it, so a mark aimed at a superseded instance is dropped rather than applied to the healthy browser that took its place. The
-   * first mark wins for a reason of its own - the adapter's alarm and its status emit both ride this transition, so a second verdict against the same instance
-   * must not fire either of them again.
+   * first mark wins for a reason of its own - the adapter's alarm and its status emit both belong to this transition, so a second verdict against the same
+   * instance must not fire either of them again.
    */
   function handleCaptureImpaired(browser: Browser, reason: string): boolean {
 

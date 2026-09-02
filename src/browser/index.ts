@@ -1083,7 +1083,7 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
      *   is a defensive duplicate: if a future puppeteer-stream release drops the flag again in favor of granting activeTab via a synthetic keystroke,
      *   CDP-synthesized keystrokes do not satisfy chrome.commands under automation (the renderer sees the event but the browser-process accelerator dispatcher
      *   does not), so capture would be denied at the API level (see github.com/Flam3rboy/puppeteer-stream/issues/206) without this fallback in place. Confirm
-     *   whether this duplicate is still warranted whenever the pinned puppeteer-stream version changes.
+     *   whether this duplicate is still warranted whenever the locked puppeteer-stream version changes.
      *
      * --autoplay-policy=no-user-gesture-required: Allows video and audio to play without requiring a user click first. Essential for automated streaming
      *   since we cannot simulate genuine user interaction for autoplay policy purposes.
@@ -1205,7 +1205,7 @@ async function declareSurface(page: Page, deviceScaleFactor: number): Promise<{ 
  * Emulates the capture surface on a page that is about to be captured: the configured quality preset's dimensions, declared at the pixel density the display
  * actually has. Chrome composes an active tab's capture from the window presentation unless the page's device-metrics override declares a density explicitly
  * and that density matches the display's real one, so the density is read from the page itself - a page carrying no declared density reports the display's own -
- * and declared back before capture acquires the page. The declared dimensions are returned so the caller pins its capture constraints to the surface that was
+ * and declared back before capture acquires the page. The declared dimensions are returned so the caller holds its capture constraints to the surface that was
  * emulated rather than reading the preset a second time.
  * @param page - The page to emulate the capture surface on.
  * @returns The dimensions declared on the page.
@@ -1332,7 +1332,7 @@ export function makeFocusReaffirmCallback(page: Page, reaffirm: (page: Page) => 
   // a higher one.
   let generation = 0;
 
-  // One rung's re-issue. The offset it was scheduled at rides the debug line, so a swallowed failure says which shot spoke; the immediate shot reports zero.
+  // One rung's re-issue. The offset it was scheduled at is carried on the debug line, so a swallowed failure says which shot spoke; the immediate shot reports zero.
   const fireShot = async (offsetMs: number): Promise<void> => {
 
     try {
@@ -1393,7 +1393,7 @@ const defaultActivationHealDeps: ActivationHealDeps = { clock: realClock, reaffi
  * The heal has two triggers and one ladder between them. The exposed binding is fired by a focus listener inside the page, which covers the activation that
  * arrives with a user's click focusing the browser window. The enrollment in activationHeals is fired by the selection primitive's activation report, which
  * covers every activation PrismCast performs for itself - the give-back returning a user to a capture tab, the selection step, a re-assert - and a captured page
- * hears none of those: capture pins it visible and the extension's update moves no operating-system focus, so no page event fires at all (measured 2026-08-30).
+ * hears none of those: capture holds it visible and the extension's update moves no operating-system focus, so no page event fires at all (measured 2026-08-30).
  * Both triggers hold the same callback instance, which is what lets them share its generation counter instead of running two schedules against one page.
  *
  * The listener is registered through evaluateOnNewDocument so it survives the page's navigations, exactly as the shared video-selector helper does, and the
@@ -1745,11 +1745,11 @@ function handleBrowserDisconnect(): void {
 
 /**
  * Records that a still-connected browser can no longer start captures - a mid-life capture death that no "disconnected" event would surface - and schedules the
- * relaunch that cures it. This is the single recovery action for a browser that is alive and still serving: the mark rides on the supervisor's ready state, so its
+ * relaunch that cures it. This is the single recovery action for a browser that is alive and still serving: the mark lives on the supervisor's ready state, so its
  * running captures continue untouched, new stream requests are refused at acquire() with a 503 back-off, the recovery ladder stops offering tab replacement, and
  * the relaunch waits for the registry to empty. Exported for the streaming layer to call once its probe or its wedge has produced the verdict.
  *
- * The restart trigger rides this function's return value rather than the supervisor's transition observer, deliberately. The observer runs inside transition(), so a
+ * The restart trigger uses this function's return value rather than the supervisor's transition observer, deliberately. The observer runs inside transition(), so a
  * restart begun there would call noteReadinessLost re-entrantly while the marking transition's notification is still on the stack. The observer stays a reporter -
  * the alarm and the status emit - and the caller that holds the verdict acts on it once the transition has completed.
  * @param browser - The specific browser instance the caller verified as unable to start captures.

@@ -227,7 +227,7 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
     // We open the stream, then want to synthesize a log entry. Calling subscribeToLogs directly is the wrong approach here - it observes, it does not emit. The
     // route subscribes via subscribeToLogs which the production logger fires when logging happens. We use a tighter contract test: confirm subscribeToLogs returns
     // an unsubscribe function (the route relies on it for cleanup on client disconnect). This locks the integration shape without requiring us to drive a real
-    // log emission from a co-located fixture. The wire-byte forwarding contract (and null-eventType prefix-skip behavior) is pinned by the direct-handler suite
+    // log emission from a co-located fixture. The wire-byte forwarding contract (and null-eventType prefix-skip behavior) is asserted by the direct-handler suite
     // below, which can drive emitLogEntry deterministically and read res.write spy calls back.
     const unsubscribe = subscribeToLogs(() => {
 
@@ -268,7 +268,7 @@ describe("setupLogsEndpoint - GET /logs/stream (SSE handshake)", () => {
 });
 
 // The direct-handler suite below registers the /logs/stream handler against a stub Express app so we can drive the captured handler against synthetic req/res
-// pairs. This pins the wire-byte forwarding contract (null-eventType produces only a `data:` line, no `event:` prefix), the level-filter short-circuit branch
+// pairs. This asserts the wire-byte forwarding contract (null-eventType produces only a `data:` line, no `event:` prefix), the level-filter short-circuit branch
 // (entries of the wrong level never reach res.write), and the close-cleanup guarantee (post-close emits do not reach the wire AND the heartbeat stops). Each
 // test extracts the route fresh because setupLogsEndpoint is the only public surface that wires the handler into our stub.
 function findLogsStreamHandler(): RouteCapture {
@@ -298,7 +298,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("forwards a log entry through sse.sendEvent(null, entry) - data line only, no 'event:' prefix", () => {
 
-    // Pins the /logs/stream forwarding path: subscribeToLogs forwards entries via sse.sendEvent(null, entry). The null-eventType branch in installSseStream skips
+    // Asserts the /logs/stream forwarding path: subscribeToLogs forwards entries via sse.sendEvent(null, entry). The null-eventType branch in installSseStream skips
     // the event line and writes only `data: <json>\n\n`. Without this assertion, a regression that switched to a named eventType (or wrapped the entry in an
     // envelope) would not be caught at any tier.
     const route = findLogsStreamHandler();
@@ -325,7 +325,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("level filter short-circuits non-matching entries - only matching entries reach res.write", () => {
 
-    // Pins the level-filter short-circuit inside the subscribeToLogs callback: entries whose level does not match filterLevel are skipped. The existing
+    // Asserts the level-filter short-circuit inside the subscribeToLogs callback: entries whose level does not match filterLevel are skipped. The existing
     // fetch-based test only checked that ?level=error did not produce an error response; it never confirmed that a non-error entry is actually filtered out. This
     // test drives the level=error filter, emits one info entry (must be skipped) and one error entry (must reach the wire), and asserts the filter shape directly.
     const route = findLogsStreamHandler();
@@ -355,7 +355,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
   test("invalid level query parameter is silently ignored - all entries reach the wire (no filter applied)", () => {
 
     // Boundary: the route validates the level query param against [error, info, warn]. Anything else is treated as no filter (filterLevel = null), so every
-    // emitted entry forwards. Pinning this prevents a regression where the validator throws or 400s on unknown values.
+    // emitted entry forwards. Asserting this prevents a regression where the validator throws or 400s on unknown values.
     const route = findLogsStreamHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes({ query: { level: "BOGUS" } });
 
@@ -374,7 +374,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("req.on('close') handler unsubscribes from the log emitter - post-close emits do not reach the wire", () => {
 
-    // Pins the req.on("close") cleanup path: the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must
+    // Asserts the req.on("close") cleanup path: the close handler must run unsubscribe(). After invoking the close handler synthetically, an emitted log entry must
     // NOT trigger a res.write. This is the observable behavior the test protects: a regression that dropped the unsubscribe() call would leak the listener and
     // continue forwarding to a disconnected response, eventually causing memory growth and write errors.
     const route = findLogsStreamHandler();
@@ -400,7 +400,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
 
   test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
 
-    // Pins the req.on("close") cleanup path: the close handler must run sse.close(), which clears the heartbeat interval. Without this, a regression that dropped
+    // Asserts the req.on("close") cleanup path: the close handler must run sse.close(), which clears the heartbeat interval. Without this, a regression that dropped
     // sse.close() would leak the heartbeat past disconnect. We use mock.timers to drive the interval deterministically: confirm one tick fires before close, then
     // call the close handler and confirm subsequent ticks produce no writes.
     mock.timers.enable({ apis: ["setInterval"] });

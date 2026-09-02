@@ -417,7 +417,8 @@ describe("cancelPrerollTimer", () => {
   test("disarms an armed timer so its callback never runs and nulls the handle", async () => {
 
     // Arm a real short timer that flips a flag, cancel it, then wait well past the original delay. A helper that failed to clear the timer would let the callback run
-    // and flip the flag - this assertion fails against a broken no-op helper, which is what makes it discriminating rather than merely asserting the handle is null.
+    // and flip the flag - this assertion fails against a broken no-op helper, which is what makes it distinguish a working helper from a broken one rather than
+    // merely asserting the handle is null.
     const state = createHLSState();
 
     let fired = false;

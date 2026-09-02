@@ -31,7 +31,7 @@ describe("empty-state rendering across tabs", () => {
      * shows 0 user channels and a non-zero predefined count, the table renders, the toolbar renders. A regression that crashed on userCount=0 (e.g., a divide-
      * by-zero in a percentage calculation, an assumed-non-empty array access) would surface here.
      *
-     * Negative invariant in the channel summary: the user-count <span> is empty (no comma-separated " N user" text appended). This is the documented behavior
+     * The negative case in the channel summary: the user-count <span> is empty (no comma-separated " N user" text appended). This is the documented behavior
      * in generateChannelsPanel: "When there are no user channels, the span is empty."
      */
     await using ctx = await createIntegrationContext();
@@ -51,7 +51,7 @@ describe("empty-state rendering across tabs", () => {
 
     /* The Custom Profiles panel (generateCustomProfilesPanel in services.ts) carries an explicit empty-state branch: when getUserProfiles() returns no entries, it emits
      * an empty-state div with a "No custom services installed" title and instructional text. The export button is conditionally omitted when there are no profiles
-     * to export. This test pins both the empty-state messaging AND the conditional export-button absence - a regression that left the export button visible in the
+     * to export. This test asserts both the empty-state messaging AND the conditional export-button absence - a regression that left the export button visible in the
      * empty state would mislead users into clicking a button that would download an empty file.
      */
     await using ctx = await createIntegrationContext();
@@ -99,7 +99,7 @@ describe("empty-state rendering across tabs", () => {
 
     /* The streams endpoint (the GET /streams handler in setupStreamsEndpoint, routes/streams.ts) unconditionally emits { count, limit, streams }. With no active
      * streams, count is 0 and streams is []. limit reflects CONFIG.streaming.maxConcurrentStreams. The shape is the same regardless of stream count - there is no
-     * separate empty-state envelope - so the test pins that uniformity: an empty streams array does NOT trigger a different envelope shape (a "no streams" message,
+     * separate empty-state envelope - so the test asserts that uniformity: an empty streams array does NOT trigger a different envelope shape (a "no streams" message,
      * an absent streams field, etc.).
      */
     await using ctx = await createIntegrationContext();
@@ -122,7 +122,7 @@ describe("empty-state rendering across tabs", () => {
   test("display preferences with all columns hidden: channels panel renders without crashing", async () => {
 
     /* The empty-state edge of column visibility. The "hiding all optional columns does not crash the renderer; the table renders with every hide-col-*
-     * class" test in filter-combinations.test.ts covers this from the filter-combinations angle; this test re-asserts the same invariant from the
+     * class" test in filter-combinations.test.ts covers this from the filter-combinations angle; this test re-asserts the same guarantee from the
      * empty-state surface so a future regression that broke the no-columns-visible scenario surfaces under both tags. The assertions differ in framing:
      * that test checks hide-col-* class enumeration; this test checks the panel is structurally complete (table element present, summary present,
      * toolbar present).
@@ -149,7 +149,7 @@ describe("empty-state rendering across tabs", () => {
      * true for "direct" unconditionally; channels without a `direct` tag (e.g., abcnews) are not visible.
      *
      * Render the panel under this filter and assert it does not crash - even if the rendered set is structurally pruned to a fraction of the catalog. The
-     * negative invariant is that the panel still renders the toolbar (so the user can clear the filter) and the table element (so the summary count is
+     * negative case is that the panel still renders the toolbar (so the user can clear the filter) and the table element (so the summary count is
      * visible) even when the visible row count is a small minority of the catalog.
      */
     await using ctx = await createIntegrationContext();

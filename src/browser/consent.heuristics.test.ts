@@ -2,7 +2,7 @@
  *
  * consent.heuristics.test.ts: DOM-fixture unit tests for the in-page heuristics consent.ts serializes across the page.evaluate boundary - the embed-gate scanner
  * (scanForEmbedGate), the coordinate resolver (locateSelectorCoordinate), and the synthetic dismisser (clickSelectorInPage). The Node-side orchestration (the poll,
- * the phase masking, the unified auto-dismiss logging) is covered by consent.test.ts; this file pins the pure in-page decision logic those serialized functions
+ * the phase masking, the unified auto-dismiss logging) is covered by consent.test.ts; this file asserts the pure in-page decision logic those serialized functions
  * embody, running them directly in the test process against a synthetic happy-dom document exactly as the collector tests in blockedPage.test.ts do.
  *
  * Home: co-located unit tier, mirroring blockedPage.test.ts's treatment of collectSignInContainers - the established precedent for exercising consent.ts's sibling
@@ -12,7 +12,7 @@
  *
  * Geometry note: happy-dom implements no layout, so getBoundingClientRect returns zero-size rects, and the scanner's zero-size guard would otherwise skip every
  * candidate. The fixtures stub rects on the candidate controls (per element) so the heuristics' DECISION logic - the accept/exclude/gate phrasing, the readyState
- * short-circuit, the probe/act split, the ancestor depth bound - is what the assertions pin; real viewport geometry remains live-smoke territory for a browser tier.
+ * short-circuit, the probe/act split, the ancestor depth bound - is what the assertions check; real viewport geometry remains live-smoke territory for a browser tier.
  */
 import { ACCEPT_AFFORDANCE_SOURCE, CMP_REGISTRY, EMBED_GATE_SOURCE, EXCLUDE_SOURCE, clickSelectorInPage, locateSelectorCoordinate, scanForEmbedGate } from "./consent.ts";
 import { describe, test } from "node:test";
@@ -289,7 +289,7 @@ describe("locateSelectorCoordinate - coordinate resolver", () => {
 
   test("a Didomi banner is detected and its reject control resolves to viewport-center coordinates", () => {
 
-    // Case (a): build the banner fixture around the CMP registry's own detect and reject selectors so the test pins the same markers the poll uses. The detect
+    // Case (a): build the banner fixture around the CMP registry's own detect and reject selectors so the test asserts the same markers the poll uses. The detect
     // selector must match the banner container (the poll's CMP presence probe), and locateSelectorCoordinate must resolve the reject button's viewport-center
     // coordinates for the real coordinate click the poll dispatches.
     const didomi = CMP_REGISTRY.find((vendor) => vendor.vendor === "Didomi");

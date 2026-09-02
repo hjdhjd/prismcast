@@ -344,7 +344,7 @@ describe("generatePrerollPlaylist", () => {
      * with the empty string and the caller (registerPendingStream) decides whether to fall back to a blocking real-stream wait. The other composition steps
      * (computeProgressiveReveal, buildPrerollEntries, buildPlaylist) collectively require seeded variants - exercising those branches honestly would require
      * spawning FFmpeg, which belongs to integration coverage rather than this unit suite. The early-return path is the one observable surface the unit tier
-     * can pin without that subprocess.
+     * can assert without that subprocess.
      */
     const playlist = generatePrerollPlaylist("http://example.test:5589", "h264", 0, new Date(1_700_000_000_000));
 
@@ -384,7 +384,7 @@ describe("setupPrerollRoutes", () => {
   test("init.mp4 returns 404 'Preroll not available.' for an unknown codec param", () => {
 
     /* The codec param is gated by the runtime check ((codec === "h264") || (codec === "hevc")). Anything else - "av1", "foo", undefined - must produce 404
-     * rather than crashing the lookup. Pins the input-validation branch.
+     * rather than crashing the lookup. Asserts the input-validation branch.
      */
     const stub = makeExpressStub();
 

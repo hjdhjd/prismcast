@@ -3,9 +3,9 @@
  * browse.test.ts: HTTP-level integration coverage for the browse-modal apply endpoint (POST /config/channels/modify). The browse modal dispatches a batch of
  * entries with per-entry actions (add | enable | switch | remove); this suite exercises the endpoint through a real Express boot and asserts the on-disk shape
  * that each action produces. It is the sibling of crud.test.ts (single-channel form CRUD) and tags.test.ts (tag vocabulary): all three drive the same channels.json
- * store, but this suite pins the browse-modal-specific contract that the others do not touch.
+ * store, but this suite asserts the browse-modal-specific contract that the others do not touch.
  *
- * The guarantees pinned are as follows. (1) buildUserChannel's variant branch: when an add resolves to a service variant of an existing predefined canonical
+ * The guarantees asserted are as follows. (1) buildUserChannel's variant branch: when an add resolves to a service variant of an existing predefined canonical
  * (canonicalKey set), the stored record carries binding-only fields (canonicalKey, url, channelSelector) and intentionally DROPS identity fields (name, stationId)
  * because identity is canonical-only. (2) A standalone add (no canonicalKey) preserves the submitted stationId on the identity-owning canonical record, and a batch entry
  * whose name yields no generatable key is skipped with a per-entry error while the rest of the batch still applies - the batch is not aborted. (3) The remove
@@ -166,7 +166,7 @@ describe("POST /config/channels/modify - remove reverts a multi-service channel 
 
     /* Seed an explicit selection to the DirecTV variant of "abc", then remove the Hulu service. The remove handler clears data.serviceSelections["abc"] before
      * resolving, so resolveServiceKey falls back to the canonical key itself, whose own service tag ("direct") differs from the removed service ("hulu"), so the
-     * channel is NOT disabled. The endpoint always clears the selection, so on disk "abc" reverts to its canonical default. The persisted outcome we pin: the
+     * channel is NOT disabled. The endpoint always clears the selection, so on disk "abc" reverts to its canonical default. The persisted outcome we assert: the
      * selection is gone and "abc" is not in disabledPredefined.
      */
     await mutateChannels((data) => {
@@ -246,7 +246,7 @@ describe("POST /config/channels/modify - remove reverts a multi-service channel 
 
     /* Removing the CURRENTLY-selected service must revert "abc" to an alternative variant or its canonical default and leave it enabled. The remove handler clears
      * the selection on the in-transaction draft and resolves against that draft (not the committed module cache), so the resolver observes the cleared selection and
-     * falls back to the canonical "direct" service, whose tag differs from the removed "hulu" - the channel is not disabled. This pins the fix for the stale-cache
+     * falls back to the canonical "direct" service, whose tag differs from the removed "hulu" - the channel is not disabled. This asserts the fix for the stale-cache
      * regression recorded in the project bug ledger (class A): reading the stale committed cache here would resolve back to abc-hulu and wrongly disable the channel.
      */
     await fetch(urlFor("/config/channels/modify"), {

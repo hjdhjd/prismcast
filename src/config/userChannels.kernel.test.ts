@@ -10,14 +10,14 @@
  *     locally.
  *
  *   - getAllowedFieldsForShape: the single source of truth for "what fields are allowed in this entry's stored shape" - canonical-shaped (full delta surface)
- *     vs variant-shaped (binding-only plus the canonicalKey tag). filterToDeltaSurface and getChannelCustomizations both consume this; pinning the
+ *     vs variant-shaped (binding-only plus the canonicalKey tag). filterToDeltaSurface and getChannelCustomizations both consume this; asserting the
  *     classifier-driven branches prevents drift between the two consumers.
  *
  *   - filterToDeltaSurface: the storage-write-time shape enforcer. Called from normalizeChannelDeltas on every save, so the strip-vs-keep decision is the gate
  *     that prevents legacy orphan fields (non-delta-eligible identity, identity-on-variants, DOM hooks) from persisting forward.
  *
  * applyOverlayKernel is the kernel shared by overlayDelta and overlayVariantBinding. The public callers' tests confirm consumer-level guarantees;
- * these tests pin the kernel's contract directly so a future refactor that breaks the abstraction (e.g., reintroduces a divergent branch in one of the wrappers)
+ * these tests assert the kernel's contract directly so a future refactor that breaks the abstraction (e.g., reintroduces a divergent branch in one of the wrappers)
  * fails locally rather than only via downstream callers.
  */
 import type { ResolvedChannel, StoredChannel } from "../types/index.ts";
@@ -38,7 +38,7 @@ describe("applyOverlayKernel", () => {
    *   field NOT in allowedFields, passThroughOthers === false, field === "canonicalKey" -> override (relationship-metadata carve-out)
    *   field NOT in allowedFields, passThroughOthers === false, field !== "canonicalKey" -> drop silently (variant overlay rule)
    *
-   * Each test below pins one cell in this matrix.
+   * Each test below asserts one cell in this matrix.
    */
 
   test("allowed field with concrete value overrides the base", () => {
@@ -103,7 +103,7 @@ describe("applyOverlayKernel", () => {
 
   test("undefined-valued non-allowed field is skipped regardless of passThroughOthers", () => {
 
-    /* The "undefined inherits" rule applies uniformly across both gates. This test pins the boundary case where a non-allowed field has an undefined value -
+    /* The "undefined inherits" rule applies uniformly across both gates. This test asserts the boundary case where a non-allowed field has an undefined value -
      * passThroughOthers=true would otherwise relay it, but the value-classification check supersedes the allowlist gate.
      */
     const base = { name: "ABC", url: "https://abc.com" } as ResolvedChannel;

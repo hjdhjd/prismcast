@@ -132,7 +132,7 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
 
     await loadHealthState();
 
-    /* The snapshot reflects the loaded state. We pin the structure (the maps are objects, not undefined) rather than emptiness, because the point under test is
+    /* The snapshot reflects the loaded state. We assert the structure (the maps are objects, not undefined) rather than emptiness, because the point under test is
      * that the parser's `?? {}` defaults always supply object-typed maps for a file that carries neither field.
      */
     const snapshot = getHealthSnapshot();
@@ -277,7 +277,7 @@ describe("flushHealthState - debounced write contract", () => {
     /* The debounced flush would lose a pending write if the process exited inside the FLUSH_DELAY window. flushHealthStateNow - called from graceful shutdown -
      * cancels the pending debounce timer and performs the write awaitably, so the on-disk file reflects the mark the instant the call resolves. The distinguishing
      * assertion from the debounce test above is the deliberate ABSENCE of waitForHealthFlush(): if flushHealthStateNow did not write immediately, the read below
-     * would observe a file missing the just-marked channel (this pins the lost-pending-write-on-shutdown regression).
+     * would observe a file missing the just-marked channel (this asserts the lost-pending-write-on-shutdown regression).
      */
     await using ctx = await createIntegrationContext();
 
@@ -309,7 +309,7 @@ describe("health schema v1 to v2 migration matrix", () => {
    */
   test("a v1 file's bare-number domains all survive as verified entries with their original timestamps", async () => {
 
-    /* Pre-mortem pin: the migration must not corrupt or drop any v1 domain. We seed several v1 domains with distinct timestamps and assert each one reads back
+    /* Pre-mortem assertion: the migration must not corrupt or drop any v1 domain. We seed several v1 domains with distinct timestamps and assert each one reads back
      * verified with its exact original timestamp. The mutation under test is the migration's adoptDomainAuthValue call - dropping it would leave bare numbers in
      * the runtime map and the entry-shaped deepEqual reads below would fail.
      */
@@ -359,8 +359,8 @@ describe("health schema v1 to v2 migration matrix", () => {
 
   test("an already-v2 file loads without transformation, preserving both statuses and the needsLogin TTL exemption at load", async () => {
 
-    /* Load-site TTL-exemption pin: loadHealthState's domain filter runs isDomainAuthExpired per entry. We seed a v2 file whose needsLogin and verified entries are
-     * both aged past the TTL - the aged verified entry must be pruned at load while the identically-aged needsLogin entry survives. A fresh verified entry pins
+    /* Load-site TTL-exemption assertion: loadHealthState's domain filter runs isDomainAuthExpired per entry. We seed a v2 file whose needsLogin and verified entries are
+     * both aged past the TTL - the aged verified entry must be pruned at load while the identically-aged needsLogin entry survives. A fresh verified entry covers
      * the untransformed happy path. The status conjunct in isDomainAuthExpired is the mutation under test: an age-only predicate would drop the aged needsLogin
      * entry too.
      */

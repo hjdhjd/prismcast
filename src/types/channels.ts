@@ -16,7 +16,7 @@ import type { Nullable } from "./shared.ts";
  *
  * The discriminated union Channel = CanonicalChannel | VariantChannel is the shape of raw stored and predefined-catalog entries. ResolvedChannel is the
  * post-resolution shape consumers see, where a variant's identity has been merged in from its canonical. Most of the codebase consumes ResolvedChannel; only
- * the flatten, resolve, and normalize internals work with the discriminated raw shape.
+ * the flatten, resolve, and normalize internals work with the tagged raw shape.
  *
  * CHANNEL_IDENTITY_KEYS and CHANNEL_BINDING_KEYS are the single source of truth for the partition. The compile-time exhaustiveness check at the bottom of this
  * file ensures every Channel field is classified - adding a new field anywhere in the type without classifying it is a build error, not a latent bug.

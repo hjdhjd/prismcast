@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * status-handlers-runtime.test.ts: DOM-runtime coverage for the PrismCast status display script (src/routes/root/scripts/status.handlers.ts). The unit suite next
- * to status.ts pins the SHAPE of the emitted string ("the script defines window.toggleStreamPopover"); this suite pins the RUNTIME BEHAVIOR of every handler,
+ * to status.ts asserts the SHAPE of the emitted string ("the script defines window.toggleStreamPopover"); this suite asserts the RUNTIME BEHAVIOR of every handler,
  * formatter, renderer, and DOM mutator the status display drives.
  *
  * The bug class this tier catches is the one most likely to bite the operator-facing UI: an off-by-one in formatDuration's threshold ladder, a wrong CSS-variable
@@ -23,12 +23,12 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin the contract, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; a regression that dropped
+ *   - Assert the contract, not historical incidents. "renderStreamsTable emits a row per stream with the data-id attribute" is the contract; a regression that dropped
  *     the data-id attribute from rendered rows is a symptom to derive coverage from but not the test name.
  *   - For pure functions, prefer literal inputs and direct return-value assertions. No DOM context, no externals plumbing.
  *   - For DOM mutators, build the HandlerContext via the file-local makeHandlerContext factory and let createDomTestContext provide the rendered page fixtures.
  *   - For SSE handlers, the assertion targets are state mutations, recorded externals invocations, and DOM side effects.
- *   - When a runtime rule reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
+ *   - When a runtime rule reveals a real bug, assert current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
  *     Do NOT fix the production module in this suite - fixes are a separate authorized arc.
  */
 import * as handlers from "../../../src/routes/root/scripts/status.handlers.ts";
@@ -64,7 +64,7 @@ interface HandlerContextHarness {
 /**
  * Builds a HandlerContext literal over the supplied document. Externals are stubbed with recording surfaces so tests can assert on invocation shape. State
  * defaults to handlers.createInitialState(); callers can supply a partial override (most commonly a pre-seeded streamData/systemData/expandedStreams) which is merged on
- * top of the defaults. The optional `updateRestartDialogStatusDefined` flag controls whether the optional config.ts trampoline is wired - set to false to pin
+ * top of the defaults. The optional `updateRestartDialogStatusDefined` flag controls whether the optional config.ts trampoline is wired - set to false to assert
  * the streamRemoved-without-restart-dialog branch.
  */
 function makeHandlerContext(document: Document, options?: {
@@ -190,7 +190,7 @@ describe("status.handlers: createInitialState", () => {
 
     /* The IIFE in status.ts does NOT call createInitialState; it hand-mirrors this shape as its own `const state` object literal (status.ts:55-63), while the tests
      * use createInitialState as the default for HandlerContext fixtures. The two are parallel definitions kept in sync by hand, so the field shape has to stay
-     * stable: any new field added here must also be added to the IIFE's literal in status.ts, and vice versa. This assertion is exactly the drift guard - we pin
+     * stable: any new field added here must also be added to the IIFE's literal in status.ts, and vice versa. This assertion is exactly the drift guard - we assert
      * every field so a regression that drops or renames any of them surfaces here.
      */
     const state = handlers.createInitialState();
@@ -209,7 +209,7 @@ describe("status.handlers: createInitialState", () => {
 
   test("two calls return independent objects so test fixtures and the IIFE seed do not share mutable state", () => {
 
-    /* If createInitialState returned a shared singleton, mutating one fixture's state would corrupt the next test's. We pin independence by mutating the first
+    /* If createInitialState returned a shared singleton, mutating one fixture's state would corrupt the next test's. We assert independence by mutating the first
      * call's expandedStreams and asserting the second call's expandedStreams is still empty.
      */
     const a = handlers.createInitialState();
@@ -236,10 +236,10 @@ describe("status.handlers: HANDLER_CONSTANTS registry", () => {
     assert.deepEqual(names, [ "clientTypeLabels", "healthColorVars", "healthLabels", "resolutionLabels", "rowTints" ]);
   });
 
-  test("healthColorVars carries CSS-variable tokens for every health discriminant the wire emits", () => {
+  test("healthColorVars carries CSS-variable tokens for every health tag the wire emits", () => {
 
     /* The health-state values (healthy/buffering/recovering/stalled/error) are the StreamSummary.health union. Each must map to a `var(--*)` token so the badge dot
-     * picks up the theme color. We pin presence of every key plus the var() prefix so a refactor that swapped to literal hex codes (which would break theming)
+     * picks up the theme color. We assert presence of every key plus the var() prefix so a refactor that swapped to literal hex codes (which would break theming)
      * surfaces here.
      */
     const entry = handlers.HANDLER_CONSTANTS.find((c) => c.name === "healthColorVars");
@@ -270,7 +270,7 @@ describe("status.handlers: HANDLER_CONSTANTS registry", () => {
       "healthLabels must NOT carry a 'recovering' key - getRecoveringLabel owns that dispatch");
   });
 
-  test("rowTints maps every health discriminant to a row background tint, with healthy mapping to transparent", () => {
+  test("rowTints maps every health tag to a row background tint, with healthy mapping to transparent", () => {
 
     /* The healthy row must have no tint so the table looks clean during normal operation; only problem states (buffering/recovering/stalled/error) get colored
      * backgrounds. The 'transparent' literal for healthy is the contract - a regression that mapped healthy to a var() token would visibly tint every healthy row.
@@ -291,7 +291,7 @@ describe("status.handlers: formatDuration (pure)", () => {
 
   test("under 60 seconds renders as 'Ns'", () => {
 
-    /* The threshold ladder: <60s renders raw seconds with an 's' suffix. Edge cases pinned: 0 (corner), 1 (singular), 59 (just-under boundary).
+    /* The threshold ladder: <60s renders raw seconds with an 's' suffix. Edge cases asserted: 0 (corner), 1 (singular), 59 (just-under boundary).
      */
     assert.equal(handlers.formatDuration(0), "0s");
     assert.equal(handlers.formatDuration(1), "1s");
@@ -300,7 +300,7 @@ describe("status.handlers: formatDuration (pure)", () => {
 
   test("60s through 3599s renders as 'Nm Ns' with second-level precision", () => {
 
-    /* The minute tier keeps seconds visible so operators can see sub-minute precision during recovery flows. We pin the boundary (60s -> '1m 0s') and a mid-range
+    /* The minute tier keeps seconds visible so operators can see sub-minute precision during recovery flows. We assert the boundary (60s -> '1m 0s') and a mid-range
      * value (125s -> '2m 5s'), plus the upper boundary (3599s -> '59m 59s' just before crossing into hours).
      */
     assert.equal(handlers.formatDuration(60), "1m 0s");
@@ -310,7 +310,7 @@ describe("status.handlers: formatDuration (pure)", () => {
 
   test("3600s and above renders as 'Nh Nm' (seconds dropped, minutes truncated)", () => {
 
-    /* Once a stream is hours old the seconds become noise; minutes is the right precision. We pin the boundary (3600s -> '1h 0m'), a multi-hour case (7325s ->
+    /* Once a stream is hours old the seconds become noise; minutes is the right precision. We assert the boundary (3600s -> '1h 0m'), a multi-hour case (7325s ->
      * '2h 2m', proving the floor-on-minutes), and a long-running case (90000s -> '25h 0m', proving hours don't roll over to days).
      */
     assert.equal(handlers.formatDuration(3600), "1h 0m");
@@ -323,7 +323,7 @@ describe("status.handlers: formatBytes (pure)", () => {
 
   test("0 bytes renders as the literal '0 B'", () => {
 
-    /* The zero case has its own branch so empty buffers don't render as '0.0 KB'. Pinning '0 B' as the exact string ensures the special case stays in.
+    /* The zero case has its own branch so empty buffers don't render as '0.0 KB'. Asserting '0 B' as the exact string ensures the special case stays in.
      */
     assert.equal(handlers.formatBytes(0), "0 B");
   });
@@ -336,7 +336,7 @@ describe("status.handlers: formatBytes (pure)", () => {
 
   test("KB tier (1024-1048575) renders one decimal place", () => {
 
-    /* The KB threshold is 1024 (binary), not 1000. We pin the boundary, a halfway value (1536 -> 1.5 KB), and the upper boundary (1048575 -> 1024.0 KB just under
+    /* The KB threshold is 1024 (binary), not 1000. We assert the boundary, a halfway value (1536 -> 1.5 KB), and the upper boundary (1048575 -> 1024.0 KB just under
      * the MB threshold).
      */
     assert.equal(handlers.formatBytes(1024), "1.0 KB");
@@ -371,7 +371,7 @@ describe("status.handlers: formatTime (pure)", () => {
 
   test("midnight (hour=0) renders as 12 AM and noon (hour=12) renders as 12 PM", () => {
 
-    /* The 12-hour wrap - hours = hours % 12, then fall back to 12 when the result is zero - is a bug-prone corner. We pin both midnight and noon so a regression
+    /* The 12-hour wrap - hours = hours % 12, then fall back to 12 when the result is zero - is a bug-prone corner. We assert both midnight and noon so a regression
      * that drops the fallback (e.g., leaving only hours = hours % 12) would render midnight as 0:00 AM instead of 12:00 AM.
      */
     const now = new Date();
@@ -384,7 +384,7 @@ describe("status.handlers: formatTime (pure)", () => {
 
   test("cross-day timestamps prepend the month abbreviation and day", () => {
 
-    /* When the formatted date falls on a different calendar day than 'now', the output gains a 'Mon D, ' prefix. We pin the prefix shape using a fixed historical
+    /* When the formatted date falls on a different calendar day than 'now', the output gains a 'Mon D, ' prefix. We assert the prefix shape using a fixed historical
      * date (Jan 14, 2024 6:54 AM local time) - the abbreviation 'Jan' and the literal day '14' must appear before the time.
      */
     const distantPast = new Date(2024, 0, 14, 6, 54, 0).toISOString();
@@ -404,7 +404,7 @@ describe("status.handlers: formatTimeAgo (pure)", () => {
 
   test("minutes tier renders 'N minute(s) ago' with singular/plural agreement", () => {
 
-    /* The singular vs plural branch is the bug-prone corner. We pin both: 1 minute (singular) and 5 minutes (plural).
+    /* The singular vs plural branch is the bug-prone corner. We assert both: 1 minute (singular) and 5 minutes (plural).
      */
     assert.equal(handlers.formatTimeAgo(Date.now() - 60000), "1 minute ago");
     assert.equal(handlers.formatTimeAgo(Date.now() - 300000), "5 minutes ago");
@@ -427,7 +427,7 @@ describe("status.handlers: getDomain (pure)", () => {
 
   test("returns the last two hostname parts for multi-segment hostnames", () => {
 
-    /* The display label collapses watch.example.com to example.com so the popover stays scannable. We pin the multi-segment, two-segment, and 5+-segment cases
+    /* The display label collapses watch.example.com to example.com so the popover stays scannable. We assert the multi-segment, two-segment, and 5+-segment cases
      * so a regression that switched the slice direction (which would render 'watch.example' for watch.example.com) surfaces here.
      */
     assert.equal(handlers.getDomain("https://watch.example.com/path"), "example.com");
@@ -437,7 +437,7 @@ describe("status.handlers: getDomain (pure)", () => {
 
   test("returns the original URL string when URL.parse cannot parse it", () => {
 
-    /* The early-return guard for unparseable URLs returns the input verbatim. Pinning this branch ensures we don't crash on malformed strings the server might
+    /* The early-return guard for unparseable URLs returns the input verbatim. Asserting this branch ensures we don't crash on malformed strings the server might
      * emit during identification races.
      */
     assert.equal(handlers.getDomain("not a url at all"), "not a url at all");
@@ -446,7 +446,7 @@ describe("status.handlers: getDomain (pure)", () => {
   test("handles localhost as a single-segment hostname (no slice past start)", () => {
 
     /* Localhost has only one hostname segment. The (parts.length > 2) ? slice(-2) : parts.join('.') branch routes localhost through the join path, which renders
-     * the literal 'localhost'. Pinning this case ensures local-development URLs don't render as 'localhost.localhost' or similar nonsense.
+     * the literal 'localhost'. Asserting this case ensures local-development URLs don't render as 'localhost.localhost' or similar nonsense.
      */
     assert.equal(handlers.getDomain("http://localhost:5589/stream"), "localhost");
   });
@@ -457,7 +457,7 @@ describe("status.handlers: getRecoveringLabel (pure)", () => {
   test("dispatches level 1-3 to the named labels and level 4+ to 'Reloading page'", () => {
 
     /* The escalation ladder defined in monitor.ts: level 1 (play/unmute) -> 'Resuming playback', level 2 (source reload) -> 'Syncing to live', level 3 (page
-     * navigation) -> 'Reloading player'. Level 4+ -> 'Reloading page' is defensive padding since escalationLevel maxes at 3 in production. Pinning the full ladder
+     * navigation) -> 'Reloading player'. Level 4+ -> 'Reloading page' is defensive padding since escalationLevel maxes at 3 in production. Asserting the full ladder
      * catches a regression in any single branch.
      */
     assert.equal(handlers.getRecoveringLabel(1), "Resuming playback");
@@ -481,7 +481,7 @@ describe("status.handlers: getHealthBadge (pure)", () => {
 
   test("renders a status-dot span with the matching CSS-variable color and the label", () => {
 
-    /* The badge HTML is two spans: the dot (color-coded) and the label (text). We pin both pieces for the healthy case so a regression that swapped the dot
+    /* The badge HTML is two spans: the dot (color-coded) and the label (text). We assert both pieces for the healthy case so a regression that swapped the dot
      * character (&#9679; is a black circle), the color binding, or the label dispatch surfaces here.
      */
     const html = handlers.getHealthBadge("healthy", 0);
@@ -502,7 +502,7 @@ describe("status.handlers: getHealthBadge (pure)", () => {
   test("unknown health state falls back to the supplied string and the muted color token", () => {
 
     /* The (healthLabels[health] ?? health) and (healthColorVars[health] ?? var(--text-muted)) fallbacks let the badge render gracefully if the wire emits a health
-     * value the script does not recognize. We pin both fallbacks against a synthetic 'mystery' state.
+     * value the script does not recognize. We assert both fallbacks against a synthetic 'mystery' state.
      */
     const html = handlers.getHealthBadge("mystery", 0);
 
@@ -520,7 +520,7 @@ describe("status.handlers: formatLastIssue (pure)", () => {
 
   test("recovered suffix when health is healthy and an issue type/time is present", () => {
 
-    /* The status suffix is '(recovered)' when health is currently healthy (the issue resolved) and '(recovering)' otherwise. We pin both branches.
+    /* The status suffix is '(recovered)' when health is currently healthy (the issue resolved) and '(recovering)' otherwise. We assert both branches.
      */
     const stream = makeStream({
 
@@ -584,7 +584,7 @@ describe("status.handlers: formatClients (pure)", () => {
 
   test("single client renders as '{count} {Type}' with the type label resolved via clientTypeLabels", () => {
 
-    /* The HLS / MPEG-TS labels come from the clientTypeLabels constant. We pin both labels here - a regression that dropped a key would surface as the raw type
+    /* The HLS / MPEG-TS labels come from the clientTypeLabels constant. We assert both labels here - a regression that dropped a key would surface as the raw type
      * string ('hls' lowercase) instead of the canonical label ('HLS' all-caps).
      */
     assert.equal(handlers.formatClients(makeStream({ clientCount: 1, clients: [{ count: 1, type: "hls" }] })), "1 HLS");
@@ -607,7 +607,7 @@ describe("status.handlers: formatClients (pure)", () => {
 
   test("unknown client type falls back to the raw string", () => {
 
-    /* Defensive fallback: an unrecognized type renders verbatim instead of dropping out of the comma list. Pin a synthetic 'rtsp' entry to verify.
+    /* Defensive fallback: an unrecognized type renders verbatim instead of dropping out of the comma list. Assert a synthetic 'rtsp' entry to verify.
      */
     const stream = makeStream({
 
@@ -623,7 +623,7 @@ describe("status.handlers: renderHealthCellContent (pure)", () => {
 
   test("no client indicator when clientCount is 0; just the badge", () => {
 
-    /* The client-count chip is gated on clientCount > 0. Pinning the negative case ensures an empty stream doesn't render a stray '&#9673; 0' marker.
+    /* The client-count chip is gated on clientCount > 0. Asserting the negative case ensures an empty stream doesn't render a stray '&#9673; 0' marker.
      */
     const html = handlers.renderHealthCellContent(makeStream({ clientCount: 0 }));
 
@@ -633,7 +633,7 @@ describe("status.handlers: renderHealthCellContent (pure)", () => {
 
   test("singular 'client' tooltip on the chip when clientCount is 1", () => {
 
-    /* The title attribute carries the count + 'client'/'clients'. Pinning the singular case pins the agreement branch.
+    /* The title attribute carries the count + 'client'/'clients'. Asserting the singular case covers the agreement branch.
      */
     const html = handlers.renderHealthCellContent(makeStream({ clientCount: 1 }));
 
@@ -650,7 +650,7 @@ describe("status.handlers: renderHealthCellContent (pure)", () => {
 
   test("recovering streams pick up the level-specific label via getHealthBadge", () => {
 
-    /* The renderer composes the chip and the badge. We pin the composition - a recovering stream at level 3 must surface 'Reloading player' inside the cell.
+    /* The renderer composes the chip and the badge. We assert the composition - a recovering stream at level 3 must surface 'Reloading player' inside the cell.
      */
     const html = handlers.renderHealthCellContent(makeStream({ escalationLevel: 3, health: "recovering" }));
 
@@ -669,7 +669,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
 
   test("hardware-accelerated capture prefixes the lightning bolt", () => {
 
-    /* The hardware-accelerated branch prepends the literal lightning-bolt character (⚡, U+26A1); non-accelerated does not - we pin its presence.
+    /* The hardware-accelerated branch prepends the literal lightning-bolt character (⚡, U+26A1); non-accelerated does not - we assert its presence.
      */
     const html = handlers.renderDetailCodec(makeStream({ captureCodec: "h264", hardwareAccelerated: true }));
 
@@ -689,7 +689,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
   test("native HLS with bandwidth + resolution appends the quality suffix", () => {
 
     /* The suffix shape: ' - {Mbps}Mbps {resolution-label}'. The resolution label comes from the shared label map keyed by the height (the second component of
-     * a 'WIDTHxHEIGHT' string). We pin the full happy-path: 5Mbps + 1920x1080 -> ' - 5.0Mbps 1080p'.
+     * a 'WIDTHxHEIGHT' string). We assert the full happy-path: 5Mbps + 1920x1080 -> ' - 5.0Mbps 1080p'.
      */
     const html = handlers.renderDetailCodec(makeStream({
 
@@ -751,7 +751,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
   test("native mode reports its variant quality and never the source pair", () => {
 
     /* A native stream's nativeResolution is both its source and its output, so the pair would be a duplicate reading of the same number. The negative assertion is
-     * what pins the mode gate: a stream carrying a sourceResolution still renders the native suffix alone.
+     * what proves the mode gate: a stream carrying a sourceResolution still renders the native suffix alone.
      */
     const html = handlers.renderDetailCodec(makeStream({
 
@@ -768,7 +768,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
   test("capture mode with no captureCodec renders 'Unknown'", () => {
 
     /* The two-step ternary: captureCodec ? ... : (streamingMode === 'native' ? 'Native HLS' : 'Unknown'). When no codec is reported and the mode is anything
-     * other than native, we fall back to the literal 'Unknown'. Pinning this corner case prevents a regression that emits an empty string or 'undefined'.
+     * other than native, we fall back to the literal 'Unknown'. Asserting this corner case prevents a regression that emits an empty string or 'undefined'.
      */
     const html = handlers.renderDetailCodec(makeStream());
 
@@ -780,7 +780,7 @@ describe("status.handlers: renderDetailStarted (pure)", () => {
 
   test("renders 'Started: {time}' when no clients are connected", () => {
 
-    /* The clientSuffix is gated on clientCount > 0; zero clients produce no suffix. We pin the unsuffixed shape against a 6:54 AM same-day time so the formatTime
+    /* The clientSuffix is gated on clientCount > 0; zero clients produce no suffix. We assert the unsuffixed shape against a 6:54 AM same-day time so the formatTime
      * collaboration is visible in the assertion target.
      */
     const stream = makeStream({
@@ -795,7 +795,7 @@ describe("status.handlers: renderDetailStarted (pure)", () => {
 
   test("renders 'Started: {time} · {clients}' when clients are connected", () => {
 
-    /* The middot separator (·) is part of the contract. The clients are formatted via formatClients, which we've already pinned. We assert the composition.
+    /* The middot separator (·) is part of the contract. The clients are formatted via formatClients, which we've already asserted. We assert the composition.
      */
     const stream = makeStream({
 
@@ -829,7 +829,7 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
 
   test("renders connected-state badge with the healthy color when browser.connected is true and active is 0", () => {
 
-    /* Connected with zero streams: green dot in the health span, '0 streams' textContent on the count button, no 'clickable' class. We pin all three so a
+    /* Connected with zero streams: green dot in the health span, '0 streams' textContent on the count button, no 'clickable' class. We assert all three so a
      * regression in any one surfaces here.
      */
     return (async (): Promise<void> => {
@@ -852,7 +852,7 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
 
   test("renders 'Browser offline' when browser.connected is false", () => {
 
-    /* The offline branch swaps the color and appends a label. We pin the literal 'Browser offline' so a regression that renamed the label surfaces here.
+    /* The offline branch swaps the color and appends a label. We assert the literal 'Browser offline' so a regression that renamed the label surfaces here.
      */
     return (async (): Promise<void> => {
 
@@ -871,7 +871,7 @@ describe("status.handlers: updateSystemStatus (DOM mutator)", () => {
 
   test("renders the relaunch-pending state when the browser can no longer start captures", () => {
 
-    /* The third header state. The color and the label are both pinned, and so is the tooltip, because the tooltip is the only place the interface explains why a
+    /* The third header state. The color and the label are both asserted, and so is the tooltip, because the tooltip is the only place the interface explains why a
      * tune is being refused - a state rendered without it would leave a user watching a failing tune with nothing to read. The offline label is asserted absent so
      * a regression that fell through to the disconnected branch surfaces here.
      */
@@ -989,7 +989,7 @@ describe("status.handlers: buildStreamPopoverContent (DOM mutator)", () => {
   test("falls back to getDomain when both channel and serviceName are empty strings (not just nullish)", () => {
 
     /* The fallback chain uses || semantics, not ?? - this matters because the server may emit empty strings during identification races. The chain: channel ||
-     * serviceName || handlers.getDomain(url). We pin the all-empty case to confirm the URL-derived label surfaces.
+     * serviceName || handlers.getDomain(url). We assert the all-empty case to confirm the URL-derived label surfaces.
      */
     return (async (): Promise<void> => {
 
@@ -1060,7 +1060,7 @@ describe("status.handlers: buildStreamPopoverContent (DOM mutator)", () => {
      * break out of the text context and inject a live element. We seed a show name with a <b> tag plus an ampersand and apostrophe and assert the raw innerHTML
      * carries the angle brackets and ampersand as entities, with no live tag surviving. We inspect innerHTML (raw markup) rather than textContent, which would
      * decode the entities and mask a missing escape. Note: the DOM serializer round-trips a quote/apostrophe in text content back to the literal character (both
-     * are inert there), so this DOM-level test pins the breakout-prevention guarantee; the byte-exact &quot;/&#39; entity contract is pinned in the clientEscape
+     * are inert there), so this DOM-level test asserts the breakout-prevention guarantee; the byte-exact &quot;/&#39; entity contract is asserted in the clientEscape
      * parity suite (clientEscape.test.ts).
      */
     return (async (): Promise<void> => {
@@ -1192,7 +1192,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
   test("preserves Object.entries insertion order so streams appear in the order they were added", () => {
 
     /* JavaScript's Object preserves insertion order for string keys. The renderer iterates Object.entries, which means the order of streamData mutation is the
-     * order of the rendered rows. We seed the streamData with explicit insertion order and pin that the rendered order matches.
+     * order of the rendered rows. We seed the streamData with explicit insertion order and assert that the rendered order matches.
      */
     return (async (): Promise<void> => {
 
@@ -1325,7 +1325,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
 
     /* The show cell is built by concatenating the show name directly into the table innerHTML. External show-name data carrying < or > must be entity-encoded so
      * it cannot break out of the cell and inject a live element. We inspect the cell's innerHTML (raw markup) rather than textContent, which would decode the
-     * entities and hide a missing escape. The strict &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention
+     * entities and hide a missing escape. The strict &quot;/&#39; entity contract is asserted in the clientEscape parity suite; here we assert the breakout-prevention
      * guarantee that survives the DOM serializer's round-trip.
      */
     return (async (): Promise<void> => {
@@ -1352,7 +1352,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
     /* The expanded detail panel concatenates the stream URL directly into the .details-url innerHTML. Stream URLs routinely carry & in their query strings, and a
      * user-supplied channel URL could carry markup characters. The ampersand and any angle brackets must be entity-encoded. We seed a URL with an ampersand-laden
      * query string plus an injected angle-bracket payload and assert the raw innerHTML carries those as entities with no live element parsed out. The strict
-     * &quot;/&#39; entity contract is pinned in the clientEscape parity suite; here we pin the breakout-prevention guarantee that survives the DOM serializer.
+     * &quot;/&#39; entity contract is asserted in the clientEscape parity suite; here we assert the breakout-prevention guarantee that survives the DOM serializer.
      */
     return (async (): Promise<void> => {
 
@@ -1865,7 +1865,7 @@ describe("status.handlers: toggleStreamPopover (window-bound trampoline)", () =>
   test("opens the popover when closed: closes other dropdowns first, then builds content and adds .show", () => {
 
     /* The opening sequence: dropdowns.close (so other open dropdowns dismiss before the popover takes over) -> buildStreamPopoverContent (populates the menu) ->
-     * .classList.add('show') (reveals it). We pin all three side effects in order via the recorder + DOM state.
+     * .classList.add('show') (reveals it). We assert all three side effects in order via the recorder + DOM state.
      */
     return (async (): Promise<void> => {
 
@@ -1903,7 +1903,7 @@ describe("status.handlers: toggleStreamPopover (window-bound trampoline)", () =>
 
       // Note: dropdowns.close() in production removes .show; the stub does not, but the !isOpen guard means we don't re-add it. We assert that reopening does not happen.
       assert.equal(menu?.classList.contains("show"), true,
-        "stub dropdowns.close does not remove .show; the test pins the no-re-open invariant via the absence of buildStreamPopoverContent (no channelDisplayCalls)");
+        "stub dropdowns.close does not remove .show; the test asserts the no-re-open rule via the absence of buildStreamPopoverContent (no channelDisplayCalls)");
       assert.equal(harness.recorder.channelDisplayCalls.length, 0,
         "buildStreamPopoverContent must NOT fire on the close path");
     })();
@@ -2035,7 +2035,7 @@ describe("status.handlers: initIPadTooltips (lifecycle helper)", () => {
       await using ctx = await createDomTestContext();
 
       // Inject a window stub so the function's `window.matchMedia(...)` reference resolves. happy-dom's window.matchMedia exists but may default to matches=false
-      // anyway; we override explicitly to pin the desktop branch.
+      // anyway; we override explicitly to assert the desktop branch.
       const previousWindow = (globalThis as { window?: unknown }).window;
 
       (globalThis as { window?: unknown }).window = { matchMedia: (): { matches: boolean } => ({ matches: false }) };
@@ -2063,7 +2063,7 @@ describe("status.handlers: initIPadTooltips (lifecycle helper)", () => {
 
   test("appends a .btn-icon-tooltip element to the body when matchMedia('(hover: none)').matches === true", () => {
 
-    /* The mobile/iPad branch creates and appends a single shared tooltip element. We pin its presence and class. We do not exercise the mouseenter/mouseleave
+    /* The mobile/iPad branch creates and appends a single shared tooltip element. We assert its presence and class. We do not exercise the mouseenter/mouseleave
      * handlers - those depend on getBoundingClientRect, which happy-dom returns as a zero-sized rect, making the positioning logic unobservable. The element's
      * existence is the witness that the init path fired.
      */
@@ -2104,7 +2104,7 @@ describe("status.handlers: initIPadTooltips (lifecycle helper)", () => {
 
 describe("status.handlers: render schedulers (rAF gates)", () => {
 
-  test("scheduleTableRender is idempotent within a frame: repeated calls before the rAF fires schedule only one render", async () => {
+  test("scheduleTableRender is a no-op on repeat within a frame: repeated calls before the rAF fires schedule only one render", async () => {
 
     /* We swap rAF for a deferred-fire stub for this test only - the module-scope synchronous-fire stub would defeat the test by firing each call inline. The
      * deferred stub queues the callbacks; we manually fire them after the schedule round-trip. The pending-flag gate must prevent more than one schedule from
@@ -2248,7 +2248,7 @@ describe("status.handlers - module export inventory", () => {
 
   /* The export {} block at the bottom of status.handlers.ts is the documented test surface - DOM-runtime suite imports it via `import * as handlers`, the
    * production-emitted script consumes the same functions via Function.prototype.toString() in HANDLER_FUNCTIONS, and a regression that adds an export without
-   * adding it to either consumer would silently leak into the public surface. We pin the export set the same way icons.test.ts pins the icon list - a closed
+   * adding it to either consumer would silently leak into the public surface. We assert the export set the same way icons.test.ts asserts the icon list - a closed
    * set test that fails when an identifier is added or removed.
    */
 
@@ -2307,7 +2307,7 @@ describe("status.handlers - module export inventory", () => {
 
     // The HANDLER_FUNCTIONS array drives the emitted script body in generateStatusScript. Every function that needs to ship to the browser must be in this
     // array - missing one means the runtime breaks at the call site. HANDLER_CONSTANTS and createInitialState are NOT emitted (createInitialState is called only
-    // by status.ts at IIFE start). The lower-bound check guards against an accidental drop without re-pinning the exact count on every additive change.
+    // by status.ts at IIFE start). The lower-bound check guards against an accidental drop without re-asserting the exact count on every additive change.
     assert.ok(handlers.HANDLER_FUNCTIONS.length > 25, "HANDLER_FUNCTIONS contains the documented script-body functions");
 
     for(const fn of handlers.HANDLER_FUNCTIONS) {

@@ -8,7 +8,7 @@
  * How the dependencies are substituted. setupHealthEndpoint accepts its state readers (isBrowserConnected, getBrowserPages, getChromeVersion, the registry
  * counts, getClientSummary) as an injected HealthDeps parameter, defaulting to the real modules. The suite passes one deps object whose readers return the
  * per-test mockState, so every status branch, the getBrowserPages-error suppression, and the client-aggregation fold are exercised through the real handler on a
- * real Express server - no loader mock. The extracted pure deriveHealthStatus decision is additionally pinned directly at the end of the file.
+ * real Express server - no loader mock. The extracted pure deriveHealthStatus decision is additionally asserted directly at the end of the file.
  *
  * Coverage tiers in this file:
  *
@@ -16,7 +16,7 @@
  *      Each branch is exercised explicitly: setting mockState.browserConnected toggles the unhealthy boundary; setting mockState.streamCount around the
  *      threshold (7, 8) exercises the healthy/degraded boundary against the production maxConcurrentStreams default of 10.
  *
- *   2. Threshold boundary. streamCount = floor(0.8 * 10) - 1 = 7 stays healthy; streamCount = ceil(0.8 * 10) = 8 flips to degraded. Pinning both points
+ *   2. Threshold boundary. streamCount = floor(0.8 * 10) - 1 = 7 stays healthy; streamCount = ceil(0.8 * 10) = 8 flips to degraded. Asserting both points
  *      structurally locks the 0.8 threshold so a regression that drifted to 0.75 or 0.85 would fail one assertion.
  *
  *   3. Client aggregation loop. health.ts iterates getAllStreams() and folds each stream's getClientSummary() into a system-wide byType map. The new test
@@ -267,7 +267,7 @@ describe("setupHealthEndpoint - GET /health response shape", () => {
     assert.ok(body.memory.rss > 0, "rss should be positive");
   });
 
-  test("uptime is a non-negative number (process.uptime invariant)", async () => {
+  test("uptime is a non-negative number (the process.uptime guarantee)", async () => {
 
     const res = await fetch(urlFor("/health"));
     const body = await res.json() as HealthBody;
@@ -278,7 +278,7 @@ describe("setupHealthEndpoint - GET /health response shape", () => {
 
   test("version is the package.json version string", async () => {
 
-    // Locks that the version is a string. We don't pin to a specific version so the test doesn't break on every release.
+    // Locks that the version is a string. We don't lock to a specific version so the test doesn't break on every release.
     const res = await fetch(urlFor("/health"));
     const body = await res.json() as HealthBody;
 
@@ -361,7 +361,7 @@ describe("setupHealthEndpoint - GET /health (browser connected, healthy branch)"
   test("treats getBrowserPages errors as zero pages without escalating the status", async () => {
 
     /* The handler wraps getBrowserPages in try/catch and intentionally suppresses errors - a transient page-enumeration failure should not flip the entire
-     * health response into a different branch. We pin that contract explicitly: an error from getBrowserPages must yield pageCount: 0 and leave the status
+     * health response into a different branch. We assert that contract explicitly: an error from getBrowserPages must yield pageCount: 0 and leave the status
      * branch alone, matching the comment "// Ignore page count errors." in production.
      */
     mockState.browserConnected = true;
@@ -381,7 +381,7 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
 
   test("crosses into 'degraded' exactly when streamUtilization reaches 0.8 (8 of 10 default)", async () => {
 
-    /* Threshold boundary, lower side: streamCount = 7 -> utilization = 0.7, status remains healthy. The cliff at 0.8 is the production contract; pinning the
+    /* Threshold boundary, lower side: streamCount = 7 -> utilization = 0.7, status remains healthy. The cliff at 0.8 is the production contract; asserting the
      * point one below proves the branch does not trip prematurely.
      */
     mockState.browserConnected = true;
@@ -399,7 +399,7 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
   test("flips to 'degraded' the moment streamUtilization reaches 0.8 (8 of 10 default)", async () => {
 
     /* Threshold boundary, upper side: streamCount = 8 -> utilization = 0.8, status flips to degraded. The handler responds with 200 (not 503) and the message
-     * names the capacity limit so the operator knows why the deployment is being throttled. This is the second half of the threshold pin - together with the
+     * names the capacity limit so the operator knows why the deployment is being throttled. This is the second half of the threshold assertion - together with the
      * 7-stream test above, the pair structurally locks the 0.8 threshold against drift.
      */
     mockState.browserConnected = true;
@@ -417,7 +417,7 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
 
   test("stays 'degraded' when streamUtilization runs above the threshold", async () => {
 
-    /* Once past the cliff, the branch should hold steady regardless of how high the utilization climbs. This pins that the predicate is "utilization >= 0.8"
+    /* Once past the cliff, the branch should hold steady regardless of how high the utilization climbs. This asserts that the predicate is "utilization >= 0.8"
      * (cliff-then-stay), not "utilization == 0.8" (a momentary spike that resets above the limit).
      */
     mockState.browserConnected = true;
@@ -434,7 +434,7 @@ describe("setupHealthEndpoint - GET /health (degraded branch + threshold boundar
 
     /* The branch ordering: the handler checks browserConnected first, so a disconnected browser surfaces as unhealthy even when stream utilization
      * would otherwise indicate degraded. Without this, an operator triaging a 503 might be misled into reading the response body's stream metrics as the cause
-     * when the underlying issue is actually browser availability. This test pins that the unhealthy-takes-precedence ordering is structural.
+     * when the underlying issue is actually browser availability. This test asserts that the unhealthy-takes-precedence ordering is structural.
      */
     mockState.browserConnected = false;
     mockState.streamCount = 9;
@@ -499,7 +499,7 @@ describe("setupHealthEndpoint - GET /health (client aggregation loop)", () => {
 
   test("an empty getAllStreams() yields an empty byType array and zero total clients", async () => {
 
-    /* The aggregation loop's empty-input case: no streams, no client work to do. Pin that the byType field is an empty array (not null, not undefined) so the
+    /* The aggregation loop's empty-input case: no streams, no client work to do. Assert that the byType field is an empty array (not null, not undefined) so the
      * UI can render the surface unconditionally.
      */
     mockState.browserConnected = true;
@@ -515,7 +515,7 @@ describe("setupHealthEndpoint - GET /health (client aggregation loop)", () => {
 
   test("byType is alphabetically sorted by type even when input order is reversed", async () => {
 
-    /* Pin the toSorted contract independently of the aggregation: even if the source streams happened to add MPEG-TS clients first, the output emits 'hls'
+    /* Assert the toSorted contract independently of the aggregation: even if the source streams happened to add MPEG-TS clients first, the output emits 'hls'
      * before 'mpegts'. Without this, an upstream order change in client registration could silently drift the response shape.
      */
     mockState.browserConnected = true;
@@ -540,7 +540,7 @@ describe("deriveHealthStatus - the pure decision core", () => {
 
   test("browser disconnected is unhealthy (503) regardless of utilization", () => {
 
-    // Branch precedence: browser-down outranks any utilization. Pins the single source of truth the handler derives status, message, and HTTP code from.
+    // Branch precedence: browser-down outranks any utilization. Asserts the single source of truth the handler derives status, message, and HTTP code from.
     assert.deepEqual(deriveHealthStatus({ browserConnected: false, captureImpaired: false, streamUtilization: 0 }),
       { httpStatus: 503, message: "Browser is not connected.", status: "unhealthy" });
     assert.deepEqual(deriveHealthStatus({ browserConnected: false, captureImpaired: false, streamUtilization: 0.9 }),
@@ -554,7 +554,7 @@ describe("deriveHealthStatus - the pure decision core", () => {
 
   test("connected at or above 0.8 utilization is degraded (200)", () => {
 
-    // The 0.8 threshold is inclusive and cliff-then-stay - the exact contract the handler tests exercise through the server, pinned here in isolation.
+    // The 0.8 threshold is inclusive and cliff-then-stay - the exact contract the handler tests exercise through the server, asserted here in isolation.
     assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: false, streamUtilization: 0.8 }),
       { httpStatus: 200, message: "Approaching stream capacity limit.", status: "degraded" }, "the threshold is inclusive at 0.8");
     assert.deepEqual(deriveHealthStatus({ browserConnected: true, captureImpaired: false, streamUtilization: 1.5 }),

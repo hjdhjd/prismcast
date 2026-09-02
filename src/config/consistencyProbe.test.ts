@@ -19,7 +19,7 @@ describe("runConsistencyProbeAtStartup", () => {
     await assert.doesNotReject(() => runConsistencyProbeAtStartup());
   });
 
-  test("is idempotent across repeated invocations", async () => {
+  test("changes nothing across repeated invocations", async () => {
 
     // Boundary: calling the probe a second time must not double-count or fail. Under the unit-test default, every check returns no issues, so the probe
     // short-circuits at the empty-issues guard before any logging or auto-fix runs... the repeated call is safe because nothing is generated, not because an

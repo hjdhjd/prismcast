@@ -153,7 +153,7 @@ describe("selectInterceptedManifest", () => {
 });
 
 /* Acceptance cases for the guide-tune three-signal rule. Cases (a) through (j) and (m) each vary EXACTLY ONE clause from the flagship case (a), so a pass can only
- * come from the clause under test. Cases (k) and (l) are branch pins. FLAGSHIP is the shared baseline: a pre-epoch master (ordinal 3, below the mark of 5, with
+ * come from the clause under test. Cases (k) and (l) are branch assertions. FLAGSHIP is the shared baseline: a pre-epoch master (ordinal 3, below the mark of 5, with
  * non-matching children) and a post-epoch live non-member media (ordinal 7). The master's declared children never include the media's pathname, so membership is
  * a genuine non-member unless a case makes it one.
  */

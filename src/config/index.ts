@@ -199,7 +199,7 @@ async function doReloadConfiguration(io: ConfigStore): Promise<ApplyResult> {
 
     const applyResult: ApplyResult = { applied: [], deferred: [], rejected: diff.map((change) => ({ change, reason: rejection })) };
 
-    LOG.warn("Configuration reload rejected; the saved configuration violates an invariant and was not applied live.", { reason: rejection });
+    LOG.warn("Configuration reload rejected; the saved configuration fails validation and was not applied live.", { reason: rejection });
     logReloadOutcome(diff, applyResult);
 
     return applyResult;

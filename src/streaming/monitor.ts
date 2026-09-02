@@ -2230,7 +2230,7 @@ export function monitorPlaybackHealth(
      * the static-capture return below. Chrome composes the capture of a selected tab from the window's fitted presentation, and re-issuing the page's own declared
      * metrics moves the composition back to the emulated surface; firing it on a cadence means any disturbance, from any cause known or unknown, is corrected
      * within about a minute rather than lasting for the recording. The registry is read again here rather than reusing the native check below, which sits on the
-     * far side of that return. The command rides currentPage, the reference tab replacement updates, and the stream context is re-established because an interval
+     * far side of that return. The command uses currentPage, the reference tab replacement updates, and the stream context is re-established because an interval
      * callback does not inherit it - so a rejection logs under this stream's own prefix.
      */
     reaffirmTickCounter++;

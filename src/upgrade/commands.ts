@@ -38,7 +38,7 @@ export interface UpgradeContext {
   // handoff branch because the helper handles the service restart itself.
   readonly isService: boolean;
 
-  // Performs the upgrade for one InstallInfo by dispatching to the platform-appropriate lifecycle strategy. Resolves with a discriminated UpgradeStep - either
+  // Performs the upgrade for one InstallInfo by dispatching to the platform-appropriate lifecycle strategy. Resolves with a tagged UpgradeStep - either
   // "ran" (the strategy executed the command in this process) or "handed-off" (the strategy spawned a detached helper). Callers narrow on `kind` to choose the
   // right messaging and exit behavior.
   readonly performUpgrade: (info: InstallInfo) => Promise<UpgradeStep>;

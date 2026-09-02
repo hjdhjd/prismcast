@@ -39,7 +39,7 @@ describe("FileStoreParseError", () => {
   test("the name override survives a throw/catch round-trip and remains queryable on the caught instance", () => {
 
     /* Route handlers catch FileStoreParseError specifically to return HTTP 400 rather than 500 - they rely on the .name override (rather than instanceof) when
-     * the error has crossed a serialization boundary or has been wrapped in another error's `cause` chain. We pin both: catching the thrown error reads name
+     * the error has crossed a serialization boundary or has been wrapped in another error's `cause` chain. We assert both: catching the thrown error reads name
      * correctly, and a synthetic AggregateError that wraps it via cause leaves the inner name intact for inspection.
      */
     const original = new FileStoreParseError("channels", "/tmp/x.json", "boom");
@@ -265,7 +265,7 @@ describe("FileStore.mutate - core paths", () => {
 
   test("queue continuity holds under rapid concurrent mutations where every other one rejects", async () => {
 
-    /* The "subsequent succeeds after one throws" test pins continuity at low cadence. The queue's promise-chain reference is `queue = operation.catch(() => {})`
+    /* The "subsequent succeeds after one throws" test asserts continuity at low cadence. The queue's promise-chain reference is `queue = operation.catch(() => {})`
      * - a single empty catch installed once per dispatch. A regression that broke the chain reference (e.g., dropping the catch, replacing with the original
      * promise rather than the swallowed one, or short-circuiting on the first rejection) would surface only under a burst where multiple rejections interleave
      * with successes - the low-cadence test would still pass.
@@ -344,7 +344,7 @@ describe("FileStore.mutate - corrupt-main rotation guard", () => {
 
   test("a mutate that follows a failed .bak restore does not rotate the corrupt main into .bak (good copy survives)", async () => {
 
-    /* This pins the layered protection for the catastrophic data-loss window: when the main file is corrupt and read() recovers from .bak in memory but the
+    /* This asserts the layered protection for the catastrophic data-loss window: when the main file is corrupt and read() recovers from .bak in memory but the
      * on-disk restore-write fails, the .bak holds the ONLY good copy. A subsequent mutate's pre-write backup step must NOT copy the still-corrupt main over
      * .bak - doing so would destroy that last good copy.
      *
@@ -402,7 +402,7 @@ describe("FileStore - recovery and mutate use distinct temp paths", () => {
      * the SAME <filePath>.tmp, the recovery's write or rename could clobber the mutate's in-flight temp before the mutate's rename. The framework gives recovery
      * a distinct suffix (.recover.tmp) so the two write paths never collide.
      *
-     * We pin the contract directly: drive a recovery (corrupt main, valid .bak) and a normal write (a subsequent mutate), recording every temp path the
+     * We assert the contract directly: drive a recovery (corrupt main, valid .bak) and a normal write (a subsequent mutate), recording every temp path the
      * framework writes. The recovery must use <filePath>.recover.tmp and the mutate must use <filePath>.tmp - two distinct keys that can never overwrite one
      * another.
      */

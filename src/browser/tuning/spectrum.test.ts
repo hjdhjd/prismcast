@@ -4,7 +4,7 @@
  * lineup arrives in one evaluate round-trip - which is what makes the provider drivable from a page stub handing back a canned guide read, with no browser behind
  * it, the same shape youtubeTv.test.ts uses.
  *
- * What these rows exist to pin is a single-source-of-truth property rather than a behavior: the watch address has exactly one construction site, and all three of
+ * What these rows exist to assert is a single-source-of-truth property rather than a behavior: the watch address has exactly one construction site, and all three of
  * its consumers - the strategy's direct navigation, the cached-URL resolver, and the durable-lineup export - produce the identical string for the same channel. A
  * second inlined copy would drift silently, and the failure would surface as a persisted hint that navigates somewhere the tune path does not expect.
  *
@@ -112,7 +112,7 @@ describe("watch address construction", () => {
 
   test("all three consumers produce the identical address for one channel", async () => {
 
-    /* The single-source-of-truth pin. The strategy's navigation, the cached-URL resolver, and the durable-lineup export each reach for the same construction site;
+    /* The single-source-of-truth assertion. The strategy's navigation, the cached-URL resolver, and the durable-lineup export each reach for the same construction site;
      * a second inlined copy would satisfy any one of these rows on its own and drift from the others the moment Spectrum's watch-page shape changed.
      */
     const guide = makeGuidePage(LINEUP);
@@ -139,7 +139,7 @@ describe("durable lineup export", () => {
   test("exports one row per channel with its watch address, however many keys point at it", async () => {
 
     /* Five cache keys, two channels. Projecting the map's values without reducing them to distinct entries would persist each channel two or three times, and the
-     * duplicates would ride into the channel-form suggestion list and every later boot's fallback.
+     * duplicates would carry into the channel-form suggestion list and every later boot's fallback.
      */
     const guide = makeGuidePage(LINEUP);
 

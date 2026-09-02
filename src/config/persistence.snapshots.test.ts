@@ -4,7 +4,7 @@
  * by mtime. Snapshots are version-keyed safety nets that survive normal .bak rotation; they are the restore-of-last-resort when a release introduces a
  * data-shape regression that escapes the primary safeguards.
  *
- * Why some tests use real fs and others use the in-memory backend: the snapshot CREATION path (snapshot label idempotence, copyFile-from-source semantics) is
+ * Why some tests use real fs and others use the in-memory backend: the snapshot CREATION path (snapshot label repeat safety, copyFile-from-source semantics) is
  * exercised against real fs because the framework's atomicity guarantees only mean what they mean against a real filesystem. The pruning tests that need
  * failure injection (readdir, per-entry stat, or per-entry unlink throwing mid-loop) use the memory backend with override hooks, since real fs cannot
  * reliably make individual calls fail on demand. The one pruning test that needs no failure injection - the at-or-below-retention no-op boundary - has no
@@ -39,11 +39,11 @@ describe("FileStore.snapshot - real-fs creation", () => {
     });
   });
 
-  test("is idempotent on the same label (second call is a no-op)", async () => {
+  test("is a no-op on a second call with the same label", async () => {
 
     await withTempDir(async (dir) => {
 
-      const store = makeStore<{ value: number }>(dir, "idempotent.json", {
+      const store = makeStore<{ value: number }>(dir, "repeat-safe.json", {
 
         defaultValue: () => ({ value: 0 })
       });
@@ -55,10 +55,10 @@ describe("FileStore.snapshot - real-fs creation", () => {
       await store.mutate((data) => { data.value = 2; });
       await store.snapshot("v1");
 
-      const snapPath = path.join(dir, "snapshots", "idempotent.json.v1");
+      const snapPath = path.join(dir, "snapshots", "repeat-safe.json.v1");
       const content = JSON.parse(await readFile(snapPath, "utf-8")) as { value: number };
 
-      assert.equal(content.value, 1, "idempotent: first snapshot's value is preserved");
+      assert.equal(content.value, 1, "the first snapshot's value is preserved");
     });
   });
 

@@ -189,11 +189,11 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
   /* The rename cascade rule: when a tag is renamed in the vocabulary, every channel that referenced the old name must be updated to the new name in lockstep,
    * AND every other tag on those channels must survive untouched. The cascade implementation is shared with DELETE - both call transformChannelTags - so the
    * shape of the cascade contract here mirrors the "DELETE /config/tags/:tag - cascade across vocabulary and channel bindings" describe block below exactly. The
-   * conflict path (renaming to an existing name) is the additional pin specific to rename:
+   * conflict path (renaming to an existing name) is the additional assertion specific to rename:
    * a 409 must short-circuit before either the registry write or the cascade, so vocabulary and channels stay byte-identical when the rename is rejected.
    *
    * The validation-failure path also short-circuits before the registry write, so a malformed newTag (empty, too long, invalid character) leaves the world
-   * unchanged just like the conflict path. This mirrors DELETE's 404 short-circuit pinned in the DELETE-cascade describe block below (the unknown-tag DELETE test).
+   * unchanged just like the conflict path. This mirrors DELETE's 404 short-circuit asserted in the DELETE-cascade describe block below (the unknown-tag DELETE test).
    */
 
   test("POST rename on a referenced user tag updates vocabulary AND every channel binding", async () => {
@@ -252,7 +252,7 @@ describe("POST /config/tags/rename - cascade across vocabulary and channel bindi
 
     /* Two user tags, A and B, both attached to a channel. Attempt to rename A -> B; the vocabulary already contains B, so the handler must reject with 409 before
      * touching the registry or the cascade. We snapshot per-key bytes pre-rename and assert byte-equality post-rename to prove the short-circuit. We assert only
-     * the 409 status, not the envelope body; what this test actually pins is the unchanged on-disk state.
+     * the 409 status, not the envelope body; what this test actually asserts is the unchanged on-disk state.
      */
     await using ctx = await createIntegrationContext();
 
@@ -598,7 +598,7 @@ describe("POST /config/tags/rename - predefined versus user tag registry semanti
 
   /* Rename resolves the old tag's provenance and takes one of two registry paths, both cascading identically across channel bindings. For a PREDEFINED old tag,
    * the endpoint tombstones the canonical old name in deletedTags (exactly once) and pushes the new name as a user tag - it cannot mutate the immutable predefined
-   * list in place. For a USER old tag, the endpoint maps the name in place within the user tags array and never touches deletedTags. These two tests pin that
+   * list in place. For a USER old tag, the endpoint maps the name in place within the user tags array and never touches deletedTags. These two tests assert that
    * distinction in the persisted registry while asserting the shared cascade onto channel bindings.
    */
 
@@ -683,7 +683,7 @@ describe("POST /config/tags - creating a deleted predefined tag conflicts", () =
 
   /* A deleted predefined tag is not gone - it is tombstoned in deletedTags and can be restored. Re-creating it as a fresh user tag would fork the identity and
    * lose the restore path, so the create endpoint rejects that case with a 409 that directs the user to restore instead. We delete the predefined Lifestyle tag,
-   * then attempt to create it, and pin the 409 plus its restore guidance and the fact that the conflicting create leaves the user vocabulary untouched.
+   * then attempt to create it, and assert the 409 plus its restore guidance and the fact that the conflicting create leaves the user vocabulary untouched.
    */
 
   test("returns 409 directing the user to restore when creating a tag that matches a deleted predefined tag", async () => {
@@ -722,7 +722,7 @@ describe("DELETE /config/tags/:tag - predefined delete and already-deleted no-op
 
   /* Deleting a predefined tag differs from deleting a user tag: the user tags array is immutable for predefined names, so the endpoint records the canonical form
    * in deletedTags and cascades a tag-stripping override across bindings. Re-deleting an ALREADY-deleted predefined tag is a no-op: the handler short-circuits
-   * before setTagRegistry and the cascade, returning current state without a second write. We pin both halves - the first delete's registry + cascade effect, and
+   * before setTagRegistry and the cascade, returning current state without a second write. We assert both halves - the first delete's registry + cascade effect, and
    * the second delete's byte-identical persisted state proving no write occurred.
    */
 

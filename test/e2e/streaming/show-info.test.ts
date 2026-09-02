@@ -8,12 +8,12 @@
  *
  * Every internal function under test (updateShowNames, updateShowNamesForHost, getGuideShowNames, loadPersistedDvrHost, persistDvrHost, populateChannelLogos)
  * is module-private, so this suite drives them exclusively through the exported functions: setDvrHost, startShowInfoPolling, and triggerShowNameUpdate. Three
- * behavior groups are pinned:
+ * behavior groups are asserted:
  *
  *   A. Show-name resolution - recording-job precedence over the program guide, guide fallback when no recording matches, and stale-name clearing when
  *      neither source matches anymore.
  *   B. Persisted DVR host round-trip - loadPersistedDvrHost reads channelsDvr.host from config.json on startup, and persistDvrHost (via setDvrHost) writes
- *      only the host field back, never touching channelsDvr.port. The rule rejecting a colon in the host value is pinned alongside the host-only mutate.
+ *      only the host field back, never touching channelsDvr.port. The rule rejecting a colon in the host value is asserted alongside the host-only mutate.
  *   C. Two-tier channel logo population - the /devices endpoint's tier-1 logos land in the shared logo cache and are broadcast via the channelUpdate SSE
  *      event, normalized through normalizeLogoUrl. A tier-2 TMS station-name fallback is attempted for a channel with a station ID but no tier-1 logo.
  *
@@ -332,7 +332,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       state.guideByDevice.set(deviceId, [{ Airings: [{ Title: "Guide Title (must be ignored)" }], Channel: { ChannelID: targetKey } }]);
 
       // clientAddress stays at the factory default of null so updateShowNames' discovery phase has nothing to iterate over; lastKnownDvrHost is set
-      // directly below via setDvrHost, which is the seam the lookup phase actually keys off.
+      // directly below via setDvrHost, which is the injection point the lookup phase actually keys off.
       const entry = makeRegistryEntry({ info: { lastPlaylistRequest: 0, storeKey: targetKey } });
 
       registerStream(entry);
@@ -369,7 +369,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       assert.ok(otherGuideNumber, "buildFullDevice must assign a GuideNumber to every channel key it processes");
 
       // The job matches an UNRELATED channel (not the target), proving the guide fallback fires because nothing genuinely matched, not merely because the
-      // jobs list happened to be empty. Two airings are supplied for the target channel so the "first airing wins" contract is pinned, not just "guide wins".
+      // jobs list happened to be empty. Two airings are supplied for the target channel so the "first airing wins" contract is asserted, not just "guide wins".
       state.jobs = [{ Channel: otherGuideNumber, DeviceID: deviceId, Name: "Unrelated Recording" }];
       state.guideByDevice.set(deviceId, [{
 

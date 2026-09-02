@@ -241,7 +241,7 @@ describe("login icon tri-state rendering", () => {
 
   test("renders the needs-sign-in state (health-failed, actionable title) when the domain is flagged", () => {
 
-    /* Regression pin for the needsLogin branch in generateChannelRowHtml's login icon block: the scenario seeds a needsLogin entry for abc.com, so the
+    /* Regression assertion for the needsLogin branch in generateChannelRowHtml's login icon block: the scenario seeds a needsLogin entry for abc.com, so the
      * rendering enters the needsLogin arm - the appended health-failed class and the sign-in title are the mutations under test. The title must lead with the
      * click action (the icon IS the remedy) and carry the detection timestamp.
      */
@@ -428,7 +428,7 @@ describe("getTagCounts (via buildChannelTablePatch tagCounts)", () => {
     assert.ok(tagCounts, "tagCounts must be present");
 
     // Recompute the expected per-tag counts from the same inputs the production builder consumes: the current listing filtered to enabled + service-available
-    // entries, and each entry's vocabulary-filtered effective tags. This pins the exact counting contract the Quick Actions toggles rely on.
+    // entries, and each entry's vocabulary-filtered effective tags. This asserts the exact counting contract the Quick Actions toggles rely on.
     const vocabulary = getActiveTagVocabulary();
     const listing = getChannelListing();
     const expected: Record<string, { count: number; total: number }> = {};

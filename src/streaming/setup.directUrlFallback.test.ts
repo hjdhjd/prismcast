@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.directUrlFallback.test.ts: Setup-tier tests for the direct-watch-URL failure contract and the guide fallback it drives. Three things are pinned here.
+ * setup.directUrlFallback.test.ts: Setup-tier tests for the direct-watch-URL failure contract and the guide fallback it drives. Three things are asserted here.
  * createPageWithCapture's catch asks the coordinator whether the failure was evidence against the URL it navigated to, and throws the typed
  * DirectUrlEstablishmentError only when the answer is yes - a page-death failure, which the retention policy keeps the URL for, rethrows raw. The skipDirectUrl
  * option makes the resolution not happen at all, which is what makes a second typed error structurally impossible on the fallback attempt. And setupStream turns
@@ -167,7 +167,7 @@ describe("createPageWithCapture - direct watch URL failure classification", () =
   test("skipDirectUrl never consults the resolver, navigates to the guide, and cannot produce the typed error", async (t) => {
 
     /* The branch behind the cannot-loop claim. With the resolution skipped, the strategy's own resolver is never called and no direct URL exists, so the catch's
-     * typed arm is unreachable no matter how the establishment fails. The hint is deliberately left in place, which is what makes this pin non-vacuous: a
+     * typed arm is unreachable no matter how the establishment fails. The hint is deliberately left in place, which is what makes this assertion non-vacuous: a
      * regression that ignored the resolver's answer instead of skipping the resolution would still navigate to the hint and still type its failure.
      */
     const strategy = getProviderBySlug("hbomax")?.strategy;
@@ -191,7 +191,7 @@ describe("setupStream - the guide fallback", () => {
   test("retries once through the guide after a typed direct-URL failure", async () => {
 
     /* The whole point of typing the error: the first attempt burns the stale hint, and rather than handing the client a failed request, the tune gets the one
-     * guide attempt it would have had if the hint had never existed. The navigation list is the pin - two attempts, the hint then the guide - so removing the
+     * guide attempt it would have had if the hint had never existed. The navigation list is the assertion - two attempts, the hint then the guide - so removing the
      * fallback leaves a single entry.
      */
     await assert.rejects(setupStream({ channelSelector: "HBO", probeIdentity: PROBE_IDENTITY, url: GUIDE_URL }, (): void => { /* No circuit break here. */ },

@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.captureLock.test.ts: Setup-tier test for createPageWithCapture's integration with the capture lock. It pins the closed-page recursion: when the page is found
+ * setup.captureLock.test.ts: Setup-tier test for createPageWithCapture's integration with the capture lock. It asserts the closed-page recursion: when the page is found
  * already closed at the instant its capture turn is granted (a browser crash during the turn-wait), the lock task throws a typed PageClosedDuringTurnError, the caller
  * recurses on a fresh page outside the lock, and after MAX_PAGE_CLOSED_RETRIES it fails with the terminal message. The test drives createPageWithCapture through its
  * CreatePageWithCaptureDeps collaborators with a stub browser whose pages report isClosed() true, so the acquisition is never reached and no real Chrome runs. The

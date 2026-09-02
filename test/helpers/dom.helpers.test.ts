@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * dom.helpers.test.ts: Tests for the DOM-runtime test harness itself. As with integration.helpers.test.ts, every DOM-runtime suite depends on these guarantees
- * holding correctly. The tests pin the harness's contract surface: served HTML is loaded into a synthetic Window, inline
+ * holding correctly. The tests assert the harness's contract surface: served HTML is loaded into a synthetic Window, inline
  * <script> bodies are extracted in document order, scripts only execute when the test explicitly opts in via runScripts(), arbitrary code can be evaluated in
  * the Window's global scope, and disposal closes the Window before the bootApp listener (LIFO) so happy-dom's async tasks settle before the listener tears down.
  *
@@ -93,7 +93,7 @@ describe("createDomTestContext - HTML loading and script extraction", () => {
     }
   });
 
-  test("does not auto-execute inline scripts (disableJavaScriptEvaluation invariant)", async () => {
+  test("does not auto-execute inline scripts (disableJavaScriptEvaluation guarantee)", async () => {
 
     /* The harness disables happy-dom's automatic script evaluation so tests can opt in to which scripts run. We confirm by checking that none of the production
      * scripts' window.* assignments leaked into the Window before runScripts is called. window.channelTable is the most reliable witness because it is the only

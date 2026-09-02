@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * process.helpers.test.ts: Tests for assertNoUnhandledRejections and expectAt. The first wires a per-test handler against an injected emitter (so synthetic
- * events don't conflict with the test runner); the second polls a microtask-yielding predicate within a bounded iteration budget. Coverage pins the rejection
+ * events don't conflict with the test runner); the second polls a microtask-yielding predicate within a bounded iteration budget. Coverage asserts the rejection
  * accumulation, listener detachment, deterministic re-throw, and the off-by-one boundaries on the polling budget.
  */
 import { assertNoUnhandledRejections, expectAt } from "./process.helpers.ts";

@@ -184,7 +184,7 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
   test("forwards the context's command deadline to the runner", async () => {
 
     // The deadline is caller policy, not a property of the platform: the web UI bounds the command so a stalled install cannot hold an HTTP request open, while
-    // the CLI runs unbounded. The strategy is the pass-through that carries the caller's choice to the runner, so the wire-up is pinned here.
+    // the CLI runs unbounded. The strategy is the pass-through that carries the caller's choice to the runner, so the wire-up is asserted here.
     const cap = makeLifecycleContext({ commandTimeoutMs: 120000, platform: "darwin" });
 
     await performUpgrade(cap.context, makeInstallInfo());
@@ -206,7 +206,7 @@ describe("performUpgrade with the POSIX in-process strategy", () => {
   test("resolves rather than returning the outcome directly", async () => {
 
     // The port is asynchronous so a caller sharing its event loop with the HTTP server keeps serving requests for the length of a package install. A regression
-    // to a synchronous return would still satisfy the awaited assertions above (await on a non-promise is a no-op), so the promise itself is pinned here.
+    // to a synchronous return would still satisfy the awaited assertions above (await on a non-promise is a no-op), so the promise itself is asserted here.
     const cap = makeLifecycleContext({ platform: "darwin" });
     const pending = performUpgrade(cap.context, makeInstallInfo());
 

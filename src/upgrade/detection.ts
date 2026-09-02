@@ -238,7 +238,7 @@ export type RegisteredMethod = typeof STRATEGY_TUPLE[number]["id"];
 export const INSTALL_STRATEGIES: readonly InstallStrategy<RegisteredMethod>[] = STRATEGY_TUPLE;
 
 /**
- * The full install-method discriminator. Adds the unknown sentinel that the dispatcher returns when no strategy in the registry matches; everything else is
+ * The full install-method set. Adds the unknown sentinel that the dispatcher returns when no strategy in the registry matches; everything else is
  * registered. Consumers that need exhaustive coverage over the full method set get it via this type.
  */
 export type InstallMethod = RegisteredMethod | "unknown";

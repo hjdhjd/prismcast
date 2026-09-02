@@ -243,7 +243,7 @@ describe("persistCoercedConfig - startup capture write-back", () => {
 });
 
 /* Reloads are serialized on a module-level queue, so two overlapping saves cannot interleave into a state where the reload holding the older disk snapshot
- * commits last. Both pins drive two reloads whose reads settle out of call order, which is the shape a pair of concurrent save requests produces.
+ * commits last. Both assertions drive two reloads whose reads settle out of call order, which is the shape a pair of concurrent save requests produces.
  */
 describe("reloadConfiguration - serialized reloads", () => {
 

@@ -19,7 +19,7 @@ import { initializePlayback } from "./video.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 
 // A record of one startOverlayHandling invocation, captured by the deps.startOverlayHandling double. abortedAtCall and priorTuneSetupAborted snapshot abort state AT
-// THE MOMENT of the call - the fields that pin the phase-poll lifecycle ordering (a post-hoc read of the signal is useless because every poll's finally
+// THE MOMENT of the call - the fields that assert the phase-poll lifecycle ordering (a post-hoc read of the signal is useless because every poll's finally
 // aborts its signal by the time the tune settles).
 interface OverlayCallRecord {
 
@@ -185,7 +185,7 @@ describe("initializePlayback - failed-tune blocked-page diagnosis", () => {
   test("surfaces the standing consent guidance text, character-identical, when a consent overlay blocks the page", async () => {
 
     /* Traced path: the consentOverlay arm in diagnoseBlockedTune. The guidance text is the detect-and-guide sentence diagnoseBlockedTune throws for a
-     * consentOverlay classification; equality (not substring) pins it character-identical.
+     * consentOverlay classification; equality (not substring) asserts it character-identical.
      */
     mockSelectResult = { reason: "Station code FBN not found.", success: false };
     classifyResult = async (): Promise<BlockedPageClassification> => ({ kind: "consentOverlay" });
@@ -370,7 +370,7 @@ describe("initializePlayback - phase-scoped overlay poll lifecycle", () => {
     /* Traced path: the gate branch of the video-wait race. The first video wait pends until it is abandoned; invoking the recorded videoWait resolver makes the gate
      * win the race, which aborts that wait, reloads the page, and runs the postGateReload span (context resolution + a second wait) under its own poll. The second
      * wait rejects here, so the span settles and the guard's finally aborts the postGateReload poll without depending on the fullscreen/ensurePlayback path. The
-     * not-aborted-at-call / aborted-after-settle pair pins the abort to the span boundary rather than a premature or missing abort.
+     * not-aborted-at-call / aborted-after-settle pair ties the abort to the span boundary rather than a premature or missing abort.
      */
     t.mock.method(LOG, "debug", () => { /* Silenced. */ });
     t.mock.method(LOG, "warn", () => { /* Silenced. */ });

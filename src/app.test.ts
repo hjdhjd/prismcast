@@ -57,7 +57,7 @@ describe("releaseInstanceSlot", () => {
     }, "releaseInstanceSlot should be a safe no-op when no identity file exists");
   });
 
-  test("is idempotent on repeated calls", () => {
+  test("is a no-op on repeated calls", () => {
 
     // Repeated invocation is the realistic scenario: the process exit handler may run after a graceful shutdown that already called releaseInstanceSlot, and
     // the function must not throw or otherwise misbehave on the second pass.

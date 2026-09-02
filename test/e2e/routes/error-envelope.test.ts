@@ -6,7 +6,7 @@
  * envelope helpers carries `{ success: true, ... }`. The client-side toast and error-handling logic depends on this shape - any endpoint that ships a
  * non-conforming envelope silently breaks the UI.
  *
- * Why this suite exists: per-endpoint suites cover behavior, but none pins the cross-endpoint envelope-shape rule. A new endpoint that forgets to
+ * Why this suite exists: per-endpoint suites cover behavior, but none asserts the cross-endpoint envelope-shape rule. A new endpoint that forgets to
  * call sendValidationError / sendErrorResponse / sendFormErrors and instead writes a raw `res.status(400).json({ error: "..." })` would slip past every per-endpoint
  * suite - the per-endpoint test would still pass because the endpoint's behavior is correct, but the envelope shape would be off and the client wouldn't know.
  *
@@ -22,7 +22,7 @@
  *   app, plus GET endpoints with validation envelopes (playlist.ts query-parameter rejections, config/profiles/export missing-key rejection, services/:slug/channels
  *   unknown-service rejection). The rich-payload form of sendValidationError / sendErrorResponse (`{ error, validTags, ... }`, `{ error, validFields, ... }`,
  *   `{ error, validDirections, ... }` - the diagnostic-context shapes the GET-validation endpoints emit) is part of the canonical contract, so one drift check and
- *   one sweep cover every envelope-helper endpoint regardless of method... validation envelopes on GET are not second-class. The sweep pins the envelope marker
+ *   one sweep cover every envelope-helper endpoint regardless of method... validation envelopes on GET are not second-class. The sweep asserts the envelope marker
  *   (success: false) and the simple-vs-form variant (error vs errors), not the diagnostic extension fields themselves.
  *
  * Why drift-check via stack-walk and not via a production-side endpoint registry: three options were considered - (A) export an endpoint registry from production,
@@ -36,9 +36,9 @@
  * registry would be referenced from both the route setup and this test), but extracting it is a production refactor; the test
  * runs without it and remains correct.
  *
- * What this suite does NOT pin: GET endpoints with no validation rejection path (read-only data responses, streaming endpoints, server-rendered HTML pages,
+ * What this suite does NOT assert: GET endpoints with no validation rejection path (read-only data responses, streaming endpoints, server-rendered HTML pages,
  * static assets - all of these are listed in EXCLUDED_ENDPOINTS with a one-line rationale per entry), and exception-only error envelopes whose 500 path
- * requires environmental fault injection (e.g., GET /logs whose 500 catch fires only on filesystem read failure - the envelope shape is pinned by the
+ * requires environmental fault injection (e.g., GET /logs whose 500 catch fires only on filesystem read failure - the envelope shape is asserted by the
  * sendErrorResponse rich-payload unit tests at src/routes/config/http/envelope.test.ts; integration coverage would require a production refactor to inject
  * the failure deterministically).
  */
@@ -170,8 +170,8 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
   /* Playlist - playlist.ts. Four paths from the same registered route, each tripping a different validation rejection: an unknown service tag (hits
    * parseServiceFilter), an unknown user tag (hits parseTagFilter), an invalid sort field (hits VALID_SORT_FIELDS), an invalid sort
    * direction (hits VALID_SORT_DIRECTIONS). Each carries a different diagnostic extension field on the rich-payload envelope (validTags, validFields,
-   * validDirections), but the sweep does not pin those fields - the matching assertion below verifies only the envelope marker (success: false) and the
-   * simple-vs-form variant (an `error` string with `errors` absent). What these entries pin is that every rejection path still ships a conforming top-level
+   * validDirections), but the sweep does not assert those fields - the matching assertion below verifies only the envelope marker (success: false) and the
+   * simple-vs-form variant (an `error` string with `errors` absent). What these entries assert is that every rejection path still ships a conforming top-level
    * error envelope.
    */
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/playlist", requestPath: "/playlist?service=nonexistent-service-tag-foo" },
@@ -181,7 +181,7 @@ const ENDPOINT_SPECS: readonly EndpointSpec[] = [
 
   /* Profiles export - config/services.ts. The "Profile key is required" rejection fires when ?profile= is absent from the query string. This is the simplest
    * deterministic 400 path on this endpoint. The "No valid profile keys provided" path (?profile=, with only commas/whitespace) is structurally identical and
-   * adds nothing to drift detection - one entry per registered path is sufficient to pin the envelope contract.
+   * adds nothing to drift detection - one entry per registered path is sufficient to assert the envelope contract.
    */
   { expectedField: "error", expectedStatus: 400, method: "GET", registeredPath: "/config/profiles/export", requestPath: "/config/profiles/export" },
 
@@ -236,7 +236,7 @@ const EXCLUDED_ENDPOINTS: readonly ExclusionSpec[] = [
 
   /* GET-side exclusions - read endpoints with no validation rejection path or with exception-only error envelopes that require environmental fault injection.
    * Each entry carries a one-line rationale; the bulk of the GET surface is data responses, streaming, server-rendered HTML, and static assets, so the
-   * envelope contract simply does not apply. Exception-only paths (e.g., /logs's filesystem-failure 500) are pinned by the sendErrorResponse rich-payload unit
+   * envelope contract simply does not apply. Exception-only paths (e.g., /logs's filesystem-failure 500) are asserted by the sendErrorResponse rich-payload unit
    * tests at src/routes/config/http/envelope.test.ts; integration coverage would require a production refactor to inject the failure deterministically.
    */
   { method: "GET", reason: "Static asset response. No JSON envelope to assert.", registeredPath: "/favicon.svg" },
@@ -251,7 +251,7 @@ const EXCLUDED_ENDPOINTS: readonly ExclusionSpec[] = [
   { method: "GET", reason: "HLS playlist response (audio manifest). Streaming endpoint, not an API.", registeredPath: "/hls/:name/audio.m3u8" },
   { method: "GET", reason: "HLS segment response. Streaming endpoint, not an API.", registeredPath: "/hls/:name/:segment" },
   { method: "GET",
-    reason: "Read-only data response (success path); 500 path requires fs fault injection. Envelope shape pinned by sendErrorResponse rich-payload unit tests.",
+    reason: "Read-only data response (success path); 500 path requires fs fault injection. Envelope shape asserted by sendErrorResponse rich-payload unit tests.",
     registeredPath: "/logs" },
   { method: "GET", reason: "Server-Sent Events stream. Long-lived connection, no JSON envelope.", registeredPath: "/logs/stream" },
   { method: "GET", reason: "MPEG-TS streaming response. Streaming endpoint, not an API.", registeredPath: "/stream/:name" },
@@ -262,11 +262,11 @@ const EXCLUDED_ENDPOINTS: readonly ExclusionSpec[] = [
   { method: "GET", reason: "Preroll fMP4 segment. Streaming endpoint, not an API.", registeredPath: "/preroll/:codec/:segment" },
   { method: "GET", reason: "Read-only data response (login mode status). No validation rejection path.", registeredPath: "/auth/status" },
   { method: "GET",
-    reason: "500 catch only (no validation rejection). Envelope shape pinned by sendErrorResponse caught-exception unit tests; success path returns data.",
+    reason: "500 catch only (no validation rejection). Envelope shape asserted by sendErrorResponse caught-exception unit tests; success path returns data.",
     registeredPath: "/upgrade/info" },
   { method: "GET", reason: "Read-only data response (profile listing). No validation rejection path.", registeredPath: "/config/profiles" },
   { method: "GET",
-    reason: "500 catch only (no validation rejection). Envelope shape pinned by sendErrorResponse caught-exception unit tests; success path returns export JSON.",
+    reason: "500 catch only (no validation rejection). Envelope shape asserted by sendErrorResponse caught-exception unit tests; success path returns export JSON.",
     registeredPath: "/config/export" },
   { method: "GET", reason: "Read-only export response (channels JSON download). No validation rejection path.", registeredPath: "/config/channels/export" },
   { method: "GET", reason: "Read-only data response (tag vocabulary). No validation rejection path.", registeredPath: "/config/tags" },
@@ -329,7 +329,7 @@ describe("HTTP error envelope - drift check across every registered endpoint", (
 
   test("every registered endpoint is either in ENDPOINT_SPECS or in EXCLUDED_ENDPOINTS", async () => {
 
-    /* SSOT pin: the runtime route stack is authoritative for "what endpoints exist." This test asserts the test fixture (ENDPOINT_SPECS + EXCLUDED_ENDPOINTS)
+    /* SSOT assertion: the runtime route stack is authoritative for "what endpoints exist." This test asserts the test fixture (ENDPOINT_SPECS + EXCLUDED_ENDPOINTS)
      * is a complete enumeration of registered routes across the entire app (mutating endpoints AND read-side endpoints). A new endpoint added to production
      * without a matching test entry fails this assertion loud, before any sweep test runs - the maintainer must decide explicitly whether to add it to
      * ENDPOINT_SPECS (sweep its envelope) or to EXCLUDED_ENDPOINTS (with a reason). Either choice is fine; the drift check catches accidental omissions.

@@ -10,7 +10,7 @@
  *
  * It is the browser-side twin of the server-side escapeHtml single source of truth in utils/markup.ts. clientEscapeHtml cannot import markup.escapeHtml: its body
  * ships to the browser verbatim via Function.prototype.toString(), where the import binding would be undefined, so the two are necessarily separate function
- * objects. The byte-parity guard in clientEscape.test.ts pins them identical across the full character set so a future edit to either - for example swapping the
+ * objects. The byte-parity guard in clientEscape.test.ts asserts them identical across the full character set so a future edit to either - for example swapping the
  * HTML5 numeric apostrophe &#39; for the XML &apos; - cannot merge silently.
  */
 

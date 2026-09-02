@@ -296,7 +296,7 @@ describe("createMP4BoxParser", () => {
 
     // A box declaring more than 4 GB via a non-zero high word is not legitimate streaming framing. Were the high word ignored, this otherwise well-formed 24-byte
     // frame would emit as a 24-byte box; the guard must instead resync so nothing is emitted. The distinct low word (24) is what an unguarded parser would wrongly
-    // trust, so a zero emit count pins the high-word rejection.
+    // trust, so a zero emit count asserts the high-word rejection.
     const seen: MP4Box[] = [];
     const parser = createMP4BoxParser((box) => seen.push(box));
     const box = Buffer.alloc(24);

@@ -71,7 +71,7 @@ describe("POST /config/service-filter", () => {
 
   test("an empty enabledServices array means 'no filter active' (clears the filter)", async () => {
 
-    /* The semantic of an empty array is "all services pass." After clearing, channels.enabledServices on disk should be either absent or empty. We don't pin
+    /* The semantic of an empty array is "all services pass." After clearing, channels.enabledServices on disk should be either absent or empty. We don't assert
      * which because filterDefaults may strip an empty array; we just confirm no filter remains.
      */
     await using ctx = await createIntegrationContext();

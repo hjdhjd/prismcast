@@ -236,7 +236,7 @@ describe("pretune scheduling state machine", () => {
   test("a job within the horizon for an idle channel triggers exactly one pretune call when the per-job timer fires", async () => {
 
     /* The positive case: a clean schedule with an eligible job where no active stream exists. Pretune must read the schedule, schedule a setTimeout for
-     * (start - 30s), and when that timer fires, call initializeStream once with the right options. This pins the happy-path flow that all the negative tests
+     * (start - 30s), and when that timer fires, call initializeStream once with the right options. This asserts the happy-path flow that all the negative tests
      * implicitly depend on - if the positive path is broken, the negative-test assertions become uninformative.
      */
     await using ctx = await createIntegrationContext();
@@ -288,7 +288,7 @@ describe("pretune scheduling state machine", () => {
 
   /* Phase 2.5 Suite 38: pretune contract for non-streamable channels.
    *
-   * The tests below close coverage gaps adjacent to Suite 12's "already-streaming" invariant. Each pins what pretune does when the DVR job's resolved channel
+   * The tests below close coverage gaps adjacent to Suite 12's "already-streaming" rule. Each asserts what pretune does when the DVR job's resolved channel
    * is not currently streamable from PrismCast - either because the channel does not exist (test 1), is structurally hidden by the user's service filter
    * (test 2), or is on the user's predefined-disabled list (test 3). Test 4 is a positive control proving the new tests' assertions are informative: a
    * normally-available predefined channel still pretunes through the same code paths the negative tests share.
@@ -310,7 +310,7 @@ describe("pretune scheduling state machine", () => {
 
     /* Suite 38 test 1: missing channel. The guide number maps to "missing-channel-x9z2", a key that exists nowhere - not in PREDEFINED_CHANNELS, not in user
      * channels. validateChannel walks the channelsRef lookup, the getAllChannels fallback, and finds nothing - returns 404 invalid. Pretune short-circuits with
-     * a debug log and never calls initializeStream. The negative invariant pins that pretune cannot fire on phantom channels (a guide-mapping drift, a renamed
+     * a debug log and never calls initializeStream. The negative case asserts that pretune cannot fire on phantom channels (a guide-mapping drift, a renamed
      * channel still referenced by the DVR's queued job, a typo in the operator's mapping table).
      */
     await using ctx = await createIntegrationContext();
@@ -357,7 +357,7 @@ describe("pretune scheduling state machine", () => {
      * getAllChannels itself - all three of which already exclude filtered-out channels.
      *
      * The end-to-end rule is enforced at the streaming boundary by validateChannel via isChannelAvailableByService - the same canonical predicate used by
-     * getVisibleChannels, the channel table renderer, and the bulk-action allowlist builders. The negative invariant: any future caller of validateChannel
+     * getVisibleChannels, the channel table renderer, and the bulk-action allowlist builders. The negative case: any future caller of validateChannel
      * (HLS direct tuning, MPEG-TS for HDHomeRun, pretune) gets the same rejection for filtered-out channels, so the bug class cannot resurface from a new
      * streaming entry point as long as it routes through validateChannel.
      */
@@ -408,7 +408,7 @@ describe("pretune scheduling state machine", () => {
   test("scheduled job for a disabledPredefined channel does NOT trigger pretune", async () => {
 
     /* Suite 38 test 3: a predefined channel on the user's disabledPredefined list. validateChannel checks isPredefinedChannelDisabled first, short-
-     * circuits with 404 "Channel is disabled," and pretuneChannel returns before initializeStream. The negative invariant: a user explicitly hiding a channel
+     * circuits with 404 "Channel is disabled," and pretuneChannel returns before initializeStream. The negative case: a user explicitly hiding a channel
      * from the playlist also suppresses pretune for that channel - the two paths share the same on-off semantics.
      */
     await using ctx = await createIntegrationContext();
@@ -454,7 +454,7 @@ describe("pretune scheduling state machine", () => {
 
     /* Suite 38 test 4: positive control adjacent to the negative tests above. A clean state (no filter, nothing disabled), a predefined channel (cnn) that
      * structurally exists in PREDEFINED_CHANNELS, and a job within the horizon. Pretune resolves the channel, validates it, and fires initializeStream. This
-     * pins that the negative-test assertions are informative - if the positive path were broken, all negative-test 0-counts would pass for the wrong reason.
+     * asserts that the negative-test assertions are informative - if the positive path were broken, all negative-test 0-counts would pass for the wrong reason.
      *
      * Distinct from the existing positive control (which uses a custom-seeded "nbc" channel with a synthetic URL). This one uses the predefined cnn entry
      * unmodified, so the validation passes through the predefined-only branches that the existing test does not exercise.
@@ -497,7 +497,7 @@ describe("pretune scheduling state machine", () => {
     assert.equal((options as { preTuned: boolean }).preTuned, true, "options.preTuned must be true so the stream is exempt from idle timeout until a client connects");
   });
 
-  /* Scheduler-branch coverage. The tests below pin the still-uncovered internal branches of pretune's state machine that the go / no-go tests above do not
+  /* Scheduler-branch coverage. The tests below assert the still-uncovered internal branches of pretune's state machine that the go / no-go tests above do not
    * exercise: the safety-timeout reaper (claimed vs unclaimed), the retry loop and its past-start abandonment guard, the pre-schedule skips (cancelled/skipped,
    * outside horizon, already started, empty or unresolvable guide, empty device mappings), and the timer-map hygiene (dedup on re-poll, stale-timer cleanup on
    * job disappearance). Each drives the scheduler with mock.timers and asserts the observable effect a regression would break - the initializeStream spy call
@@ -1010,7 +1010,7 @@ describe("pretune scheduling state machine", () => {
   test("a job whose start has already passed is skipped while a future job fires", async () => {
 
     /* The already-started skip: pollForUpcomingJobs ignores jobs whose start is at or before now, so a recording already in progress is never speculatively
-     * tuned. The past job's start is before the clock; the future job proves the poll ran and pins that only it schedules.
+     * tuned. The past job's start is before the clock; the future job proves the poll ran and asserts that only it schedules.
      */
     await using ctx = await createIntegrationContext();
 
@@ -1068,7 +1068,7 @@ describe("pretune scheduling state machine", () => {
   test("a job whose channels[0] is empty is skipped while a resolvable job fires", async () => {
 
     /* The empty-guide skip: a job whose preferred channel entry is empty yields no guide number to resolve, so pretune skips it before touching the device
-     * mappings. The control job with a resolvable guide proves the poll ran and pins that only it schedules.
+     * mappings. The control job with a resolvable guide proves the poll ran and asserts that only it schedules.
      */
     await using ctx = await createIntegrationContext();
 
@@ -1129,7 +1129,7 @@ describe("pretune scheduling state machine", () => {
 
     /* The unresolved-guide skip: a guide number the device mappings do not know maps to no PrismCast channel, so resolveGuideNumber returns undefined and pretune
      * skips the job. This guards against guide-mapping drift where the DVR references a channel PrismCast no longer serves. The mapped control job proves the poll
-     * ran and pins that only it schedules.
+     * ran and asserts that only it schedules.
      */
     await using ctx = await createIntegrationContext();
 

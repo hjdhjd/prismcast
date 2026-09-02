@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * config-runtime.test.ts: DOM-runtime coverage for the configuration-tab client-side script (src/routes/root/scripts/config.ts). The unit suite next to the
- * generator pins the SHAPE of the emitted string ("the script defines window.submitSettingsForm"); this suite pins the RUNTIME BEHAVIOR of that emitted string
+ * generator asserts the SHAPE of the emitted string ("the script defines window.submitSettingsForm"); this suite asserts the RUNTIME BEHAVIOR of that emitted string
  * when a synthetic browser parses and executes it ("when window.submitSettingsForm runs against a real DOM, it POSTs the right body and toggles the right
  * controls").
  *
@@ -23,12 +23,12 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin the guarantee the test enforces, not the historical incident that motivated it. "submitSettingsForm builds the dot-path config object" is the
+ *   - Assert the guarantee the test enforces, not the historical incident that motivated it. "submitSettingsForm builds the dot-path config object" is the
  *     contract; "the d2ee7be Save flow regression doesn't recur" is a symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (POST bodies, URL paths, methods), override window.fetch with a spy before triggering the operation. Asserting on persisted
  *     state via the bootApp listener is also acceptable but couples the test to the server response shape - the spy is preferred when only the call shape matters.
- *   - When a runtime guarantee this suite pins reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion
+ *   - When a runtime guarantee this suite asserts reveals a real bug, assert current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion
  *     to flip post-fix.
  *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  */
@@ -152,7 +152,7 @@ describe("config.ts: subtab initialization", () => {
   test("hides #settings-buttons when switching to the backup subtab; shows it on every other subtab", async () => {
 
     /* The onSwitch callback is the config-specific behavior layered onto the shared switcher: backup subtab is purely informational (no Save button), so the
-     * sticky button row must hide. Every other subtab restores it. Pin both directions so a regression in either branch surfaces here.
+     * sticky button row must hide. Every other subtab restores it. Assert both directions so a regression in either branch surfaces here.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -198,7 +198,7 @@ describe("config.ts: window.resetSetting", () => {
   test("sets the input value to its data-default and dispatches both 'input' and 'change' events", async () => {
 
     /* resetSetting is the per-field reset entry. The contract: replace dots with hyphens to find the input id, set value to data-default, and dispatch both
-     * input (so updateModifiedIndicator + validateInput re-run) and change (so cascade handlers like the preset dropdown's onPresetChange fire). We pin all three.
+     * input (so updateModifiedIndicator + validateInput re-run) and change (so cascade handlers like the preset dropdown's onPresetChange fire). We assert all three.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -1297,7 +1297,7 @@ describe("config.ts: window.toggleDisabledVisibility", () => {
 
   test("checking the toggle removes 'hide-disabled' from the channel-table and persists the preference", async () => {
 
-    /* The toggle sets a localStorage flag and toggles a class on .channel-table. Pin both endpoints.
+    /* The toggle sets a localStorage flag and toggles a class on .channel-table. Assert both endpoints.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -2037,7 +2037,7 @@ describe("config.ts: form input listeners (validation + modified indicator wirin
 
     if(!probe) {
 
-      /* Settings page renders no bounded number input; this is a structural prerequisite. We skip the assertion on the production wiring and instead pin the
+      /* Settings page renders no bounded number input; this is a structural prerequisite. We skip the assertion on the production wiring and instead assert the
        * function directly: validateInput is closure-scoped so we cannot call it; the only public surface is via the input event. Without a bounded number input,
        * the test cannot exercise the validateInput error branch. Mark the assumption explicitly.
        */

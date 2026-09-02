@@ -359,7 +359,7 @@ describe("emitSystemStatusChanged", () => {
 
     /* The mark is broadcast on its own account. A status that differs from the cached one only in captureImpaired has the same connectivity and the same active
      * count, so a dedupe that compared only those would swallow the very transition the interface needs to render - and the repeat that follows must still be
-     * suppressed, or the periodic status updates would wake every client for the life of the mark. The clearing is pinned as well, so a dedupe that noticed only the
+     * suppressed, or the periodic status updates would wake every client for the life of the mark. The clearing is asserted as well, so a dedupe that noticed only the
      * rising edge would surface here.
      */
     emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
@@ -452,7 +452,7 @@ describe("getStatusSnapshot", () => {
 
   test("carries the browser's capture-impairment mark through to a connecting client", () => {
 
-    // The snapshot is the whole state a client gets on connect, so a mark that only rode the delta events would leave a client that connected during the mark
+    // The snapshot is the whole state a client gets on connect, so a mark carried only by the delta events would leave a client that connected during the mark
     // rendering a healthy header until the next transition.
     updateSystemStatus(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
 

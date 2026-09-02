@@ -191,7 +191,7 @@ describe("mergeConfiguration", () => {
 
   test("the non-text arms are left alone - a padded boolean env var is still not truthy", () => {
 
-    /* Scope pin. Sanitization covers exactly the text types named by TEXT_SETTING_TYPES, which is the codebase's own definition of a text setting, and nothing
+    /* Scope assertion. Sanitization covers exactly the text types named by TEXT_SETTING_TYPES, which is the codebase's own definition of a text setting, and nothing
      * beyond them. The boolean arm compares the raw lowercased value against its accepted words, so a padded "true" matches none of them and the arm returns
      * false. Note what that means here: the default for this setting is true, so the override still applies and turns it off - the padded value is not ignored,
      * it is read as a negative. Widening sanitization to this arm would make the padded value match and flip the result back to true, which is why the
@@ -206,7 +206,7 @@ describe("mergeConfiguration", () => {
 
   test("integer env var with invalid value falls through for non-PORT settings (e.g., VIDEO_BITRATE)", () => {
 
-    /* The merge has integer-parsing fall-through for every integer field, not just PORT. We pin VIDEO_BITRATE to lock that the per-type branch fires
+    /* The merge has integer-parsing fall-through for every integer field, not just PORT. We assert VIDEO_BITRATE to lock that the per-type branch fires
      * uniformly across CONFIG_METADATA entries; a regression that bypassed parseEnvValue's NaN guard for non-PORT integer settings would surface here.
      */
     process.env["VIDEO_BITRATE"] = "not-a-number";
@@ -218,7 +218,7 @@ describe("mergeConfiguration", () => {
 
   test("env var that parses as zero is honored (no truthiness gate on parsed values)", () => {
 
-    /* Boundary: the merge writes through any defined parsed value because the guard is `parsedValue !== undefined`, NOT a truthy check. This pins that a single
+    /* Boundary: the merge writes through any defined parsed value because the guard is `parsedValue !== undefined`, NOT a truthy check. This asserts that a single
      * non-empty checkboxList override reaches CONFIG unchanged, with no per-element truthiness filter applied to the array contents. The checkboxList type carries
      * no positivity gate at the merge layer, which makes it the clean vehicle for exercising the defined-value pass-through here.
      */
@@ -231,7 +231,7 @@ describe("mergeConfiguration", () => {
 
   test("CLI override with a non-undefined object value is written through", () => {
 
-    /* The CLI overrides loop writes any non-undefined value into CONFIG via setNestedValue. Here we exercise a string-valued override and pin that the loop
+    /* The CLI overrides loop writes any non-undefined value into CONFIG via setNestedValue. Here we exercise a string-valued override and assert that the loop
      * accepts it unchanged; setNestedValue places it at the dotted path so the value reaches runtime CONFIG.
      */
     const result = mergeConfiguration({}, { "paths.chromeDataDir": "/tmp/explicit/chrome-data-override" });
@@ -253,7 +253,7 @@ describe("mergeConfiguration", () => {
 
   test("float env var is parsed via parseFloat and applied (STALL_THRESHOLD)", () => {
 
-    /* parseEnvValue's float branch is otherwise unreached by the existing merge tests. STALL_THRESHOLD is a documented float setting; pinning the parse here
+    /* parseEnvValue's float branch is otherwise unreached by the existing merge tests. STALL_THRESHOLD is a documented float setting; asserting the parse here
      * locks the type-specific branch.
      */
     process.env["STALL_THRESHOLD"] = "0.42";
@@ -431,7 +431,7 @@ describe("filterDefaults", () => {
 
   test("filterDefaults preserves a non-empty array preserved field while still stripping default-equal sibling fields in the same nested group", () => {
 
-    /* Pins the interaction between PRESERVED_FIELDS and the metadata-driven loop: a single channels group can contain both a preserved non-empty array
+    /* Asserts the interaction between PRESERVED_FIELDS and the metadata-driven loop: a single channels group can contain both a preserved non-empty array
      * (channels.disabledPredefined) and a default-equal scalar (channels.channelSortField). The output must keep the array and drop the scalar; the parent
      * group survives because the array kept it non-empty.
      */
@@ -480,7 +480,7 @@ describe("hydration registry parity", () => {
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* channelsDvr.host is auto-discovered by showInfo.persistDvrHost and persisted via PRESERVED_FIELDS. This test pins that HYDRATED_FIELDS brings it back
+    /* channelsDvr.host is auto-discovered by showInfo.persistDvrHost and persisted via PRESERVED_FIELDS. This test asserts that HYDRATED_FIELDS brings it back
      * into runtime CONFIG immediately on boot, so the host is available before the next DVR discovery cycle runs.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };

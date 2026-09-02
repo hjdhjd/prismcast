@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * reader-during-writer.test.ts: Pins the file-store framework's atomicity contract under read-during-write contention. The framework's safety guarantee
+ * reader-during-writer.test.ts: Asserts the file-store framework's atomicity contract under read-during-write contention. The framework's safety guarantee
  * (createFileStore docstring's atomic-writes bullet in src/config/persistence.ts): writes are atomic via temp+rename - rename() is atomic on POSIX and NTFS.
  * The structural consequence is that any concurrent reader either sees the old inode (pre-write) or the new inode (post-write), never partial bytes from a write
  * in flight.
@@ -8,7 +8,7 @@
  *
  * The cross-store-isolation suite covers the *result* guarantee for parallel writes to different stores: each store's bytes carry only its own data
  * after the dust settles. This suite covers the *timing* guarantee: while the writes are in flight, readers must see well-formed content at every moment.
- * Together they pin both axes of the framework's transactional contract.
+ * Together they assert both axes of the framework's transactional contract.
  *
  * Why a burst-of-N rather than a single race: a single concurrent read-write pair will almost always race far enough apart that the read either fully precedes
  * or fully follows the write, leaving the atomic-rename branch untested in practice. A burst-of-N drives many overlapping pairs so the timing window is hit
@@ -22,15 +22,15 @@
  * switch to a production-side debug hook (e.g., one in createFileStore that injects a configurable delay between writeFile and rename) rather than to flake-
  * tolerate the test - that is the "no bandaid" rule applied to test infrastructure as well as to production code.
  *
- * Per-store queue independence under contention: a timing-focused test could pin "concurrent writes to different stores complete independently
- * with consistent timing" - the *timing* invariant complementing cross-store-isolation's *result* invariant. Pinning this deterministically requires either
+ * Per-store queue independence under contention: a timing-focused test could assert "concurrent writes to different stores complete independently
+ * with consistent timing" - the *timing* guarantee complementing cross-store-isolation's *result* guarantee. Asserting this deterministically requires either
  * a production-side debug hook (an injectable delay between writeFile and rename so a slow store-A write provably overlaps a fast store-B write) or wall-clock
  * comparisons against a serial baseline. The latter approach was tried and proved too noisy at the sub-10ms range (concurrent and serial baselines fall
  * inside one another's jitter), and a wall-clock test that happens to pass on this hardware would be a flake on slower CI. The former requires a production
- * refactor for testability, which we avoid here. The structural invariant ("per-store queue, not a shared
+ * refactor for testability, which we avoid here. The structural guarantee ("per-store queue, not a shared
  * queue") is already proven indirectly: the `let queue` declaration in createFileStore is a closure-scoped let inside each store's
- * factory call, so two stores cannot share one queue by construction. cross-store-isolation's concurrent-mutation test proves the result invariant. The timing
- * invariant is therefore intentionally not pinned by this suite; the architectural reading plus the existing cross-store coverage carry the weight a flaky timing test
+ * factory call, so two stores cannot share one queue by construction. cross-store-isolation's concurrent-mutation test proves the result guarantee. The timing
+ * guarantee is therefore intentionally not asserted by this suite; the architectural reading plus the existing cross-store coverage carry the weight a flaky timing test
  * would have.
  */
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
@@ -112,8 +112,8 @@ describe("file-store atomicity under read-during-write contention", () => {
     }
 
     // After the burst settles, every writer's channel must be present in the final file. The per-store queue's serialization guarantee is the contract: writes
-    // never get lost under contention. Combined with the per-read shape assertion above, this pins both the in-flight invariant (no partial visibility) and
-    // the post-burst invariant (no lost writes).
+    // never get lost under contention. Combined with the per-read shape assertion above, this asserts both the in-flight guarantee (no partial visibility) and
+    // the post-burst guarantee (no lost writes).
     const finalContent = await readFile(channelsPath, "utf-8");
     const finalParsed = JSON.parse(finalContent) as Record<string, unknown>;
 
@@ -126,13 +126,13 @@ describe("file-store atomicity under read-during-write contention", () => {
 
   test("readers driven through the production HTTP surface during a writer burst always receive a well-formed playlist response", async () => {
 
-    /* The same atomicity invariant as the raw-read atomicity test above, but exercised through the production HTTP surface. The /playlist route reads the
+    /* The same atomicity guarantee as the raw-read atomicity test above, but exercised through the production HTTP surface. The /playlist route reads the
      * merged channel state at request time; if a reader's request lands during a writer's atomic-rename window and the framework's contract is broken, the
      * reader could see partial data and produce a malformed playlist body. Since /playlist returns a 200 with an M3U body, "malformed" surfaces as either
      * an empty body or a body missing the #EXTM3U preamble.
      *
      * Where the raw-read atomicity test above exercised raw fs.readFile, this exercises the actual end-to-end pipeline (HTTP request, route handler,
-     * channel-state read, body composition). It pins the invariant at the layer the user actually hits.
+     * channel-state read, body composition). It asserts the guarantee at the layer the user actually hits.
      */
     await using ctx = await createIntegrationContext();
 
@@ -184,10 +184,10 @@ describe("file-store atomicity under read-during-write contention", () => {
      * that parallelized within a store would race them, and the on-disk value would be non-deterministic - this assertion catches that drift.
      *
      * This complements the raw-read atomicity test above (which proves no in-flight read sees a partial write) and the HTTP-surface atomicity test above
-     * (which proves the same at the HTTP layer). Together the three tests pin: writes are atomic on disk (the raw-read and HTTP-surface atomicity tests
+     * (which proves the same at the HTTP layer). Together the three tests assert: writes are atomic on disk (the raw-read and HTTP-surface atomicity tests
      * above), writes are serialized within a store (this test), and writes never produce partial results visible to concurrent readers (the raw-read and
-     * HTTP-surface atomicity tests above). The cross-store independence invariant - which would deserve its own timing-focused test - is intentionally not
-     * pinned here for the reasons documented in the file header's per-store-queue-independence note.
+     * HTTP-surface atomicity tests above). The cross-store independence guarantee - which would deserve its own timing-focused test - is intentionally not
+     * asserted here for the reasons documented in the file header's per-store-queue-independence note.
      */
     await using ctx = await createIntegrationContext();
 

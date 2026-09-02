@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * shared-runtime.test.ts: DOM-runtime coverage for the shared client-side utilities script (src/routes/root/scripts/shared.ts). The unit suite next to the
- * generator pins the SHAPE of the emitted string ("the script contains window.channelTable"); this suite pins the RUNTIME BEHAVIOR of that emitted string when
+ * generator asserts the SHAPE of the emitted string ("the script contains window.channelTable"); this suite asserts the RUNTIME BEHAVIOR of that emitted string when
  * a synthetic browser parses and executes it ("when window.channelTable.removeRow runs against a real DOM, the row is gone").
  *
  * The bug class this tier catches is the one most likely to bite the operator-facing UI: a typo in a DOM operation, a wrong fetch shape, a stale closure in an
  * event handler, an off-by-one in row insertion, a missed branch in a switch over patch fields. These regressions ship past the unit suite (the string shape is
- * still right) and past the rendering suite (the static HTML is still right) but blow up the moment a user clicks the affected control. Pinning runtime behavior
+ * still right) and past the rendering suite (the static HTML is still right) but blow up the moment a user clicks the affected control. Asserting runtime behavior
  * is the only way to catch them before release.
  *
  * The harness loads the full landing page through the production bootApp listener, then selectively executes the shared utilities script. Other scripts on the
@@ -15,12 +15,12 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin the guarantee, not historical incidents. "applyPatch handles every patch field" is the contract; "the channel-number rendering bug doesn't recur" is a
+ *   - Assert the guarantee, not historical incidents. "applyPatch handles every patch field" is the contract; "the channel-number rendering bug doesn't recur" is a
  *     symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (persistDisplayPrefs, etc.), override window.fetch with a spy before triggering the operation. Asserting on persisted state
  *     is also acceptable but flushes timing concerns into the test - the spy is preferred.
- *   - When a test reveals a real bug in the production script's runtime behavior, pin current (buggy) behavior with a FIX-PENDING comment showing exactly
+ *   - When a test reveals a real bug in the production script's runtime behavior, assert current (buggy) behavior with a FIX-PENDING comment showing exactly
  *     which assertion to flip post-fix. Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  */
 import { describe, test } from "node:test";
@@ -51,7 +51,7 @@ describe("shared.ts: showToast", () => {
   test("appends a toast element to #toast-container with the message text and the type class", async () => {
 
     /* showToast is the canonical client-side notification entry point. The minimal contract: when called, it appends a .toast element under #toast-container,
-     * the element's textContent contains the message, and its className includes the supplied type. This pins the basic DOM-mutation behavior - regressions
+     * the element's textContent contains the message, and its className includes the supplied type. This asserts the basic DOM-mutation behavior - regressions
      * where the function silently no-ops (wrong selector, missing container handling) surface as zero children post-call.
      */
     await using ctx = await setupSharedRuntime();
@@ -213,7 +213,7 @@ describe("shared.ts: safe localStorage wrappers", () => {
 
   test("remove deletes a previously-set key", async () => {
 
-    /* Lifecycle: set, verify, remove, verify-gone. Pins all three operations in one test so a regression in any of them surfaces here.
+    /* Lifecycle: set, verify, remove, verify-gone. Asserts all three operations in one test so a regression in any of them surfaces here.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -694,7 +694,7 @@ describe("shared.ts: processServiceDisplays", () => {
     }
   });
 
-  test("skips elements that already carry data-processed='1' (idempotent)", async () => {
+  test("skips elements that already carry data-processed='1' (repeat-safe)", async () => {
 
     /* Repeated calls must be safe (a no-op on already-processed elements) because processServiceDisplays is called on every relevant DOM mutation. If it did
      * not skip elements already marked processed, repeated calls would re-render the entire list every time, bloating the DOM and clobbering any in-flight
@@ -950,7 +950,7 @@ describe("shared.ts: window.channelTable namespace", () => {
   test("applyPatch counts: user=0 produces an empty user-count text", async () => {
 
     /* Edge case: when user channels are absent, the user-count span should be empty (not "0", not ", 0 user"). The formatting rule lives inline in the patch
-     * loop; this test pins it explicitly.
+     * loop; this test asserts it explicitly.
      */
     await using ctx = await setupSharedRuntime();
 
@@ -986,7 +986,7 @@ describe("shared.ts: window.channelTable namespace", () => {
 
   test("applyPatch processes hdhrCounts to update the bulk hdhr toggle and count", async () => {
 
-    /* HDHR bulk toggle and count update from patch.hdhrCounts. Pins the field-name and DOM-id mapping (hdhr-bulk-toggle / hdhr-bulk-count).
+    /* HDHR bulk toggle and count update from patch.hdhrCounts. Asserts the field-name and DOM-id mapping (hdhr-bulk-toggle / hdhr-bulk-count).
      */
     await using ctx = await setupSharedRuntime();
 
@@ -1142,7 +1142,7 @@ describe("shared.ts: window.channelTable namespace", () => {
      */
     await using ctx = await setupSharedRuntime();
 
-    // Pin a known starting state: a different sort field. That way the first click on 'name' is a field-change (asc), the second is a same-field toggle.
+    // Assert a known starting state: a different sort field. That way the first click on 'name' is a field-change (asc), the second is a same-field toggle.
     ctx.evaluate("document.querySelector('.channel-table').setAttribute('data-sort-field', 'channelNumber');");
     ctx.evaluate("document.querySelector('.channel-table').setAttribute('data-sort-dir', 'asc');");
 
@@ -1195,7 +1195,7 @@ describe("shared.ts: window.channelTable namespace", () => {
   test("insertRow places a new row in the correct sort position based on the current table sort field", async () => {
 
     /* Insertion order: the table carries data-sort-field and data-sort-dir attributes. insertRow reads the new row's sort value, scans existing rows, and
-     * splices the new row before the first row whose sort value loses to it. We pin name-asc ordering by inserting "ban" between "abc" and "cnn"; the test
+     * splices the new row before the first row whose sort value loses to it. We assert name-asc ordering by inserting "ban" between "abc" and "cnn"; the test
      * uses station IDs that the predefined channel list already orders.
      */
     await using ctx = await setupSharedRuntime();
@@ -1266,7 +1266,7 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
   test("data-submit-prevent-default on a form prevents the submit default but NOT keydown defaults on input fields inside the form", async () => {
 
-    /* This test pins the rule that an event modifier is scoped to its own event type via the data-<event>-* attribute: a submit-scoped preventDefault on a
+    /* This test asserts the rule that an event modifier is scoped to its own event type via the data-<event>-* attribute: a submit-scoped preventDefault on a
      * form must not suppress keydown on input fields inside that form, so typed characters still insert. We assert both halves directly: submit gets
      * defaultPrevented; keydown does not.
      */
@@ -1410,7 +1410,7 @@ describe("shared.ts: window.escapeHtml (client-escape SSOT) and the renderers th
 
   test("the shared utilities script installs window.escapeHtml and it encodes the special characters", async () => {
 
-    /* The shared utilities script emits the single client-escape SSOT (generateClientEscapeAssignment) near the top of its IIFE. This pins that the emitted
+    /* The shared utilities script emits the single client-escape SSOT (generateClientEscapeAssignment) near the top of its IIFE. This asserts that the emitted
      * .toString()-serialized body actually parses and installs a working window.escapeHtml in a real DOM - the runtime counterpart to the byte-parity guard in
      * clientEscape.test.ts, which checks the source function in isolation but cannot prove the emitted-and-executed form works.
      */
@@ -1455,7 +1455,7 @@ describe("shared.ts: window.escapeHtml (client-escape SSOT) and the renderers th
 
   test("serviceIconHtml escapes the name in both the title attribute and the text span", async () => {
 
-    /* serviceIconHtml mirrors channelDisplayHtml: callers pass raw service names and it is the single escape boundary. We pin the same attribute-breakout and
+    /* serviceIconHtml mirrors channelDisplayHtml: callers pass raw service names and it is the single escape boundary. We assert the same attribute-breakout and
      * text-context guarantees - the double quote survives as an entity in the title, and an injected <i> tag does not parse out.
      */
     await using ctx = await setupSharedRuntime();
@@ -1474,7 +1474,7 @@ describe("shared.ts: window.safeUrl (URL-safety SSOT) and renderer URL handling"
 
   test("the shared utilities script installs window.safeUrl and it gates schemes", async () => {
 
-    /* The shared utilities script emits the client URL-safety SSOT (generateClientSafeUrlAssignment) alongside the escaper. This pins that the emitted, executed
+    /* The shared utilities script emits the client URL-safety SSOT (generateClientSafeUrlAssignment) alongside the escaper. This asserts that the emitted, executed
      * form works: http/https/relative pass through and a javascript: scheme collapses to the empty string.
      */
     await using ctx = await setupSharedRuntime();

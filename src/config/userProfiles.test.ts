@@ -111,7 +111,7 @@ describe("validateProfileKey", () => {
   test("rejects keys that collide with builtin profiles", () => {
 
     /* These names live in the general SITE_PROFILES table. Every call here passes isNew=false - the framing an import takes - and is still rejected, which is
-     * also the pin against gating the builtin check on the isNew flag: an implementation that only reserved builtin names while creating would let an import
+     * also the assertion against gating the builtin check on the isNew flag: an implementation that only reserved builtin names while creating would let an import
      * introduce a shadowed key here.
      */
     assert.match(validateProfileKey("keyboardFullscreen", false) ?? "", /conflicts with a builtin/);
@@ -140,7 +140,7 @@ describe("validateProfileKey", () => {
   test("isNew=true returns undefined for a non-colliding key (no duplicate among loaded user profiles in unit-test state)", () => {
 
     /* The isNew=true branch checks loadedUserProfiles for a duplicate key. In unit tests no user profiles are loaded, so any non-builtin non-colliding key
-     * returns undefined. This pins the contract that the check fires (it does not fall through to the builtin check) and that isNew=true produces a clean
+     * returns undefined. This asserts the contract that the check fires (it does not fall through to the builtin check) and that isNew=true produces a clean
      * result for the empty-state. The duplicate-among-user-profiles branch requires module state that only the integration tier provides.
      */
     assert.equal(validateProfileKey("brand-new-user-key", true), undefined);
@@ -271,7 +271,7 @@ describe("validateProfile", () => {
 
   test("accepts a strategy from STRATEGIES_REQUIRING_MATCH_SELECTOR when matchSelector is supplied (combination boundary)", () => {
 
-    /* Pins the four-way intersection: strategy is recognized AND generic AND requires-match-selector AND the selector is supplied. The existing tests cover
+    /* Asserts the four-way intersection: strategy is recognized AND generic AND requires-match-selector AND the selector is supplied. The existing tests cover
      * three of the four branches in isolation; this combination test verifies the happy intersection so a regression that demands match-selector even when
      * present surfaces here.
      */
@@ -385,7 +385,7 @@ describe("validateDomain", () => {
 
   test("rejects an empty dismissSelector string when the field is supplied", () => {
 
-    /* The validator accepts a missing dismissSelector but rejects an explicit empty string. Pins the asymmetry so a future refactor that flipped to "any
+    /* The validator accepts a missing dismissSelector but rejects an explicit empty string. Asserts the asymmetry so a future refactor that flipped to "any
      * string is fine" loses no signal here.
      */
     const errors = validateDomain("custom-site.example", { dismissSelector: "" }, noKnownProfiles);
@@ -412,7 +412,7 @@ describe("validateDomain", () => {
 
   test("rejects Infinity for maxContinuousPlayback (Number.isFinite gate)", () => {
 
-    /* The validator's Number.isFinite gate rejects Infinity and NaN explicitly, beyond the typeof === number check. Pins the gate so a refactor that loosened
+    /* The validator's Number.isFinite gate rejects Infinity and NaN explicitly, beyond the typeof === number check. Asserts the gate so a refactor that loosened
      * to typeof-only would surface here.
      */
     const errors = validateDomain("custom-site.example", { maxContinuousPlayback: Number.POSITIVE_INFINITY }, noKnownProfiles);
@@ -503,7 +503,7 @@ describe("validateImportedProfiles", () => {
   test("a domain referencing a profile from the same import batch resolves to that profile", () => {
 
     /* The cross-reference rule: a referenced name counts as known when it is a builtin, a profile validated earlier in this same batch, or a profile already in
-     * the store. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile" errors. Pins
+     * the store. A domain mapping that references a profile validated within the SAME batch must resolve cleanly without "non-existent profile" errors. Asserts
      * that in-batch resolution actually fires (an implementation that only recognized builtins would fail here).
      */
     const result = validateImportedProfiles({
@@ -589,7 +589,7 @@ describe("validateImportedProfiles field-type guards", () => {
   test("skips a single profile that fails validateProfile while collecting every valid sibling", () => {
 
     /* One profile failing validateProfile must not discard the whole import: the validator continues past the bad entry and still collects the valid siblings.
-     * The existing single-sibling test pins that one good entry survives one bad entry; this strengthens the guarantee to two good siblings so a regression that
+     * The existing single-sibling test asserts that one good entry survives one bad entry; this strengthens the guarantee to two good siblings so a regression that
      * kept only the first valid entry (or aborted the loop on the first error) surfaces here.
      */
     const result = validateImportedProfiles({

@@ -4,7 +4,7 @@
  * trampolines that the project-wide action dispatcher invokes via its registerAction handlers. The sibling suites cover the surface around this boundary but not
  * the boundary itself:
  *
- *   - status.test.ts (next to status.ts) pins the SHAPE of the emitted string: "the script contains window.toggleStreamPopover = ...". It never executes the
+ *   - status.test.ts (next to status.ts) asserts the SHAPE of the emitted string: "the script contains window.toggleStreamPopover = ...". It never executes the
  *     script, so any runtime collision is invisible to it.
  *   - status-handlers-runtime.test.ts imports the handlers as TypeScript free-standing functions and calls them with a synthetic HandlerContext literal. It never
  *     goes through window.toggleStreamPopover, so the trampoline binding pattern is never exercised.
@@ -95,7 +95,7 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamPopover invokes the underlying handler without infinite recursion", async () => {
 
-    /* This test pins the trampoline-wiring rule for window.toggleStreamPopover. Because classic-script top-level function declarations create properties on the
+    /* This test asserts the trampoline-wiring rule for window.toggleStreamPopover. Because classic-script top-level function declarations create properties on the
      * global object, a naive window.toggleStreamPopover = () => toggleStreamPopover(ctx) would shadow the global binding for toggleStreamPopover; the arrow's
      * bare-identifier lookup would then resolve back to the arrow itself, blowing the stack with RangeError on the first invocation. The IIFE avoids this by capturing
      * the original function reference in an IIFE-local const before reassigning the global. This test calls window.toggleStreamPopover and asserts that no
@@ -109,7 +109,7 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.toggleStreamDetails invokes the underlying handler without infinite recursion", async () => {
 
-    /* Same trampoline pattern as toggleStreamPopover, same shadow-the-global risk. The test pins the rule for the sibling trampoline so a future refactor
+    /* Same trampoline pattern as toggleStreamPopover, same shadow-the-global risk. The test asserts the rule for the sibling trampoline so a future refactor
      * cannot reintroduce the bug for toggleStreamDetails alone.
      */
     await using ctx = await setupStatusIifeRuntime();
@@ -136,7 +136,7 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
   test("window.copyOverviewPlaylistUrl reaches the handler body and delegates to ctx.externals.copyToClipboard", async () => {
 
     /* The recursion checks above prove the trampolines don't loop on themselves, but they cannot distinguish "trampoline correctly delegates to handler" from
-     * "trampoline silently no-ops in a way that swallows the bug". This test pins the positive case: when called with a populated DOM, copyOverviewPlaylistUrl
+     * "trampoline silently no-ops in a way that swallows the bug". This test asserts the positive case: when called with a populated DOM, copyOverviewPlaylistUrl
      * must actually invoke the externals.copyToClipboard surface the IIFE captured at init time.
      *
      * We install a recording spy on window.copyToClipboard between the shared-utilities script and the status script. The IIFE captures the bare identifier
@@ -205,7 +205,7 @@ describe("status.ts: the active stream count channel (script-tag runtime)", () =
   test("window.activeStreamCount reports the live stream count and tracks it as streams come and go", async () => {
 
     /* config.ts's restart dialog and upgrade flow read the stream count from this channel, and neither can be trusted further than the channel itself. The
-     * sibling assertion in status.test.ts pins that the assignment is emitted; it cannot say what number the getter yields, because it never runs the script.
+     * sibling assertion in status.test.ts asserts that the assignment is emitted; it cannot say what number the getter yields, because it never runs the script.
      * This test does, and it reaches the count the only honest way: the state object the getter closes over is IIFE-local by design, so the test drives it
      * through the SSE handlers the IIFE registers rather than reaching around them.
      *

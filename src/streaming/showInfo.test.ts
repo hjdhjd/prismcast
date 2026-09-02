@@ -83,7 +83,7 @@ describe("getDvrHost / setDvrHost", () => {
     /* The runtime safety net for the v3 migration's architectural cleanup. The schema migration splits any legacy host:port value at read time, but only on
      * disk - a future caller mistakenly passing "1.2.3.4:8089" through setDvrHost would silently reintroduce the embedded-port form into module state and (via
      * persist) onto disk. The colon-rejection in setDvrHost prevents that drift: colon-bearing inputs are dropped (with a debug log; not asserted here because
-     * the observable contract is the absent state change). This test pins both halves of the contract - a valid host updates state, a colon-bearing host does
+     * the observable contract is the absent state change). This test asserts both halves of the contract - a valid host updates state, a colon-bearing host does
      * not - so a refactor that loosens the rejection (e.g., to "strip the port portion") would fail loudly instead of silently undoing the migration's intent.
      */
     setDvrHost("1.2.3.4");
@@ -260,7 +260,7 @@ describe("matchesM3uDevice", () => {
 
     // Every prismcast key (a, b, c, d) is found in the device, so a denominator drawn from the smaller (prismcast) set would wrongly report 100% overlap.
     // The device carries two extra channels (e, f) that PrismCast does not have, so maxSize must be drawn from the larger device set (6), yielding
-    // overlapRatio 4/6 - below the 0.8 threshold. This pins Math.max(deviceChannelIds.size, prismcastChannelKeys.size) as the denominator rather than either
+    // overlapRatio 4/6 - below the 0.8 threshold. This asserts Math.max(deviceChannelIds.size, prismcastChannelKeys.size) as the denominator rather than either
     // set's size alone.
     const deviceChannelIds = new Set([ "a", "b", "c", "d", "e", "f" ]);
     const prismcastChannelKeys = new Set([ "a", "b", "c", "d" ]);

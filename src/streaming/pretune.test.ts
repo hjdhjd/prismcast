@@ -18,7 +18,7 @@ closePuppeteerStreamWssOnIdle();
 
 describe("startPretunePolling / stopPretunePolling", () => {
 
-  test("startPretunePolling is idempotent - second call is a no-op", () => {
+  test("startPretunePolling on a second call is a no-op", () => {
 
     // The implementation guards on `if(pollInterval) { return; }` so a second call has no effect. Locks the contract that startup paths can call multiple times
     // without spawning duplicate intervals.
@@ -87,7 +87,7 @@ describe("clearPretuneSafetyTimer", () => {
   test("is a no-op for a stream ID that was never pretuned (the dominant claim+terminate path)", () => {
 
     // terminateStream() calls clearPretuneSafetyTimer() for every stream it tears down, but the overwhelming majority of streams were never pretuned and so have no
-    // safetyTimers entry. The function must take the no-op branch (safetyTimers.get(streamId) is undefined) without throwing. This pins the contract that the
+    // safetyTimers entry. The function must take the no-op branch (safetyTimers.get(streamId) is undefined) without throwing. This asserts the contract that the
     // clearPretuneSafetyTimer call in terminateStream cannot fail for an ordinary, non-pretuned stream.
     assert.doesNotThrow(() => {
 
@@ -95,7 +95,7 @@ describe("clearPretuneSafetyTimer", () => {
     });
   });
 
-  test("is idempotent - clearing the same stream ID twice leaves no entry and does not throw", () => {
+  test("clearing the same stream ID twice leaves no entry and does not throw", () => {
 
     // After the first clear, the safetyTimers entry for the stream ID is gone, so a second clear must find nothing and remain a no-op. This locks the guarantee
     // that terminateStream relies on: once the timer is cleared the Map entry is removed, so a redundant terminate (which the guard already tolerates) cannot

@@ -72,7 +72,7 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
   test("changing sort after a service filter is set leaves the filter active in the rendered panel", async () => {
 
     /* Mutation-order independence: the order in which the user interacts with filter and sort must not matter. We set the filter first, then change the sort,
-     * and assert the filter is STILL active when the panel renders. This pins the absence of any side-effect coupling in mutateChannelDisplayPrefs that would
+     * and assert the filter is STILL active when the panel renders. This asserts the absence of any side-effect coupling in mutateChannelDisplayPrefs that would
      * accidentally clear enabledServices.
      *
      * The mutateChannelDisplayPrefs implementation in userChannels.ts reads CONFIG.channels.* for absent fields and writes the merged result; if the merge

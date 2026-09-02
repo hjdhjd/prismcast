@@ -3,7 +3,7 @@
  * retry.test.ts: Unit tests for retryOperation. The function consumes a Clock (see clock.ts) for sleeps between attempts and for the per-attempt timeout race;
  * tests pass a fake clock built by makeFakeClock (clock.helpers.ts) that resolves sleeps instantly and forwards (or selectively rejects) the timeout race. No
  * real-time delays, no mock.timers - the fake-clock literal is the entire test substrate, deterministic and budget-free. The pure maxRetryDuration estimator is
- * tested directly against the same default constants retryOperation reads, so the worst-case closed form stays pinned to the loop that produces the sleeps.
+ * tested directly against the same default constants retryOperation reads, so the worst-case closed form stays tied to the loop that produces the sleeps.
  */
 import { describe, mock, test } from "node:test";
 import { maxRetryDuration, retryOperation } from "./retry.ts";

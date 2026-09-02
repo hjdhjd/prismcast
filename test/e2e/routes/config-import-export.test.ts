@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * config-import-export.test.ts: HTTP-level integration coverage for the two whole-config transfer endpoints in src/routes/config/settings.ts - POST /config/import
- * and GET /config/export. These are the layer-replacement counterparts to the settings-form save path pinned by settings-preservation.test.ts: where the form
+ * and GET /config/export. These are the layer-replacement counterparts to the settings-form save path asserted by settings-preservation.test.ts: where the form
  * save merges a partial CONFIG_METADATA body into the existing config, import replaces the entire user-settings layer while leaving the system-state layer intact.
  *
  * The key distinction is the two-layer model. CONFIG_METADATA is the single source of truth for which fields are user settings (port, timeouts, quality
@@ -11,7 +11,7 @@
  * CONFIG_METADATA and therefore never cleared. Export is the inverse read side: it serializes readConfig() as sorted-key JSON with an attachment disposition so a
  * browser download round-trips byte-for-byte back through import.
  *
- * settings-preservation.test.ts pins the merge-preserves-non-form-fields rule for the form save; this suite pins the clear-then-merge rule for import
+ * settings-preservation.test.ts asserts the merge-preserves-non-form-fields rule for the form save; this suite asserts the clear-then-merge rule for import
  * and the sorted-key attachment rule for export, which the form-save suite does not exercise.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
@@ -155,7 +155,7 @@ describe("GET /config/export - sorted-key attachment round-trips the current con
     assert.equal(rawBody, stringifySorted(parsed) + "\n", "the export body must be sorted-key JSON with a trailing newline");
 
     // Round-trip: the exported config must equal the current on-disk config that readConfig() reads. Both go through the same file-store read, so a deep-equality
-    // check pins that export ships the live config rather than a stale or synthesized copy.
+    // check asserts that export ships the live config rather than a stale or synthesized copy.
     const persisted = await readPersistedJson(ctx, "config.json");
 
     assert.deepEqual(parsed, persisted, "the exported config must round-trip to the current on-disk config");
@@ -166,7 +166,7 @@ describe("GET /config/export - sorted-key attachment round-trips the current con
 
 /* The import handler validates raw JSON values, so it is the only ingress that can present a value whose runtime type is wrong. The form save coerces every
  * submitted field to its declared type before validation, which means a form-path fixture cannot tell a type-honest validator apart from one that assumes
- * coercion already ran - every pin below therefore goes through POST /config/import.
+ * coercion already ran - every assertion below therefore goes through POST /config/import.
  *
  * A mistyped value that passes validation is not a cosmetic problem: it is written to config.json verbatim and read back at the next boot, so a quoted "false"
  * for a boolean field would silently invert that setting until someone re-saved the form.

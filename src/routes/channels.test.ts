@@ -200,7 +200,7 @@ describe("setupChannelsEndpoint - GET /channels", () => {
     assert.deepEqual(keys, sorted, "channels should be alphabetically ordered by key");
   });
 
-  test("two consecutive requests return identical responses (idempotent reads)", async () => {
+  test("two consecutive requests return identical responses (repeat-safe reads)", async () => {
 
     const a = await (await fetch(urlFor("/channels"))).json() as ChannelsResponse;
     const b = await (await fetch(urlFor("/channels"))).json() as ChannelsResponse;

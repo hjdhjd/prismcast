@@ -2,7 +2,7 @@
  *
  * exec.helpers.test.ts: Tests for the execFile fakes (bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds). The fakes model the
  * promisified node:child_process.execFile contract, including both encoding branches (string default, Buffer for encoding: "buffer" callers) so production
- * unpackers can exercise both. Coverage pins the success/failure/encoding branches plus the strict-key-miss behavior of execFileFromMap.
+ * unpackers can exercise both. Coverage asserts the success/failure/encoding branches plus the strict-key-miss behavior of execFileFromMap.
  */
 import { bufferOrStringToString, execFileAlwaysSucceeds, execFileFromMap, makeExecFileError } from "./exec.helpers.ts";
 import { describe, test } from "node:test";
@@ -170,7 +170,7 @@ describe("execFileFromMap", () => {
 
   test("keys are 'file args.join(\" \")' so multi-arg commands match exactly", async () => {
 
-    // The key construction is documented; this test pins it so future refactors don't accidentally change the join character or quoting.
+    // The key construction is documented; this test asserts it so future refactors don't accidentally change the join character or quoting.
     const execFile = execFileFromMap({ "git --git-dir=/x status --porcelain": { stdout: "" } });
 
     await assert.doesNotReject(() => execFile("git", [ "--git-dir=/x", "status", "--porcelain" ]), "a space-joined multi-arg key should match");
@@ -178,7 +178,7 @@ describe("execFileFromMap", () => {
 
   test("an empty args array yields a key with a trailing space (file + ' ')", async () => {
 
-    // Edge case: zero-arg invocations still need a key. The current implementation produces "file " (file plus a space and an empty join). We pin this so a
+    // Edge case: zero-arg invocations still need a key. The current implementation produces "file " (file plus a space and an empty join). We assert this so a
     // future refactor doesn't accidentally make zero-arg commands key as just "file".
     const execFile = execFileFromMap({ "ls ": { stdout: "current dir" } });
 

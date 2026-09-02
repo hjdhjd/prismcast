@@ -257,7 +257,7 @@ describe("scheduleServerRestart", () => {
   test("does not schedule a setTimeout on the manual-restart path", () => {
 
     /* Boundary: when not running as a service, the function returns immediately without scheduling any timer. The previous assertion ("we are still alive")
-     * would survive a refactor that scheduled an irrelevant timer in the manual branch. We pin the contract directly via setTimeout call count.
+     * would survive a refactor that scheduled an irrelevant timer in the manual branch. We assert the contract directly via setTimeout call count.
      */
     Reflect.deleteProperty(process.env, "PRISMCAST_SERVICE");
 

@@ -42,7 +42,7 @@ describe("withDocument", () => {
 
   test("restores pre-existing slot values by identity rather than deleting them", () => {
 
-    // A suite that installs its own DOM around a withDocument call must get that DOM back. Identity is what the assertion pins: an equal-but-different object would
+    // A suite that installs its own DOM around a withDocument call must get that DOM back. Identity is what the assertion checks: an equal-but-different object would
     // mean the helper rebuilt the slot instead of putting the caller's own back.
     const priorDocument = { marker: "document" };
     const priorWindow = { marker: "window" };

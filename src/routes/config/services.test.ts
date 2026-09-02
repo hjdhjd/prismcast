@@ -259,7 +259,7 @@ describe("generateProfileWizardModal", () => {
     assert.match(html, /id="wizard-content"/, "content area uses the configured id");
   });
 
-  test("returns a deterministic string across two calls (idempotent renderer)", () => {
+  test("returns a deterministic string across two calls (repeat-safe renderer)", () => {
 
     // The wizard modal renderer pulls from getProfiles(), which sorts its output. Two calls in the same process must produce byte-identical HTML so
     // diffs in client-rendered output are caused by data changes, not renderer flakiness.
@@ -304,7 +304,7 @@ describe("generateProfileWizardModal", () => {
   test("every wizard strategy field id is a legal ChannelSelectionConfig key", () => {
 
     /* The strategy fields the wizard renders are written into channelSelection, so each id must be a real ChannelSelectionConfig key. The Record type forces every
-     * config key to be listed (a renamed or removed key is a compile error here), and the runtime membership check pins that the serialized registry only renders
+     * config key to be listed (a renamed or removed key is a compile error here), and the runtime membership check asserts that the serialized registry only renders
      * legal keys.
      */
     const configKeys: Record<keyof ChannelSelectionConfig, true> = {
@@ -358,7 +358,7 @@ describe("setupProfileRoutes", () => {
 
   test("registers exactly the documented number of routes (no extras, no drops)", () => {
 
-    // Pin the registration count so a route added or removed forces a test update. Eight registrations as enumerated above.
+    // Assert the registration count so a route added or removed forces a test update. Eight registrations as enumerated above.
     const { app, calls } = makeExpressStub();
 
     setupProfileRoutes(app as never);

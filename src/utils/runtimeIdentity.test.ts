@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * runtimeIdentity.test.ts: Unit tests for the runtime-identity state machine. Each state-machine branch (free, held-live, stale-different-boot, stale-dead-pid,
- * stale-malformed) gets a dedicated test that pins the exact kind tag and (where applicable) the record payload. The file format is covered via round-trip
+ * stale-malformed) gets a dedicated test that asserts the exact kind tag and (where applicable) the record payload. The file format is covered via round-trip
  * tests over serializeRecord/parseRecord. Tests use withTempDir for filesystem isolation and a hand-rolled RuntimeIdentityContext literal for deterministic
  * control over boot session ID, PID liveness, and process identity - no real /proc or process.kill is exercised here.
  */
@@ -372,7 +372,7 @@ describe("forceRelease", () => {
     });
   });
 
-  test("is idempotent when the file is already absent", async () => {
+  test("is a no-op when the file is already absent", async () => {
 
     await withTempDir(async (dir) => {
 

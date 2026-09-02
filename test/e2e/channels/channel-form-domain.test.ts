@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * channel-form-domain.test.ts: Integration-tier coverage for findMatchingVariant in src/config/channelForm.ts. The unit suite at src/config/channelForm.test.ts
- * pins channelMatches and computePredefinedDelta directly, plus the no-service-group early return for findMatchingVariant. The iteration body of
+ * asserts channelMatches and computePredefinedDelta directly, plus the no-service-group early return for findMatchingVariant. The iteration body of
  * findMatchingVariant - which queries getServiceGroup() for the user-resolved channel and walks each variant - requires the runtime serviceGroups module
  * cache to be populated, which only happens after initializeUserChannels has run. This file lands the iteration coverage at the right tier.
  */
@@ -81,7 +81,7 @@ describe("findMatchingVariant - iteration body and positive match", () => {
      * upstream no-op-save check.
      *
      * To exercise this branch, we'd need a service group containing a :predefined entry, which requires user-overriding a predefined channel. That setup is
-     * orchestrated by the channels CRUD endpoints; here we pin a softer guarantee: findMatchingVariant returns undefined for a form payload that matches
+     * orchestrated by the channels CRUD endpoints; here we assert a softer guarantee: findMatchingVariant returns undefined for a form payload that matches
      * canonical (which the upstream no-op check is supposed to have caught). The contract is that findMatchingVariant does not double-report the canonical
      * itself as a matching variant.
      */

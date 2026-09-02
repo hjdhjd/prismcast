@@ -375,7 +375,7 @@ describe("parseServicePack", () => {
   test("sanitizes non-printable characters in channel string fields before storing", () => {
 
     /* The channel string-field sanitization loop in parseServicePack strips non-printable characters from string fields before adding the channel to the pack.
-     * Pinning the gate explicitly catches a regression where a refactor stops calling sanitizeString on a particular field; without this assertion only the
+     * Asserting the gate explicitly catches a regression where a refactor stops calling sanitizeString on a particular field; without this assertion only the
      * name/url path is exercised, leaving channelSelector / stationId / profile untested. We construct each test value with String.fromCharCode so non-printable
      * bytes are literal in the source rather than invisible characters in editor buffers.
      */
@@ -452,7 +452,7 @@ describe("countNewKeys (net-new import accounting)", () => {
 
   /* countNewKeys is the pure kernel of importServicePack's summary counts. The stateful import orchestrator (which round-trips through the profiles and channels file
    * stores) is exercised at the integration tier, but the net-new arithmetic - counting only keys absent from the store so overwriting re-imports report zero
-   * additions - is pinned here against the pure function so a regression to raw pack-size counting is caught at the unit tier.
+   * additions - is asserted here against the pure function so a regression to raw pack-size counting is caught at the unit tier.
    */
 
   test("counts every key as net-new when the existing record is empty", () => {

@@ -191,7 +191,7 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 
 describe("shutdownFileLogger", () => {
 
-  test("is idempotent on an already-shut-down logger", () => {
+  test("is a no-op on an already-shut-down logger", () => {
 
     // Boundary: calling shutdown twice (or before init) must not crash.
     assert.doesNotThrow(() => {

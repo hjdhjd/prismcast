@@ -97,7 +97,7 @@ export async function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number,
  *
  * The composition is deliberate. runWithAbort performs no race of its own; it composes the bounds into one signal, hands that signal to the factory, and maps
  * an abort-time rejection to null. So the factory forwards the signal into waitWithSignal, and that forwarding is what makes the bound genuinely bind on a
- * promise this code does not own - a factory that ignored its signal would leave a held promise waiting forever. The bound rides timeoutSignal rather than
+ * promise this code does not own - a factory that ignored its signal would leave a held promise waiting forever. The bound uses timeoutSignal rather than
  * runWithAbort's own timeout option so every bound in the project flows through the one source that can carry a reason, owns its timer, and is controllable
  * from a fake clock.
  *

@@ -228,7 +228,7 @@ describe("getCurrentPattern", () => {
   test("emits parts in the documented order: wildcard -> excludes (insertion order) -> includes (insertion order)", () => {
 
     // The reconstruction order is structural: wildcard first, then excludes, then includes. Both Set iteration order and the implementation's loop preserve
-    // insertion order. We pin the exact reconstructed string for a known input so a future reorder (or accidental swap of the loops) surfaces here.
+    // insertion order. We assert the exact reconstructed string for a known input so a future reorder (or accidental swap of the loops) surfaces here.
     initDebugFilter("*,-streaming:ffmpeg,tuning:hulu");
 
     assert.equal(getCurrentPattern(), "*,-streaming:ffmpeg,tuning:hulu",

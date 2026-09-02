@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * testing.helpers.test.ts: Tests for the cross-cutting testing-helpers barrel. The barrel is the canonical import path for tests outside `src/testing/`
- * (enforced by the `prismcast/testing-helpers-barrel-only` ESLint rule). These tests pin the barrel's runtime export surface so a forgotten re-export, a
+ * (enforced by the `prismcast/testing-helpers-barrel-only` ESLint rule). These tests assert the barrel's runtime export surface so a forgotten re-export, a
  * renamed submodule symbol, or an unintended addition surfaces immediately at unit-tier rather than as a confusing import error in some downstream test file.
  *
  * Three checks form a symmetric drift catch:
@@ -99,7 +99,7 @@ describe("testing.helpers barrel", () => {
 
   test("documented and actual runtime export sets match exactly in cardinality", () => {
 
-    // Symmetric pin: the previous tests catch missing or extra exports individually; this one asserts the cardinality matches so a same-size swap (one removed,
+    // Symmetric assertion: the previous tests catch missing or extra exports individually; this one asserts the cardinality matches so a same-size swap (one removed,
     // one added) cannot pass both above tests by accident.
     const actual = new Set(Object.keys(barrel));
     const expected = EXPECTED_FUNCTION_EXPORTS.length + Object.keys(EXPECTED_VALUE_EXPORTS).length;

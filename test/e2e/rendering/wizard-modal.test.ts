@@ -4,13 +4,13 @@
  * and dialog modal in the app (Browse Channels wizard, profile wizard, import wizard, Import/Export dialogs). A regression in the shell-builder breaks every
  * wizard at once - the inverse, where one wizard's shell drifts independent of the others, is structurally impossible because there is exactly one builder.
  *
- * Tests pin the SHELL contract: HTML structure (overlay, header, content, optional step indicator, optional error display, footer buttons), button-ownership
+ * Tests assert the SHELL contract: HTML structure (overlay, header, content, optional step indicator, optional error display, footer buttons), button-ownership
  * rules (role-tagged controller buttons vs. inline-onclick custom buttons), step-indicator initial state (always step 1 active server-side; client manages
- * transitions), single-step dialog mode (no step indicator), and idempotency (same input -> same output). The controller's runtime navigation behavior is
- * client-side; tests pin the SURFACE the controller mounts to, not the controller itself - if the shell is correct, the controller has what it needs.
+ * transitions), single-step dialog mode (no step indicator), and repeat safety (same input -> same output). The controller's runtime navigation behavior is
+ * client-side; tests assert the SURFACE the controller mounts to, not the controller itself - if the shell is correct, the controller has what it needs.
  *
  * The WizardModalOptions interface has no `activeStep` parameter. The server always renders the first step as active; step transitions are client-side via
- * createWizardController(). The test below pins the actual contract: server marks step 1 active, all other steps non-active. A future refactor that adds
+ * createWizardController(). The test below asserts the actual contract: server marks step 1 active, all other steps non-active. A future refactor that adds
  * server-side step rendering would intentionally fail this test, signalling the contract change.
  *
  * No harness required. generateWizardModal is a pure string-producing function whose only collaborators are the markup helpers escapeHtml and serializeAttrs
@@ -85,7 +85,7 @@ describe("generateWizardModal - shell HTML structure", () => {
   test("step indicator: server renders step 1 as active and every other step without the active marker (client manages transitions)", async () => {
 
     /* The server has no `activeStep` parameter on WizardModalOptions; it always emits step 1 active. The wizard controller in
-     * shared.ts is responsible for runtime step transitions - removing/adding `active` on data-step elements as the user clicks Next or Back. This test pins the
+     * shared.ts is responsible for runtime step transitions - removing/adding `active` on data-step elements as the user clicks Next or Back. This test asserts the
      * server-side contract: regardless of which step the user is currently on, the initially-rendered HTML marks ONLY step 1 as active.
      *
      * A regression that quietly added server-side activeStep handling without coordinating the client controller would surface here as a test divergence. A
@@ -123,7 +123,7 @@ describe("generateWizardModal - shell HTML structure", () => {
   test("single-step dialog mode: no step indicator block; content uses the compact variant; rest of shell intact", async () => {
 
     /* Dialogs (Import/Export) omit the steps array. The renderer must NOT emit the wizard-steps block, AND must use wizard-content-compact for the content area
-     * (the compact variant removes the min-height that stepped wizards need). Header, content, footer continue to render. This pins the dialog vs. wizard
+     * (the compact variant removes the min-height that stepped wizards need). Header, content, footer continue to render. This asserts the dialog vs. wizard
      * dichotomy at the structural level - the dichotomy is the steps array's presence/absence, with no third option.
      */
     const html = generateWizardModal({
@@ -169,7 +169,7 @@ describe("generateWizardModal - button ownership rules", () => {
      * data-click-action; the project-wide action dispatcher (shared.ts) routes the click to the registered handler. Neither path emits an inline onclick
      * attribute - all event mechanics flow through delegation.
      *
-     * The renderer's structural pin: a role-tagged button MUST emit data-wizard-role and MUST NOT emit data-click-action or onclick. A custom action button
+     * The renderer's structural assertion: a role-tagged button MUST emit data-wizard-role and MUST NOT emit data-click-action or onclick. A custom action button
      * MUST emit data-click-action and MUST NOT emit data-wizard-role or onclick. No button anywhere carries inline onclick.
      */
     const html = generateWizardModal({
@@ -212,7 +212,7 @@ describe("generateWizardModal - button ownership rules", () => {
   });
 });
 
-describe("generateWizardModal - idempotency", () => {
+describe("generateWizardModal - repeat safety", () => {
 
   test("calling the builder twice with identical options returns the byte-identical HTML string", async () => {
 

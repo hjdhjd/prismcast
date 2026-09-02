@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userChannels.tags.test.ts: Direct unit tests for the tag canonicalization helpers - sortTags and parseTagInput. Both are exported and used as the single source
- * of truth for tag ordering and form-input parsing. Pinning their pure-function semantics here means a regression in either is caught locally rather than via
+ * of truth for tag ordering and form-input parsing. Asserting their pure-function semantics here means a regression in either is caught locally rather than via
  * indirect failure in the channels normalizer or the bulk-tag handlers.
  */
 import { describe, test } from "node:test";

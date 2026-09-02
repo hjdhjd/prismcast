@@ -16,7 +16,7 @@ import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
 import { setupPlayEndpoint } from "./play.ts";
 
-// An ad-hoc URL whose scheme is outside validateStreamUrl's allowlist. Named once because the pin below both requests it and asserts nothing was sent to it.
+// An ad-hoc URL whose scheme is outside validateStreamUrl's allowlist. Named once because the assertion below both requests it and asserts nothing was sent to it.
 const BAD_SCHEME_URL = "ftp://redirect-probe.invalid/stream";
 
 function makeServer(): Promise<{ port: number; server: Server }> {

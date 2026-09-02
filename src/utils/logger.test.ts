@@ -344,7 +344,7 @@ describe("LOG.withStreamId bound logger", () => {
 
 describe("LOG sentence normalization (info / warn / error)", () => {
 
-  /* The logger guarantees that every non-debug line ends with exactly one terminator. This suite pins each branch of the normalizer so a future regression in
+  /* The logger guarantees that every non-debug line ends with exactly one terminator. This suite asserts each branch of the normalizer so a future regression in
    * the helper (or a removal of the call from logWithLevel) surfaces immediately. Debug intentionally bypasses the normalizer and is covered separately.
    */
   let captured: LogEntry[];
@@ -465,7 +465,7 @@ describe("LOG sentence normalization (info / warn / error)", () => {
 describe("displayLine (non-sentence escape hatch)", () => {
 
   /* displayLine routes through the same SSE / file / console pipeline as LOG.info but bypasses the sentence normalizer. It exists so structured display output
-   * (the startup configuration dump, banners) can render without forced terminal periods. This suite pins its contract so a future change that quietly funneled
+   * (the startup configuration dump, banners) can render without forced terminal periods. This suite asserts its contract so a future change that quietly funneled
    * displayLine through normalizeSentence - or stripped its format-arg support - would surface immediately.
    */
   let captured: LogEntry[];

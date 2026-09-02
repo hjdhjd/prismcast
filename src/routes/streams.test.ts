@@ -3,7 +3,7 @@
  * streams.test.ts: Unit tests for the stream management routes in streams.ts. setupStreamsEndpoint registers GET /streams (lists active streams), DELETE
  * /streams/:id (terminates a single stream), and GET /streams/status (Server-Sent Events). Without a real Chrome browser or capture pipeline running, the
  * registry is empty for the duration of the suite, so the tests focus on the empty-list response shape, the parameter-validation paths in DELETE, and the
- * SSE handshake (initial snapshot + SSE response headers). A separate direct-handler suite drives the captured handler against synthetic req/res pairs to pin
+ * SSE handshake (initial snapshot + SSE response headers). A separate direct-handler suite drives the captured handler against synthetic req/res pairs to assert
  * named-event forwarding, the close-time unsubscribe, and heartbeat teardown. Streams cannot be created in a unit test - that path is covered by e2e tests.
  */
 import type { AddressInfo, Server } from "node:net";
@@ -227,7 +227,7 @@ describe("setupStreamsEndpoint - GET /streams/status (SSE handshake)", () => {
 });
 
 // The direct-handler suite below registers /streams/status against a stub Express app so we can drive the captured handler against synthetic req/res pairs.
-// This pins the named-event forwarding contract (subsequent live events from subscribeToStatus reach the wire as `event: <name>\ndata: <json>\n\n`) and the
+// This asserts the named-event forwarding contract (subsequent live events from subscribeToStatus reach the wire as `event: <name>\ndata: <json>\n\n`) and the
 // close-cleanup guarantee (post-close emits do not reach the wire AND the heartbeat stops). The named-event forwarding is what no tier currently observes
 // beyond the initial snapshot frame - a regression that swapped subscribeToStatus for a no-op would still pass the existing fetch-based suite.
 function findStreamsStatusHandler(): RouteCapture {
@@ -255,7 +255,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("forwards a named status event through sse.sendEvent(eventType, data) - 'event: <name>' line followed by 'data: <json>' line", () => {
 
-    // Pins streams.ts - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged) to
+    // Asserts streams.ts - subscribeToStatus forwards each named event (channelUpdate, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged) to
     // sse.sendEvent(eventType, data). The existing fetch-based suite asserts only the initial snapshot frame; nothing observes that subsequent live events reach
     // the wire with their named eventType. We use emitChannelUpdate as the driver because it is exported and accepts a free-form payload (the other emit*()
     // functions require constructing full StreamStatus / SystemStatus shapes that are unrelated to the routing contract under test here).
@@ -282,7 +282,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("emits the initial 'snapshot' frame at install time before subscribing to live events", () => {
 
-    // Pins streams.ts - the route writes the snapshot frame via sse.sendEvent("snapshot", ...) BEFORE the subscribeToStatus call, so connecting clients always
+    // Asserts streams.ts - the route writes the snapshot frame via sse.sendEvent("snapshot", ...) BEFORE the subscribeToStatus call, so connecting clients always
     // have current state on first read. We assert the first two writes match the snapshot shape: "event: snapshot\n" then "data: {...}\n\n".
     const route = findStreamsStatusHandler();
     const { req, res, triggerReqEvent, write } = makeReqRes();
@@ -302,7 +302,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("req.on('close') handler unsubscribes from the status emitter - post-close emits do not reach the wire", () => {
 
-    // Pins streams.ts - the req.on("close") teardown handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event
+    // Asserts streams.ts - the req.on("close") teardown handler must run unsubscribe(). After invoking the close handler synthetically, an emitted status event
     // must NOT trigger a res.write. This is the behavior under test: a regression that dropped unsubscribe() would leak the listener and continue forwarding to
     // a disconnected response.
     const route = findStreamsStatusHandler();
@@ -328,7 +328,7 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
 
   test("req.on('close') handler clears the heartbeat - subsequent ticks do not produce writes", () => {
 
-    // Pins streams.ts - the req.on("close") teardown handler must run sse.close(), which clears the heartbeat interval. We use mock.timers to drive the interval
+    // Asserts streams.ts - the req.on("close") teardown handler must run sse.close(), which clears the heartbeat interval. We use mock.timers to drive the interval
     // deterministically: confirm one tick fires before close, then call the close handler and confirm subsequent ticks produce no writes.
     mock.timers.enable({ apis: ["setInterval"] });
 

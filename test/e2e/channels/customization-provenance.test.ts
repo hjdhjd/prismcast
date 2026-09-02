@@ -131,7 +131,7 @@ describe("getChannelCustomizations - provenance reporting", () => {
   test("Pass 2 silently drops identity fields encountered on a variant-stored entry (allowed-fields gate)", async () => {
 
     /* The recordCustomizations helper restricts variant-pass walks via getAllowedFieldsForShape, which forbids identity fields on variants. If a stored variant
-     * entry carries identity (e.g., legacy data), Pass 2 must NOT surface it as a customization. This pins the field-gate branch.
+     * entry carries identity (e.g., legacy data), Pass 2 must NOT surface it as a customization. This asserts the field-gate branch.
      */
     await using ctx = await createIntegrationContext();
 
@@ -157,7 +157,7 @@ describe("getChannelCustomizations - provenance reporting", () => {
   test("Pass 2 variant-stored override wins over Pass 1 canonical-stored override on the same field name (last-overlay-wins matches resolution)", async () => {
 
     /* If the same field name is set on both canonical and variant entries, the variant overlay applies last during resolution. The customizations accessor
-     * mirrors that: Pass 2 entries overwrite Pass 1 entries on the same key. This pins the order-of-overlay rule for the customization map.
+     * mirrors that: Pass 2 entries overwrite Pass 1 entries on the same key. This asserts the order-of-overlay rule for the customization map.
      */
     await using ctx = await createIntegrationContext();
 

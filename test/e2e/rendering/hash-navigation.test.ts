@@ -10,14 +10,14 @@
  * (in routes/ui.ts) and createSubtabSwitcher (in routes/root/scripts/shared.ts) read window.location.hash on the client and toggle classes accordingly.
  *
  * Therefore the server-side contract is narrow: GET / produces stable, URL-independent HTML carrying the default-active markers; deep-link reload behavior is
- * the client controller's responsibility (out of integration-tier scope; reserved for browser-e2e coverage if/when that tier exists). The tests below pin
+ * the client controller's responsibility (out of integration-tier scope; reserved for browser-e2e coverage if/when that tier exists). The tests below assert
  * exactly that:
  *
- *   1. Default-active state on GET / - overview tab marked active, all other tabs inactive. Pins the deterministic baseline.
- *   2. URL query parameters do not influence the response - GET /?tab=channels and GET /?something=else produce HTML byte-identical to GET /. Pins the guarantee
+ *   1. Default-active state on GET / - overview tab marked active, all other tabs inactive. Asserts the deterministic baseline.
+ *   2. URL query parameters do not influence the response - GET /?tab=channels and GET /?something=else produce HTML byte-identical to GET /. Asserts the guarantee
  *      that the server never interprets hash or query state.
  *   3. Subtab default-active state inside the rendered tabs - channels tab has the "channels" subtab active, config tab has the "settings" subtab active.
- *      Pins the per-tab subtab convention so a regression that defaulted to a different subtab would surface here, not on a deep-link reload bug report.
+ *      Asserts the per-tab subtab convention so a regression that defaulted to a different subtab would surface here, not on a deep-link reload bug report.
  *   4. Every tab content generator renders successfully against an empty seed state. Defensive coverage: a content generator that throws on empty data
  *      becomes a 500 on the landing page.
  *
@@ -37,7 +37,7 @@ describe("GET / - server-side hash/tab navigation contract", () => {
   test("default active state: overview tab carries class active and aria-selected=true; every other tab does not", async () => {
 
     /* The deterministic baseline. The landing page handler builds the tab bar by calling generateTabButton(category, label, isActive). Only overview is invoked
-     * with isActive=true. Test pins that contract structurally: for each of the 6 tabs, locate its <button> via data-category and assert its class and
+     * with isActive=true. Test asserts that contract structurally: for each of the 6 tabs, locate its <button> via data-category and assert its class and
      * aria-selected reflect the correct default-active state. A regression that defaulted to a different tab (or marked multiple tabs active) would surface
      * here as the unexpected tab carrying the active marker.
      */
@@ -70,8 +70,8 @@ describe("GET / - server-side hash/tab navigation contract", () => {
 
   test("server ignores URL query parameters for tab activation: GET /?tab=channels emits HTML byte-identical to GET /", async () => {
 
-    /* Negative invariant. The server-side contract is "stable HTML regardless of URL state"; the client-side controller is responsible for hash-driven
-     * activation after page load. This test pins that absence by comparing two responses: one with a query string, one without. They must be byte-identical.
+    /* The negative case. The server-side contract is "stable HTML regardless of URL state"; the client-side controller is responsible for hash-driven
+     * activation after page load. This test asserts that absence by comparing two responses: one with a query string, one without. They must be byte-identical.
      *
      * A regression that quietly added req.query.tab handling in app.get("/") would silently shift this contract from "client-only activation" to "split
      * server+client activation," which is exactly the architectural smell the roadmap flagged. The byte-equality assertion catches that regression even when
@@ -142,9 +142,9 @@ describe("GET / - server-side hash/tab navigation contract", () => {
 
   test("every tab content panel is non-empty against an empty seed state (defensive: no content generator throws on empty data)", async () => {
 
-    /* Defensive invariant. With a fresh data directory, all user channels, profiles, tags, and disabledPredefined lists are empty. Every tab content
+    /* A defensive check. With a fresh data directory, all user channels, profiles, tags, and disabledPredefined lists are empty. Every tab content
      * generator runs against this empty state when GET / is invoked. A generator that threw on empty data (NPE on undefined.length, division by zero, an
-     * invariant assuming at least one item) would render the entire landing page as a 500. This test runs the empty-state landing-page render and asserts that
+     * assumption of at least one item) would render the entire landing page as a 500. This test runs the empty-state landing-page render and asserts that
      * (a) it returns 200, (b) every tab's panel <div> is present, (c) every tab's panel contains some HTML body content (not an empty <div>).
      *
      * The empty-states.test.ts suite covers empty-state rendering of the Channels, Profiles, Tags, and Streams surfaces; this suite's job here is the basic

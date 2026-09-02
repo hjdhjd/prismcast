@@ -8,7 +8,7 @@
  * and assert via the public reader. clearChannelLogos is verified by reading after clear.
  *
  * The Pacific east-counterpart resolution in getChannelStationId (the getEastCanonicalKey(channelKey) ?? channelKey line in userChannels.ts) is critical: a
- * regression there silently misroutes logos for every Pacific channel. Pinning it here keeps the case-of-record visible.
+ * regression there silently misroutes logos for every Pacific channel. Asserting it here keeps the case-of-record visible.
  */
 import { afterEach, describe, test } from "node:test";
 import { clearChannelLogos, getChannelLogo, getChannelStationId, setChannelLogo, setChannelLogos } from "./userChannels.ts";
@@ -24,7 +24,7 @@ const ABCNEWS_STATION_ID = ((): string => {
 
   if(!sid) {
 
-    throw new Error("Test setup invariant: abcnews must have a predefined stationId");
+    throw new Error("Test setup requirement: abcnews must have a predefined stationId");
   }
 
   return sid;
@@ -75,7 +75,7 @@ describe("setChannelLogo / getChannelLogo via canonical channel", () => {
 
   test("getChannelLogo returns undefined for a channel key with no resolvable stationId (chain short-circuits)", () => {
 
-    /* No stationId -> cache lookup is never performed. Pin: a channel that doesn't exist in any catalog produces undefined regardless of cache state.
+    /* No stationId -> cache lookup is never performed. Assertion: a channel that doesn't exist in any catalog produces undefined regardless of cache state.
      */
     assert.equal(getChannelLogo("definitely-not-a-channel-x9z2"), undefined);
   });

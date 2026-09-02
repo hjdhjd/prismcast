@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * services.delegation.test.ts: Unit test pinning that the /services/:slug/channels route delegates its discovery walk to the shared guarded guide-page session
+ * services.delegation.test.ts: Unit test asserting that the /services/:slug/channels route delegates its discovery walk to the shared guarded guide-page session
  * (withProviderGuidePage in browser/precaching.ts) rather than owning the page lifecycle itself. The route exposes a ServiceDiscoveryDeps injection point; the test
  * drives the route through the REAL withProviderGuidePage, bound to a stub PrecachingDeps so the helper reaches for a stub browser and a recording overlay poll
  * rather than a live Chrome. The helper's observable effects are asserted - the audio-mute override installs before the guide navigation, the navigation targets the
@@ -8,14 +8,14 @@
  * Those effects exist only inside withProviderGuidePage, so a route that inlined the page lifecycle instead of delegating would produce none of them - a more
  * reliable way to tell delegation from a mocked call than a spy on the helper's call.
  *
- * A second run pins that the assertions above actually tell delegation from non-delegation apart: the same route wired to a non-delegating guide-page session - one that
- * returns the walk's channels without the real helper's page lifecycle - produces none of the mute/goto/poll/close effects, so the page-lifecycle assertions above
+ * A second run asserts that the assertions above actually tell delegation from non-delegation apart: the same route wired to a non-delegating guide-page session - one
+ * that returns the walk's channels without the real helper's page lifecycle - produces none of the mute/goto/poll/close effects, so the page-lifecycle assertions above
  * genuinely detect delegation rather than passing vacuously. recordDiscoveryOutcome is left real: for the driven provider its non-empty result takes the no-op clear
  * branch, so it records nothing to disk while its own coverage is exercised.
  *
- * A third run pins the refresh path's sequencing through the same injection point with a controllable guide-page session: a refresh clears the provider's caches only
+ * A third run asserts the refresh path's sequencing through the same injection point with a controllable guide-page session: a refresh clears the provider's caches only
  * after the walk it aborted has settled, the replacement walk it registers is there for any request that arrives behind the abort, and a refresh with nothing in
- * flight still clears before the walk it starts. Those pins drive ordering, so each one owns a private service slug and proves every ordering it relies on with an
+ * flight still clears before the walk it starts. Those assertions drive ordering, so each one owns a private service slug and proves every ordering it relies on with an
  * awaited signal rather than with request order.
  */
 import type { AddressInfo, Server } from "node:net";
@@ -76,8 +76,8 @@ function urlFor(port: number, path: string): string {
 }
 
 /**
- * Builds a discovery URL on the sequencing server for one pin's private slug.
- * @param slug - The pin's service slug.
+ * Builds a discovery URL on the sequencing server for one assertion's private slug.
+ * @param slug - The assertion's service slug.
  * @param query - The query string to append, including its leading "?".
  * @returns The absolute discovery URL.
  */
@@ -162,13 +162,13 @@ const bareDeps: ServiceDiscoveryDeps = {
   withProviderGuidePage: async (): Promise<DiscoveredChannel[]> => UNSORTED_CHANNELS
 };
 
-/* The signals one stub discovery walk exposes to the pin that drives it. started fires when the stub guide-page session is entered, aborted fires when the signal the
- * session received is aborted, and result is the deferred whose settlement the stub returns - the pin settles every invocation explicitly, which is what lets every
- * request it fired drain before the test ends.
+/* The signals one stub discovery walk exposes to the assertion that drives it. started fires when the stub guide-page session is entered, aborted fires when the signal
+ * the session received is aborted, and result is the deferred whose settlement the stub returns - the assertion settles every invocation explicitly, which is what lets
+ * every request it fired drain before the test ends.
  *
- * signal is the abort signal that session received, held so a pin can ask whether the walk was ever cancelled. It answers what the aborted deferred cannot: a signal
- * aborted BEFORE the walk starts never fires a listener the walk registers afterward, so a pin claiming a walk was left alone has to read the signal's own state
- * rather than wait on a barrier that a pre-start cancellation would silently skip.
+ * signal is the abort signal that session received, held so an assertion can ask whether the walk was ever cancelled. It answers what the aborted deferred cannot: a
+ * signal aborted BEFORE the walk starts never fires a listener the walk registers afterward, so an assertion claiming a walk was left alone has to read the signal's own
+ * state rather than wait on a barrier that a pre-start cancellation would silently skip.
  */
 interface SequencedWalk {
 
@@ -178,7 +178,7 @@ interface SequencedWalk {
   started: PromiseWithResolvers<void>;
 }
 
-// One refresh-sequencing pin's private service: its stub provider, the ordered log of everything observable about it, and the per-invocation signals its walks and
+// One refresh-sequencing assertion's private service: its stub provider, the ordered log of everything observable about it, and the per-invocation signals its walks and
 // cached-check expose.
 interface SequencedService {
 
@@ -186,7 +186,7 @@ interface SequencedService {
   // coalesce block, so awaiting a check proves that request has already joined or created an in-flight entry.
   cacheCheck: (index: number) => PromiseWithResolvers<void>;
 
-  // Claims the next invocation index. Called by the stub guide-page session as it starts a walk, never by a pin.
+  // Claims the next invocation index. Called by the stub guide-page session as it starts a walk, never by an assertion.
   claim: () => number;
 
   // The ordered log of this service's observable effects: each walk's start and settlement, and each cache clear.
@@ -195,23 +195,23 @@ interface SequencedService {
   // The stub provider the injected registry lookup resolves for this service's slug.
   provider: ProviderModule;
 
-  // How many stub walks have started, so a pin can prove a request rode an existing walk instead of spawning its own.
+  // How many stub walks have started, so an assertion can prove a request joined an existing walk instead of spawning its own.
   started: () => number;
 
-  // The signals for the nth walk, created on demand so a pin can hold them before the request that triggers the walk is dispatched.
+  // The signals for the nth walk, created on demand so an assertion can hold them before the request that triggers the walk is dispatched.
   walk: (index: number) => SequencedWalk;
 }
 
-// The channels every sequenced replacement walk resolves with, distinct from the delegation runs' channels so a pin's response assertion names its own fixture.
+// The channels every sequenced replacement walk resolves with, distinct from the delegation runs' channels so an assertion's response assertion names its own fixture.
 const SEQUENCED_CHANNELS = [{ channelSelector: "TNT", name: "TNT" }] as unknown as DiscoveredChannel[];
 
-// The registry the sequencing deps resolve against. Registration is per pin, so the route's module-level in-flight map - shared by every request in this process - is
-// partitioned by slug and no pin can inherit another's in-flight residue.
+// The registry the sequencing deps resolve against. Registration is per assertion, so the route's module-level in-flight map - shared by every request in this process -
+// is partitioned by slug and no assertion can inherit another's in-flight residue.
 const sequencedServices = new Map<string, SequencedService>();
 
 /**
- * Registers a controllable stub service for a refresh-sequencing pin.
- * @param slug - The pin's private service slug. No other pin may use it.
+ * Registers a controllable stub service for a refresh-sequencing assertion.
+ * @param slug - The assertion's private service slug. No other assertion may use it.
  * @returns The recorder for that service: its event log, its stub provider, and its per-invocation barriers.
  */
 function registerSequencedService(slug: string): SequencedService {
@@ -273,11 +273,11 @@ function registerSequencedService(slug: string): SequencedService {
   return service;
 }
 
-/* The sequencing route wiring: the registry lookup resolves each pin's stub provider by slug, and the guide-page session is a controllable stand-in that records the
- * walk's start, forwards the abort signal to that walk's barrier, and returns a deferred the pin settles by hand. The settlement is logged from a finally on the
- * deferred, so the event log carries the walk's settlement at the moment the route's own await of it can first observe it - which is what makes "the clear happened
- * after the aborted walk settled" an ordering the log can state rather than an inference. recordDiscoveryOutcome is real but never reached: this session never
- * invokes the afterWalk hook the route wires into it.
+/* The sequencing route wiring: the registry lookup resolves each assertion's stub provider by slug, and the guide-page session is a controllable stand-in that records
+ * the walk's start, forwards the abort signal to that walk's barrier, and returns a deferred the assertion settles by hand. The settlement is logged from a finally on
+ * the deferred, so the event log carries the walk's settlement at the moment the route's own await of it can first observe it - which is what makes "the clear happened
+ * after the aborted walk settled" an ordering the log can state rather than an inference. recordDiscoveryOutcome is real but never reached: this session never invokes
+ * the afterWalk hook the route wires into it.
  */
 const sequencedDeps: ServiceDiscoveryDeps = {
 
@@ -387,7 +387,7 @@ describe("setupServicesEndpoint - discovery delegates to the real guarded guide-
   });
 });
 
-describe("setupServicesEndpoint - the delegation discriminators actually discriminate", () => {
+describe("setupServicesEndpoint - the delegation checks actually tell delegation apart", () => {
 
   test("a route wired to a non-delegating guide-page session produces none of the real helper's page-lifecycle effects", async () => {
 
@@ -399,7 +399,7 @@ describe("setupServicesEndpoint - the delegation discriminators actually discrim
     const body = await res.json() as DiscoveredChannel[];
 
     assert.equal(res.status, 200, "the discovery request still succeeds against the non-delegating session");
-    assert.deepEqual(body.map((c) => c.name), [ "AMC", "Bravo" ], "the response is sorted regardless of who walked, so the body cannot discriminate delegation");
+    assert.deepEqual(body.map((c) => c.name), [ "AMC", "Bravo" ], "the response is sorted regardless of who walked, so the body cannot tell delegation apart");
     assert.equal(overlayHandlingCalls.length, 0, "a non-delegating session launches no discovery poll");
     assert.deepEqual(gotoUrls, [], "a non-delegating session performs no guide navigation");
     assert.deepEqual(pageEvents, [], "a non-delegating session touches no page: no mute, no goto, no close");
@@ -449,7 +449,7 @@ describe("setupServicesEndpoint - a refresh sequences its cache clear behind the
     assert.deepEqual(doomedBody.map((c) => c.name), ["TNT"], "the aborted request retries onto the replacement rather than surfacing the abort");
   });
 
-  test("a request arriving behind the abort rides the replacement walk rather than starting its own", async () => {
+  test("a request arriving behind the abort joins the replacement walk rather than starting its own", async () => {
 
     const slug = "stub-sequencing-piggyback";
     const service = registerSequencedService(slug);
@@ -466,7 +466,7 @@ describe("setupServicesEndpoint - a refresh sequences its cache clear behind the
     /* The late request is dispatched only after the abort has provably run, so the only in-flight state it can find is what the refresh left behind. Its
      * cached-check barrier proves its handler reached the coalesce block: a non-refresh request runs from that check into the coalesce block with nothing to await
      * in between. Whether it coalesced onto the replacement or retried onto it through the loop, both paths prove a successor existed in the abort's own turn -
-     * and the walk count proves it rode that successor instead of starting a walk of its own.
+     * and the walk count proves it joined that successor instead of starting a walk of its own.
      */
     const lateResponse = fetch(sequencedUrl(slug));
 
@@ -483,10 +483,10 @@ describe("setupServicesEndpoint - a refresh sequences its cache clear behind the
 
     assert.equal(lateRes.status, 200, "the late request succeeds");
     assert.deepEqual(lateBody.map((c) => c.name), ["TNT"], "the late request is answered by the replacement walk");
-    assert.equal(service.started(), 2, "the late request rode the replacement instead of starting a third walk");
+    assert.equal(service.started(), 2, "the late request joined the replacement instead of starting a third walk");
 
-    // Riding the replacement means leaving it alone: a piggybacking request takes the walk's result and never cancels the walk it joined, so the replacement's
-    // signal staying quiet is part of what this pin claims. The signal's own state is what answers that, because a cancellation landing before the walk starts
+    // Joining the replacement means leaving it alone: a piggybacking request takes the walk's result and never cancels the walk it joined, so the replacement's
+    // signal staying quiet is part of what this assertion claims. The signal's own state is what answers that, because a cancellation landing before the walk starts
     // would never reach a listener the walk registers afterward.
     assert.ok(replacement.signal, "the replacement walk received an abort signal");
     assert.equal(replacement.signal.aborted, false, "the replacement walk was never cancelled by the request that piggybacked on it");

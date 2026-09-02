@@ -11,7 +11,7 @@
  * What the shortcut has to get right is row recognition. It scrolls to a row number it cached, reads what rendered there, and has to decide whether the channel
  * it wants is on screen - and the name it asked for is frequently not the name that row displays. A local affiliate is filed under its network name and renders
  * as its call sign; a channel whose guide name differs from the user's channelSelector by punctuation is filed under the guide's spelling and found through a
- * fuzzy key. Both cases are one cache entry reachable by two names, so entry identity is what recognizes the row, and both are pinned below.
+ * fuzzy key. Both cases are one cache entry reachable by two names, so entry identity is what recognizes the row, and both are asserted below.
  */
 import type { ChannelSelectionProfile, Nullable } from "../../types/index.ts";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";

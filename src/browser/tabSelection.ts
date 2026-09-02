@@ -6,7 +6,7 @@
  * selected, and the tab id the extension receives is only logged. A site's Fullscreen API request is the other: Chrome grants fullscreen to the selected tab. Both
  * needs are momentary, and both end with the user entitled to the tab they had.
  *
- * This module also announces the activations it performs. A page being captured is pinned visible for the whole of its capture, so a tab this module activates
+ * This module also announces the activations it performs. A page being captured is held visible for the whole of its capture, so a tab this module activates
  * through the extension raises no event at all inside the page it activates - not focus, not visibilitychange, not pageshow, measured 2026-08-30 across a full
  * deselect-reselect cycle. That leaves the actor as the only party able to report the fact, which is what onTabActivation subscribes to. A subscriber receives a
  * tab id and nothing else, so this module still knows about tabs and windows alone, and what a capture surface owes an activation stays the capture layer's.

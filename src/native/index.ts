@@ -38,7 +38,7 @@ import { parseTokenExpiry } from "./tokenExpiry.ts";
  * Two triggers reach the refresh - the boundary timer above and the monitor's failure-triggered recovery - and they share one attempt: whichever arrives second
  * awaits the one in flight and reads its real outcome, because running two against a single browser page races their navigations and the monitor steers on the
  * boolean it reads back. An attempt that fails on a live proxy warns and re-arms itself, doubling the delay per consecutive failure up to the refresh margin and
- * riding the proxy's one timer slot, so a stream that stumbles keeps its proactive chain instead of coasting until its tokens die.
+ * using the proxy's one timer slot, so a stream that stumbles keeps its proactive chain instead of coasting until its tokens die.
  */
 
 // Time in milliseconds before token expiry to trigger a refresh. We refresh 5 minutes early to ensure the new manifest is ready before the old one expires.
@@ -334,7 +334,7 @@ interface TokenRefreshOptions {
   url: string;
 
   // The variant URL the proxy is actually polling. Its token rotates independently of the master URL and may expire first, so the refresh boundary is the earlier
-  // of the two. When the master URL carries no expiry token, the variant URL still pins the boundary; when neither does, no refresh is scheduled.
+  // of the two. When the master URL carries no expiry token, the variant URL still sets the boundary; when neither does, no refresh is scheduled.
   variantUrl: string;
 }
 
@@ -454,7 +454,7 @@ interface ManifestRefreshOptions {
  * back here.
  *
  * A failed refresh on a live proxy warns and re-arms itself with a doubling delay bounded by the refresh margin, so one transient failure cannot leave a stream
- * with no proactive refresh for the rest of its life. The retry rides the proxy's single timer slot, the same one the boundary schedule uses.
+ * with no proactive refresh for the rest of its life. The retry uses the proxy's single timer slot, the same one the boundary schedule uses.
  *
  * @param options - Refresh options. masterUrl is optional - when provided, direct fetch is attempted first. probeIdentity is the stream's own, so the probe on
  *                  either strategy reads and writes the cache under the identity the tune established.
@@ -504,7 +504,7 @@ export async function refreshNativeManifest(options: ManifestRefreshOptions): Pr
 
       /* A failure on a live proxy is the field's early warning that a stream is heading for token death - every refusal inside the attempt reports at debug, so
        * this is the one line an operator sees - and it re-arms the chain the failure would otherwise have ended. The delay doubles per consecutive failure up to
-       * the refresh margin, read from a count captured once so the warn and the timer cannot disagree. The re-arm rides the proxy's single timer slot: arming
+       * the refresh margin, read from a count captured once so the warn and the timer cannot disagree. The re-arm uses the proxy's single timer slot: arming
        * retires whatever is there, and stop() retires whichever is live, so there is never a second timer to leak. Nothing caps the retries because the stream's
        * own lifecycle already does - a token that stays dead drives segment failures into the proxy's error threshold, and the fallback to capture that follows
        * stops the proxy and its timer with it.

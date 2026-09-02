@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * envelope.test.ts: Unit tests for the response envelope helpers. The envelope is the SSOT for the /config/* endpoint response shape - every endpoint
- * routes its success/failure path through here, so the tests pin the contract: success bodies always carry success: true, error bodies always carry
+ * routes its success/failure path through here, so the tests assert the contract: success bodies always carry success: true, error bodies always carry
  * success: false, reserved fields override caller-supplied data on collision, the playlistHint append fires only when both message and the flag are present, and
  * the FileStoreParseError branch produces a 400 with the parse details rather than a generic 500.
  */
@@ -198,7 +198,7 @@ describe("sendValidationError", () => {
   test("string and ErrorPayload forms produce byte-identical responses when the payload contains only { error }", () => {
 
     // The unifying guarantee: the simple case is a true special case of the rich case. A string argument and a `{ error: <string> }` payload must produce the
-    // same wire format, so callers can adopt either form without affecting clients. This pin protects the polymorphic refactor from drifting into two
+    // same wire format, so callers can adopt either form without affecting clients. This assertion protects the polymorphic refactor from drifting into two
     // divergent code paths.
     const { json: jsonString, res: resString } = makeReqRes();
 
@@ -363,7 +363,7 @@ describe("sendErrorResponse", () => {
 
     /* The unifying guarantee for sendErrorResponse: a `{ error: "X" }` rich payload at status 500 produces the same wire format as a sendValidationError-style
      * single-line error envelope at status 500 would, modulo the envelope's status logic. This is the same special-case-of-rich-case relationship that
-     * sendValidationError tests, but applied to the form-2 path. Together with the sendValidationError pin, both helpers are byte-symmetric on the simple case.
+     * sendValidationError tests, but applied to the form-2 path. Together with the sendValidationError assertion, both helpers are byte-symmetric on the simple case.
      */
     const { json, res } = makeReqRes();
 

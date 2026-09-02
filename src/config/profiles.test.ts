@@ -235,13 +235,13 @@ describe("getProfileForChannel", () => {
   test("explicit profile + URL re-applies domain properties idempotently (no double-merge surprise)", () => {
 
     /* The comment in mergeDomainProperties' re-application call says "For the URL-based path above, getProfileForUrl() already merges these - the re-application
-     * here is idempotent. For the explicit-profile path, this fills the gap." We pin the gap-fill: an explicit profile with a URL whose domain carries a
+     * here is a no-op on repeat. For the explicit-profile path, this fills the gap." We assert the gap-fill: an explicit profile with a URL whose domain carries a
      * dismissSelector must surface that dismissSelector in the resolved profile even though the profile itself didn't declare one.
      */
     const result = getProfileForChannel({ profile: "fullscreenApi", url: "https://www.c-span.org/live/" });
 
     /* c-span.org's DomainConfig declares a dismissSelector. The explicit fullscreenApi path does not invoke getProfileForUrl, so the dismissSelector arrives
-     * via mergeDomainProperties' re-application step. Pin: it is present.
+     * via mergeDomainProperties' re-application step. Assertion: it is present.
      */
     assert.match(result.profile.dismissSelector ?? "", /SkipButton/, "domain dismissSelector merged onto an explicitly-set profile");
   });
@@ -249,7 +249,7 @@ describe("getProfileForChannel", () => {
   test("channel-level dismissSelector override wins over the domain-level value", () => {
 
     /* The channel-level merge at profiles.ts:216-219 happens after the domain-level merge, so a channel that declares dismissSelector overrides whatever the
-     * domain provided. Pinning this lets a regression that reordered the merges (or dropped the channel-level one entirely) surface here.
+     * domain provided. Asserting this lets a regression that reordered the merges (or dropped the channel-level one entirely) surface here.
      */
     const result = getProfileForChannel({
 
@@ -270,7 +270,7 @@ describe("getProfileForChannel", () => {
 
   test("merges scrollSelector channel override into the resolved channelSelection", () => {
 
-    /* Companion to the scrollToBottom test - same merge-loop code path, different field. Pins that scrollSelector specifically reaches the resolved profile,
+    /* Companion to the scrollToBottom test - same merge-loop code path, different field. Asserts that scrollSelector specifically reaches the resolved profile,
      * not just scrollToBottom.
      */
     const result = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", scrollSelector: ".my-scroller", url: "https://example.com" });
@@ -287,7 +287,7 @@ describe("getProfileForChannel", () => {
 
   test("does NOT touch channelSelection when no scroll override is supplied (gate boundary)", () => {
 
-    /* The merge loop only runs when at least one scroll key is present on the channel. Pinning this prevents a regression where the loop unconditionally
+    /* The merge loop only runs when at least one scroll key is present on the channel. Asserting this prevents a regression where the loop unconditionally
      * builds a partial scrollOverrides object and overwrites the resolved profile's channelSelection with an empty extension.
      */
     const baseline = getProfileForChannel({ channelSelector: "ABC", profile: "fullscreenApi", url: "https://example.com" });

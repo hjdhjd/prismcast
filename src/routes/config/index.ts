@@ -133,7 +133,7 @@ export async function applyConfigurationChange(reason: string): Promise<ApplyCon
 /**
  * Builds the user-facing message for a save response based on the apply and restart outcome. Picks the strongest signal: a restart message when a restart
  * was scheduled (operators rely on this exact wording to recognize a pending restart), a live-applied summary when the change took effect immediately, or a
- * rejected summary when handlers refused the change. The message is plain prose - the structured counts ride alongside in the data envelope for clients that
+ * rejected summary when handlers refused the change. The message is plain prose - the structured counts go alongside in the data envelope for clients that
  * want them.
  * @param result - The combined apply and restart result.
  * @returns Single-sentence message describing the outcome.

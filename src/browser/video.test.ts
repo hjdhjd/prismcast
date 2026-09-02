@@ -377,7 +377,7 @@ describe("applyVideoStyles", () => {
 
   test("lifts every ancestor up to the body into the video's layer, positioning the static ones", async () => {
 
-    /* The defect this pins: a z-index ranks an element only inside its nearest stacking context, so the video's own high z-index is capped by whatever its
+    /* The defect this asserts: a z-index ranks an element only inside its nearest stacking context, so the video's own high z-index is capped by whatever its
      * positioned container ranks at, and a site header above that container paints over the capture. Lifting each ancestor to the video's layer within its own
      * context is what makes the styling's promise hold. The header is outside the chain and must be left exactly as authored.
      */
@@ -667,7 +667,7 @@ describe("injectVideoSelector", () => {
     assert.equal(stub.evaluateCalls, 0, "no immediate evaluate call - injection runs on the next navigation");
   });
 
-  test("a second call results in a second registration (idempotency is not enforced at this layer)", async () => {
+  test("a second call results in a second registration (repeat calls are not collapsed at this layer)", async () => {
 
     // Boundary: the helper does not gate on a registered flag - duplicate calls register duplicate handlers, so the injected script runs twice on each new document.
     // Each run merely reassigns the same window.__prismcastSelectVideo global, which is safe to call more than once, so the net effect is a no-op; we lock the

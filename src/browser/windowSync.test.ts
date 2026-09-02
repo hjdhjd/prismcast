@@ -3,7 +3,7 @@
  * windowSync.test.ts: Unit tests for the browser window's visibility policy and its serialized executor in windowSync.ts. The module is dependency-free by design -
  * it takes its whole world through WindowSyncDeps - so the whole executor runs here against fakes with no browser, no CDP, and no timers.
  *
- * Two surfaces are pinned. decideWindowVisibility is a pure function and every arm of it is covered directly. The executor is covered through its factory: each test
+ * Two surfaces are asserted. decideWindowVisibility is a pure function and every arm of it is covered directly. The executor is covered through its factory: each test
  * builds an instance with recording fakes, and the primitives are held open with deferred promises where the order of "the command was issued" against "the caller's
  * promise resolved" is the thing under assertion - a microtask coincidence would otherwise let a broken drain look correct.
  */
@@ -232,7 +232,7 @@ describe("createWindowVisibilitySync - drain and coalescing", () => {
 
   test("a call during a live run shares that run and resolves only after the drain empties", async () => {
 
-    /* The pin: the second caller must not resolve on the first pass. We hold the first pass open, let the second call arrive while it is genuinely in flight, and
+    /* The assertion: the second caller must not resolve on the first pass. We hold the first pass open, let the second call arrive while it is genuinely in flight, and
      * check that the extra pass ran before either promise settled. A run that resolved at the end of whichever pass it happened to be in would settle the second
      * caller with only one command issued.
      */
@@ -316,9 +316,9 @@ describe("createWindowVisibilitySync - drain and coalescing", () => {
   test("a trigger fired while a run is settling still gets its own pass before resolving", async () => {
 
     /* The trigger waits for a settled boundary with nothing outstanding rather than attaching to whichever run is live, so a request arriving late in a run's
-     * life is honored by a pass of its own rather than riding the tail of one that has already decided.
+     * life is honored by a pass of its own rather than piggybacking on the tail of one that has already decided.
      *
-     * Honest strength: this pins the intended behavior at the point in a run's life a test can reach deterministically - after the held command is released,
+     * Honest strength: this asserts the intended behavior at the point in a run's life a test can reach deterministically - after the held command is released,
      * before the pass resumes. The window the loop shape actually exists to close is narrower still (between the drain's final flag check and the run clearing),
      * and it sits between microtasks that no injected collaborator can be scheduled into, so this test passes under the earlier attach-to-one-run shape as well.
      * It documents the contract; the source comment carries the reasoning a test cannot reach.

@@ -301,7 +301,7 @@ describe("resolveServiceKey: filter-fallback paths", () => {
 
   test("valid selection: returns the selection unchanged even when canonical is in groups", () => {
 
-    /* When the user has explicitly selected a non-canonical variant and no filter is active, the selection wins. Pin the no-fallback branch on the with-selection
+    /* When the user has explicitly selected a non-canonical variant and no filter is active, the selection wins. Assert the no-fallback branch on the with-selection
      * path.
      */
     setEnabledServices([]);

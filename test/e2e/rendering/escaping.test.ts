@@ -3,14 +3,14 @@
  * escaping.test.ts: Integration coverage for the guarantee that every server-rendered surface (HTML rows, tag manager, M3U playlist) safely handles
  * user-supplied strings. The escapeHtml helper at src/utils/markup.ts maps {<, >, &, ", '} to HTML entities; the table renderer
  * uses it on every user-content position; the M3U generator at src/routes/playlist.ts uses escapeM3uAttribute (src/utils/m3u.ts) to backslash-escape the
- * structural characters of an M3U quoted-string (`"` and `\`) and to collapse forbidden line breaks into a single space. Each test below pins the contract
+ * structural characters of an M3U quoted-string (`"` and `\`) and to collapse forbidden line breaks into a single space. Each test below asserts the contract
  * that surface is supposed to honor, and the tests use one fixture string with every dangerous character so a regression in any single replacement path
  * surfaces.
  *
- * The M3U tvg-name escaping test pins the M3U attribute escaping contract: a user-defined channel whose display name carries a literal double-quote must
+ * The M3U tvg-name escaping test asserts the M3U attribute escaping contract: a user-defined channel whose display name carries a literal double-quote must
  * emit a backslash-escaped quote inside tvg-name="..." so the attribute terminates correctly and downstream parsers see a well-formed EXTINF line. We use
  * escapeM3uAttribute itself to compute the expected substring so the test and the helper share a single source of truth - if the helper's strategy ever
- * changes (different escape character, percent-encoding, etc.), the test continues to pin the contract without rewrites.
+ * changes (different escape character, percent-encoding, etc.), the test continues to assert the contract without rewrites.
  *
  * Why HTTP integration vs. function-level rendering: the channel-name, channel-URL, and tag-name escaping tests call generateChannelRowHtml /
  * generateTagManagerBody directly, mirroring channels-table.test.ts and variant-display.test.ts. The M3U tvg-name escaping test hits the playlist endpoint
@@ -29,7 +29,7 @@ import { getProfiles } from "../../../src/config/profiles.ts";
 // renderer that escapes < and > but stops escaping &) is caught uniformly without duplicating the literal across each call site.
 const DANGEROUS_NAME = "My <Channel> & \"Test\" 'It'";
 
-describe("HTML escaping invariants - table renderer", () => {
+describe("HTML escaping guarantees - table renderer", () => {
 
   test("a channel name with HTML special characters renders with every dangerous char escaped in the display row", async () => {
 
@@ -128,7 +128,7 @@ describe("HTML escaping invariants - table renderer", () => {
   });
 });
 
-describe("M3U escaping invariants - playlist endpoint", () => {
+describe("M3U escaping guarantees - playlist endpoint", () => {
 
   test("the M3U tvg-name attribute backslash-escapes embedded double-quote characters so the attribute terminates correctly", async () => {
 
@@ -139,7 +139,7 @@ describe("M3U escaping invariants - playlist endpoint", () => {
      * parsers (Channels DVR included) see a corrupted EXTINF line.
      *
      * We compute the expected substring by calling escapeM3uAttribute directly on the seed name, so the test and the helper share a single source of truth.
-     * If the helper's escape strategy ever changes (different sequence, percent-encoding, validation-time stripping), the test continues to pin the end-to-end
+     * If the helper's escape strategy ever changes (different sequence, percent-encoding, validation-time stripping), the test continues to assert the end-to-end
      * contract: whatever the helper emits, the playlist surface must emit too.
      */
     await using ctx = await createIntegrationContext();
@@ -191,7 +191,7 @@ describe("Round-trip safety - export and re-import preserve dangerous characters
      *
      * Implementation: seed a user channel with DANGEROUS_NAME, GET /config/channels/export, capture the body, POST /config/channels/import with that body,
      * read channels.json from disk, and compare the channel entry's name field. Bytes-identical at the field level is the contract; differences in the file's
-     * surrounding metadata (timestamps, schema version, etc.) are not part of the channel-content invariant.
+     * surrounding metadata (timestamps, schema version, etc.) are not part of the channel-content guarantee.
      */
     await using ctx = await createIntegrationContext();
 

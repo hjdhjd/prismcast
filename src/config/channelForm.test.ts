@@ -100,7 +100,7 @@ describe("channelMatches", () => {
 
   test("tags of equal length but different content do not match (post-isDeepStrictEqual semantics)", () => {
 
-    /* Tag equality is order-independent (via sortTags) but content-sensitive: equal-length arrays whose contents differ must not match. This case pins the
+    /* Tag equality is order-independent (via sortTags) but content-sensitive: equal-length arrays whose contents differ must not match. This case asserts the
      * boundary that the length check alone cannot cover, where the arrays are the same size but hold different tag values.
      */
     const channel = makeChannel({ name: "ABC", tags: [ "Local", "News" ], url: "https://abc.com" });

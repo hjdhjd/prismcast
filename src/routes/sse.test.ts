@@ -3,7 +3,7 @@
  * sse.test.ts: Unit tests for installSseStream in sse.ts. The helper is the single source of truth for Server-Sent Events transport setup across /logs/stream
  * and /streams/status: it owns the response headers (Cache-Control, Connection, Content-Type), the immediate flushHeaders() call that opens the EventSource
  * handshake, the 30-second keep-alive heartbeat, and the close() teardown that clears the heartbeat timer. Every consumer route relies on these wire-byte
- * contracts; tests pin them here so a regression in any branch fails at this tier rather than silently degrading the live status / log streams.
+ * contracts; tests assert them here so a regression in any branch fails at this tier rather than silently degrading the live status / log streams.
  *
  * The suite uses makeReqRes from ./express.helpers.ts to synthesize an Express Response object with mock.fn-backed setHeader / flushHeaders / write spies, and
  * mock.timers to drive the heartbeat interval deterministically without sleeping.
@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { installSseStream } from "./sse.ts";
 import { makeReqRes } from "./express.helpers.ts";
 
-// The exact heartbeat frame the helper writes every 30 seconds. Pinning this literal locks the keep-alive contract a proxy depends on - any drift here would
+// The exact heartbeat frame the helper writes every 30 seconds. Asserting this literal locks the keep-alive contract a proxy depends on - any drift here would
 // silently change the on-the-wire shape that EventSource clients and intermediaries observe.
 const HEARTBEAT_FRAME = "event: heartbeat\ndata: \n\n";
 
@@ -130,11 +130,11 @@ describe("installSseStream - close()", () => {
     assert.equal(write.mock.callCount(), 1, "no further heartbeats after close()");
   });
 
-  test("close() is idempotent - a double-call does not throw", () => {
+  test("close() can be called more than once - a double-call does not throw", () => {
 
     // Defensive: req.on("close") may fire multiple times in pathological proxy scenarios, and a future consumer might call sse.close() defensively in addition
     // to the route's own teardown. clearInterval on an already-cleared id is a no-op in Node, so the helper is safe to call more than once for free; this test
-    // pins that contract so a future "track whether we already closed" guard isn't accidentally introduced, breaking callers.
+    // asserts that contract so a future "track whether we already closed" guard isn't accidentally introduced, breaking callers.
     const { res } = makeReqRes();
     const sse = installSseStream(res);
 
@@ -151,7 +151,7 @@ describe("installSseStream - sendEvent", () => {
   test("named eventType writes 'event: <type>\\n' followed by 'data: <json>\\n\\n'", () => {
 
     // The named-event branch is what /streams/status uses for snapshot, streamAdded, streamRemoved, streamHealthChanged, systemStatusChanged, and channelUpdate.
-    // We pin the two-write shape exactly: first the event line, then the data line with the trailing blank line that terminates the SSE frame.
+    // We assert the two-write shape exactly: first the event line, then the data line with the trailing blank line that terminates the SSE frame.
     const { res, write } = makeReqRes();
     const sse = installSseStream(res);
 
@@ -194,9 +194,9 @@ describe("installSseStream - sendEvent", () => {
 
   test("serializes representative payload shapes via JSON.stringify (object, array, string, number, null)", () => {
 
-    // The helper passes the payload through JSON.stringify verbatim. We pin the wire bytes for the shapes production actually pushes through SSE so a future
+    // The helper passes the payload through JSON.stringify verbatim. We assert the wire bytes for the shapes production actually pushes through SSE so a future
     // refactor that swaps stringification (e.g., adopts a structured-clone-based serializer) doesn't silently change client-observable bytes. We deliberately
-    // do NOT cover BigInt or circular references - those throw under JSON.stringify and the production code never passes them; pinning negative behavior would
+    // do NOT cover BigInt or circular references - those throw under JSON.stringify and the production code never passes them; asserting negative behavior would
     // entrench a contract we don't promise.
     const { res, write } = makeReqRes();
     const sse = installSseStream(res);
@@ -218,7 +218,7 @@ describe("installSseStream - sendEvent", () => {
 
   test("undefined fields in object payloads are stripped (matches JSON.stringify semantics)", () => {
 
-    // JSON.stringify drops undefined-valued properties from objects. We pin this so a future shape-change (e.g., wrapping the payload in a defensive normalizer)
+    // JSON.stringify drops undefined-valued properties from objects. We assert this so a future shape-change (e.g., wrapping the payload in a defensive normalizer)
     // doesn't silently change wire bytes for the common case of optional fields like LogEntry.categoryTag.
     const { res, write } = makeReqRes();
     const sse = installSseStream(res);
@@ -231,7 +231,7 @@ describe("installSseStream - sendEvent", () => {
   test("undefined as the top-level payload yields 'data: undefined\\n\\n' (JSON.stringify returns undefined which coerces in string concat)", () => {
 
     // Edge case: JSON.stringify(undefined) returns the JS value `undefined`, which the "data: " + JSON.stringify(...) concatenation coerces to the literal
-    // string "undefined". This is unspecified surface but the production code paths could in theory pass undefined; pinning current behavior as a contract
+    // string "undefined". This is unspecified surface but the production code paths could in theory pass undefined; asserting current behavior as a contract
     // means a consumer relying on it knows the wire shape, and any future shift (e.g., deciding to skip the write entirely on undefined) would surface here.
     const { res, write } = makeReqRes();
     const sse = installSseStream(res);

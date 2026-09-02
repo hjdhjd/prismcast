@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * termination-during-recovery.test.ts: Pins the cleanup contract for terminating a stream while it is mid-recovery. PrismCast's design philosophy is explicit:
+ * termination-during-recovery.test.ts: Asserts the cleanup contract for terminating a stream while it is mid-recovery. PrismCast's design philosophy is explicit:
  * "isolate stream failures - a problem with one stream should never affect other streams." That guarantee depends on terminateStream being correct under
  * concurrency, not just on the happy path. The harder case - termination while the playback monitor's recovery loop holds in-flight state - is the one that
  * silently leaks resources or corrupts other streams when the cleanup contract has gaps.
  *
- * Investigation summary (mirroring the roadmap's "investigate the cleanup contract before pinning" rule):
+ * Investigation summary (mirroring the roadmap's "investigate the cleanup contract before asserting" rule):
  *
  *   1. Recovery state lifetime in production. The monitor in src/streaming/monitor.ts holds RecoveryMetrics and CircuitBreakerState in closure-scoped lets and
  *      exposes itself on the registry entry as a self-disposing handle: monitor: MonitorHandle, with getMetrics() (reads the live accumulated RecoveryMetrics) and
@@ -26,7 +26,7 @@
  *        - segmentEmitter: removeAllListeners called after the "terminated" emit (no orphan listeners).
  *        - registry entry: unregisterStream called (no orphan registry entry).
  *        - channel-to-stream index: deleted via channelToStreamId.delete (no orphan index entry).
- *      No cleanup gap surfaces from this reading. The contract is correct as written; this suite pins each branch as an integration-level invariant so a
+ *      No cleanup gap surfaces from this reading. The contract is correct as written; this suite asserts each branch as an integration-level guarantee so a
  *      future regression that drops one (e.g., a refactor that removes the prerollTimer clear, or one that early-returns from disposeStreamResources without
  *      disposing the monitor) fails loudly here.
  *
@@ -139,7 +139,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     assert.equal(isTerminationInitiated(entry.id), false, "the terminationInitiated flag must be cleared after termination completes");
   });
 
-  test("terminateStream is idempotent across recovery cycles: a second call during a notional next-recovery is a no-op", async () => {
+  test("terminateStream is safe to call again across recovery cycles: a second call during a notional next-recovery is a no-op", async () => {
 
     /* The "twice in quick succession" scenario. terminateStream's first action is to add the id to terminationInitiated; if the id is already there, it
      * early-returns without doing anything else via the terminationInitiated.has guard. The second call must NOT dispose the monitor again, NOT throw, and NOT
@@ -147,7 +147,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
      * breaker trip, graceful shutdown sweep). Without it, a double-cleanup would attempt to drain already-released resources.
      *
      * Why this matters specifically for recovery: the recovery loop and the client-tracking idle-timeout are independent producers of termination intent. A
-     * stream that is mid-recovery and simultaneously has all clients disconnect can have terminateStream fired from both paths. The idempotency test pins the
+     * stream that is mid-recovery and simultaneously has all clients disconnect can have terminateStream fired from both paths. The repeat-safety test asserts the
      * race-safety contract.
      */
     await using ctx = await createIntegrationContext();
@@ -175,8 +175,8 @@ describe("terminateStream during active recovery - cleanup contract", () => {
 
   test("two streams in mid-recovery: terminating one does NOT dispose the other's monitor and leaves the other's recovery state intact", async () => {
 
-    /* The cross-stream isolation invariant under the recovery axis. Phase 1's lifecycle.test.ts pins cross-stream isolation for the registry/index
-     * cleanup; this test extends the invariant to the recovery-state hook: stream A's monitor must NOT be disposed when stream B is terminated. A
+    /* The cross-stream isolation guarantee under the recovery axis. Phase 1's lifecycle.test.ts asserts cross-stream isolation for the registry/index
+     * cleanup; this test extends the guarantee to the recovery-state hook: stream A's monitor must NOT be disposed when stream B is terminated. A
      * regression that confused the per-stream monitor reference (e.g., a closure that captured a shared variable instead of the per-entry field) would
      * surface here as both monitors being disposed when one terminates.
      *

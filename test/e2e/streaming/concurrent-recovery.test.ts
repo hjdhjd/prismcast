@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * concurrent-recovery.test.ts: Pins the per-stream isolation rule for the recovery state machine. PrismCast's design philosophy demands that "a problem
+ * concurrent-recovery.test.ts: Asserts the per-stream isolation rule for the recovery state machine. PrismCast's design philosophy demands that "a problem
  * with one stream should never affect other streams" - the canonical statement of failure isolation in this codebase. The recovery layer realizes that
  * philosophy by making the state objects (RecoveryMetrics, CircuitBreakerState) per-stream values that the monitor instantiates one-per-stream and that the
  * helpers in src/streaming/recovery.ts mutate by parameter, never via module-level singletons. A regression that introduced shared state - a global breaker
@@ -8,7 +8,7 @@
  * modes: one stream's escalation would advance another's; one stream's tripped breaker would terminate another; one stream's reset would clear another's
  * accumulated counters.
  *
- * Phase 1's recovery-escalation.test.ts pins the single-stream sequence (escalation, accumulation, trip-and-reset). This suite pins the independent axis: with
+ * Phase 1's recovery-escalation.test.ts asserts the single-stream sequence (escalation, accumulation, trip-and-reset). This suite asserts the independent axis: with
  * two streams driven through state mutations in interleaved order, neither's state must influence the other's. The integration value here is precisely what
  * the unit suite cannot exercise alone - the unit suite tests one state object at a time, by construction. Independence-under-concurrency is not visible at
  * that resolution.
@@ -19,7 +19,7 @@
  *      recordRecoverySuccess, and pass an explicit `now` argument into checkCircuitBreaker - the same shape the prior recovery suite uses.
  *
  *   2. The harness (createIntegrationContext / initializePersistence) is omitted on purpose. recovery.ts has no module-level singletons, no persistence, and no
- *      I/O - that is in fact the invariant under test. Importing the harness would introduce filesystem state that is irrelevant to per-stream isolation and
+ *      I/O - that is in fact the guarantee under test. Importing the harness would introduce filesystem state that is irrelevant to per-stream isolation and
  *      would mislead a reader into expecting it to matter.
  *
  *   3. "Concurrent" here is interleaved synchronous mutation, not parallel async execution. Recovery state mutators are synchronous and deterministic; the
@@ -55,7 +55,7 @@ describe("recovery state machine - per-stream isolation across concurrent stream
   test("two streams escalate independently; advancing stream A through L1->L2->L3 leaves stream B's metrics at zero", async () => {
 
     /* Two streams each have their own RecoveryMetrics object. The monitor in production constructs one-per-stream and never threads them across streams; the
-     * helpers in recovery.ts take a metrics argument and mutate it in place. The invariant: writes to streamA's metrics must not be visible in streamB's
+     * helpers in recovery.ts take a metrics argument and mutate it in place. The rule: writes to streamA's metrics must not be visible in streamB's
      * metrics, and vice versa. A regression that introduced a singleton (e.g., a module-level "lastRecoveryMethod") would break this immediately - either
      * streamB would see streamA's increments, or streamA's reads would surface streamB's last write.
      *
@@ -138,7 +138,7 @@ describe("recovery state machine - per-stream isolation across concurrent stream
   test("resetting one stream's breaker does not affect another stream's breaker or its metrics", async () => {
 
     /* Both streams have escalated and accumulated state - both metrics carry attempts, both breakers carry counts. Calling resetCircuitBreaker on stream A's
-     * breaker must zero only that breaker. Stream A's metrics, stream B's breaker, and stream B's metrics must all be unchanged. This pins the four-way
+     * breaker must zero only that breaker. Stream A's metrics, stream B's breaker, and stream B's metrics must all be unchanged. This asserts the four-way
      * non-coupling: (A.breaker -> A.metrics, A.breaker -> B.breaker, A.breaker -> B.metrics).
      *
      * The test shape follows the metric/breaker independence test in recovery-escalation.test.ts but extends it across two streams. A regression that "helpfully"

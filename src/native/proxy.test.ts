@@ -6,7 +6,7 @@
  * via update* methods, and stat counter behavior. The loop's own behavior is driven in proxy.map.test.ts, whose harness virtualizes the polling cadence through the
  * clock port and routes fetches through a stub; what stays beyond unit reach is the live-Chrome and live-source behavior around it, which e2e covers. The pure
  * module-level helpers extracted from the polling loop - manifestFailureThreshold (poll failure escalation), resolveSegmentIv (explicit-versus-derived IV
- * selection), and pruneKeyCache (per-URL key cache bounding) - are exported and tested directly, pinning the manifest-hardening rules the closure delegates to
+ * selection), and pruneKeyCache (per-URL key cache bounding) - are exported and tested directly, asserting the manifest-hardening rules the closure delegates to
  * them.
  */
 import { createNativeProxy, manifestFailureThreshold, pruneKeyCache, resolveSegmentIv } from "./proxy.ts";
@@ -422,7 +422,7 @@ describe("NativeProxy.getConsecutiveErrors aggregation", () => {
 describe("manifestFailureThreshold", () => {
 
   // The base threshold is MAX_MANIFEST_FAILURES (3) and the extended threshold is double that (6). These are not exported, so we assert against the literal values
-  // the constant resolves to. If the constant changes, these literals must change with it - the parity property below is the structural invariant, the literals are
+  // the constant resolves to. If the constant changes, these literals must change with it - the parity property below is the structural rule, the literals are
   // the documented current values.
   const BASE = 3;
   const EXTENDED = 6;
@@ -457,7 +457,7 @@ describe("manifestFailureThreshold", () => {
   test("treats the 3xx and exactly-400 boundaries correctly", () => {
 
     // Boundary: 399 is not a client error (extended), 400 is the first client error (base), 499 is the last client error (base), and 500 leaves the client range
-    // (extended). This pins the half-open [400, 500) classification the helper implements.
+    // (extended). This asserts the half-open [400, 500) classification the helper implements.
     assert.equal(manifestFailureThreshold(399), EXTENDED, "399 is below the client range");
     assert.equal(manifestFailureThreshold(400), BASE, "400 is the first client error");
     assert.equal(manifestFailureThreshold(499), BASE, "499 is the last client error");
@@ -533,7 +533,7 @@ describe("pruneKeyCache", () => {
 
   test("evicts entries whose URL is not in the active set and reports the count", () => {
 
-    // The bounding invariant: keys whose URL left the active video+audio working set are released. We seed three keys, mark one active, and assert
+    // The bounding rule: keys whose URL left the active video+audio working set are released. We seed three keys, mark one active, and assert
     // the other two are evicted while the active one survives.
     const keysByUrl = new Map<string, Buffer>([
       [ "https://cdn.test/key-old-1.bin", Buffer.alloc(16, 1) ],

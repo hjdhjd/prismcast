@@ -2,9 +2,9 @@
  *
  * fmp4Segmenter.test.ts: Unit tests for the pure helpers in the fMP4 segmenter module. The two formatters (formatKeyframeStatsSummary, formatSessionStatsSummary) are
  * pure string-builders that earn full coverage here. The two discontinuity-sequence helpers (pruneDiscontinuityIndices, computeDiscontinuitySequence) are the SSOT for
- * keeping discontinuityIndices bounded over a long stream while preserving a correct, monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests pin
- * both properties at once. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment,
- * and emits playlists via hlsSegments.updatePlaylist; it is driven here with synthetic ftyp/moov/moof/mdat boxes against a registered stream, pinning init-segment
+ * keeping discontinuityIndices bounded over a long stream while preserving a correct, monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests
+ * assert both properties at once. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment,
+ * and emits playlists via hlsSegments.updatePlaylist; it is driven here with synthetic ftyp/moov/moof/mdat boxes against a registered stream, asserting init-segment
  * storage, the fast-path first cut, the segment-duration boundary, final flush, and discontinuity marking. Real Chrome-capture fMP4 remains an e2e concern only for
  * codec/timescale fidelity.
  */

@@ -288,7 +288,7 @@ describe("observeHlsPlaylists", () => {
     assert.equal(observed.length, 0, "post-dispose response is not delivered");
   });
 
-  test("dispose() is idempotent - a second call is a safe no-op", async () => {
+  test("dispose() can be called more than once - a second call is a safe no-op", async () => {
 
     // Boundary: cleanup paths may invoke dispose from multiple code paths. Locking the no-op contract prevents double-disabling errors that would mask real bugs.
     const connection = new FakeConnection();
@@ -358,7 +358,7 @@ describe("observeHlsPlaylists", () => {
     assert.ok(networkDisable, "throw-path scope exit still propagates Network.disable through to the root CDP session");
   });
 
-  test("does not retry the body fetch when the first fetch fails (failed-fetch-no-retry dedup invariant)", async () => {
+  test("does not retry the body fetch when the first fetch fails (failed-fetch-no-retry dedup rule)", async () => {
 
     // The dedup design keeps a URL in seenUrls across both successful and failed fetches, so a transient network blip on the first observation does not trigger
     // an immediate retry on the next observation of the same URL. The interceptor timeout in the consumer is the safety net for genuinely missed manifests; the
@@ -429,7 +429,7 @@ describe("observeHlsPlaylists", () => {
 
   test("a media observation carries live=true for a sliding-window playlist and live=false for a VOD/ENDLIST playlist", async () => {
 
-    // The media arm carries liveness, computed by isLiveMediaPlaylist. Both polarities are pinned: the bare media body is live, the VOD/ENDLIST body is not.
+    // The media arm carries liveness, computed by isLiveMediaPlaylist. Both polarities are asserted: the bare media body is live, the VOD/ENDLIST body is not.
     const connection = new FakeConnection();
     const rootSession = new FakeCdpSession(connection);
     const liveUrl = "https://cdn.test/live.m3u8";

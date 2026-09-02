@@ -152,7 +152,7 @@ describe("isPageDeathError", () => {
 
   test("returns true for each execution-context and frame phrasing, in any capitalization", () => {
 
-    // The CDP family this predicate exists to catch. Capitalization varies by the surface that raised the error, so every phrase is pinned in a different case.
+    // The CDP family this predicate exists to catch. Capitalization varies by the surface that raised the error, so every phrase is asserted in a different case.
     assert.equal(isPageDeathError(new Error("Execution context was destroyed")), true);
     assert.equal(isPageDeathError(new Error("EXECUTION CONTEXT IS NOT AVAILABLE")), true);
     assert.equal(isPageDeathError(new Error("Cannot find context with specified id")), true);
@@ -162,7 +162,7 @@ describe("isPageDeathError", () => {
 
   test("returns true for the session-closed family it composes, in any capitalization", () => {
 
-    // The union's other half. These reach the predicate through isSessionClosedError, so the composition is what this pins.
+    // The union's other half. These reach the predicate through isSessionClosedError, so the composition is what this asserts.
     assert.equal(isPageDeathError(new Error("TARGET CLOSED")), true);
     assert.equal(isPageDeathError(new Error("session closed")), true);
     assert.equal(isPageDeathError(new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'")), true);

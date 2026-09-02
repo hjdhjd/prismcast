@@ -109,8 +109,8 @@ const PLAYBACK_INIT_TIMEOUT = 45000;
 // latency bound - no healthy path waits on it - so its generosity costs nothing.
 const INTERCEPTION_BUDGET_MARGIN_MS = 5000;
 
-// The caller-visible capture-timeout messages, each defined once so the lock's deadline errors and any pin test read the exact text. Both match
-// isCaptureInfrastructureError via its "timed out" substring, so they are exported for the classification pin that locks that contract.
+// The caller-visible capture-timeout messages, each defined once so the lock's deadline errors and any assertion test read the exact text. Both match
+// isCaptureInfrastructureError via its "timed out" substring, so they are exported for the classification assertion that locks that contract.
 export const STREAM_INIT_TIMEOUT_MESSAGE = "Stream initialization timed out.";
 export const CAPTURE_PROBE_TIMEOUT_MESSAGE = "Capture probe timed out.";
 
@@ -525,7 +525,7 @@ function disposePage(page: Page): void {
  * while production uses the real
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
  * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window.
- * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering pin
+ * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering assertion
  * has to observe it landing there. So are the two surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
  * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
  * pipeline it drives. So is the page creation itself, which is a queued turn on the tab-selection executor rather than a bare browser call, so a test observes
@@ -650,12 +650,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       video: true,
       videoBitsPerSecond: CONFIG.streaming.videoBitsPerSecond,
 
-      /* The dimension bounds pin the track to exactly the surface emulateCaptureSurface declared on this page, rather than to a second read of the configured
+      /* The dimension bounds hold the track to exactly the surface emulateCaptureSurface declared on this page, rather than to a second read of the configured
        * preset, so a preset saved mid-establishment cannot leave the encoder constrained to dimensions the page was never emulated at.
        *
        * The frame rate is constrained to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower
        * rate. The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but
-       * never drops below 30. The readiness probe (attemptCaptureProbe) instead pins both bounds to a flat 30 because its acquisition fails or succeeds at the
+       * never drops below 30. The readiness probe (attemptCaptureProbe) instead holds both bounds to a flat 30 because its acquisition fails or succeeds at the
        * tabCapture API level before encoding matters, so a representative-but-minimal constraint set suffices there.
        */
       videoConstraints: {
@@ -1136,7 +1136,7 @@ export async function establishChannelPlayback(page: Page, profile: ResolvedSite
 
   const initPromise = deps.initializePlayback(page, profile, initOptions);
 
-  /* The settlement hook rides the initialization's own settlement rather than a fixed step after the wait below, because only the promise knows which of
+  /* The settlement hook runs on the initialization's own settlement rather than a fixed step after the wait below, because only the promise knows which of
    * success, failure, or a late completion actually happened - and a late completion is reachable, since the wait abandons rather than cancels: a lapsed
    * initialization is not stopped, it winds down on its own bounded internal phases and can finish afterward. The trailing catch is the whole safety net for
    * the hook itself, absorbing a hook that throws as well as a structurally-permitted async hook that rejects, so this chain can never become a rejection
@@ -1316,7 +1316,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
     try {
 
-      /* Skip CDP manifest interception when the channel is pinned to screen capture, or when the probe cache already knows this stream's binding resolves to
+      /* Skip CDP manifest interception when the channel is locked to screen capture, or when the probe cache already knows this stream's binding resolves to
        * DRM. The per-channel override short-circuits first, so a forced channel never installs the interceptor: nothing intercepts a manifest, no native
        * attempt runs, no probe fires, and the encryption cache stays untouched by that stream. The cache half avoids creating a CDP session that sits idle for
        * 15 seconds before the interceptor timeout cleans it up; every stream carries an identity, ad-hoc URLs included, so that lookup needs no guard.
@@ -1754,7 +1754,7 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
   try {
 
     // Use the same capture MIME type and surface as the runtime. The stale state error occurs at the tabCapture API level before encoding matters, so matching
-    // those runtime constraints ensures the probe exercises a representative acquisition. The constraints are pinned to the dimensions the declaration above
+    // those runtime constraints ensures the probe exercises a representative acquisition. The constraints are held to the dimensions the declaration above
     // returned, so the probe holds its track to the surface the page actually carries rather than to a second read of the preset.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
     const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
@@ -1864,7 +1864,7 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
 /* A browser can be capture-ready at launch and lose its capture capability later - the extension wedges, tabCapture stalls, a display reconfiguration leaves the
  * process unable to start another capture while the captures already running continue - without ever firing a "disconnected" event, so neither the launch gate nor
- * the disconnect handler would catch it. This detector rides a signal that is already happening: a stream-setup failure carrying a capture-infrastructure
+ * the disconnect handler would catch it. This detector uses a signal that is already happening: a stream-setup failure carrying a capture-infrastructure
  * signature. The probe is the arbiter, serialized through the capture lock so it can never race a real stream's capture acquisition, and it runs in the background,
  * single-flight, so it never delays a response or stacks up. A probe that never obtained a turn is no verdict at all, because a busy lock is evidence about load
  * rather than about the browser. On a confirmed failure the one recovery action runs: mark the browser, which leaves its running captures alone, refuses new

@@ -90,7 +90,7 @@ export function registerBulkRoutes(app: Express): void {
       ("Cleared channel numbers from " + String(affectedKeys.length) + " channels.") :
       ("Numbered " + String(affectedKeys.length) + " channels.");
 
-    // The hint rides only when channels actually changed: with an empty visible listing the message reports zero channels and nothing playlist-visible happened.
+    // The hint is included only when channels actually changed: with an empty visible listing the message reports zero channels and nothing playlist-visible happened.
     sendSuccess(res, { affectedKeys, message, playlistHint: affectedKeys.length > 0 });
   }));
 
@@ -203,7 +203,7 @@ export function registerBulkRoutes(app: Express): void {
     const message = "Tag '" + tag + "' " + verb + " " + String(affectedKeys.length) + " channel(s).";
 
     // Include the full tag UI bundle so the filter dropdown and tag manager modal stay in sync. Tags render in the playlist as group-title and tvc-guide-tags, so
-    // the reload hint rides the message; the early return above means this path is reached only with a non-empty affected set.
+    // the reload hint is carried on the message; the early return above means this path is reached only with a non-empty affected set.
     sendSuccess(res, { affectedKeys, message, playlistHint: true, tags: true });
   }));
 }

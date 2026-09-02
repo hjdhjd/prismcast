@@ -126,7 +126,7 @@ describe("getServicePaths happy paths (per platform)", () => {
 
   test("linux: extracts both paths from a quoted ExecStart whose node path contains a space", () => {
 
-    // The other half of the two-grammar contract the test above pins: a quoted line is what the unit writer emits, and quoting is what lets a path containing a
+    // The other half of the two-grammar contract the test above asserts: a quoted line is what the unit writer emits, and quoting is what lets a path containing a
     // space survive a field grammar that otherwise splits on spaces.
     setPlatform("linux");
 

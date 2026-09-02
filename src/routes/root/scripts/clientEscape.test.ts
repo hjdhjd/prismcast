@@ -2,7 +2,7 @@
  *
  * clientEscape.test.ts: Unit tests for the single client-side HTML-escape source of truth. clientEscapeHtml ships to the browser via Function.prototype.toString()
  * and therefore cannot import the server-side markup.escapeHtml, so the two are separate function objects; this suite is the one byte-parity guard that keeps them
- * identical. It also pins the entity contract directly and the shape of the window.escapeHtml assignment that the shared utilities script emits. The runtime
+ * identical. It also asserts the entity contract directly and the shape of the window.escapeHtml assignment that the shared utilities script emits. The runtime
  * validity of the emitted assignment (that the .toString()-serialized body parses and installs window.escapeHtml in a real DOM) is exercised by the shared-runtime
  * suite, which executes the shared utilities script and calls window.escapeHtml.
  */
@@ -15,7 +15,7 @@ describe("clientEscapeHtml", () => {
 
   test("encodes the five HTML special characters as entities, leaving ordinary text untouched", () => {
 
-    /* The five characters that can break out of a text or attribute context - & < > " ' - must each render as an entity. We pin each character to its entity: the
+    /* The five characters that can break out of a text or attribute context - & < > " ' - must each render as an entity. We check each character against its entity: the
      * ampersand, the angle brackets, the double quote (the attribute-breakout vector), and the apostrophe (HTML5 numeric reference &#39;). Assertion order is
      * presentational, not meaningful for correctness: the escaper is a single character-class regex pass that matches and replaces each character exactly once,
      * so escaping order is irrelevant to correctness. Ordinary alphanumerics pass through verbatim.
@@ -67,7 +67,7 @@ describe("generateClientEscapeAssignment", () => {
   test("emits statements that install window.escapeHtml backed by an IIFE-local const alias", () => {
 
     /* The shared utilities script concatenates this fragment near the top of its IIFE. It must install the global surface (window.escapeHtml) that every later
-     * client script resolves and the local const alias that shared.ts's own renderers call without a global property lookup. We pin both so a refactor that dropped
+     * client script resolves and the local const alias that shared.ts's own renderers call without a global property lookup. We assert both so a refactor that dropped
      * either binding - leaving cross-script callers or in-IIFE callers with an undefined escapeHtml - surfaces here.
      */
     const snippet = generateClientEscapeAssignment();

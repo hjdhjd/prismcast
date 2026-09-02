@@ -133,13 +133,13 @@ const PHASE_POLICY = {
 } as const satisfies Record<OverlayPhase, PhasePolicy>;
 
 /**
- * The set of phases whose policy permits an embed-gate accept, derived from PHASE_POLICY itself. Used only by the compile-time pin below.
+ * The set of phases whose policy permits an embed-gate accept, derived from PHASE_POLICY itself. Used only by the compile-time assertion below.
  */
 type EmbedGatePhase = { [P in OverlayPhase]: (typeof PHASE_POLICY)[P]["embedGate"] extends true ? P : never }[OverlayPhase];
 
-/* Compile-time pin: the video wait is the only phase whose policy may accept an embed gate. If a policy edit ever flips a second phase's embedGate to true,
+/* Compile-time assertion: the video wait is the only phase whose policy may accept an embed gate. If a policy edit ever flips a second phase's embedGate to true,
  * EmbedGatePhase widens past "videoWait", the conditional below collapses to `never`, and the assignment of `true` fails to compile - a build error rather than a
- * silent widening of the privacy-sensitive auto-accept surface. The binding is read once at module scope purely so the pin is live code, not a dead type alias.
+ * silent widening of the privacy-sensitive auto-accept surface. The binding is read once at module scope purely so the assertion is live code, not a dead type alias.
  */
 const embedGatePhaseIsVideoWaitOnly: EmbedGatePhase extends "videoWait" ? true : never = true;
 

@@ -98,7 +98,7 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
     const { displayRow } = generateChannelRowHtml("abc", getProfiles());
 
     /* Look for the channelNumber 7 in the row. The cell wraps it in HTML so the literal "7" appears between tags - we just need the digit somewhere in the
-     * output. We avoid pinning the exact cell wrapper because that's a UI detail; what matters is that the data is present.
+     * output. We avoid asserting the exact cell wrapper because that's a UI detail; what matters is that the data is present.
      */
     assert.match(displayRow, />7</, "channelNumber 7 should appear in the rendered display row");
   });
@@ -106,7 +106,7 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
   test("a non-existent channel key produces empty rows (defensive)", async () => {
 
     /* Boundary: the generator looks up the listing by key and returns empty rows when not found. The route handler should never call this for an unknown key,
-     * but the defensive contract pins the safe-by-default behavior.
+     * but the defensive contract asserts the safe-by-default behavior.
      */
     await using ctx = await createIntegrationContext();
 
@@ -229,7 +229,7 @@ describe("generateChannelRowHtml - Profile column explicit vs auto-resolved bran
 
     /* The Profile column has two rendering branches (table.ts). When channel.profile is set, the explicit branch emits a bare <td> whose content is the profile
      * name run through escapeHtml - no wrapping span, no "(auto)" suffix, no text-muted class. The auto-resolved branch (no explicit profile) instead wraps the
-     * derived service label in <span class="text-muted">Label (auto)</span>. This test pins the explicit branch so a regression that accidentally routed an
+     * derived service label in <span class="text-muted">Label (auto)</span>. This test asserts the explicit branch so a regression that accidentally routed an
      * explicit assignment through the muted/auto styling - visually implying "we guessed this" when the operator set it deliberately - is caught.
      */
     await using ctx = await createIntegrationContext();
@@ -266,7 +266,7 @@ describe("generateChannelsPanel - validation errors block", () => {
 
     /* formErrors is the fifth positional parameter of generateChannelsPanel (channelMessage, channelError, editingChannelKey, showAddForm, formErrors,
      * formValues). When it is non-empty the panel emits a "Validation Errors" block with a <ul> carrying one <li> per entry, each rendering the field name in a
-     * <strong> and the message after it - both through escapeHtml. This pins the count-per-field invariant and the escaping of BOTH positions, so a regression
+     * <strong> and the message after it - both through escapeHtml. This asserts the count-per-field rule and the escaping of BOTH positions, so a regression
      * that dropped escaping on either the field name or the message (an XSS vector, since messages can echo user input) surfaces.
      */
     await using ctx = await createIntegrationContext();
@@ -274,7 +274,7 @@ describe("generateChannelsPanel - validation errors block", () => {
     void ctx;
     await initializePersistence(ctx);
 
-    // Put HTML markup in BOTH the field name and the message so a regression dropping escaping on either position is caught. A second plain entry pins the
+    // Put HTML markup in BOTH the field name and the message so a regression dropping escaping on either position is caught. A second plain entry asserts the
     // one-<li>-per-field count.
     const formErrors = new Map<string, string>();
 
@@ -327,7 +327,7 @@ describe("generateChannelsPanel - channels file parse error block", () => {
 
     assert.match(panel, /<div class="error-title">Channels File Error<\/div>/, "the Channels File Error block header must be present");
 
-    // The user-channels file path renders inside a <code> element, HTML-escaped. escapeHtml is identity for a plain temp path, but comparing against it pins the
+    // The user-channels file path renders inside a <code> element, HTML-escaped. escapeHtml is identity for a plain temp path, but comparing against it asserts the
     // escaping as the contract - a path containing markup would still be neutralized.
     const expectedPath = "<code>" + escapeHtml(getUserChannelsFilePath()) + "</code>";
 

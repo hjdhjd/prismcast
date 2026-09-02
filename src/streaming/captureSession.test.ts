@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * captureSession.test.ts: Unit tests for the capture-pipeline composite. createCaptureSession owns three resources (raw capture stream, optional FFmpeg child, fMP4
- * segmenter) and exposes a single Disposable whose teardown runs kill -> destroy -> stop. These tests pin that order against synthetic doubles - in particular the
+ * segmenter) and exposes a single Disposable whose teardown runs kill -> destroy -> stop. These tests assert that order against synthetic doubles - in particular the
  * correctness-critical first step (FFmpeg is killed, setting its shuttingDown flag, before the capture stream is destroyed and carries EOF to FFmpeg's stdin), the
  * repeated-dispose safety, the native-fMP4 (no FFmpeg) and segmenter-less (setup-phase / native-upgrade) shapes, the "using" scope-bound path, and the
  * orphaned-segmenter fold where attaching a segmenter to an already-disposed session stops it instead of wiring it. The composite is pure orchestration over the
@@ -163,7 +163,7 @@ describe("createCaptureSession - teardown order", () => {
   });
 });
 
-describe("createCaptureSession - idempotency", () => {
+describe("createCaptureSession - repeat safety", () => {
 
   test("a second dispose is a no-op", () => {
 
@@ -183,7 +183,7 @@ describe("createCaptureSession - idempotency", () => {
   test("[Symbol.dispose] is the same disposer as dispose() and shares the disposed guard", () => {
 
     // The "using" contract rests on [Symbol.dispose] being the exact dispose closure, so a regression that pointed it at a second, independently-flagged closure
-    // would break idempotency without any other test noticing. Pin both the identity and that a repeated dispose through the Symbol alias is a no-op.
+    // would break repeat safety without any other test noticing. Assert both the identity and that a repeated dispose through the Symbol alias is a no-op.
     const rig = createRig();
     const session = createCaptureSession({ ffmpegProcess: rig.ffmpegProcess, rawCaptureStream: rig.rawCaptureStream });
 

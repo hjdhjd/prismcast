@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * playlistHint.test.ts: Unit tests for the playlist-reload hint helpers. The module is the SSOT for which fields surface in the M3U playlist and for the prose
- * appended to user-facing messages when those fields change. Tests pin the M3U_FIELDS membership, the PLAYLIST_HINT literal, and the predicate helpers
+ * appended to user-facing messages when those fields change. Tests assert the M3U_FIELDS membership, the PLAYLIST_HINT literal, and the predicate helpers
  * (stored, delta, change). Locking these behaviors prevents an accidental field-list drift from silently suppressing the playlist-reload nudge after a real
  * mutation.
  */
@@ -202,8 +202,8 @@ describe("playlistHintForChange", () => {
     assert.equal(playlistHintForChange(previous, next), PLAYLIST_HINT, "type difference must be treated as a real change");
   });
 
-  /* tags is compared by content the way the playlist renders it, not by array identity. The pins below use members of the predefined vocabulary, because the
-   * comparator reads effective tags - a fixture tag outside the active vocabulary filters to nothing and would silently invert what the pin proves.
+  /* tags is compared by content the way the playlist renders it, not by array identity. The assertions below use members of the predefined vocabulary, because the
+   * comparator reads effective tags - a fixture tag outside the active vocabulary filters to nothing and would silently invert what the assertion proves.
    */
 
   test("returns an empty string when the tag arrays hold the same tags in a different order", () => {

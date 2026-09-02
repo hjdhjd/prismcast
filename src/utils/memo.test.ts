@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * memo.test.ts: Unit tests for the memoizeAsync primitive in memo.ts. The primitive is small but its correctness has subtle implications for production
- * caching (resolveFFmpegPath in particular). Tests pin every documented behavior: single-shot probe invocation across concurrent first-callers, cached-value
+ * caching (resolveFFmpegPath in particular). Tests assert every documented behavior: single-shot probe invocation across concurrent first-callers, cached-value
  * return on subsequent calls, sticky-rejection semantics, and correct handling of probes whose resolved value is itself undefined.
  */
 import { describe, test } from "node:test";
@@ -80,7 +80,7 @@ describe("memoizeAsync", () => {
 
     /* Without the "resolved" kind tag, the closure would have to use `state.value !== undefined` as the cache-hit check, which would re-probe whenever the
      * resolved value is undefined. The discriminated union's kind tag distinguishes "resolved to undefined" from "not yet resolved", eliminating that
-     * conflation. This test pins the contract.
+     * conflation. This test asserts the contract.
      */
     let calls = 0;
     const memoized = memoizeAsync(async () => {

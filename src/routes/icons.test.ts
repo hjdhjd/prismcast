@@ -2,7 +2,7 @@
  *
  * icons.test.ts: Unit tests for the SVG icon constants in icons.ts. Each export is a string literal carrying a complete <svg> element. The tests lock the
  * structural properties documented in the module header (14x14 dimensions, viewBox 16x16, currentColor stroke), enforce that every exported name resolves to
- * an actual SVG, and pin the well-formed structure of each icon's outer wrapper so an accidental string truncation or mutation surfaces as a test failure.
+ * an actual SVG, and assert the well-formed structure of each icon's outer wrapper so an accidental string truncation or mutation surfaces as a test failure.
  */
 import * as icons from "./icons.ts";
 import { describe, test } from "node:test";

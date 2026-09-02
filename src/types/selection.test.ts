@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * selection.test.ts: Unit tests for the runtime type guard exported from selection.ts. The module is mostly type-only, but isChannelSelectionProfile is a
- * runtime function: a predicate that proves channelSelector is a non-empty string and narrows ResolvedSiteProfile to ChannelSelectionProfile. The tests pin
+ * runtime function: a predicate that proves channelSelector is a non-empty string and narrows ResolvedSiteProfile to ChannelSelectionProfile. The tests assert
  * the boundary cases (null, empty string, non-empty string) and exercise the type-narrowing behavior of the guard.
  */
 import type { ChannelSelectionProfile, ResolvedSiteProfile } from "./index.ts";

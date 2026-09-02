@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userchannels-public-api.test.ts: Integration-tier coverage for the smaller public exports of userChannels.ts that are reachable only after the persistence
- * subsystem is initialized. Each describe block pins one or more such exports:
+ * subsystem is initialized. Each describe block asserts one or more such exports:
  *
  *   - getStoredUserChannels: defensive copy contract.
  *   - isChannelAvailable: in-merged-map predicate.
@@ -140,7 +140,7 @@ describe("mutateChannelDisplayPrefs: partial update + runtime CONFIG sync", () =
      *
      * Note on disk shape: filterDefaults strips fields equal to defaults via the PRESERVED_FIELDS predicates (differsFromStringDefault for direction/field,
      * isNonEmptyArray for visibleColumns). When the explicit override differs from default but the inherited fields still equal defaults, only the override
-     * lands on disk. The contract worth pinning is the runtime CONFIG state, not the on-disk shape (which is filterDefaults' contract).
+     * lands on disk. The contract worth asserting is the runtime CONFIG state, not the on-disk shape (which is filterDefaults' contract).
      */
     await using ctx = await createIntegrationContext();
 
@@ -169,13 +169,13 @@ describe("markSetupCompleted: one-shot transition", () => {
 
   test("sets the runtime CONFIG flag to true; in-memory state survives the call", async () => {
 
-    /* Contract worth pinning at integration tier: after the call, CONFIG.channels.setupCompleted is true. Subsequent table renders and route handlers read this
+    /* Contract worth asserting at integration tier: after the call, CONFIG.channels.setupCompleted is true. Subsequent table renders and route handlers read this
      * runtime flag.
      *
      * On-disk persistence note: setupCompleted is NOT in PRESERVED_FIELDS or CONFIG_METADATA, so filterDefaults strips it from the on-disk shape. The flag is
      * effectively in-memory only and gets re-inferred at next startup via initializeUserChannels' "if any services or user channels exist" branch. This is
      * intentional - the function's mutateConfig call is a no-op on disk, but the flag survives across restarts via the inference, not via persistence. The
-     * companion suite below pins the inference path that closes the loop.
+     * companion suite below asserts the inference path that closes the loop.
      */
     await using ctx = await createIntegrationContext();
 

@@ -3,7 +3,7 @@
  * channels.test.ts: Unit tests for the runtime constants and partition completeness machinery in channels.ts. The module's runtime exports are four readonly
  * arrays (CHANNEL_IDENTITY_KEYS, CHANNEL_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS) that act as the single source of truth for
  * the identity/binding partition and the delta-eligible subset. The tests lock the membership, ordering, and disjointness contracts so a silent change to any
- * array surfaces as a failed assertion. Type-level tests pin the CanonicalChannel/VariantChannel tag: a value with a string canonicalKey is a
+ * array surfaces as a failed assertion. Type-level tests assert the CanonicalChannel/VariantChannel tag: a value with a string canonicalKey is a
  * VariantChannel, anything else is a CanonicalChannel.
  */
 import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.ts";
@@ -16,7 +16,7 @@ describe("CHANNEL_IDENTITY_KEYS", () => {
   test("contains the expected identity field names", () => {
 
     // The identity partition must include every property declared on ChannelIdentity. The compile-time _partitionCompleteness check enforces structural
-    // coverage; this test pins the literal membership so an accidental rename or omission surfaces as a value-level failure too.
+    // coverage; this test asserts the literal membership so an accidental rename or omission surfaces as a value-level failure too.
     assert.deepEqual(
       [...CHANNEL_IDENTITY_KEYS],
       [ "channelNumber", "forceCapture", "guideTitle", "hdhrEnabled", "logoUrl", "name", "pacificStationId", "stationId", "tags", "tvgShift" ]
@@ -85,7 +85,7 @@ describe("identity/binding partition disjointness", () => {
     assert.deepEqual(overlap, [], "identity and binding partitions must not overlap");
   });
 
-  test("neither partition contains the canonicalKey discriminator", () => {
+  test("neither partition contains the canonicalKey tag", () => {
 
     // canonicalKey is the explicit "neither" carve-out per the compile-time exhaustiveness check. Including it in either array would corrupt the partition.
     const all: string[] = [ ...CHANNEL_IDENTITY_KEYS, ...CHANNEL_BINDING_KEYS ];
@@ -248,7 +248,7 @@ describe("Channel discriminated union (type-level)", () => {
 
   test("VariantChannel requires a canonicalKey (type system rejects omission)", () => {
 
-    // Without canonicalKey, the literal does not satisfy VariantChannel. The @ts-expect-error pins this contract.
+    // Without canonicalKey, the literal does not satisfy VariantChannel. The @ts-expect-error asserts this contract.
     // @ts-expect-error - VariantChannel.canonicalKey is required; omitting it is a type error.
     const bad: VariantChannel = { url: "https://example.com/live" };
 

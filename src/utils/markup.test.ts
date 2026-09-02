@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * markup.test.ts: Unit tests for the markup-escape primitives in markup.ts. This suite covers the escape functions (escapeHtml, escapeXml), which share an
- * internal regex callback; it pins the exact entity mapping for each metacharacter for both flavors, locks surrounding-text passthrough, and asserts the apostrophe
+ * internal regex callback; it asserts the exact entity mapping for each metacharacter for both flavors, locks surrounding-text passthrough, and asserts the apostrophe
  * entity differs between HTML5 (&#39;) and XML (&apos;) so a future regression in either entity table or the shared regex surfaces immediately. The module's third
  * export, serializeAttrs, is the attribute serializer; it delegates value encoding to escapeHtml and is intentionally out of scope here, exercised through its
  * renderer callers rather than this primitive suite.
@@ -91,7 +91,7 @@ describe("escapeXml", () => {
   test("escapes the apostrophe to &apos; (XML named entity, not the HTML5 numeric form)", () => {
 
     // Boundary: this is the one place the XML table diverges from the HTML table. The XML 1.0 spec defines &apos; as one of the five predefined entities and
-    // launchd's plist parser expects this form; the HTML escaper emits &#39; instead. Pinning both forms here would catch a future merge that crossed the tables.
+    // launchd's plist parser expects this form; the HTML escaper emits &#39; instead. Asserting both forms here would catch a future merge that crossed the tables.
     assert.equal(escapeXml("it's"), "it&apos;s");
     assert.equal(escapeHtml("it's"), "it&#39;s");
   });

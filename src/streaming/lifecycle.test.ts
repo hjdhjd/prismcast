@@ -118,7 +118,7 @@ describe("getChannelStreamId / setChannelStreamId / deleteChannelStreamId", () =
     assert.equal(getChannelStreamId("beta"), undefined);
   });
 
-  test("delete is a no-op for an unknown channel (idempotent)", () => {
+  test("delete is a no-op for an unknown channel (repeat-safe)", () => {
 
     assert.doesNotThrow(() => {
 
@@ -216,7 +216,7 @@ describe("terminateStream", () => {
     deleteChannelStreamId("epsilon");
   });
 
-  test("is idempotent - calling twice does not crash and the second call is a no-op", () => {
+  test("calling twice does not crash and the second call is a no-op", () => {
 
     // The terminationInitiated guard ensures double-termination is silently absorbed. Locks the contract that callers can issue redundant terminate calls without
     // worrying about stack overflows or double-stop calls into the segmenter.
@@ -304,7 +304,7 @@ describe("terminateStream", () => {
 
   test("disposes the monitor handle when present", () => {
 
-    // terminateStream reads the monitor's metrics in the prologue and disposes the handle in disposeStreamResources. This test pins that the handle's dispose runs.
+    // terminateStream reads the monitor's metrics in the prologue and disposes the handle in disposeStreamResources. This test asserts that the handle's dispose runs.
     let monitorDisposed = false;
     const dispose = (): void => { monitorDisposed = true; };
 

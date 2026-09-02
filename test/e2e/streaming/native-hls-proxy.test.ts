@@ -175,7 +175,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
     /* The HLS spec defines AES-128-CBC at the segment level, with the IV derived from the media sequence number when no explicit IV appears in the manifest.
      * The proxy fetches the key once (caching by URL), decrypts each segment as it arrives, and stores plaintext - downstream consumers (Channels DVR) read
-     * cleartext segments from the registry. This test pins that contract: we encrypt synthetic plaintext on the stub, the proxy fetches and decrypts, the
+     * cleartext segments from the registry. This test asserts that contract: we encrypt synthetic plaintext on the stub, the proxy fetches and decrypts, the
      * registry holds the plaintext byte-for-byte.
      */
     await using ctx = await createIntegrationContext();
@@ -251,7 +251,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("decrypts an AES-128 segment whose #EXT-X-KEY carries an explicit lowercase IV=0x value", async () => {
 
-    /* Parity pin for the explicit-IV path. RFC 8216 lets a segment key declare its own IV as IV=0x followed by 32 hex digits, overriding the sequence-derived
+    /* Parity assertion for the explicit-IV path. RFC 8216 lets a segment key declare its own IV as IV=0x followed by 32 hex digits, overriding the sequence-derived
      * default. We choose an IV that differs from the sequence-derived value and encrypt the segment with it, so a correct round-trip proves the manifest's explicit
      * IV was the one used - a decrypt that silently fell back to the sequence-derived IV would produce garbage and fail the byte comparison.
      */
@@ -266,7 +266,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const ivHex = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
     const iv = Buffer.from(ivHex, "hex");
 
-    assert.notDeepEqual(iv, deriveIvFromSequence(500), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+    assert.notDeepEqual(iv, deriveIvFromSequence(500), "the chosen IV must differ from the sequence-derived IV or the assertion proves nothing about the explicit path");
 
     const cipher = aes128Encrypt(plain, key, iv);
 
@@ -327,7 +327,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("decrypts an AES-128 segment whose #EXT-X-KEY carries an explicit uppercase IV=0X value", async () => {
 
-    /* IV prefix casing. RFC 8216 permits either 0x or 0X, and parseExplicitIv accepts both. This pin encrypts a segment with an explicit IV, declares it with the
+    /* IV prefix casing. RFC 8216 permits either 0x or 0X, and parseExplicitIv accepts both. This assertion encrypts a segment with an explicit IV, declares it with the
      * uppercase 0X prefix, and requires a clean decrypt: the extraction must pass the whole prefixed value to the parser rather than deciding prefix casing itself.
      * We choose an IV that differs from the sequence-derived value so the round-trip can only succeed via the explicit path.
      */
@@ -342,7 +342,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const ivHex = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
     const iv = Buffer.from(ivHex, "hex");
 
-    assert.notDeepEqual(iv, deriveIvFromSequence(600), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+    assert.notDeepEqual(iv, deriveIvFromSequence(600), "the chosen IV must differ from the sequence-derived IV or the assertion proves nothing about the explicit path");
 
     const cipher = aes128Encrypt(plain, key, iv);
 
@@ -485,7 +485,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("uses the real IV attribute when a quoted URI value contains a decoy IV= substring", async () => {
 
-    /* Adversarial pin for the quoted-string blanking. A quoted attribute value may legally contain commas and arbitrary text, including a literal ",IV=deadbeef".
+    /* Adversarial assertion for the quoted-string blanking. A quoted attribute value may legally contain commas and arbitrary text, including a literal ",IV=deadbeef".
      * An unanchored scan of the raw line would match that decoy inside the URI and decrypt with the wrong IV. The extraction blanks quoted spans before scanning,
      * so only the genuine IV attribute outside the quotes is captured. We embed the decoy in the key URI and encrypt with the real IV; a correct round-trip proves
      * the decoy was ignored.
@@ -501,7 +501,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const ivHex = "112233445566778899aabbccddeeff00";
     const iv = Buffer.from(ivHex, "hex");
 
-    assert.notDeepEqual(iv, deriveIvFromSequence(800), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+    assert.notDeepEqual(iv, deriveIvFromSequence(800), "the chosen IV must differ from the sequence-derived IV or the assertion proves nothing about the explicit path");
 
     const cipher = aes128Encrypt(plain, key, iv);
 
@@ -563,7 +563,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("captures the IV attribute when it appears immediately after the #EXT-X-KEY: colon", async () => {
 
-    /* Boundary pin for the colon anchor. Attribute order in #EXT-X-KEY is not significant, so IV can be the first attribute, sitting right after the tag colon with
+    /* Boundary assertion for the colon anchor. Attribute order in #EXT-X-KEY is not significant, so IV can be the first attribute, sitting right after the tag colon with
      * no preceding comma. The extraction anchors IV= to either the tag colon or a separating comma; a comma-only anchor would miss this layout, fall back to the
      * sequence-derived IV, and decrypt to garbage. We place IV first and encrypt with it; a correct round-trip proves the colon boundary is honored.
      */
@@ -578,7 +578,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     const ivHex = "fedcba9876543210fedcba9876543210";
     const iv = Buffer.from(ivHex, "hex");
 
-    assert.notDeepEqual(iv, deriveIvFromSequence(900), "the chosen IV must differ from the sequence-derived IV or the pin proves nothing about the explicit path");
+    assert.notDeepEqual(iv, deriveIvFromSequence(900), "the chosen IV must differ from the sequence-derived IV or the assertion proves nothing about the explicit path");
 
     const cipher = aes128Encrypt(plain, key, iv);
 
@@ -774,7 +774,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     });
 
     // Build a fake clock whose sleep returns a promise the test holds open. The post-first-poll awaiter inside schedulePoll is the only consumer of
-    // clock.sleep here; we capture its resolver so the test can release the sleep deterministically after asserting the invariant.
+    // clock.sleep here; we capture its resolver so the test can release the sleep deterministically after asserting the rule.
     const sleepResolvers: (() => void)[] = [];
     const sleepDurations: number[] = [];
 
@@ -846,7 +846,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
   test("polls a separate-audio rendition and stores its audio segments as audioN.ts with a master + audio variant playlist", async () => {
 
-    /* The separate-audio contract mirrors the video fetch-and-store contract this suite already pins, but on the audio rendition. When the probe resolves a
+    /* The separate-audio contract mirrors the video fetch-and-store contract this suite already asserts, but on the audio rendition. When the probe resolves a
      * master with an EXT-X-MEDIA AUDIO group, it hands the proxy the two resolved media playlist URLs directly (variantUrl for video, audioVariantUrl for audio).
      * The proxy runs pollAudioStream in parallel with the video poll, applies the same tail-fill window on the first poll, and stores each new audio segment under
      * "audio0.ts", "audio1.ts", ... in the registry's SEPARATE hls.audioSegments map - never intermixed with the video hls.segments map. It then publishes a
@@ -1095,7 +1095,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     /* The escalation contract: pollAudioStream classifies a failed audio manifest poll via the SAME manifestFailureThreshold helper the video poll uses, so a 4xx
      * (client error) is capped at MAX_MANIFEST_FAILURES = 3 consecutive attempts before it reports an error and stops the proxy. We keep the video rendition
      * healthy so the poll loop keeps cycling at MANIFEST_BACKOFF_BASE, and return HTTP 404 for the audio manifest. After three consecutive audio failures the proxy
-     * invokes onError with the audio-specific message and flips itself to stopped. Pinning "3 times" in the message asserts the 4xx branch of the shared threshold
+     * invokes onError with the audio-specific message and flips itself to stopped. Asserting "3 times" in the message asserts the 4xx branch of the shared threshold
      * (identical to the video path) rather than the doubled network/5xx branch.
      */
     await using ctx = await createIntegrationContext();

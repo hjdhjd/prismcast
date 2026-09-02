@@ -3,12 +3,12 @@
  * variant-display.test.ts: Integration coverage for variant-dropdown rendering under the service filter. The renderer at
  * src/routes/config/channels/table.ts (line ~951) marks each <option> with the `hidden` attribute when its service tag is filtered out by isServiceTagEnabled,
  * which is the contract that closes the d2ee7be regression class - "provider filter not applied to predefined variant dropdown options" rendered every option
- * regardless of the active filter, leaving users to select services they never enabled. The unit suite for services.ts pins isServiceTagEnabled in isolation;
- * this suite pins the renderer's actual emission of `hidden` against a real channel listing assembled by the production buildServiceGroups pipeline.
+ * regardless of the active filter, leaving users to select services they never enabled. The unit suite for services.ts asserts isServiceTagEnabled in isolation;
+ * this suite asserts the renderer's actual emission of `hidden` against a real channel listing assembled by the production buildServiceGroups pipeline.
  *
  * Test 4 verifies directly (rather than assuming) what the dropdown renders as `selected` when the user's stored selection points at a service that is currently
  * filtered out. resolveServiceKey() in services.ts:969-991 falls back via findFirstEnabledVariant to the first variant whose tag is enabled; this is the
- * documented behavior, and the test pins it. Note: a regression that re-shapes that fallback (e.g., to "leave the stored selection selected even when filtered"
+ * documented behavior, and the test asserts it. Note: a regression that re-shapes that fallback (e.g., to "leave the stored selection selected even when filtered"
  * or to "fall back to the canonical key without consulting the filter") would surface here as a different option carrying `selected`. The narrative comment in
  * Test 4 documents the contract so a future reader knows the assertion is by design, not chance.
  *
@@ -162,7 +162,7 @@ describe("variant dropdown rendering under the service filter", () => {
      * stored selection on yttv but enabledServices excluding yttv, the rendered dropdown's `selected` option must be the first-enabled variant, not yttv.
      *
      * The yttv option itself still appears in the dropdown - filtered options are hidden, not removed - and it must carry `hidden`. We assert both: the
-     * `selected` flag landed on the fallback variant, and yttv's `hidden` flag is set. This pins the resolver-renderer contract end-to-end so a future
+     * `selected` flag landed on the fallback variant, and yttv's `hidden` flag is set. This asserts the resolver-renderer contract end-to-end so a future
      * refactor that changed either side independently (e.g., a renderer that ignored resolveServiceKey, or a resolver that returned the stale selection) would
      * surface the divergence.
      *
@@ -200,14 +200,14 @@ describe("variant dropdown rendering under the service filter", () => {
 
 describe("variant fallback contract under service filter", () => {
 
-  /* These tests pin the variant fallback CONTRACT - the rule the renderer uses when the user's stored selection (or the canonical's own service tag) lands
+  /* These tests assert the variant fallback CONTRACT - the rule the renderer uses when the user's stored selection (or the canonical's own service tag) lands
    * outside the active enabledServices filter. The contract is implemented in src/config/services.ts:
    * resolveServiceKey() returns findFirstEnabledVariant(canonicalKey) when the resolved service tag is filtered out, and falls through to the canonical/selection
    * when no variant is enabled (services.ts:982-1004, 1012-1035). The renderer at table.ts:943 passes the resolveServiceKey output to mark `selected` on the matching
    * <option>. The cumulative observation: the variant cell does NOT emit any cell-level indicator (banner, pill, "unavailable" badge) - the only signal of fallback
    * is which option carries `selected` and which carry `hidden`.
    *
-   * The tests below pin these aspects:
+   * The tests below assert these aspects:
    *
    *   1. Negative observation - no cell-level "unavailable" indicator is emitted outside the dropdown. The fallback is silent at the cell level; the dropdown's
    *      `selected` flag is the only signal.
@@ -224,7 +224,7 @@ describe("variant fallback contract under service filter", () => {
 
   test("no cell-level unavailable indicator: variant cell renders only the dropdown when stored selection is filtered out", async () => {
 
-    /* Investigation pin. With the user's stored selection on yttv and enabledServices = [hulu], the variant cell <td> emits the dropdown <select>...</select> and
+    /* Investigation assertion. With the user's stored selection on yttv and enabledServices = [hulu], the variant cell <td> emits the dropdown <select>...</select> and
      * a "no available services" <em> placeholder (always present, hidden when isAvailableByService is true), but NO additional badge, banner, or text node
      * indicating "your selection is unavailable." We assert this with negative substring checks on the sliced variant <td>: no class="unavailable", no
      * class="fallback-", and no static <span class="provider-name"> - any of which would signal a cell-level indicator. A future renderer that adds an
@@ -274,11 +274,11 @@ describe("variant fallback contract under service filter", () => {
   test("positive control: when the stored selection's tag is enabled, the stored selection wins (no fallback)", async () => {
 
     /* Counterfactual to the fallback contract. The user has selected abcnews-hulu; enabledServices = [hulu] makes that selection valid. The dropdown's `selected`
-     * flag must land on abcnews-hulu, not on any other variant. This pins the "fallback only fires when the stored selection is filtered out" branch of
+     * flag must land on abcnews-hulu, not on any other variant. This asserts the "fallback only fires when the stored selection is filtered out" branch of
      * resolveServiceKey - if the resolver erroneously fell back even when the selection was enabled, this test would fail loudly.
      *
      * Using the same channel and the same enabledServices as the canonical-fallback test (the "no user selection + canonical's tag filtered out" test,
-     * enumerated as #3 in the suite header) - only the stored selection differs. The dropdown rendering is otherwise identical, so the contract pin is precise:
+     * enumerated as #3 in the suite header) - only the stored selection differs. The dropdown rendering is otherwise identical, so the contract assertion is precise:
      * selection-enabled vs selection-filtered is the single variable.
      */
     await using ctx = await createIntegrationContext();
@@ -336,7 +336,7 @@ describe("variant fallback contract under service filter", () => {
      * user's stored selection on a filtered tag (abc-yttv), resolveServiceKey returns findFirstEnabledVariant which scans alphabetically and returns the canonical
      * abc - the only enabled variant remaining.
      *
-     * This pins the renderer-resolver collaboration around the direct rule: a filter that excludes all paid-service tags does NOT leave the user with no
+     * This asserts the renderer-resolver collaboration around the direct rule: a filter that excludes all paid-service tags does NOT leave the user with no
      * usable variant - the network-owned site URL remains accessible. A regression that "tightened" isServiceTagEnabled to drop the direct carve-out would
      * surface here as the dropdown selecting nothing or selecting the stale yttv (depending on which side of the contract regressed first).
      */

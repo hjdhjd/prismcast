@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * recovery-escalation.test.ts: Integration coverage for the recovery state machine viewed as a sequence rather than a set of isolated functions. The unit
- * tier (src/streaming/recovery.metrics.test.ts and src/streaming/recovery.circuitBreaker.test.ts) pins each function's behavior in isolation; this suite
- * pins the orchestration the playback monitor performs at run time - escalation through recovery levels, accumulation across multiple cycles, the
+ * tier (src/streaming/recovery.metrics.test.ts and src/streaming/recovery.circuitBreaker.test.ts) asserts each function's behavior in isolation; this suite
+ * asserts the orchestration the playback monitor performs at run time - escalation through recovery levels, accumulation across multiple cycles, the
  * trip-and-reset arc on the circuit breaker, and the architectural separation between metrics state and circuit-breaker state. The regression class this
  * catches: someone reorders or merges the recovery state objects in a way that passes the unit suite (each function still works in isolation) but corrupts
  * the multi-step flow that production actually runs.
@@ -16,7 +16,7 @@
  *
  *   2. The "60-second sustained-healthy reset" lives in monitor.ts, not recovery.ts. The monitor observes sustained playback and then calls
  *      resetCircuitBreaker(state) as its policy decision. From recovery.ts's perspective, "reset" is just the explicit function call - the time observation
- *      is monitor-side state machinery. This suite pins the recovery-side hook (resetCircuitBreaker collapses the breaker to a fresh state) and treats the
+ *      is monitor-side state machinery. This suite asserts the recovery-side hook (resetCircuitBreaker collapses the breaker to a fresh state) and treats the
  *      monitor's time policy as out-of-scope. A separate suite exercising monitor.ts orchestration would need a Page stub and is not built here.
  *
  *   3. The harness (createIntegrationContext / initializePersistence) is omitted on purpose. recovery.ts has no module-level singletons, no persistence, and
@@ -55,7 +55,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     /* The monitor's escalation flow when each lower level fails to restore playback. Production sequences this as: detect issue, record an L1 attempt
      * (play/unmute), observe that recovery did not restore healthy playback, escalate to L2 (source reload), record that attempt, observe failure again,
      * escalate to L3 (page navigation), record that attempt, observe success, record the success against L3. The integration value over the unit suite is
-     * pinning the *temporal sequence* of state mutations - each step's accumulated state must reflect everything before it.
+     * asserting the *temporal sequence* of state mutations - each step's accumulated state must reflect everything before it.
      */
     const metrics: RecoveryMetrics = createRecoveryMetrics();
 
@@ -107,7 +107,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
   test("two consecutive recovery cycles accumulate metrics; nothing resets between cycles unless a reset call happens", async () => {
 
     /* Production's monitor never resets metrics on its own - the metrics object lives for the stream's lifetime and feeds the termination summary. This test
-     * pins that lifetime semantics: a successful cycle followed by a healthy interval followed by a second cycle leaves the per-method counters and total
+     * asserts that lifetime semantics: a successful cycle followed by a healthy interval followed by a second cycle leaves the per-method counters and total
      * duration as the SUM of both cycles.
      */
     const metrics: RecoveryMetrics = createRecoveryMetrics();
@@ -144,7 +144,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
 
     /* The breaker's role: terminate the stream when recovery has clearly stopped helping. Production policy: monitor records every recovery failure into the
      * breaker; once the threshold count is reached within the window, the breaker trips and the stream terminates. After sustained healthy playback (the
-     * 60-second policy in monitor.ts), the monitor calls resetCircuitBreaker - clearing the count so a fresh failure window can begin. This test pins that
+     * 60-second policy in monitor.ts), the monitor calls resetCircuitBreaker - clearing the count so a fresh failure window can begin. This test asserts that
      * trip-and-reset arc as a sequence: count up to the trip; then reset; then verify the next failure starts a clean window.
      */
     const breaker = freshBreaker();
@@ -192,7 +192,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
 
     /* The architectural separation: metrics track per-method attempt/success counters; the breaker tracks failure-count-within-window. A recovery success
      * absolutely does NOT mean "the breaker should clear" - the breaker counts the FAILURE that preceded the recovery, not the recovery itself, and only
-     * clears on the monitor's explicit reset call after sustained healthy playback. This test pins the non-coupling so a refactor that "helpfully" decrements
+     * clears on the monitor's explicit reset call after sustained healthy playback. This test asserts the non-coupling so a refactor that "helpfully" decrements
      * the breaker on success would fail loudly here.
      */
     const metrics: RecoveryMetrics = createRecoveryMetrics();

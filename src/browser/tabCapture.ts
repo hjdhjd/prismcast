@@ -17,7 +17,7 @@
  * is still selected. The activeTab grant gets the same treatment: rather than sleeping a fixed interval after the keyboard command and hoping the grant landed,
  * the start is attempted and Chrome's own "has not been invoked for the current page" answer drives a short poll, so a grant that lands immediately costs nothing.
  *
- * The coupling this module takes on is the extension's protocol, and it is pinned rather than trusted: tabCapture.test.ts fingerprints the three library files
+ * The coupling this module takes on is the extension's protocol, and it is asserted rather than trusted: tabCapture.test.ts fingerprints the three library files
  * this module was written against and derives the settings-object shape from the extension's own source, so a dependency bump that changes either fails the
  * suite with instructions rather than failing a capture in the field.
  */
@@ -78,7 +78,7 @@ export const CAPTURE_STREAM_HIGH_WATER_MARK = 8 * 1024 * 1024;
 // Types.
 
 /**
- * The dimension and frame-rate bounds a capture track is held to. Chrome reads these as tabCapture's mandatory media constraints, which is what pins the encoder
+ * The dimension and frame-rate bounds a capture track is held to. Chrome reads these as tabCapture's mandatory media constraints, which is what holds the encoder
  * to the surface the page was emulated at rather than to whatever the window happens to be showing.
  */
 export interface CaptureVideoConstraints {
@@ -113,7 +113,7 @@ export interface CaptureStreamOptions {
  *
  * One divergence is deliberate. The extension annotates audioBitsPerSecond, videoBitsPerSecond, and bitsPerSecond as required numbers, but it hands all three
  * straight to MediaRecorder, where an absent value selects the recorder's own default - and the readiness probe passes none of them and captures perfectly well.
- * So this type declares what the protocol tolerates rather than what the extension's annotation over-claims, and the settings-shape test pins the field NAMES
+ * So this type declares what the protocol tolerates rather than what the extension's annotation over-claims, and the settings-shape test asserts the field NAMES
  * against the extension's source so a genuine protocol change still fails loudly.
  */
 export interface ExtensionRecordingSettings {

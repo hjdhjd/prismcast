@@ -165,7 +165,7 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
     seenUrls.add(url);
 
     // Assign the wire-arrival ordinal synchronously, immediately past the dedup gate and before the first await, so it reflects the order this response arrived
-    // rather than the order its body fetch resolves against every other in-flight fetch. The local rides through the fetch and is delivered on the observation.
+    // rather than the order its body fetch resolves against every other in-flight fetch. The local is carried across the fetch and is delivered on the observation.
     const sequence = ++sequenceCounter;
 
     LOG.debug(logCategory, "Observed .m3u8 response (seq %s): %s.", sequence, url.slice(0, 120));

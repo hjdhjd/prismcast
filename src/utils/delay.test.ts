@@ -250,9 +250,9 @@ describe("boundedWait", () => {
 
   test("returns null when the bound lapses before the promise settles", async () => {
 
-    /* The bound has to ride this project's own timeout signal, which is built on the global setTimeout a fake clock can virtualize, rather than on a timer the
+    /* The bound has to use this project's own timeout signal, which is built on the global setTimeout a fake clock can virtualize, rather than on a timer the
      * platform owns internally. A large bound is what tells those two wirings apart: mock.timers fires the virtualized timer on the tick, so the correct wiring
-     * settles here and now, while a bound riding a platform-internal timer would still be a real sixty seconds away and would lose to the short sentinel below.
+     * settles here and now, while a bound built on a platform-internal timer would still be a real sixty seconds away and would lose to the short sentinel below.
      */
     const { promise: never } = Promise.withResolvers<string>();
 

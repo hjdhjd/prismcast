@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * channels-runtime.test.ts: DOM-runtime coverage for the Channels subtab client-side script (src/routes/root/scripts/channels.ts). The unit suite next to the
- * generator pins the SHAPE of the emitted string ("the script defines window.openTagManager"); this suite pins the RUNTIME BEHAVIOR of that emitted string when
+ * generator asserts the SHAPE of the emitted string ("the script defines window.openTagManager"); this suite asserts the RUNTIME BEHAVIOR of that emitted string when
  * a synthetic browser parses and executes it ("when window.createTag runs against a real DOM, it POSTs the right body and updates the modal").
  *
  * The bug class this tier catches is the one most likely to bite the operator-facing UI: a typo in a fetch URL, a stale closure capturing the wrong service slug,
@@ -16,17 +16,17 @@
  *
  * Pattern guidance for adding tests:
  *
- *   - Pin the guarantee, not historical incidents. "saveProfile sends the canonical body shape" is the contract; "the d2ee7be variant-dropdown bug doesn't recur" is
+ *   - Assert the guarantee, not historical incidents. "saveProfile sends the canonical body shape" is the contract; "the d2ee7be variant-dropdown bug doesn't recur" is
  *     a symptom to derive coverage from but not the test name.
  *   - Use evaluate(...) for one-shot expressions and DOM seeding; for complex setup, set ctx.document.body.innerHTML or insertAdjacentHTML in a single block.
  *   - For fetch-shape verification (POST bodies, URL paths, methods), override window.fetch with a spy before triggering the operation. Asserting on persisted
  *     state via the bootApp listener is also acceptable but couples the test to the server response shape - the spy is preferred when only the call shape matters.
- *   - When a test reveals a real bug, pin current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
+ *   - When a test reveals a real bug, assert current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
  *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
  *
  * Auto-open guard: the channels.ts IIFE auto-opens the Setup Wizard when the setup-modal carries data-setup-completed='false', which is the default for a fresh
  * data directory. setupChannelsRuntime() flips the attribute to 'true' BEFORE running the scripts so the wizard does not show during normal tests. The dedicated
- * "auto-opens setup wizard" test keeps the attribute at its default to pin the auto-open path explicitly.
+ * "auto-opens setup wizard" test keeps the attribute at its default to assert the auto-open path explicitly.
  */
 import type { DisposableDomTestContext, DomTestContextOptions } from "../../helpers/dom.helpers.ts";
 import { describe, test } from "node:test";
@@ -237,7 +237,7 @@ describe("channels.ts: window.deleteUserProfile", () => {
   test("aborts the delete request when confirm() returns false", async () => {
 
     /* The handler gates on confirm() before sending DELETE. happy-dom does not provide window.confirm by default, so we install a stub that returns false and
-     * confirm no fetch was issued. This pins the click-to-confirm-then-fetch contract: a cancelled confirmation must NOT touch the server.
+     * confirm no fetch was issued. This asserts the click-to-confirm-then-fetch contract: a cancelled confirmation must NOT touch the server.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -433,7 +433,7 @@ describe("channels.ts: window.saveProfile", () => {
   test("attaches channelSelection only when strategy is not 'none'", async () => {
 
     /* The 'none' strategy means inherit-from-base; the body must omit channelSelection so the server doesn't store an empty selector block. Loading a profile
-     * with no channelSelection block via editUserProfile sets state.strategy to 'none' (the `editCs.strategy || 'none'` default), which is the path we want to pin.
+     * with no channelSelection block via editUserProfile sets state.strategy to 'none' (the `editCs.strategy || 'none'` default), which is the path we want to assert.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -528,19 +528,19 @@ describe("channels.ts: window.saveProfile", () => {
 
     assert.ok(cs, "the profile carries a channelSelection block");
     assert.ok(presDomain, "the domain entry is present in the save body");
-    assert.equal(body.profile.staticCapture, true, "the unrendered profile flag rides through");
-    assert.equal(cs["scrollSelector"], ".shelf", "the unrendered channelSelection sub-field rides through");
+    assert.equal(body.profile.staticCapture, true, "the unrendered profile flag survives");
+    assert.equal(cs["scrollSelector"], ".shelf", "the unrendered channelSelection sub-field survives");
     assert.equal(cs["matchSelector"], ".cell", "the rendered strategy field is preserved");
     assert.equal(Object.hasOwn(body.profile, "hideSelector"), false, "the cleared rendered field is deleted from the round-tripped profile");
-    assert.equal(presDomain["videoTimeout"], 25000, "the unrendered domain videoTimeout rides through");
-    assert.equal(presDomain["loginUrl"], "https://login.pres.test", "the unrendered domain loginUrl rides through");
+    assert.equal(presDomain["videoTimeout"], 25000, "the unrendered domain videoTimeout survives");
+    assert.equal(presDomain["loginUrl"], "https://login.pres.test", "the unrendered domain loginUrl survives");
     assert.equal(presDomain["profile"], "pres", "the domain still points at the saved profile");
   });
 
   test("scopes the save to the edited profile's own domains, ignoring the top-level domains record", async () => {
 
     /* The per-profile domain projection is the wizard's single source of truth; the GET response's top-level domains record (which carries every profile's domains)
-     * plays no part in the save body. Seeding a second profile's domain into that record and asserting it never appears in the save body pins the cross-profile
+     * plays no part in the save body. Seeding a second profile's domain into that record and asserting it never appears in the save body proves the cross-profile
      * scoping - a regression that read the top-level record would leak another profile's domains into this save and the server's whole-replace would clobber them.
      */
     await using ctx = await setupChannelsRuntime();
@@ -566,7 +566,7 @@ describe("channels.ts: window.saveProfile", () => {
   test("switching strategy does not resurrect the previous strategy's stale rendered value", async () => {
 
     /* Risk-4 guard: the channelSelection rebuild subtracts the CHOSEN strategy's rendered field ids from the base copy before applying current values, so a field
-     * cleared after switching strategies cannot ride through from the base. Seed tileClick with a playSelector, switch to thumbnailRow, clear the carried-over
+     * cleared after switching strategies cannot carry through from the base. Seed tileClick with a playSelector, switch to thumbnailRow, clear the carried-over
      * playSelector in the re-rendered step-2 form, and assert the saved channelSelection drops playSelector while keeping the new strategy and an unrendered sub-field.
      */
     await using ctx = await setupChannelsRuntime();
@@ -595,7 +595,7 @@ describe("channels.ts: window.saveProfile", () => {
 
     assert.equal(cs["strategy"], "thumbnailRow", "the newly chosen strategy is saved");
     assert.equal(Object.hasOwn(cs, "playSelector"), false, "the cleared playSelector does not resurrect from the base copy");
-    assert.equal(cs["scrollSelector"], ".shelf", "an unrendered channelSelection sub-field still rides through the switch");
+    assert.equal(cs["scrollSelector"], ".shelf", "an unrendered channelSelection sub-field still survives the switch");
   });
 });
 
@@ -606,7 +606,7 @@ describe("channels.ts: profile wizard attribute round-trip", () => {
     /* The step-2 renderer concatenates stored state into a value attribute, so the attribute writer has to neutralize every character the HTML parser would
      * otherwise decode - not just the double quote that would break out of the attribute. An escaper that leaves the ampersand raw lets the parser decode any
      * entity text the value actually contains, so a stored '&amp;' reads back as '&' and the value the user saved is silently corrupted. The fixture carries a
-     * double quote, a bare ampersand, a literal entity, and angle brackets, and each assertion pins the full path: state -> escape -> attribute -> DOM parse ->
+     * double quote, a bare ampersand, a literal entity, and angle brackets, and each assertion covers the full path: state -> escape -> attribute -> DOM parse ->
      * value. The second pass matters on its own because the strategy radio re-renders the step from the same state, so a value that survives one render must
      * survive every subsequent one.
      */
@@ -721,7 +721,7 @@ describe("channels.ts: profile test flow handlers", () => {
 
   test("startProfileTest prefixes 'https://' when the URL has no scheme and POSTs /config/profiles/test", async () => {
 
-    /* The contract: a bare domain like "example.test" becomes "https://example.test"; a fully-qualified URL is shipped as-is. Pinning both ensures the wrong
+    /* The contract: a bare domain like "example.test" becomes "https://example.test"; a fully-qualified URL is shipped as-is. Asserting both ensures the wrong
      * scheme isn't injected when the user pastes an http:// URL.
      */
     await using ctx = await setupChannelsRuntime();
@@ -877,7 +877,7 @@ describe("channels.ts: import/export modal handlers", () => {
      * (so cancelling the modal doesn't leave a stale payload that a subsequent confirm could re-submit).
      *
      * We can only observe the clearing indirectly: after closeImportModal, calling executeImport must early-return without firing a fetch. That's the
-     * property this test pins.
+     * property this test asserts.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -901,7 +901,7 @@ describe("channels.ts: import/export modal handlers", () => {
   test("closeExportModal hides the export-modal element", async () => {
 
     /* The production page only renders the export modal when at least one user profile exists (see generateCustomProfilesPanel - the modal is gated on user
-     * profile count). For this isolated test we synthesize the element so we can pin the function's behavior independently of profile state. The handler reads
+     * profile count). For this isolated test we synthesize the element so we can assert the function's behavior independently of profile state. The handler reads
      * the element by id and toggles display, so a synthetic fixture is structurally identical to the production-rendered one.
      */
     await using ctx = await setupChannelsRuntime();
@@ -997,7 +997,7 @@ describe("channels.ts: submitBrowseChannels", () => {
 
   test("collects 'add' entries from new+checked checkboxes and POSTs to /config/channels/modify with the right serviceSlug", async () => {
 
-    /* The browse modal collects categorized actions (add/enable/switch/remove) into a single POST. This test pins the 'add' action: a new channel (data-original=
+    /* The browse modal collects categorized actions (add/enable/switch/remove) into a single POST. This test asserts the 'add' action: a new channel (data-original=
      * 'new') that's checked must surface as { action: 'add', name, channelSelector, ... } in the request body, with serviceSlug matching the wizard's selected
      * service. We use the openBrowseAndSelectFirstService helper to set the closure-scoped browseWizard.state.slug, then synthesize a checkbox fixture and submit.
      */
@@ -1052,7 +1052,7 @@ describe("channels.ts: submitBrowseChannels", () => {
   test("classifies switch action only when checked AND not indeterminate (a checked-but-indeterminate switch must NOT submit)", async () => {
 
     /* The browse modal's three-state semantics: a 'switch' channel becomes a 'switch' action only when the user explicitly checks it (not just leaves it
-     * indeterminate). This pins the gating: a checkbox with data-original='switch' that is left as indeterminate must NOT produce a switch action.
+     * indeterminate). This asserts the gating: a checkbox with data-original='switch' that is left as indeterminate must NOT produce a switch action.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -1141,7 +1141,7 @@ describe("channels.ts: tag manager modal lifecycle", () => {
 
     await using ctx = await setupChannelsRuntime();
 
-    /* The server-rendered tag-manager-modal has style.display='none' initially. openTagManager flips it to 'flex'. Pin both endpoints so a regression in either
+    /* The server-rendered tag-manager-modal has style.display='none' initially. openTagManager flips it to 'flex'. Assert both endpoints so a regression in either
      * direction surfaces here.
      */
     assert.equal(getDisplay(ctx, "tag-manager-modal"), "none", "modal starts hidden");
@@ -1647,7 +1647,7 @@ describe("channels.ts: window.applyTagResponse", () => {
 
     /* applyTagResponse is the cross-script helper used by both channels.ts (createTag, deleteTag, restoreTag, startTagRename) and config.ts (bulkToggleTag). It
      * has three side effects: (1) modalBody -> #tag-manager-modal-content innerHTML, (2) filterContent -> #tag-filter-menu innerHTML, (3) patch ->
-     * channelTable.applyPatch. We pin all three.
+     * channelTable.applyPatch. We assert all three.
      */
     await using ctx = await setupChannelsRuntime();
 

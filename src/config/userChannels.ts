@@ -869,7 +869,7 @@ function normalizeChannelDeltas(data: ChannelsFileData): void {
 
     // Step 1: enforce the expected stored shape via filterToDeltaSurface. Strips orphan fields (non-delta-eligible identity, non-delta-eligible binding,
     // identity-on-variants) before any diff computation. When fields are stripped, log a warning so operators see when their data is being cleaned. The shape
-    // rule is the same regardless of classification kind - canonicalKey-discriminated through filterToDeltaSurface internally.
+    // rule is the same regardless of classification kind - distinguished by canonicalKey through filterToDeltaSurface internally.
     const { filtered: shapeFiltered, stripped } = filterToDeltaSurface(key, stored);
 
     if(stripped.length > 0) {

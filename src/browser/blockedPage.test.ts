@@ -117,7 +117,7 @@ describe("decideBlockedPage", () => {
 
   test("a container with text entry, a submit affordance, and sign-in phrasing classifies authWall", () => {
 
-    // Traced path: the (c) branch's conjunction arm. Removing any conjunct's check would still pass here; the negative tests below pin each conjunct.
+    // Traced path: the (c) branch's conjunction arm. Removing any conjunct's check would still pass here; the negative tests below assert each conjunct.
     const result = decideBlockedPage(makeSignals({ containers: [QUALIFYING_CONTAINER] }));
 
     assert.equal(result.kind, "authWall");
@@ -131,7 +131,7 @@ describe("decideBlockedPage", () => {
     assert.equal(result.kind, "authWall");
   });
 
-  test("a container missing the submit affordance does not classify (conjunct pin)", () => {
+  test("a container missing the submit affordance does not classify (conjunct assertion)", () => {
 
     // Traced path: the hasSubmitAffordance conjunct in (c). A mutation dropping it would classify this signal set as authWall.
     const result = decideBlockedPage(makeSignals({ containers: [{ hasPasswordInput: false, hasSubmitAffordance: false, hasTextEntry: true, text: "Sign in" }] }));
@@ -139,7 +139,7 @@ describe("decideBlockedPage", () => {
     assert.equal(result.kind, "unknown");
   });
 
-  test("a container without sign-in phrasing does not classify (conjunct pin)", () => {
+  test("a container without sign-in phrasing does not classify (conjunct assertion)", () => {
 
     // Traced path: the SIGN_IN_PHRASING_RE test in (c). A mutation dropping it would classify any submit-bearing email form - including a newsletter - as a wall.
     const newsletter: SignInContainerRecord = { hasPasswordInput: false, hasSubmitAffordance: true, hasTextEntry: true, text: "Get our weekly newsletter" };
@@ -323,8 +323,8 @@ describe("classifyBlockedPage - acceptance fixtures through the full pipeline", 
 
   test("a provider host indicator match skips every page probe (lazy collection)", async () => {
 
-    /* Efficiency pin: when the landed host matches a declared indicator, the classification is decided before any page.evaluate runs. The evaluateCalls counter
-     * pins the lazy-collection contract - a regression that collected all signals eagerly would record probe calls here.
+    /* Efficiency assertion: when the landed host matches a declared indicator, the classification is decided before any page.evaluate runs. The evaluateCalls counter
+     * asserts the lazy-collection contract - a regression that collected all signals eagerly would record probe calls here.
      */
     const { evaluateCalls, page } = makeDomBackedPage("<div></div>", "https://auth.example.test/login");
     const result = await classifyBlockedPage(page, { indicators: { hosts: ["auth.example.test"] }, requestedUrl: "https://www.example.test/guide" });
@@ -371,7 +371,7 @@ describe("classifyBlockedPage - never throws", () => {
   test("resolves unknown when the collector evaluate rejects", async () => {
 
     /* consentOverlayPresent absorbs its own evaluate failures (returning false), so the rejection that reaches classifyBlockedPage's catch is the collector's.
-     * The never-throws guarantee lives inside the classifier, not at call sites - this pins it.
+     * The never-throws guarantee lives inside the classifier, not at call sites - this asserts it.
      */
     const page = {
 

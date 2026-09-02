@@ -95,7 +95,7 @@ describe("persistence migrations", () => {
     assert.equal((persisted["fox-foxone"] as { url: string }).url, "https://custom-fox-mirror.example.test/", "the renamed entry should preserve its url");
   });
 
-  test("a file already at the current schema version is a no-op (idempotent)", async () => {
+  test("a file already at the current schema version is a no-op (repeat-safe)", async () => {
 
     /* Seed a file that already declares schemaVersion: 3. The runner should treat it as up-to-date and not record any new entries in migrationsApplied. We
      * also re-call initializePersistence a second time to prove no migrations are re-applied even after a full reload cycle.
@@ -119,7 +119,7 @@ describe("persistence migrations", () => {
   test("forward-compatible read: a file declaring a newer schemaVersion is preserved without rolling back", async () => {
 
     /* If a future PrismCast version writes schemaVersion: 99 and an older binary reads it, the framework logs and proceeds without applying migrations -
-     * downgrading would be more dangerous than tolerating unknown fields. We pin this contract: the file survives an init pass without losing its declared
+     * downgrading would be more dangerous than tolerating unknown fields. We assert this contract: the file survives an init pass without losing its declared
      * version or its content.
      */
     await using ctx = await createIntegrationContext();
@@ -139,9 +139,9 @@ describe("persistence migrations", () => {
   });
 });
 
-describe("persistence migrations - chain ordering and idempotency across stores", () => {
+describe("persistence migrations - chain ordering and repeat safety across stores", () => {
 
-  /* This suite pins the runner's behavior across two regimes that the per-step tests above did not directly exercise:
+  /* This suite asserts the runner's behavior across two regimes that the per-step tests above did not directly exercise:
    *
    *   1. Chain coverage: a v1-fixture boot must apply v2 AND v3 in chronological order, with each step's transformation visible in the final on-disk state. The
    *      per-step tests in the prior describe block cover individual steps; these tests exercise both ends of the chain together. We exercise the chain on both
@@ -150,7 +150,7 @@ describe("persistence migrations - chain ordering and idempotency across stores"
    *
    *   2. Skip-already-applied no-op: a v2 fixture must skip v2 and apply only v3; a v3 fixture must skip both. The skip-fully-current case is covered by
    *      the existing test verifying that a file already at the current schema version is a no-op; this block adds the partial-skip case so the runner's
-   *      version-walking loop is pinned end-to-end.
+   *      version-walking loop is asserted end-to-end.
    *
    * Migration descriptions are hard-coded constants in production (configMigrations and channelsMigrations registries). Tests reference them via inline string
    * literals because the registries are module-internal - the constants live in exactly one place in production, so a future rename forces a deliberate test
@@ -203,7 +203,7 @@ describe("persistence migrations - chain ordering and idempotency across stores"
     assert.equal(channelsDvr.port, 9999, "v3 should split embedded port into channelsDvr.port");
     assert.equal((persisted as { dvrHost?: unknown }).dvrHost, undefined, "legacy dvrHost field should be deleted by v3");
 
-    // Application order is the runner's structural invariant: applied[0] is the version it ran first.
+    // Application order is the runner's structural rule: applied[0] is the version it ran first.
     assert.deepEqual(persisted.migrationsApplied, [ CONFIG_V2_DESCRIPTION, CONFIG_V3_DESCRIPTION ], "migrationsApplied should list v2 before v3");
   });
 
@@ -251,12 +251,12 @@ describe("persistence migrations - chain ordering and idempotency across stores"
     assert.deepEqual(persisted.migrationsApplied, [ CHANNELS_V2_DESCRIPTION, CHANNELS_V3_DESCRIPTION ], "migrationsApplied should list v2 before v3");
   });
 
-  test("v2 config.json skips v2 and applies only v3 (partial-chain idempotency)", async () => {
+  test("v2 config.json skips v2 and applies only v3 (partial-chain repeat safety)", async () => {
 
     /* The runner walks from currentVersion + 1 up to currentSchemaVersion. A file declaring schemaVersion: 2 must skip v2 and apply only v3 - migrationsApplied
-     * carries exactly one new entry (v3's description), schemaVersion ends at 3, the v3 transformation is visible. The structural pin is the migrationsApplied
+     * carries exactly one new entry (v3's description), schemaVersion ends at 3, the v3 transformation is visible. The structural assertion is the migrationsApplied
      * shape: only v3's description is appended, never v2's. (Note: the persisted file is rewritten by filterDefaults on every save, which strips legacy
-     * unknown keys regardless of migration state; we therefore pin the chain-runner contract via migrationsApplied + schemaVersion + the v3 transformation,
+     * unknown keys regardless of migration state; we therefore assert the chain-runner contract via migrationsApplied + schemaVersion + the v3 transformation,
      * not via legacy-key survival.)
      */
     await using ctx = await createIntegrationContext();
@@ -278,10 +278,10 @@ describe("persistence migrations - chain ordering and idempotency across stores"
 
     assert.equal(persisted.schemaVersion, 3, "schemaVersion should advance to 3");
 
-    // Positive invariant: v3 ran exactly once.
+    // The positive case: v3 ran exactly once.
     assert.equal(persisted.channelsDvr?.host, "10.0.0.5", "v3 should split dvrHost into channelsDvr.host");
 
-    // Structural invariant: migrationsApplied carries v3's description only - never v2's. The seeded historical entry is preserved by the recordMigration hook's
+    // The structural rule: migrationsApplied carries v3's description only - never v2's. The seeded historical entry is preserved by the recordMigration hook's
     // append-only contract.
     assert.deepEqual(persisted.migrationsApplied, [ "seeded-v2-applied", CONFIG_V3_DESCRIPTION ],
       "the seeded v2-applied entry should be preserved and only v3's description appended");
@@ -289,11 +289,11 @@ describe("persistence migrations - chain ordering and idempotency across stores"
       "v2 was already declared as applied; its description must not be re-appended");
   });
 
-  test("v3 channels.json skips both migrations (full-chain idempotency)", async () => {
+  test("v3 channels.json skips both migrations (full-chain repeat safety)", async () => {
 
     /* A file already at the current schema version must not have any migration re-applied. The existing no-op-on-repeat test in the prior describe block covers an
      * empty fixture; here we use a richer fixture whose contents would be visibly mutated if either migration ran erroneously. We seed a -foxcom-suffixed key
-     * (which v3 would rename if executed) and assert it survives byte-for-byte. The negative observation (no rename) is the structural pin.
+     * (which v3 would rename if executed) and assert it survives byte-for-byte. The negative observation (no rename) is the structural assertion.
      */
     await using ctx = await createIntegrationContext();
 
@@ -314,7 +314,7 @@ describe("persistence migrations - chain ordering and idempotency across stores"
     assert.equal(persisted.schemaVersion, 3, "schemaVersion should still be 3 (no migration ran)");
     assert.deepEqual(persisted.migrationsApplied, ["seeded-historical"], "no new migration entries should be appended when already at current");
 
-    // Negative invariant: v3 was skipped. The -foxcom-suffixed key survives.
+    // The negative case: v3 was skipped. The -foxcom-suffixed key survives.
     assert.ok("abc-foxcom" in persisted, "v3 was skipped; the -foxcom-suffixed key must survive byte-for-byte");
     assert.equal("abc-foxone" in persisted, false, "v3 was skipped; no foxone-renamed shadow entry should be created");
   });

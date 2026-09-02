@@ -2,7 +2,7 @@
  *
  * consent.test.ts: Unit tests for the Node-side orchestration in consent.ts - the unified auto-dismiss logging (logAutoDismiss), the phase-scoped overlay-handling
  * poll (startOverlayHandling), and the detect-and-guide probe (consentOverlayPresent). The in-page heuristics themselves (the embed-gate selector/keyword matching
- * and the coordinate resolution inside page.evaluate) are pinned against a synthetic happy-dom document in the co-located consent.heuristics.test.ts; here a page
+ * and the coordinate resolution inside page.evaluate) are asserted against a synthetic happy-dom document in the co-located consent.heuristics.test.ts; here a page
  * stub returns scripted page.evaluate results so the poll's decision flow - phase masking, reject-then-accept ordering, the embed-gate signal, the probe/act split,
  * malformed-selector fault isolation, the tick-error taxonomy, and abort handling - is locked without spinning up Chrome. Time is driven by an injected fake clock
  * so multi-tick behavior is deterministic with no real timers. LOG is spied via the test-context mock so the logging contract is asserted directly on the

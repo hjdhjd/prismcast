@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * loggers.helpers.test.ts: Tests for silentLog and capturingLog. These are the LOG doubles every other test relies on, so a bug here cascades into misleading
- * results across the entire suite. Coverage pins: silent contract (drop-the-call), capture shape (level, message, args, category, streamId), bound-logger
- * delegation, snapshot semantics on lines(), and clear() resetting the buffer.
+ * results across the entire suite. The coverage asserts the silent contract (drop-the-call), the capture shape (level, message, args, category, streamId),
+ * bound-logger delegation, snapshot semantics on lines(), and clear() resetting the buffer.
  */
 import { capturingLog, silentLog } from "./loggers.helpers.ts";
 import { describe, test } from "node:test";

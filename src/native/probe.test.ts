@@ -88,7 +88,7 @@ describe("buildProbeCacheStamp", () => {
   test("leaves a member whose value is undefined out of the stamp entirely", () => {
 
     // A channel that never carried a selector and one whose selector was cleared both arrive here as undefined, and JSON serialization drops them, so the two
-    // stamp identically. Asserting on the stamp's content rather than comparing two literals is what pins the normalization itself: a serializer that wrote
+    // stamp identically. Asserting on the stamp's content rather than comparing two literals is what proves the normalization itself: a serializer that wrote
     // undefined members as nulls would still make those two cases equal to each other while making them differ from every stamp built before the field existed.
     const stamp = buildProbeCacheStamp({ channelSelector: undefined, profile: undefined, url: "https://cdn.test/channel" });
 

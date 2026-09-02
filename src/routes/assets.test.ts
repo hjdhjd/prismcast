@@ -94,7 +94,7 @@ describe("setupAssetEndpoints - GET /favicon.svg", () => {
   test("serves the same content on a second request (cache hit)", async () => {
 
     // Boundary: the second request must produce identical content. A cache miss-on-every-request would still pass the status check above but would defeat the
-    // caching invariant; a content-mismatch would surface as a real bug.
+    // caching guarantee; a content-mismatch would surface as a real bug.
     const a = await fetch(urlFor("/favicon.svg"));
     const aBody = await a.text();
     const b = await fetch(urlFor("/favicon.svg"));

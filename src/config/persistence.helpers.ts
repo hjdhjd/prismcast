@@ -10,7 +10,7 @@
  *
  *   2. **Failure injection.** Override hooks let tests force any single backend operation to throw or return arbitrary content. This is how unreached safety
  *      paths (snapshot pruning's per-entry stat/unlink errors, post-write integrity check's readback mismatch, tryRecoverFromBackup's restore-write failure,
- *      doMutate's non-ENOENT backup failure) are pinned without resorting to fragile real-fs trickery (chmod, EISDIR via directory-as-file).
+ *      doMutate's non-ENOENT backup failure) are asserted without resorting to fragile real-fs trickery (chmod, EISDIR via directory-as-file).
  *
  * Helper-location convention: this is a domain-specific factory tied to one production module (persistence.ts), so it co-locates with its owner. Cross-cutting
  * test primitives live in src/testing/; domain-specific factories sit next to the module they test.

@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * tabSelection.test.ts: Unit tests for the tab-selection primitive in tabSelection.ts. The module's whole world is the capture extension's tabs and windows APIs
- * plus a page it writes a title into, so what is pinned here is that conversation as an ordered timeline: which reads it takes, in what order it takes them, what
+ * plus a page it writes a title into, so what is asserted here is that conversation as an ordered timeline: which reads it takes, in what order it takes them, what
  * it updates, what it announces to its activation subscribers, and what it hands back.
  *
  * Everything is faked in this file rather than mocked at the loader, in the shape tabCapture.test.ts established: an extension page whose evaluate dispatches on
@@ -848,7 +848,7 @@ describe("withTabSelected", () => {
 
     unsubscribe();
 
-    assert.deepEqual(ceilings, [CONFIG.streaming.navigationTimeout], "a bare call rides the deadline a capture start already runs under");
+    assert.deepEqual(ceilings, [CONFIG.streaming.navigationTimeout], "a bare call uses the deadline a capture start already runs under");
 
     const lapseWarnings = warnings.filter((entry) => entry.level === "warn");
 
@@ -856,7 +856,7 @@ describe("withTabSelected", () => {
     assert.match(lapseWarnings[0]?.message ?? "", /ceilingMs: 10000/, "naming the ceiling it was held past");
   });
 
-  test("rides the ceiling its caller names", async () => {
+  test("uses the ceiling its caller names", async () => {
 
     // The fullscreen path holds a selection for a whole activation sequence and passes a ceiling of its own, so the value has to be the caller's rather than a
     // constant of this module's.

@@ -19,7 +19,7 @@
  *
  *   1. Kill FFmpeg FIRST. kill() sets FFmpeg's internal shuttingDown flag unconditionally, so its exit handler treats whatever follows as an expected exit and
  *      never misfires the onError callback. This must precede step 2 because destroying the capture stream carries an EOF down the pipeline to FFmpeg's stdin, and
- *      an FFmpeg flush that exits non-zero would otherwise look like a spurious error. Pinning kill-first here is correctness-by-construction, not a fix for an
+ *      an FFmpeg flush that exits non-zero would otherwise look like a spurious error. Asserting kill-first here is correctness-by-construction, not a fix for an
  *      active misfire: kill() always runs ahead of the capture stream's destroy, so shuttingDown is set before FFmpeg's inherently asynchronous exit event can run
  *      its handler, whatever the exit code. Because that guarantee comes from the fixed step order rather than from destroy and kill happening in the same
  *      synchronous frame, an await inserted between the steps would remain safe - the flush-triggered non-zero exit can never look like a spurious error.
@@ -64,7 +64,7 @@ export interface CaptureSession extends Disposable {
   // Whether the session has been disposed. Once true, dispose() is a no-op and attachSegmenter() stops its argument rather than wiring it.
   readonly disposed: boolean;
 
-  // Tears the pipeline down in the kill -> destroy -> stop order. Idempotent and safe to call from any teardown path. Aliased to [Symbol.dispose].
+  // Tears the pipeline down in the kill -> destroy -> stop order. Safe to call more than once and from any teardown path. Aliased to [Symbol.dispose].
   readonly dispose: () => void;
 
   // The attached fMP4 segmenter, or null before attachSegmenter() has run. Exposed read-only so the registry, monitor, and shutdown resume-state collector can

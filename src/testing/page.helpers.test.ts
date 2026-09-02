@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * page.helpers.test.ts: Unit tests for the general Page double. The double's whole value is that calls stay open until the test settles them and that every
- * call is recorded with the clock value it was issued at, so those two properties plus the per-member handler contract are what these tests pin.
+ * call is recorded with the clock value it was issued at, so those two properties plus the per-member handler contract are what these tests assert.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -53,7 +53,7 @@ describe("makeFakePage", () => {
 
   test("records the clock value each call was issued at", async (t) => {
 
-    // The timestamp is what lets a test pin when production code chose to make a call rather than only how many it made.
+    // The timestamp is what lets a test assert when production code chose to make a call rather than only how many it made.
     t.mock.timers.enable({ apis: [ "setTimeout", "Date" ] });
 
     const fake = makeFakePage();

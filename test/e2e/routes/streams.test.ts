@@ -5,9 +5,9 @@
  * truth these routes read, so we seed it directly with makeRegistryEntry + registerStream (the same synthetic-stream pattern test/e2e/streaming/lifecycle.test.ts
  * uses) rather than launching a real capture.
  *
- * The projection's default-fill path is the detail this suite exists to pin: a freshly registered stream has never emitted a status, so getStreamStatus() returns
+ * The projection's default-fill path is the detail this suite exists to assert: a freshly registered stream has never emitted a status, so getStreamStatus() returns
  * undefined and every status-derived field must fall back through its ?? default (health "healthy", clientCount 0, clients [], escalationLevel 0, logoUrl "",
- * recoveryAttempts 0, showName ""). The 400 (NaN id) and 404 (missing id) DELETE branches are pinned by the cross-tree envelope sweep in
+ * recoveryAttempts 0, showName ""). The 400 (NaN id) and 404 (missing id) DELETE branches are asserted by the cross-tree envelope sweep in
  * routes/error-envelope.test.ts; this suite adds the populated GET projection and the DELETE success path those do not exercise.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";

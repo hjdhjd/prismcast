@@ -217,7 +217,7 @@ export function isLiveMediaPlaylist(mediaBody: string): boolean {
 
 /**
  * Counts the segments a media playlist declares. Each segment is introduced by exactly one #EXTINF duration line, so counting those lines counts the window. The
- * scan is line-anchored - trim then startsWith - and tests the colon-suffixed form that a duration line always carries, so an #EXTINF token riding inside a segment
+ * scan is line-anchored - trim then startsWith - and tests the colon-suffixed form that a duration line always carries, so an #EXTINF token sitting inside a segment
  * URI, a comment, or another tag's quoted attribute value cannot inflate the count.
  *
  * @param mediaBody - The media playlist text.

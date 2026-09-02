@@ -131,7 +131,7 @@ describe("setupAuthEndpoint - POST /auth/login (validation paths)", () => {
 
 describe("setupAuthEndpoint - POST /auth/done", () => {
 
-  test("returns 200 success even when login mode was not active (idempotent)", async () => {
+  test("returns 200 success even when login mode was not active (repeat-safe)", async () => {
 
     // Boundary: endLoginMode is documented as a no-op when login mode isn't running. The endpoint always reports success - no error path - so callers can use
     // it as a defensive cleanup without checking state first.
@@ -143,7 +143,7 @@ describe("setupAuthEndpoint - POST /auth/done", () => {
     assert.match(body.message ?? "", /Login mode ended/);
   });
 
-  test("repeated calls are still successful (idempotent across invocations)", async () => {
+  test("repeated calls are still successful (repeat-safe across invocations)", async () => {
 
     // Boundary: this confirms the no-op contract holds across two consecutive calls.
     const a = await fetch(urlFor("/auth/done"), { method: "POST" });

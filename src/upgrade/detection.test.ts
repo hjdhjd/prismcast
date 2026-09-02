@@ -534,7 +534,7 @@ describe("detectInstallMethod (dispatcher)", () => {
     assert.equal(info.method, "npm-global");
   });
 
-  test("upgradeable InstallInfos carry no manualUpgradeMessage (union-shape invariant)", () => {
+  test("upgradeable InstallInfos carry no manualUpgradeMessage (union-shape rule)", () => {
 
     // Locks the guarantee the discriminated union buys us: the dispatcher cannot accidentally attach manualUpgradeMessage to an upgradeable variant.
     // Verified at runtime by reading the (typed-undefined) field; the property name is permitted in the cast because the union explicitly forbids it on the

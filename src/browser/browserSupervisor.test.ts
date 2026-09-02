@@ -2,7 +2,7 @@
  *
  * browserSupervisor.test.ts: Unit tests for the browser capture-readiness supervisor. The supervisor's launch is an injected port and its clock is an injected
  * now(), so the entire lifecycle state machine - the gate, the loop-safe governor wiring, and every transition - is exercised here with a fake launch and a fake
- * clock, without ever spawning Chrome. The headline guarantees pinned below: single-flight launches, and NO launch attempt while the governor is cooling (the
+ * clock, without ever spawning Chrome. The headline guarantees asserted below: single-flight launches, and NO launch attempt while the governor is cooling (the
  * loop bound).
  */
 import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, createBrowserSupervisor } from "./browserSupervisor.ts";
@@ -47,8 +47,8 @@ function makeHarness(policy: LaunchGovernorPolicy = POLICY): {
     now: (): number => env.clock,
     onStateChange: (next): void => {
 
-      // A marked ready state records as its own marker, so a pin can count the transition that carries the mark without reading the state back. Every other
-      // transition records as its bare kind, which is what the pins written before the mark existed read.
+      // A marked ready state records as its own marker, so an assertion can count the transition that carries the mark without reading the state back. Every other
+      // transition records as its bare kind, which is what the assertions written before the mark existed read.
       transitions.push(((next.kind === "ready") && (next.impairment !== null)) ? "ready:impaired" : next.kind);
     },
     policy: (): LaunchGovernorPolicy => policy
@@ -415,7 +415,7 @@ describe("browserSupervisor: the teardown drain", () => {
 
   test("a teardown begun without a preceding readiness loss still supersedes an in-flight launch", async () => {
 
-    // The adapter always relinquishes readiness first, so this order does not arise in production. The pin exists because the method advances the launch epoch
+    // The adapter always relinquishes readiness first, so this order does not arise in production. The assertion exists because the method advances the launch epoch
     // itself rather than trusting the caller to have done it, and that self-sufficiency is what makes the contract safe to reason about at any call site.
     const h = makeHarness();
     const { promise: launch, resolve: completeLaunch } = Promise.withResolvers<Browser>();
@@ -521,8 +521,8 @@ describe("browserSupervisor: capture impairment", () => {
 
   test("declines a second mark on an already-marked instance and keeps the first record", async () => {
 
-    // First mark wins. The adapter's alarm and its status emit both ride the transition that records the mark, so a second verdict against the same instance must
-    // not fire either of them again - which is what the transition count proves - and the record it would have overwritten stays as it was.
+    // First mark wins. The adapter's alarm and its status emit both belong to the transition that records the mark, so a second verdict against the same
+    // instance must not fire either of them again - which is what the transition count proves - and the record it would have overwritten stays as it was.
     const h = makeHarness();
 
     await h.sup.acquire("page");
@@ -563,7 +563,7 @@ describe("browserSupervisor: capture impairment", () => {
 
   test("serves a capture acquire on an unmarked ready browser without launching", async () => {
 
-    // The other half of the guard. A guard that dropped the impairment term, or inverted it, would refuse here - and would pass every pin that only ever asks a
+    // The other half of the guard. A guard that dropped the impairment term, or inverted it, would refuse here - and would pass every assertion that only ever asks a
     // marked browser.
     const h = makeHarness();
 

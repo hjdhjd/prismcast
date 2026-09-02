@@ -399,7 +399,7 @@ describe("detectMoofKeyframe - flag-source resolution and container robustness",
     // tfhd optional fields appear in flag order: base_data_offset (0x1, 8 bytes), sample_description_index (0x2, 4 bytes), default_sample_size (0x10, 4 bytes),
     // then default_sample_flags (0x20, 4 bytes). We poison every preceding field with a non-keyframe pattern (0x01000000) and set default_sample_flags to a
     // keyframe pattern (0x02000000); the trun carries no flags, so the verdict comes solely from tfhd's default. A miscomputed cursor reads a poisoned field and
-    // returns false, so a true result pins the cursor math.
+    // returns false, so a true result asserts the cursor math.
     const tfhd = makeTfhdRaw({ baseDataOffset: 0x0100000001000000n, defaultSampleFlags: 0x02000000, defaultSampleSize: 0x01000000, sampleDescriptionIndex: 0x01000000,
       trackId: 1 });
     const moof = makeMoof(makeTraf(tfhd, makeTrun({ sampleCount: 1 })));

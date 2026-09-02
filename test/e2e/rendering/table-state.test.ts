@@ -4,12 +4,12 @@
  * the tag-vocabulary renderers (generateTagFilterContent, generateTagManagerBody) - composed against real channel state populated through the integration
  * harness rather than against synthetic listings. The unit tier (src/routes/config/channels/table.test.ts) covers each function's local guarantees in
  * isolation: counts.total = predefined+user, counts.enabled+counts.disabled = total, the patch shape carries counts/hdhrCounts/rows/scopeCounts, the tag
- * markers' wrapper classes appear, etc. Those are stable invariants that hold regardless of state. This suite tests the independent surface: how the helpers
+ * markers' wrapper classes appear, etc. Those are stable guarantees that hold regardless of state. This suite tests the independent surface: how the helpers
  * RESPOND to mutations through real production write paths - disabling a predefined channel, applying a service filter, customizing a field, requesting a
  * patch for multiple keys at once. The bug class this catches is patch-shape regressions (too few or too many rows in the response) and state-class drift
  * (a row missing the disabled/unavailable class even though the underlying state is correct).
  *
- * Companion suite: test/e2e/rendering/channels-table.test.ts pins generateChannelRowHtml's canonical/variant/override visual classes against
+ * Companion suite: test/e2e/rendering/channels-table.test.ts asserts generateChannelRowHtml's canonical/variant/override visual classes against
  * generateChannelRowHtml directly. This suite extends to the patch path - the same state classes must travel through buildChannelTablePatch onto the rendered
  * row HTML, because every CRUD endpoint response uses that path to refresh the client-side table.
  */
@@ -65,7 +65,7 @@ describe("buildChannelTablePatch - composition against real channel state", () =
     assert.equal(row.action, "update", "an existing key produces an update action");
   });
 
-  test("the patch row HTML matches generateChannelRowHtml for the same key (single source of truth invariant)", async () => {
+  test("the patch row HTML matches generateChannelRowHtml for the same key (single source of truth)", async () => {
 
     /* The patch builder is documented as the single source of truth for refresh-after-mutation responses, and generateChannelRowHtml is the single source of
      * truth for full page-load row rendering. Both paths must produce byte-identical HTML for the same channel state - if they ever diverge, a save would
@@ -102,7 +102,7 @@ describe("buildChannelTablePatch - composition against real channel state", () =
     void ctx;
     await initializePersistence(ctx);
 
-    // Verify the baseline: the row is NOT marked disabled before we disable it. This is the matched-pair invariant.
+    // Verify the baseline: the row is NOT marked disabled before we disable it. This is the matched-pair check.
     const beforeRow = firstOf(buildChannelTablePatch([PREDEFINED_KEY], getProfiles()).rows, "row before disable");
 
     assert.equal(beforeRow.action, "update");
@@ -160,7 +160,7 @@ describe("buildChannelTableState - composition against real channel state", () =
   test("disabling a predefined channel decrements counts.enabled and increments counts.disabled (no total drift)", async () => {
 
     /* The summary counts feed the channels tab header ("12 / 200 channels"). A regression that miscounts disabled channels surfaces as a wrong header number,
-     * which operators notice immediately. The unit suite locks the local invariants (total = enabled + disabled, total = predefined + user); this test pins
+     * which operators notice immediately. The unit suite locks the local rules (total = enabled + disabled, total = predefined + user); this test asserts
      * the transition - a single disable mutation must move exactly one channel from enabled to disabled with no change in total or in user/predefined splits.
      */
     await using ctx = await createIntegrationContext();
@@ -185,7 +185,7 @@ describe("buildChannelTableState - composition against real channel state", () =
   test("scopeCounts reflect the predefined East/Pacific/all distribution and stay consistent with counts", async () => {
 
     /* The scopeCounts feed the East/Pacific scope toggle in the channel table header. Each scope reports its own enabled/total, so a regression that
-     * miscomputes one would surface as an asymmetric toggle (e.g., "East 50/100" vs "Pacific 0/100" when both should match). We pin the structural invariant:
+     * miscomputes one would surface as an asymmetric toggle (e.g., "East 50/100" vs "Pacific 0/100" when both should match). We assert the structural rule:
      * each scope's total is non-negative, enabled <= total, and scopeCounts.all.total bounds the per-scope totals.
      */
     await using ctx = await createIntegrationContext();

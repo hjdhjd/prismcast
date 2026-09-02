@@ -452,7 +452,7 @@ describe("profile resolution over stored user profiles", () => {
 
 /* Builtin profile keys are reserved for names that are not already user data, which makes the rule depend on the loaded user store - module state that only
  * real file I/O populates. The unit tier covers the reservation itself against an empty store; the grandfather clause needs a key to already be there, so its
- * pins live here.
+ * assertions live here.
  */
 describe("validateProfileKey grandfathering of keys already in the store", () => {
 

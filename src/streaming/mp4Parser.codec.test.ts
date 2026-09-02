@@ -261,7 +261,7 @@ describe("parseMoovCodecConfig", () => {
   test("handles multi-byte size encoding in the esds DecoderSpecificInfo descriptor", () => {
 
     // The descriptor size encoding uses a continuation-bit scheme: bytes with the high bit set are length-prefix bytes; the byte without the high bit is the
-    // final size byte. The parser walks past the prefix bytes and reads the AudioSpecificConfig at the byte after the final size byte. This test pins the
+    // final size byte. The parser walks past the prefix bytes and reads the AudioSpecificConfig at the byte after the final size byte. This test asserts the
     // multi-byte path: tag 0x05, three prefix bytes (each 0x80), one terminator (0x02), then the two-byte AudioSpecificConfig.
     const objectType = 2;
     const sampleRateIndex = 3;
@@ -291,8 +291,8 @@ describe("parseMoovCodecConfig", () => {
 
   test("decodes full range of profile/level/compatibility values from avcC", () => {
 
-    // Pin the byte-position contract: profile is byte[9], compatibility is byte[10], level is byte[11] of the avcC box, measured from the box start, whose first 8 bytes
-    // are the box header. Use distinct values for each so a swap would be detected.
+    // Assert the byte-position contract: profile is byte[9], compatibility is byte[10], level is byte[11] of the avcC box, measured from the box start, whose first 8
+    // bytes are the box header. Use distinct values for each so a swap would be detected.
     const avcC = makeAvcC(0xAA, 0xBB, 0xCC);
     const stsd = makeStsd(makeAvc1(avcC));
     const moov = makeMoovWithStsd(stsd);

@@ -175,7 +175,7 @@ describe("ensureFullscreen", () => {
   test("runs the whole native sequence inside one selection when the first attempt verifies", async () => {
 
     /* The selection is what makes the Fullscreen API grantable, so it has to be taken before the trigger and given back only once the sequence has confirmed
-     * native fullscreen. The recorded order is the pin: a sequence that selected per attempt, or released before its verification, reorders this log.
+     * native fullscreen. The recorded order is the assertion: a sequence that selected per attempt, or released before its verification, reorders this log.
      */
     const timeline: string[] = [];
     const ceilings: (number | undefined)[] = [];

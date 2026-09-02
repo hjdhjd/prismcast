@@ -14,7 +14,7 @@
  *
  * The tests below cover tier 1 exhaustively. A third group - the thin state and delegation wrappers hasChannelsParseError, getChannelsParseErrorMessage, and
  * getUserChannelsFilePath - is contract-tested directly here: their shape (boolean, string-or-undefined, and throw-or-resolve) holds regardless of bring-up state,
- * so we pin the contract without standing up the bootstrap. The remaining tier-2 accessors are documented at each function's describe block as a deliberate
+ * so we assert the contract without standing up the bootstrap. The remaining tier-2 accessors are documented at each function's describe block as a deliberate
  * transitive-coverage decision.
  */
 import type { ChannelListingEntry, ResolvedChannel } from "../types/index.ts";
@@ -68,7 +68,7 @@ describe("tagsMatch", () => {
 describe("getEffectiveHdhrEnabled", () => {
 
   /* Sparse-storage convention: absent or true => included in the HDHR lineup; only an explicit false excludes. The function is the single source of truth for
-   * that convention. Tests pin the boundary between "false" (the only excluding value) and every other valid value or shape.
+   * that convention. Tests assert the boundary between "false" (the only excluding value) and every other valid value or shape.
    */
 
   test("returns true when hdhrEnabled is absent (the typical predefined-channel shape)", () => {
@@ -231,7 +231,7 @@ describe("isVisibleChannel", () => {
 describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannelsFilePath", () => {
 
   /* Accessor wrappers exposing module-level state. Without runtime initialization, the parse-error flag is the default false / undefined and the file path
-   * resolves via the paths module to whatever default is in effect. Tests pin contract shape rather than specific values.
+   * resolves via the paths module to whatever default is in effect. Tests assert contract shape rather than specific values.
    */
 
   test("hasChannelsParseError returns a boolean", () => {
@@ -244,7 +244,7 @@ describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannels
 
   test("getChannelsParseErrorMessage returns string-or-undefined matching the parse-error flag", () => {
 
-    /* Contract: when hasChannelsParseError() is false, getChannelsParseErrorMessage() returns undefined. When true, it returns a string. Pinning the relationship
+    /* Contract: when hasChannelsParseError() is false, getChannelsParseErrorMessage() returns undefined. When true, it returns a string. Asserting the relationship
      * between the two getters captures the rule linking them without depending on a specific value.
      */
     const message = getChannelsParseErrorMessage();
@@ -262,7 +262,7 @@ describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannels
   test("getUserChannelsFilePath delegates to the paths module (throws when data dir not initialized; resolves when initialized)", () => {
 
     /* The wrapper delegates to getChannelsFilePath in the paths module. Without a prior initializeDataDir call the resolver throws "Data directory not
-     * initialized". We pin the throw-or-resolve contract: either the call resolves to a non-empty string (when run under an integration harness that initialized
+     * initialized". We assert the throw-or-resolve contract: either the call resolves to a non-empty string (when run under an integration harness that initialized
      * the dir) or it throws. Both are valid documented states for this thin wrapper. Document the structural delegation here without taking on the bring-up cost
      * of paths.ts initialization just to assert a wrapped getter.
      */
@@ -274,7 +274,7 @@ describe("hasChannelsParseError / getChannelsParseErrorMessage / getUserChannels
       assert.ok(path.length > 0, "path must be non-empty when data dir is initialized");
     } catch(error) {
 
-      /* The expected error from getDataDir() before initializeDataDir() runs. Pinning the message anchors the contract.
+      /* The expected error from getDataDir() before initializeDataDir() runs. Asserting the message anchors the contract.
        */
       assert.match((error as Error).message, /Data directory not initialized/, "delegates to paths.getDataDir which throws this exact message pre-init");
     }

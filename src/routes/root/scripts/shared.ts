@@ -21,7 +21,7 @@ export function generateSharedUtilitiesScript(): string {
     /* Client-side render-safety single sources of truth, installed first in the shared utilities IIFE so window.escapeHtml and window.safeUrl are defined before any
      * client script runs: shared.ts's own channel/service renderers below, the status display, the channels wizards, the config changelog, and the inline log viewer
      * all route their escaping through them. escapeHtml encodes a value for an HTML text or attribute context (generated from clientEscapeHtml, which a byte-parity
-     * guard pins identical to the server-side markup.escapeHtml); safeUrl vets a URL's scheme before it is placed in a URL-bearing attribute (generated from
+     * guard holds identical to the server-side markup.escapeHtml); safeUrl vets a URL's scheme before it is placed in a URL-bearing attribute (generated from
      * clientSafeUrl). They are independent and composable - escapeHtml(safeUrl(url)) for a URL attribute. The local const bindings let the renderers in this IIFE
      * call them without a global property lookup.
      */

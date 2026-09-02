@@ -4,7 +4,7 @@
  * startPrecaching (the gated scheduler tested here), stopPrecaching (the shutdown-time canceller), precacheService (the per-service primitive), and
  * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching inspects the CONFIG.channels.precacheServices list and the
  * module-level precacheInProgress flag before scheduling the precache cycle; the tests here cover those two gates. The remaining gate, the isGracefulShutdown()
- * check, and the full runPrecacheCycle/precacheService flow (driven through the PrecachingDeps injection seam) are covered in the sibling
+ * check, and the full runPrecacheCycle/precacheService flow (driven through the PrecachingDeps injection point) are covered in the sibling
  * precaching.revalidation.test.ts. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
  *
  *   1. CONFIG.channels.precacheServices: when empty, the function returns immediately with no side effects (no timer scheduled, no log lines, no internal flag
@@ -89,7 +89,7 @@ describe("startPrecaching", () => {
 
   test("does not throw on repeated calls with an empty precacheServices list", () => {
 
-    // Idempotency: callers (browser launch sequence) may invoke startPrecaching once per launch, including after browser crash recovery. With no services
+    // Repeat safety: callers (browser launch sequence) may invoke startPrecaching once per launch, including after browser crash recovery. With no services
     // configured, every call must be a clean no-op.
     for(let i = 0; i < 3; i++) {
 
@@ -181,7 +181,7 @@ describe("recordDiscoveryOutcome", () => {
   test("an empty result classified as a consent overlay warns but never marks auth state", async (t) => {
 
     /* Traced path: channels.length === 0 -> no indicators -> consentOverlayPresent's CMP probe (the string-array evaluate) returns true -> consentOverlay case.
-     * The scenario pins that the case logs WARN and reaches no health mutator - a mutation that marked needs-sign-in here would trip the null read.
+     * The scenario asserts that the case logs WARN and reaches no health mutator - a mutation that marked needs-sign-in here would trip the null read.
      */
     const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
     const provider = makeProvider({ guideUrl: "https://www.case-consent.test/guide" });
@@ -332,7 +332,7 @@ describe("recordDiscoveryOutcome", () => {
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
  * precaching.revalidation.test.ts already covers runPrecacheCycle's deps threading through to precacheService, precacheService's navigation, mute injection,
- * cleanup ordering, and the window sync on discovery-page cleanup, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection seam
+ * cleanup ordering, and the window sync on discovery-page cleanup, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection point
  * without a real browser. What remains genuinely deferred is:
  *
  * - runPrecacheCycle's succeeded/empty/skipped counters and the completion sentence they compose, which requires driving a full multi-service cycle rather than
@@ -342,5 +342,5 @@ describe("recordDiscoveryOutcome", () => {
  *
  * - Per-provider error isolation (one provider failing while others succeed) - requires a real browser to populate the discovery flow.
  *
- * - The real Puppeteer mechanics of page.evaluateOnNewDocument and page.goto against an actual page, which the injection seam stubs out.
+ * - The real Puppeteer mechanics of page.evaluateOnNewDocument and page.goto against an actual page, which the injection point stubs out.
  */

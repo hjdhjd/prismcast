@@ -2,7 +2,7 @@
  *
  * dom.helpers.ts: Foundation for the DOM-runtime test tier under test/e2e/dom-runtime/. Where the integration tier exercises production routes end-to-end at
  * the HTTP boundary, the DOM-runtime tier exercises the EMITTED CLIENT-SIDE JAVASCRIPT - the strings that PrismCast ships to the browser as inline <script>
- * blocks. Unit tests pin "the generator emits a string containing X"; this tier pins "when that emitted X runs in a DOM, it does Y."
+ * blocks. Unit tests assert "the generator emits a string containing X"; this tier asserts "when that emitted X runs in a DOM, it does Y."
  *
  * Architecture:
  *
@@ -153,7 +153,7 @@ export type DisposableDomTestContext = DomTestContext & AsyncDisposable;
  *
  * Why we don't auto-execute the served scripts: the emitted scripts have side-effecting init code (status.ts opens EventSource on load; happy-dom does not
  * implement EventSource). Executing every script by default would crash the harness before the test body could run. Tests opt in to which scripts to run via
- * runScripts(), which is the right scope for behavioral tests anyway - they should pin the runtime behavior of the script under test, not collateral effects
+ * runScripts(), which is the right scope for behavioral tests anyway - they should assert the runtime behavior of the script under test, not collateral effects
  * from other scripts loading alongside it. Tests that need EventSource (see status-iife-runtime.test.ts) stub it directly via evaluate() rather than the
  * harness providing a global polyfill.
  *

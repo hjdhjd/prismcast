@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * clientUrl.test.ts: Unit tests for the single client-side URL-safety source of truth. clientSafeUrl ships to the browser via Function.prototype.toString() and
- * gates the scheme of any URL placed in a URL-bearing HTML attribute. This suite pins the scheme allowlist (http/https/relative pass, everything else collapses to
+ * gates the scheme of any URL placed in a URL-bearing HTML attribute. This suite asserts the scheme allowlist (http/https/relative pass, everything else collapses to
  * ""), the scheme-obfuscation defenses the platform URL parser provides (mixed case, embedded tab/newline, leading whitespace), and the shape of the window.safeUrl
  * assignment that the shared utilities script emits. The runtime validity of the emitted assignment is exercised by the shared-runtime suite, which executes the
  * shared utilities script and calls window.safeUrl.
@@ -54,7 +54,7 @@ describe("generateClientSafeUrlAssignment", () => {
   test("emits statements that install window.safeUrl backed by an IIFE-local const alias", () => {
 
     /* The shared utilities script concatenates this fragment near the top of its IIFE alongside the escape assignment. It must install the global surface
-     * (window.safeUrl) and the local const alias that shared.ts's own renderers call without a global property lookup. We pin both so a refactor that dropped
+     * (window.safeUrl) and the local const alias that shared.ts's own renderers call without a global property lookup. We assert both so a refactor that dropped
      * either binding surfaces here.
      */
     const snippet = generateClientSafeUrlAssignment();

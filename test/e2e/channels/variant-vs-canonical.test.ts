@@ -15,7 +15,7 @@ import { getServiceSelections, mutateServiceSelections, setServiceSelection } fr
 import { PREDEFINED_CHANNELS } from "../../../src/channels/index.ts";
 import assert from "node:assert/strict";
 
-describe("variant resolution invariants", () => {
+describe("variant resolution guarantees", () => {
 
   test("setting a service selection switches the resolved binding without touching identity", async () => {
 
@@ -99,7 +99,7 @@ describe("default canonical resolution for multi-service predefined channels", (
 
   /* The canonical resolution rule documented in the "Canonical resolution rules" comment in src/channels/index.ts: if "site" exists in services, the canonical
    * always gets the site URL; otherwise, the alphabetically-first service key (computed via Object.keys().sort(), not source-order) becomes canonical.
-   * Pinning this rule at the integration level means a future flattener change that breaks it fails this suite immediately rather than surfacing as a
+   * Asserting this rule at the integration level means a future flattener change that breaks it fails this suite immediately rather than surfacing as a
    * user-visible misrouted canonical URL.
    *
    * Tests work against the public PREDEFINED_CHANNELS surface (the resolved output of flattenChannelDefinitions) - the flattener itself is not exported, but its
@@ -111,7 +111,7 @@ describe("default canonical resolution for multi-service predefined channels", (
   test("site URL wins canonical when present (abc has site + service variants)", async () => {
 
     /* abc declares { cox, directv, hulu, site, sling, spectrum, xfinity, yttv } - alphabetically, "cox" would win without the site rule. Asserting the canonical
-     * URL is the site's value pins the "site beats alphabetical" branch, which is the highest-leverage rule because it's what makes network-owned URLs
+     * URL is the site's value proves the "site beats alphabetical" branch, which is the highest-leverage rule because it's what makes network-owned URLs
      * (abc.com/watch-live, fox.com, etc.) outrank cable-provider URLs that would otherwise coincidentally sort first.
      */
     await using ctx = await createIntegrationContext();
@@ -150,7 +150,7 @@ describe("default canonical resolution for multi-service predefined channels", (
   test("alphabetical-first principle holds for two-service channels (amcthrillers picks sling over yttv)", async () => {
 
     /* amcthrillers declares only { sling, yttv } - the smallest non-trivial multi-service shape. "sling" sorts before "yttv" alphabetically. If the resolver
-     * were ever broken to use source-order or a different rule, this case would surface a different canonical URL. Pinning the two-service path explicitly
+     * were ever broken to use source-order or a different rule, this case would surface a different canonical URL. Asserting the two-service path explicitly
      * complements the multi-service abcnews case: a regression that breaks for cardinality > 2 but happens to work at exactly 2 (or vice versa) is caught by
      * having both shapes covered.
      */
@@ -223,7 +223,7 @@ describe("setServiceSelection: persistence and delete branch", () => {
 
   test("post-write cache hydration: getServiceSelections reflects the persisted state immediately after the mutate", async () => {
 
-    /* setServiceSelection routes through mutateChannels, which re-hydrates the serviceSelections cache from the same normalized data it just wrote. This pins
+    /* setServiceSelection routes through mutateChannels, which re-hydrates the serviceSelections cache from the same normalized data it just wrote. This asserts
      * that after setServiceSelection resolves, the in-memory getServiceSelections() returns the just-written state, demonstrating the cache was hydrated as
      * part of the mutate.
      */
@@ -369,7 +369,7 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
 describe("mutateEnabledServices: post-write cache hydration", () => {
 
   /* After mutateEnabledServices writes config.json, the in-memory enabledServices cache is hydrated from the just-persisted value.
-   * This suite pins that hydration via the service-filter HTTP route plus a subsequent in-memory getEnabledServices() read.
+   * This suite asserts that hydration via the service-filter HTTP route plus a subsequent in-memory getEnabledServices() read.
    */
 
   test("after mutateEnabledServices via the service-filter route, getEnabledServices reflects the new value", async () => {
