@@ -3,9 +3,9 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, getBrowserInstance,
-  getCaptureImpairment, getCurrentBrowser, installCaptureFocusHook, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe, syncWindowVisibility,
-  unregisterManagedPage } from "../browser/index.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, emulateLayoutSurface,
+  getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installCaptureFocusHook, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe,
+  syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
@@ -31,7 +31,6 @@ import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
 import { getDomainConfig } from "../config/sites.ts";
 import { getNextStreamId } from "./registry.ts";
-import { getPresetViewport } from "../config/presets.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
@@ -1695,6 +1694,10 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
   registerManagedPage(page);
 
+  // The probe page carries the preset-sized layout at the display's density, the surface a capture page starts from before its own declaration, so the probe's
+  // acquisition keeps the shape the field validated.
+  const surface = await emulateLayoutSurface(page);
+
   // Tears the probe page down cleanly: retire the raw capture stream (destroy plus the stop confirmation) while the browser is still connected, unregister the
   // managed page, then close it. Shared by every success and self-timed-failure path in both modes.
   const teardown = async (stream: CaptureStream): Promise<void> => {
@@ -1710,12 +1713,11 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
   try {
 
-    // Use the same capture MIME type and viewport (height/width) as the runtime. The stale state error occurs at the tabCapture API level before encoding matters,
-    // so matching those runtime constraints ensures the probe exercises a representative acquisition. Both read the configured preset, so they agree by
-    // construction rather than by two call sites happening to pick the same numbers.
+    // Use the same capture MIME type and surface as the runtime. The stale state error occurs at the tabCapture API level before encoding matters, so matching
+    // those runtime constraints ensures the probe exercises a representative acquisition. The constraints are pinned to the dimensions the declaration above
+    // returned, so the probe holds its track to the surface the page actually carries rather than to a second read of the preset.
     const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
     const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
-    const viewport = getPresetViewport(CONFIG);
 
     const streamOptions: CaptureStreamOptions = {
 
@@ -1727,11 +1729,11 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
         mandatory: {
 
           maxFrameRate: 30,
-          maxHeight: viewport.height,
-          maxWidth: viewport.width,
+          maxHeight: surface.height,
+          maxWidth: surface.width,
           minFrameRate: 30,
-          minHeight: viewport.height,
-          minWidth: viewport.width
+          minHeight: surface.height,
+          minWidth: surface.width
         }
       }
     };

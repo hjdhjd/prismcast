@@ -8,8 +8,8 @@ import type { Nullable } from "../types/index.ts";
  * plus the WebGL renderer string identifying the GPU. Used for diagnostic logging at startup and consumed by codec selection to gate each hardware capture mode
  * when the corresponding hardware encoder is available.
  *
- * The display itself is not cached here, because nothing derives from it: every page renders at the configured quality preset's dimensions, so the capture surface
- * is the same whatever the display can show.
+ * The display itself is not cached here, because nothing derives from it: every capture page renders at the configured quality preset's dimensions, so the capture
+ * surface is the same whatever the display can show.
  *
  * This module is intentionally minimal with no imports from other project modules to avoid circular dependencies. The browser module detects capabilities and calls
  * the setter. Other modules call the getter to access the cached value.

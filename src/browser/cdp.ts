@@ -214,9 +214,10 @@ export async function unminimizeWindow(page: Page, clock: Clock = realClock): Pr
  */
 export async function reaffirmCaptureSurface(page: Page): Promise<void> {
 
-  /* An explicitly declared, positive density is precisely the mark of a capture page: the launch default leaves every other page at native density and the login
-   * page clears its emulation outright, so this guard is what makes the function safe to fire at any page from any trigger. The narrowing runs in two steps
-   * because the send forwards the page's own dimensions as well: the record is nullable, and its density is optional where CDP's field is required.
+  /* An explicitly declared, positive density is precisely the mark of a capture page, which is what makes this function safe to fire at any page from any trigger.
+   * A page PrismCast has not emulated carries no viewport at all and falls out on the first test; a page emulated for layout declares the display's own density
+   * through Chrome's disable value of 0, which the positive test excludes. The narrowing runs in two steps because the send forwards the page's own dimensions as
+   * well: the record is nullable, and its density is optional where CDP's field is required.
    */
   const viewport = page.viewport();
 

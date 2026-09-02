@@ -135,17 +135,13 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
 
   try {
 
-    // Create a new page for login. We intentionally do NOT register it as a managed page so stale page cleanup ignores it. The local variable avoids repeated
-    // null narrowing on the module-level loginPage reference.
+    /* Create a new page for login. We intentionally do NOT register it as a managed page so stale page cleanup ignores it. The local variable avoids repeated
+     * null narrowing on the module-level loginPage reference. Nothing declares a surface on this page, so it renders at the window's own dimensions - which is
+     * what a human working inside the real window needs, in contrast to the automated pages that carry a declared surface for capture or for layout.
+     */
     const page = await browser.newPage();
 
     loginPage = page;
-
-    /* Clear the device-metrics override this page inherited from the browser's launch viewport. Every automated page stays emulated at the configured preset
-     * because that is the surface capture reads, but this page is for a human working inside the real window, so it renders at the window's own dimensions
-     * instead. The clear runs before the first navigation, so the page loads once, at its natural size.
-     */
-    await page.setViewport(null);
 
     /* Set up handler for tab close detection. If the user closes the tab manually, we should end login mode automatically.
      *

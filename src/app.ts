@@ -653,8 +653,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Settle the window against the visibility policy. Nothing is streaming yet, so this leaves it minimized: the desktop stays clear and the GPU stays idle until a
   // capture stream needs the window on screen. We defer the sync until after the browser capability probe and the launch-gate capture probe complete, because the
-  // GPU probe wants an environment representative of the one capture runs in, and the display advisory reads the bounds the OS granted the window, which a
-  // minimized window does not report.
+  // GPU probe wants an environment representative of the one capture runs in and the capture probe acquires a real capture, both of which want the window as the
+  // launch left it.
   await syncWindowVisibility();
 
   // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale

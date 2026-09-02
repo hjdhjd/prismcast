@@ -45,15 +45,22 @@ let newPageOptions: unknown[] = [];
 // hands the store without touching a real file.
 const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
-/* The injected precaching dependencies: the browser accessors and page bookkeeping, the window-visibility sync, the provider-registry lookups, and the
- * discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so revalidation and discovery run against stubs with no real Chrome.
- * Each field reads the mutable module state above at call time, so a test shapes the registry and browser behavior by reassigning those lets. startOverlayHandling
- * stands in for the real poll, recording each call's options (phase and abort signal) into overlayHandlingCalls and logging its launch into pageEvents so the
- * guide-page tests can pin the discovery phase and its abort timing. Typed as the production port so the doubles cannot drift. The health and login modules stay
- * real.
+/* The injected precaching dependencies: the browser accessors and page bookkeeping, the layout-surface declaration, the window-visibility sync, the
+ * provider-registry lookups, and the discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so revalidation and discovery run
+ * against stubs with no real Chrome. Each field reads the mutable module state above at call time, so a test shapes the registry and browser behavior by
+ * reassigning those lets. startOverlayHandling stands in for the real poll, recording each call's options (phase and abort signal) into overlayHandlingCalls and
+ * logging its launch into pageEvents so the guide-page tests can pin the discovery phase and its abort timing; emulateLayoutSurface logs itself into the same
+ * record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. Typed as the production port so the doubles cannot
+ * drift. The health and login modules stay real.
  */
 const deps: PrecachingDeps = {
 
+  emulateLayoutSurface: async (): Promise<{ height: number; width: number }> => {
+
+    pageEvents.push("layout");
+
+    return { height: 1080, width: 1920 };
+  },
   getCurrentBrowser: async (): Promise<Browser> => stubBrowser,
   getProviderBySlug: (slug: string): ProviderModule | undefined => mockProviders[slug],
   getProvidersForDomain: (domain: string): ProviderModule[] => Object.entries(mockGuideUrls)
@@ -111,8 +118,7 @@ function makeStubProvider(discoverChannels: (page: Page) => Promise<DiscoveredCh
 // One discovered channel - enough for recordDiscoveryOutcome's non-empty arm to mark the domain verified.
 const ONE_CHANNEL = [{ channelSelector: "Stub", name: "Stub" }] as unknown as DiscoveredChannel[];
 
-// Minimal login-page stub for driving the real startLoginMode in the login-mode-active tests, mirroring the login.test.ts stub shape. startLoginMode clears the
-// page's inherited viewport emulation before navigating, so the stub answers setViewport as well.
+// Minimal login-page stub for driving the real startLoginMode in the login-mode-active tests, mirroring the login.test.ts stub shape.
 function makeLoginPageStub(): Page {
 
   return {
@@ -120,8 +126,7 @@ function makeLoginPageStub(): Page {
     close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
     goto: async (): Promise<void> => { /* Nothing to navigate on a stub. */ },
     isClosed: (): boolean => false,
-    on: (): void => { /* Close-handler registration is irrelevant here. */ },
-    setViewport: async (): Promise<void> => { /* The stub inherits no emulation to clear. */ }
+    on: (): void => { /* Close-handler registration is irrelevant here. */ }
   } as unknown as Page;
 }
 
@@ -997,17 +1002,22 @@ describe("withProviderGuidePage", () => {
     assert.equal(signalAbortedInAfterWalk, true, "the overlay poll is aborted before afterWalk classifies the page");
   });
 
-  test("opens the guide page in the background", async () => {
+  test("opens the guide page in the background, on the declared layout surface, before it navigates", async () => {
 
-    /* A guide walk never needs its tab selected, and the tab it would otherwise take the foreground from is either the blank tab that keeps running captures
-     * composing their emulated surface or a login page the user is working in. The recorded creation options are the pin: dropping the option opens the page in
-     * front and this row reads the bare undefined a plain creation leaves behind.
+    /* A guide walk never needs its tab selected, and taking the foreground would move the user off the tab they are on. The recorded creation options are the
+     * pin: dropping the option opens the page in front and this row reads the bare undefined a plain creation leaves behind.
+     *
+     * The page-operation order carries the second half of the contract. Every guide strategy was written against the preset's dimensions, and a page carries no
+     * emulation of its own, so the declaration has to land before the first navigation or the guide lays out once at the window's size and has to be re-laid-out.
+     * The prefix is compared exactly rather than by index arithmetic, so a declaration that never happened fails here instead of comparing an index of -1.
      */
     const provider = guideProvider(false, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
 
     await withProviderGuidePage(provider, {}, deps);
 
     assert.deepEqual(newPageOptions, [{ background: true }], "the guide page is created behind whatever the window is already showing");
+    assert.deepEqual(pageEvents.slice(0, pageEvents.indexOf("goto") + 1), [ "mute", "layout", "poll:discovery", "goto" ],
+      "the mute override, the layout declaration, and the overlay poll all precede the first navigation, in that order");
   });
 
   test("launches the discovery poll for a handlesOwnNavigation provider without a caller-driven navigation", async () => {

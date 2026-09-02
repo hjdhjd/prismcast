@@ -10,7 +10,7 @@ import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../strea
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
-import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
@@ -945,9 +945,7 @@ const NATIVE_DENSITY = 0;
  * - Pipe mode provides a faster, more reliable connection than WebSocket
  * @returns Puppeteer launch options.
  */
-export function buildLaunchOptions(): LaunchOptions {
-
-  const viewport = getPresetViewport(CONFIG);
+export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } {
 
   return {
 
@@ -1006,20 +1004,17 @@ export function buildLaunchOptions(): LaunchOptions {
       "--no-first-run"
     ],
 
-    /* The configured quality preset is the capture surface. Puppeteer holds this viewport for the browser's lifetime and applies it as a device-metrics override
-     * to every page the browser creates - capture pages, probe pages, discovery pages, and the capture extension's own page - so no individual page-creation site
-     * has to ask for it. Tab capture reads the compositor's emulated surface, which is what lets capture run at the preset's resolution whatever size the display
-     * is.
+    /* No launch-wide viewport, stated as an explicit null because an omitted option is not the same thing: Puppeteer reads an absent defaultViewport as its own
+     * 800x600 default and applies that override to every page it creates, while a null leaves each page carrying no override at all. Two consequences follow, and
+     * both are the point. A page renders at whatever surface PrismCast declares on it and nothing else - the capture surface on a capture page, the preset-sized
+     * layout on the discovery and capture-probe pages - so no page inherits an emulation it never asked for. And puppeteer-stream derives Chrome's --window-size
+     * and --ozone-override-screen-size flags from a sized default, where a --window-size flag stops Chrome restoring the placement it persisted in the profile, so
+     * with no default the window's size and placement are Chrome's and the user's.
      *
-     * The size is overridden for every page; the pixel density is not. Declaring NATIVE_DENSITY leaves each page rendering the preset-sized surface at whatever
-     * density the display actually has, which is what makes a page's own devicePixelRatio a truthful reading of that display...emulateCaptureSurface reads it
-     * back and declares it explicitly on each capture page, because Chrome composes an active tab's capture correctly only under an explicitly declared density
-     * equal to the display's real one. Non-capture pages - the launch-gate probe, the discovery and precache pages, the extension's own page - keep this default
-     * and are never encoded. The encoder still receives exactly the preset dimensions, because the capture constraints pin the track size independently.
-     * puppeteer-stream reads this same option and derives Chrome's window and ozone screen dimension flags from it, so the preset's dimensions enter the launch in
-     * exactly one place.
+     * The return type names the null so the key cannot be dropped as dead configuration without a compile error, since its absence is silently a viewport rather
+     * than none.
      */
-    defaultViewport: { deviceScaleFactor: NATIVE_DENSITY, height: viewport.height, width: viewport.width },
+    defaultViewport: null,
 
     // Path to the Chrome executable, either from environment variable or autodetected.
     executablePath: getExecutablePath(),
@@ -1067,17 +1062,32 @@ export function buildLaunchOptions(): LaunchOptions {
 }
 
 /**
+ * Declares a device-metrics override on a page: the configured quality preset's dimensions at the density the caller names. Every surface this module declares is
+ * built here, so the preset reaches a page's emulation through exactly one read and one command.
+ * @param page - The page to declare the surface on.
+ * @param deviceScaleFactor - The pixel density to declare. NATIVE_DENSITY leaves the display's own density in effect.
+ * @returns The dimensions declared on the page.
+ */
+async function declareSurface(page: Page, deviceScaleFactor: number): Promise<{ height: number; width: number }> {
+
+  const viewport = getPresetViewport(CONFIG);
+
+  await page.setViewport({ deviceScaleFactor, height: viewport.height, width: viewport.width });
+
+  return { height: viewport.height, width: viewport.width };
+}
+
+/**
  * Emulates the capture surface on a page that is about to be captured: the configured quality preset's dimensions, declared at the pixel density the display
  * actually has. Chrome composes an active tab's capture from the window presentation unless the page's device-metrics override declares a density explicitly
- * and that density matches the display's real one, so the density is read from the page itself - which the launch default leaves at the display's own value,
- * precisely so this read returns it - and declared back before capture acquires the page. The declared dimensions are returned so the caller pins its capture
- * constraints to the surface that was emulated rather than reading the preset a second time.
+ * and that density matches the display's real one, so the density is read from the page itself - a page carrying no declared density reports the display's own -
+ * and declared back before capture acquires the page. The declared dimensions are returned so the caller pins its capture constraints to the surface that was
+ * emulated rather than reading the preset a second time.
  * @param page - The page to emulate the capture surface on.
  * @returns The dimensions declared on the page.
  */
 export async function emulateCaptureSurface(page: Page): Promise<{ height: number; width: number }> {
 
-  const viewport = getPresetViewport(CONFIG);
   const reportedDensity = await evaluateWithAbort(page, (): number => window.devicePixelRatio);
 
   // A reading that is not a positive finite number is no measurement at all, and the compositor still needs an explicit density...1 is the density of an
@@ -1090,11 +1100,23 @@ export async function emulateCaptureSurface(page: Page): Promise<{ height: numbe
     LOG.warn("The capture page reported a pixel density of %s. Emulating the capture surface at a density of %d instead.", reportedDensity, deviceScaleFactor);
   }
 
-  await page.setViewport({ deviceScaleFactor, height: viewport.height, width: viewport.width });
+  const surface = await declareSurface(page, deviceScaleFactor);
 
-  LOG.debug("browser:lifecycle", "Emulated the capture surface at %dx%d with a pixel density of %s.", viewport.width, viewport.height, deviceScaleFactor);
+  LOG.debug("browser:lifecycle", "Emulated the capture surface at %dx%d with a pixel density of %s.", surface.width, surface.height, deviceScaleFactor);
 
-  return { height: viewport.height, width: viewport.width };
+  return surface;
+}
+
+/**
+ * Emulates the layout surface on a page that is laid out but never captured: the configured quality preset's dimensions at the display's own density. The guide
+ * walks were written against that layout and the launch-gate capture probe acquires against it, so declaring it is what keeps both on the surface they were
+ * validated on. The density stays the display's, because nothing reads this page's pixels.
+ * @param page - The page to emulate the layout surface on.
+ * @returns The dimensions declared on the page.
+ */
+export async function emulateLayoutSurface(page: Page): Promise<{ height: number; width: number }> {
+
+  return declareSurface(page, NATIVE_DENSITY);
 }
 
 /**
@@ -1200,35 +1222,8 @@ function formatGpuSuffix(gpu: GpuCapabilities): string {
 }
 
 /**
- * Decides whether the window bounds the browser granted prove the display cannot show a whole captured frame, returning those bounds when they do and null
- * otherwise. Bounds the browser could not report, and bounds read while the window carried a state other than normal, describe a transient condition rather than
- * the display...treating either as evidence would let a CDP hiccup or an unfinished window transition pose as a small display, so both yield null. Beyond that,
- * either dimension falling below the capture surface is enough: a frame that does not fit the window in one axis is already a frame the screen cannot show whole.
- * @param bounds - The window bounds the browser reported, or undefined when the read did not complete.
- * @param captureSurface - The dimensions every page renders at, derived from the configured quality preset.
- * @returns The granted window dimensions when the display falls short of the capture surface, null otherwise.
- */
-export function getUndersizedDisplayBounds(bounds: { height?: number; width?: number; windowState?: string } | undefined,
-  captureSurface: { height: number; width: number }): Nullable<{ height: number; width: number }> {
-
-  if((bounds?.windowState !== "normal") || (bounds.width === undefined) || (bounds.height === undefined)) {
-
-    return null;
-  }
-
-  if((bounds.width >= captureSurface.width) && (bounds.height >= captureSurface.height)) {
-
-    return null;
-  }
-
-  return { height: bounds.height, width: bounds.width };
-}
-
-/**
- * Probes the browser's GPU hardware-encoding capabilities and reports how the display compares to the configured capture surface. The GPU half queries CDP
- * SystemInfo.getInfo for renderer identity and H.264/HEVC/AV1 hardware encoding support, falling back to a MediaRecorder capability probe where the CDP data is
- * incomplete, and caches the result for codec selection to read. The display half is advisory: every page renders at the configured preset, so a display too
- * small to show a whole frame changes nothing about capture and is worth stating once.
+ * Probes the browser's GPU hardware-encoding capabilities. It queries CDP SystemInfo.getInfo for renderer identity and H.264/HEVC/AV1 hardware encoding support,
+ * falls back to a MediaRecorder capability probe where the CDP data is incomplete, and caches the result for codec selection to read.
  *
  * The probe runs against an existing page where one is open, and a temporary page otherwise.
  * @param browser - The browser instance to use for detection.
@@ -1250,9 +1245,7 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
     }
 
     /* Restore the window to its normal state before probing. Chrome restores window state from the persistent user data directory, so after a scheduled browser
-     * restart the window can come up minimized, and a minimized window reports its bounds as the shrunken presentation rather than the size the OS granted it -
-     * which would make the display advisory below fire against a size no display ever imposed. It also keeps the GPU probe's environment representative of the
-     * one capture runs in.
+     * restart the window can come up minimized, and the GPU probe wants an environment representative of the one capture runs in.
      */
     await unminimizeWindow(targetPage);
 
@@ -1367,25 +1360,6 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
       LOG.debug("browser:lifecycle", "GPU detection failed: %s.", String(gpuError));
     }
 
-    /* Report a display that cannot show a whole frame. The bounds come from the browser rather than from the page, because an emulated page reports the emulated
-     * size for screen.* and window.* alike, which would make the comparison circular - Browser.getWindowBounds is window state the page's emulation cannot reach.
-     */
-    const bounds = await withCDPSession(targetPage, async (session, windowId) => {
-
-      const result = await session.send("Browser.getWindowBounds", { windowId });
-
-      return result.bounds;
-    });
-
-    const captureSurface = getPresetViewport(CONFIG);
-    const granted = getUndersizedDisplayBounds(bounds, captureSurface);
-
-    if(granted) {
-
-      LOG.info("The display is smaller than the configured %s\u00d7%s capture surface (the browser window was granted %s\u00d7%s). Capture is unaffected: every " +
-        "page renders at the configured preset whatever size the display is, and the window stays visible while captures run.", captureSurface.width,
-      captureSurface.height, granted.width, granted.height);
-    }
   } catch(error) {
 
     LOG.warn("Browser capability detection failed: %s. Hardware encoding capabilities are unknown for this session.", formatError(error));

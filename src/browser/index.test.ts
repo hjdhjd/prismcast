@@ -10,9 +10,9 @@
  *   - getChromeVersion (the cached version string accessor)
  *   - getBrowserInstance / getCaptureImpairment / isBrowserConnected (the synchronous status accessors)
  *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
- *   - getUndersizedDisplayBounds (the pure decision the display advisory composes)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
+ *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
  *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
@@ -22,8 +22,8 @@
  * not prevent the file from exiting cleanly.
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance,
-  getCaptureImpairment, getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback,
+import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile,
+  getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback,
   registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
@@ -390,67 +390,6 @@ describe("getExecutablePath", () => {
   });
 });
 
-describe("getUndersizedDisplayBounds", () => {
-
-  // The capture surface every case is measured against. Held as a literal rather than read from configuration so a preset change cannot silently move what these
-  // boundaries mean.
-  const captureSurface = { height: 1080, width: 1920 };
-
-  test("reports the granted bounds when both dimensions fall short of the capture surface", () => {
-
-    // The plain case the advisory exists for: a laptop display that cannot show a 1080p frame whole.
-    assert.deepEqual(getUndersizedDisplayBounds({ height: 776, width: 1280, windowState: "normal" }, captureSurface), { height: 776, width: 1280 },
-      "a display short in both axes is reported");
-  });
-
-  test("reports the granted bounds when only the width falls short", () => {
-
-    // Either axis is enough. A window as tall as the surface but narrower still cannot show a whole frame, so a both-dimensions test would miss this display.
-    assert.deepEqual(getUndersizedDisplayBounds({ height: 1080, width: 1600, windowState: "normal" }, captureSurface), { height: 1080, width: 1600 },
-      "a short width alone is reported");
-  });
-
-  test("reports the granted bounds when only the height falls short", () => {
-
-    // The mirror of the case above, pinning that the check is not written against one axis.
-    assert.deepEqual(getUndersizedDisplayBounds({ height: 900, width: 1920, windowState: "normal" }, captureSurface), { height: 900, width: 1920 },
-      "a short height alone is reported");
-  });
-
-  test("stays silent when both dimensions meet the capture surface exactly", () => {
-
-    // Boundary: equal is not short. A display that matches the surface exactly is the common, healthy configuration and must not draw an advisory.
-    assert.equal(getUndersizedDisplayBounds({ height: 1080, width: 1920, windowState: "normal" }, captureSurface), null, "an exact fit is silent");
-  });
-
-  test("stays silent when the display exceeds the capture surface", () => {
-
-    assert.equal(getUndersizedDisplayBounds({ height: 2160, width: 3840, windowState: "normal" }, captureSurface), null, "a larger display is silent");
-  });
-
-  test("stays silent when the bounds read did not complete", () => {
-
-    /* Negative test: the CDP helper surfaces a closed page, an unresolvable window id, and a protocol error alike as undefined. None of them says anything about
-     * the display, and reporting one would tell an operator their display is too small on the strength of a transient failure.
-     */
-    assert.equal(getUndersizedDisplayBounds(undefined, captureSurface), null, "an incomplete read is silent");
-  });
-
-  test("stays silent when the window carried a state other than normal", () => {
-
-    /* A minimized window reports the dimensions of its minimized presentation, which are far below any preset and have nothing to do with the display. The state
-     * check is what stops a window whose restore has not finished settling from producing a false advisory on every launch.
-     */
-    assert.equal(getUndersizedDisplayBounds({ height: 0, width: 0, windowState: "minimized" }, captureSurface), null, "a minimized window is silent");
-  });
-
-  test("stays silent when the browser reported no dimensions at all", () => {
-
-    // Boundary: every field of the CDP bounds object is optional. Bounds carrying a state but no numbers cannot be compared against anything.
-    assert.equal(getUndersizedDisplayBounds({ windowState: "normal" }, captureSurface), null, "dimensionless bounds are silent");
-  });
-});
-
 describe("buildLaunchOptions", () => {
 
   let originalExecutablePath: string | null;
@@ -474,35 +413,14 @@ describe("buildLaunchOptions", () => {
     assert.equal(options.executablePath, "/sentinel/chrome", "executablePath surfaces from CONFIG");
   });
 
-  test("emulates every page at the configured preset and leaves the pixel density native", () => {
+  test("declares no launch viewport at all, as an explicit null", () => {
 
-    /* The launch viewport is the capture surface: Puppeteer applies it to every page it creates, and tab capture reads that emulated surface. The dimensions have
-     * to track the configured preset, and the scale factor has to be 0 - Chrome's disable value - so every page renders at the display's own density, which is
-     * what makes a page's reported devicePixelRatio the real one for emulateCaptureSurface to read back and declare on each capture page.
+    /* The null disables two derivations at once. Puppeteer reads an absent option as its own 800x600 default and applies that override to every page it creates,
+     * so a page would carry an emulation nothing asked for; and puppeteer-stream reads a sized default to push Chrome's --window-size and
+     * --ozone-override-screen-size flags, where the window-size flag is what stops Chrome restoring the placement it persisted. Undefined would silently be a
+     * viewport, so the assertion is on the null itself rather than on the key's absence.
      */
-    const viewport = getPresetViewport(CONFIG);
-
-    assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 0, height: viewport.height, width: viewport.width },
-      "preset dimensions with the density override disabled");
-  });
-
-  test("derives the emulated viewport from a non-default preset rather than a fixed pair of dimensions", () => {
-
-    /* The configured default preset and the getter's own fallback resolve to the same dimensions, so those numbers alone cannot tell a config-driven
-     * implementation from a hardcoded one. Configuring 4K moves the expected dimensions away from both and makes the distinction observable.
-     */
-    const originalPreset = CONFIG.streaming.qualityPreset;
-
-    CONFIG.streaming.qualityPreset = "4k";
-
-    try {
-
-      assert.deepEqual(buildLaunchOptions().defaultViewport, { deviceScaleFactor: 0, height: 2160, width: 3840 },
-        "the 4K preset yields a 3840x2160 surface, still at native density");
-    } finally {
-
-      CONFIG.streaming.qualityPreset = originalPreset;
-    }
+    assert.equal(buildLaunchOptions().defaultViewport, null, "no page-wide emulation and no window-dimension flags are derived from the launch");
   });
 
   test("runs Chrome in headed mode so the streaming extension can capture", () => {
@@ -525,10 +443,10 @@ describe("buildLaunchOptions", () => {
     assert.ok(args.includes("--autoplay-policy=no-user-gesture-required"), "autoplay flag present");
   });
 
-  test("carries no manual window-size flag, leaving the window dimensions to the launch viewport", () => {
+  test("carries no manual window-size flag, leaving the window's dimensions to Chrome", () => {
 
-    // puppeteer-stream reads the launch viewport and pushes the window-size and ozone screen-size flags from it. A flag assembled here as well would be a second
-    // declaration of the same dimensions, free to drift from the one the capture layer acts on.
+    // The window's size and placement are Chrome's and the user's, restored from the profile. A window-size flag assembled here would override both, and with the
+    // null viewport deriving none, this is the one place such a flag could enter the launch.
     const args = buildLaunchOptions().args ?? [];
 
     assert.equal(args.filter((a) => a.startsWith("--window-size=")).length, 0, "no window-size arg assembled here");
@@ -658,6 +576,48 @@ describe("emulateCaptureSurface", () => {
       const surface = await emulateCaptureSurface(page);
 
       assert.deepEqual(declared, [{ deviceScaleFactor: 2, height: 2160, width: 3840 }], "the 4K preset is declared at the reported density");
+      assert.deepEqual(surface, { height: 2160, width: 3840 }, "the returned dimensions follow the preset");
+    } finally {
+
+      CONFIG.streaming.qualityPreset = originalPreset;
+    }
+  });
+});
+
+describe("emulateLayoutSurface", () => {
+
+  test("declares the preset's dimensions at the display's own density", async () => {
+
+    /* The layout declaration is the whole surface a page that is laid out but never captured needs: the preset's dimensions, with the density left at Chrome's
+     * disable value so the display's own is what the page renders at. The declaration is read back rather than assumed, because the returned dimensions are what
+     * the capture probe pins its constraints to.
+     */
+    const { declared, page } = makeCapturePage(async (): Promise<number> => 2);
+    const viewport = getPresetViewport(CONFIG);
+
+    const surface = await emulateLayoutSurface(page);
+
+    assert.deepEqual(declared, [{ deviceScaleFactor: 0, height: viewport.height, width: viewport.width }],
+      "one override, at the preset size with the density override disabled");
+    assert.deepEqual(surface, { height: viewport.height, width: viewport.width }, "the declared dimensions come back for the caller to hold its capture to");
+  });
+
+  test("derives the declared dimensions from a non-default preset rather than a fixed pair", async () => {
+
+    /* The configured default preset and the getter's own fallback resolve to the same dimensions, so those numbers alone cannot tell a config-driven declaration
+     * from a hardcoded one. Configuring 4K moves the expected dimensions away from both and makes the distinction observable.
+     */
+    const originalPreset = CONFIG.streaming.qualityPreset;
+
+    CONFIG.streaming.qualityPreset = "4k";
+
+    try {
+
+      const { declared, page } = makeCapturePage(async (): Promise<number> => 2);
+
+      const surface = await emulateLayoutSurface(page);
+
+      assert.deepEqual(declared, [{ deviceScaleFactor: 0, height: 2160, width: 3840 }], "the 4K preset is declared, still at the display's own density");
       assert.deepEqual(surface, { height: 2160, width: 3840 }, "the returned dimensions follow the preset");
     } finally {
 

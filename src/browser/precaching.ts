@@ -5,7 +5,7 @@
 import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
-import { getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility, unregisterManagedPage } from "./index.ts";
+import { emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility, unregisterManagedPage } from "./index.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
@@ -107,6 +107,7 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
  */
 export interface PrecachingDeps {
 
+  readonly emulateLayoutSurface: typeof emulateLayoutSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly getProviderBySlug: typeof getProviderBySlug;
   readonly getProvidersForDomain: typeof getProvidersForDomain;
@@ -120,6 +121,7 @@ export interface PrecachingDeps {
 
 export const defaultPrecachingDeps: PrecachingDeps = {
 
+  emulateLayoutSurface,
   getCurrentBrowser,
   getProviderBySlug,
   getProvidersForDomain,
@@ -420,8 +422,8 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
   const { afterWalk, signal } = options;
   const browser = await deps.getCurrentBrowser("page");
 
-  // The guide page opens behind whatever the window is already showing. A walk never needs its tab selected, while the tab it would otherwise take the foreground
-  // from is either the blank tab that keeps running captures composing their emulated surface or a login page the user is working in.
+  // The guide page opens behind whatever the window is showing. A walk never needs its tab selected, and taking the foreground would move the user off the tab
+  // they are on.
   const page = await browser.newPage({ background: true });
 
   // Close the page the moment the caller aborts, so any in-progress Puppeteer operation throws and propagates the cancellation through discoverChannels without each
@@ -465,6 +467,10 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
     });
 
     deps.registerManagedPage(page);
+
+    // Declare the layout the walk runs against, before the first navigation so the guide loads once at the surface it will be read on. A page carries no
+    // emulation of its own, and every guide strategy was written against the preset's dimensions.
+    await deps.emulateLayoutSurface(page);
 
     // Launch the discovery-phase overlay poll before navigation: a handlesOwnNavigation provider navigates inside discoverChannels, and the tick-error taxonomy lets
     // the poll survive that navigation. The phase's window is the backstop; the abort after the walk is the terminator. The guide page is not a tune, so the phase

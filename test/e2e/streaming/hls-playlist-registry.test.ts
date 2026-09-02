@@ -502,8 +502,7 @@ describe("handlePlayStream request guards", () => {
 
       goto: async (): Promise<void> => { /* The login page load is irrelevant to the 503 guard under test. */ },
       isClosed: (): boolean => true,
-      on: (): void => { /* The close-detection handler is never exercised by this test. */ },
-      setViewport: async (): Promise<void> => { /* The viewport clear is irrelevant to the 503 guard under test. */ }
+      on: (): void => { /* The close-detection handler is never exercised by this test. */ }
     };
 
     const fakeBrowser = { connected: true, newPage: async (): Promise<unknown> => fakePage } as unknown as Browser;
