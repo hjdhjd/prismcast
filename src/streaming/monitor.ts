@@ -1675,7 +1675,8 @@ export function monitorPlaybackHealth(
           LOG.warn("Detected %d consecutive undersized segments (%dKB) - capture pipeline may have stalled.",
             segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
 
-          // Trigger tab replacement if available, otherwise let circuit breaker handle it via segmentState.productionStalled.
+          // Replace the tab when a replacement can start, and otherwise raise the stalled-production flag. The recovery action reads that flag on this same tick
+          // and terminates the stream, because no replacement can be started and the in-page ladder cannot revive a dead capture.
           if(canReplaceTab() && !recoveryState.inProgress) {
 
             await executeTabReplacement("tiny segments");
@@ -2012,21 +2013,34 @@ export function monitorPlaybackHealth(
    */
   async function executeRecoveryAction(now: number, state: VideoState, isProgressing: boolean, isBuffering: boolean): Promise<boolean> {
 
-    // Segment production stall handling. When segments stopped flowing after L2/L3 recovery, the capture pipeline is dead and normal recovery won't help. Skip the
-    // escalation ladder and go directly to tab replacement if available.
-    if(segmentState.productionStalled && canReplaceTab()) {
-
-      LOG.warn("Capture pipeline still stalled - escalating to %s.", RECOVERY_METHODS.tabReplacement);
-
-      await executeTabReplacement("capture pipeline stalled");
+    // Post-await stop check, covering every exit below it. The tick awaited getVideoState before calling this; a tick that resumed after the monitor stopped must
+    // trip nothing and attempt nothing, because the accounting, the log, the replacement, and the termination would all describe a stream that has already ended.
+    // Return terminal so the tick exits without further work.
+    if(intervalCleared) {
 
       return true;
     }
 
-    // Post-await stop check for the breaker branch below. The tick awaited getVideoState before calling this; a tick that resumed after the monitor stopped must not
-    // trip the breaker, because the accounting, the log, and the termination would all describe a stream that has already ended. Return terminal so the tick exits
-    // without further work.
-    if(intervalCleared) {
+    /* Segment production stall handling. The capture pipeline is dead and the in-page ladder cannot revive a capture, so a replacement is the one cure. When none
+     * can start, the stream is unrecoverable: every rung the ladder would run spends an attempt and part of the breaker's window on a stream it cannot save, while
+     * holding open the relaunch that would cure a marked browser. So the stream terminates through the breaker at once, which is the judgment the unresponsive-tab
+     * branch already makes.
+     */
+    if(segmentState.productionStalled) {
+
+      if(canReplaceTab()) {
+
+        LOG.warn("Capture pipeline still stalled - escalating to %s.", RECOVERY_METHODS.tabReplacement);
+
+        await executeTabReplacement("capture pipeline stalled");
+
+        return true;
+      }
+
+      LOG.error("Capture pipeline stalled and tab replacement is unavailable (%s) - terminating stream.", tabReplacementUnavailableReason());
+
+      stopMonitoring();
+      onCircuitBreak();
 
       return true;
     }
@@ -2090,7 +2104,6 @@ export function monitorPlaybackHealth(
 
       segmentState.preRecoveryIndex = getStreamSegmenter(entry)?.getSegmentIndex() ?? null;
       segmentState.waitStartTime = null;
-      segmentState.productionStalled = false;
     }
 
     recoveryState.inProgress = true;

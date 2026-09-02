@@ -43,6 +43,10 @@ const DEFAULT_EVALUATE_TIMEOUT = 15000;
 // The short bound a read carries once a timeout streak is open, which is the cadence every strike after the first lapses at.
 const UNRESPONSIVE_PROBE_TIMEOUT = 2000;
 
+// A segment size well above the undersized threshold the monitor watches for, so a drive built to reach the staleness trigger never trips the tiny-segment
+// trigger on its way there.
+const HEALTHY_SEGMENT_BYTES = 1000000;
+
 /**
  * Advances mock timers in interval-sized steps, letting each tick body settle before the next firing.
  * @param t - The test context owning the mock timers.
@@ -116,6 +120,19 @@ const DIVERGENT_DEPS: MonitorDeps = {
   syncWindowVisibility: async (): Promise<void> => { syncs++; }
 };
 
+// The mark a browser carries once it can no longer start a capture, and the deps object that reports it. Every replacement decision consults that read, so a
+// frozen mark is what puts a row on a browser where no replacement can start. The codec answers match DIVERGENT_DEPS, so the mark is the only thing that differs
+// from the deps every other row starts from.
+const MARK: CaptureImpairment = { reason: "Could not start video source", since: 0 };
+
+const MARKED_DEPS: MonitorDeps = {
+
+  getCaptureImpairment: (): Nullable<CaptureImpairment> => MARK,
+  getEffectiveCaptureCodec: (): CaptureCodec => "hevc",
+  isCaptureHardwareAccelerated: (): boolean => true,
+  syncWindowVisibility: async (): Promise<void> => { syncs++; }
+};
+
 // How many window syncs the fallback asked for.
 let syncs: number;
 
@@ -170,6 +187,56 @@ function makeSwappedSession(): CaptureSession {
 }
 
 /**
+ * Builds a segmenter double whose segment index advances on every read and whose segments are always undersized and video-free, which is the exact condition the
+ * tiny-segment trigger watches for.
+ * @returns The segmenter double.
+ */
+function makeStarvingSegmenter(): FMP4SegmenterResult {
+
+  let index = 0;
+
+  return {
+
+    getLastSegmentHasVideo: (): boolean => false,
+    getLastSegmentSize: (): number => 16,
+    getSegmentIndex: (): number => ++index,
+    pipe: (): void => { /* Nothing consumes this double. */ },
+    stop: (): void => { /* Nothing to stop. */ }
+  } as unknown as FMP4SegmenterResult;
+}
+
+/**
+ * Answers a run of health reads with a progressing, healthy video state. Every outstanding read is answered on each pass rather than one indexed read, so the
+ * drive stays correct whichever tick a given read belongs to; a read that is already settled ignores a second answer.
+ * @param t - The test context owning the mock timers.
+ * @param fake - The Page double whose reads are answered.
+ * @param ticks - How many ticks to drive.
+ */
+async function driveHealthyTicks(t: TestContext, fake: ReturnType<typeof makeFakePage>, ticks: number): Promise<void> {
+
+  for(let tick = 0; tick < ticks; tick++) {
+
+    // Sequential by definition: each tick's read must settle before the next firing.
+    // eslint-disable-next-line no-await-in-loop
+    await advance(t, MONITOR_INTERVAL);
+
+    /* The playhead advances monotonically across the whole drive, not within one call. A drive that restarted it would report a stalled video, which sends the
+     * general recovery ladder down a path this row is not about and takes the segment trigger out of reach entirely.
+     */
+    playheadSeconds++;
+
+    for(const pending of fake.evaluations) {
+
+      pending.resolve({ currentTime: playheadSeconds, ended: false, error: false, muted: false, networkState: 2, paused: false, readyState: 3, videoHeight: 0,
+        videoWidth: 0, volume: 1 });
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await settle();
+  }
+}
+
+/**
  * Builds the registry entry a row registers under the id its monitor was started with.
  * @param numericStreamId - The id the monitor and registry agree on.
  * @returns The entry.
@@ -205,25 +272,6 @@ afterEach(() => {
 });
 
 describe("monitorPlaybackHealth: a failed replacement throttles the next attempt", () => {
-
-  /**
-   * Builds a segmenter double whose segment index advances on every read and whose segments are always undersized and video-free, which is the exact condition the
-   * tiny-segment trigger watches for.
-   * @returns The segmenter double.
-   */
-  function makeStarvingSegmenter(): FMP4SegmenterResult {
-
-    let index = 0;
-
-    return {
-
-      getLastSegmentHasVideo: (): boolean => false,
-      getLastSegmentSize: (): number => 16,
-      getSegmentIndex: (): number => ++index,
-      pipe: (): void => { /* Nothing consumes this double. */ },
-      stop: (): void => { /* Nothing to stop. */ }
-    } as unknown as FMP4SegmenterResult;
-  }
 
   test("a stream whose replacement did not cure it re-attempts once per grace window, not once per tick", async (t) => {
 
@@ -408,37 +456,6 @@ describe("monitorPlaybackHealth: a failed replacement throttles the next attempt
   });
 
   /**
-   * Answers a run of health reads with a progressing, healthy video state. Every outstanding read is answered on each pass rather than one indexed read, so the
-   * drive stays correct whichever tick a given read belongs to; a read that is already settled ignores a second answer.
-   * @param t - The test context owning the mock timers.
-   * @param fake - The Page double whose reads are answered.
-   * @param ticks - How many ticks to drive.
-   */
-  async function driveHealthyTicks(t: TestContext, fake: ReturnType<typeof makeFakePage>, ticks: number): Promise<void> {
-
-    for(let tick = 0; tick < ticks; tick++) {
-
-      // Sequential by definition: each tick's read must settle before the next firing.
-      // eslint-disable-next-line no-await-in-loop
-      await advance(t, MONITOR_INTERVAL);
-
-      /* The playhead advances monotonically across the whole drive, not within one call. A drive that restarted it would report a stalled video, which sends the
-       * general recovery ladder down a path this row is not about and takes the segment trigger out of reach entirely.
-       */
-      playheadSeconds++;
-
-      for(const pending of fake.evaluations) {
-
-        pending.resolve({ currentTime: playheadSeconds, ended: false, error: false, muted: false, networkState: 2, paused: false, readyState: 3, videoHeight: 0,
-          videoWidth: 0, volume: 1 });
-      }
-
-      // eslint-disable-next-line no-await-in-loop
-      await settle();
-    }
-  }
-
-  /**
    * Drives one evaluate timeout strike against a page that never answers. The first strike of a streak lapses at the evaluate wrapper's full bound; every strike
    * after it lapses at the short confirmation probe the streak arms, which is the cadence a genuinely hung tab produces.
    * @param t - The test context owning the mock timers.
@@ -449,6 +466,265 @@ describe("monitorPlaybackHealth: a failed replacement throttles the next attempt
     await advance(t, MONITOR_INTERVAL);
     await advance(t, first ? DEFAULT_EVALUATE_TIMEOUT : UNRESPONSIVE_PROBE_TIMEOUT);
   }
+});
+
+describe("monitorPlaybackHealth: a dead pipeline on a browser that can start no replacement", () => {
+
+  // The line the terminate arm emits, which is what every row here counts.
+  const TERMINATION_LINE = "Capture pipeline stalled and tab replacement is unavailable";
+
+  /**
+   * Builds a segmenter double that reports one healthy, video-bearing segment and then never advances again, which is the exact condition the staleness trigger
+   * watches for: an index that has moved at least once, so the stream is past startup, and has not moved since.
+   * @returns The segmenter double.
+   */
+  function makeStalledSegmenter(): FMP4SegmenterResult {
+
+    return {
+
+      getLastSegmentHasVideo: (): boolean => true,
+      getLastSegmentSize: (): number => HEALTHY_SEGMENT_BYTES,
+      getSegmentIndex: (): number => 1,
+      pipe: (): void => { /* Nothing consumes this double. */ },
+      stop: (): void => { /* Nothing to stop. */ }
+    } as unknown as FMP4SegmenterResult;
+  }
+
+  /**
+   * Registers the row's entry carrying a capture session built around the supplied segmenter, which is what the monitor reads every segment fact through.
+   * @param numericStreamId - The id the monitor and registry agree on.
+   * @param segmenter - The segmenter double the session exposes.
+   */
+  function registerCapturing(numericStreamId: number, segmenter: FMP4SegmenterResult): void {
+
+    const session = { attachSegmenter: (): void => undefined, dispose: (): void => undefined, disposed: false, segmenter,
+      [Symbol.dispose]: (): void => undefined } as unknown as CaptureSession;
+
+    entry = { ...makeEntry(numericStreamId), identity: { ...makePendingCaptureIdentity(), captureSession: session } };
+    registerStream(entry);
+  }
+
+  test("the tiny-segment trigger terminates the stream on the tick it fires", async (t) => {
+
+    /* The arm read as counts on one tick. A capture that died on a browser which can start no replacement has nothing left that would revive it: every rung of
+     * the in-page ladder spends an attempt and part of the breaker's window on a stream it cannot save, and holds the relaunch that would cure the browser behind
+     * a stream still sitting in the registry. So the row demands the termination land on the trigger's first firing - one error line, the breaker reached once,
+     * no replacement attempted, and no ladder announcement at all. The throttle describe's tiny-segment row is the control: the same double and the same drive on
+     * an unmarked browser reach the replacement handler instead.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    registerCapturing(9320, makeStarvingSegmenter());
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let replacements = 0;
+    let breaks = 0;
+
+    handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "tiny-marked-1", streamInfo(9320),
+      (): void => { breaks++; }, async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }, MARKED_DEPS);
+
+    // Drive one tick at a time until the stream terminates, so nothing but the trigger's own firing decides which tick the assertions read.
+    const terminations = (): number => countMessages(messages, TERMINATION_LINE);
+
+    for(let tick = 0; (tick < 80) && (terminations() === 0); tick++) {
+
+      // Sequential by definition: the trigger's own state advances one tick at a time.
+      // eslint-disable-next-line no-await-in-loop
+      await driveHealthyTicks(t, fake, 1);
+    }
+
+    assert.equal(terminations(), 1, "the unrecoverable stream was terminated, once");
+    assert.equal(countMessages(messages, "Detected"), 1, "on the trigger's first firing rather than a later one");
+    assert.equal(breaks, 1, "through the breaker, exactly once");
+    assert.equal(replacements, 0, "with no replacement attempted, because none could start");
+    assert.equal(countMessages(messages, "Playback"), 0, "and with no rung of the in-page ladder announced");
+
+    const evaluationsAtTermination = fake.evaluations.length;
+
+    // The positive control on the termination itself: a monitor that logged and broke without stopping would keep reading the page on every later tick.
+    await driveHealthyTicks(t, fake, 5);
+
+    assert.equal(fake.evaluations.length, evaluationsAtTermination, "and the monitor stopped, so no later tick read the page");
+  });
+
+  test("the staleness trigger terminates the stream on the tick it fires", async (t) => {
+
+    /* The same judgment reached through the other trigger. A frozen segment index leaves the video element looking perfectly healthy - the playhead advances and
+     * nothing errors - so this is the case where only the segment facts say the capture is gone, and the decision site has to be the same one either way.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    registerCapturing(9321, makeStalledSegmenter());
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let replacements = 0;
+    let breaks = 0;
+
+    handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "stale-marked-1", streamInfo(9321),
+      (): void => { breaks++; }, async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }, MARKED_DEPS);
+
+    const terminations = (): number => countMessages(messages, TERMINATION_LINE);
+
+    for(let tick = 0; (tick < 80) && (terminations() === 0); tick++) {
+
+      // Sequential by definition: the staleness clock advances one tick at a time.
+      // eslint-disable-next-line no-await-in-loop
+      await driveHealthyTicks(t, fake, 1);
+    }
+
+    assert.equal(terminations(), 1, "the unrecoverable stream was terminated, once");
+    assert.equal(countMessages(messages, "No new segments produced"), 1, "on the trigger's first firing rather than a later one");
+    assert.equal(breaks, 1, "through the breaker, exactly once");
+    assert.equal(replacements, 0, "with no replacement attempted, because none could start");
+    assert.equal(countMessages(messages, "Playback"), 0, "and with no rung of the in-page ladder announced");
+
+    const evaluationsAtTermination = fake.evaluations.length;
+
+    await driveHealthyTicks(t, fake, 5);
+
+    assert.equal(fake.evaluations.length, evaluationsAtTermination, "and the monitor stopped, so no later tick read the page");
+  });
+
+  test("the staleness trigger reaches the replacement handler on a browser that can still start one", async (t) => {
+
+    /* The control for the row above, and the one that keeps it meaningful. The double and the drive are identical and the mark is the only difference, so a row
+     * that terminated here would be saying the double never reached the trigger at all rather than that the mark is what decides the outcome.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    registerCapturing(9322, makeStalledSegmenter());
+
+    const messages = captureLogs(t);
+    const fake = makeFakePage();
+
+    let replacements = 0;
+    let breaks = 0;
+
+    handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "stale-able-1", streamInfo(9322),
+      (): void => { breaks++; }, async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }, DIVERGENT_DEPS);
+
+    for(let tick = 0; (tick < 80) && (replacements === 0); tick++) {
+
+      // Sequential by definition: the staleness clock advances one tick at a time.
+      // eslint-disable-next-line no-await-in-loop
+      await driveHealthyTicks(t, fake, 1);
+    }
+
+    assert.equal(countMessages(messages, "No new segments produced"), 1, "the trigger fired, once");
+    assert.ok(replacements > 0, "and reached the replacement handler");
+    assert.equal(countMessages(messages, TERMINATION_LINE), 0, "with no termination, because a replacement could still start");
+    assert.equal(breaks, 0, "so the breaker was never reached");
+  });
+
+  test("a tick that resumed after the monitor stopped neither terminates nor replaces, even with the pipeline judged dead", async (t) => {
+
+    /* The recovery action's entry stop check, read through the resumption it exists for. A tick issues its health read, the monitor is disposed while that read
+     * is outstanding, and the read then resolves - so the rest of the tick body runs against a stream that has already ended. Without the check, the resumption
+     * reaches the stalled-pipeline arm and, on a browser that can start no replacement, terminates a stream that is already gone and spends a breaker trip on it.
+     *
+     * The row calibrates rather than encoding the trigger's count. A control monitor built from the same double and driven the same way records which tick the
+     * trigger fires on; the subject then stops one tick short and parks that tick at its health read. Encoding the number here would make the row a hostage of
+     * the undersized-segment threshold rather than a statement about the stop check.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const messages = captureLogs(t);
+
+    // The control, run only to learn which tick the trigger fires on. Same double, same deps, same one-tick-at-a-time drive as the rows above.
+    registerCapturing(9323, makeStarvingSegmenter());
+
+    const controlEntryId = entry.id;
+    const controlPage = makeFakePage();
+    const controlHandle = monitorPlaybackHealth(controlPage.page, controlPage.page, makeProfile(), "https://two-phase.test/watch", "resumed-control-1",
+      streamInfo(9323), (): void => { /* The control counts ticks and nothing else. */ },
+      async (): Promise<Nullable<TabReplacementResult>> => null, MARKED_DEPS);
+
+    const terminations = (): number => countMessages(messages, TERMINATION_LINE);
+
+    let ticksToTrigger = 0;
+
+    for(; (ticksToTrigger < 80) && (terminations() === 0); ticksToTrigger++) {
+
+      // Sequential by definition: the trigger's own state advances one tick at a time.
+      // eslint-disable-next-line no-await-in-loop
+      await driveHealthyTicks(t, controlPage, 1);
+    }
+
+    controlHandle.dispose();
+    unregisterStream(controlEntryId);
+
+    assert.equal(terminations(), 1, "the control reached the termination, so the count it recorded is the trigger's own");
+
+    // The subject: the same drive stopped one tick short, so the trigger fires on a tick whose health read is still outstanding when the monitor is disposed.
+    registerCapturing(9324, makeStarvingSegmenter());
+
+    const fake = makeFakePage();
+
+    let replacements = 0;
+    let breaks = 0;
+
+    const subjectHandle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "resumed-subject-1", streamInfo(9324),
+      (): void => { breaks++; }, async (): Promise<Nullable<TabReplacementResult>> => {
+
+        replacements++;
+
+        return null;
+      }, MARKED_DEPS);
+
+    handle = subjectHandle;
+
+    const sliceStart = messages.length;
+
+    await driveHealthyTicks(t, fake, ticksToTrigger - 1);
+
+    // The trigger tick fires and parks at its health read, the monitor stops while that read is outstanding, and only then does the read resolve.
+    await advance(t, MONITOR_INTERVAL);
+
+    subjectHandle.dispose();
+    playheadSeconds++;
+
+    /* Answer every outstanding read in turn. The resumed tick issues further reads once the health read settles - the fullscreen verification among them - so a
+     * single pass would leave the body parked short of the decision site and the row would pass without ever reaching what it is about.
+     */
+    for(let pass = 0; pass < 4; pass++) {
+
+      for(const pending of fake.evaluations) {
+
+        pending.resolve({ currentTime: playheadSeconds, ended: false, error: false, muted: false, networkState: 2, paused: false, readyState: 3, videoHeight: 0,
+          videoWidth: 0, volume: 1 });
+      }
+
+      // Sequential by definition: each pass answers what the previous one released.
+      // eslint-disable-next-line no-await-in-loop
+      await settle();
+    }
+
+    const subjectMessages = messages.slice(sliceStart);
+
+    assert.equal(countMessages(subjectMessages, "Detected"), 1, "the resumption ran the segment check, so the tick did reach the decision site");
+    assert.equal(countMessages(subjectMessages, TERMINATION_LINE), 0, "and terminated nothing, because the stream it would terminate has already ended");
+    assert.equal(breaks, 0, "so the breaker was never reached");
+    assert.equal(replacements, 0, "and no replacement was attempted");
+  });
 });
 
 describe("executeNativeL3Fallback: the relay is released on exactly the exits that hand the stream on", () => {
