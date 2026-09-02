@@ -15,6 +15,14 @@ export const RECOGNIZED_CODECS = [ "h264", "hevc" ] as const;
  */
 export type CaptureCodec = typeof RECOGNIZED_CODECS[number];
 
+/**
+ * Chrome's rejection text when it cannot open a capture source for the tab. Two layers speak this string and neither may spell it independently: the capture
+ * module tests a refusal against it to decide whether the start is worth one more attempt, and the recovery module carries it in the signature list that
+ * classifies a failure as capture infrastructure. It lives here, in a module with no runtime dependencies at all, so the classifier can read the protocol's own
+ * wording without taking on the browser stack that speaks the protocol.
+ */
+export const CAPTURE_SOURCE_UNAVAILABLE_MESSAGE = "Could not start video source";
+
 /* These types represent the state of HTML5 video elements as reported by the browser. The playback health monitor periodically evaluates video state to detect
  * problems and trigger recovery. Understanding these values is essential for diagnosing playback issues.
  */

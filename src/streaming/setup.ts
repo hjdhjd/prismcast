@@ -813,6 +813,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     // Every other rejection - a caller-deadline CaptureDeadlineError, or any other capture-init failure - just
     // unwinds. Resource teardown (page, interceptor, and the capture session once built) is handled by the DisposableStack as this throw unwinds the function scope.
+    noteClassifiedCaptureFailure(error);
+
     throw error;
   }
 
@@ -922,6 +924,14 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       throw new DirectUrlEstablishmentError(error);
     }
+
+    /* Classification sits below that branch, on the standing attempt, and not above it. A failure that leaves this function typed is not a verdict on the
+     * establishment at all - it is a request for one more attempt - and the attempt that follows raises its own failure through this same catch. Classifying
+     * above the branch would hand the readiness detector both of them for a single logical setup, which is two background probes deciding one browser's fate.
+     * The establishment timeout is exactly the shape where that matters, because it is both a failure the URL can be blamed for and one that carries a
+     * capture-infrastructure signature.
+     */
+    noteClassifiedCaptureFailure(error);
 
     throw error;
   }
@@ -1394,18 +1404,14 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         LOG.error("Stream setup failed for %s: %s.", url, errorMessage);
       }
 
-      // Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include Chrome capture state issues, capture-lock turn-wait
-      // timeouts, and stream initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue. isCaptureInfrastructureError
-      // (recovery.ts) is the single source of truth for this classification, shared with the browser supervisor's readiness detection.
+      /* Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include Chrome capture state issues, capture-lock turn-wait
+       * timeouts, and stream initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue. isCaptureInfrastructureError
+       * (recovery.ts) is the single source of truth for this judgment, shared with the browser supervisor's readiness detection.
+       *
+       * The read here is purely for the client-facing status. The side effect that judgment also drives - handing the failure to the passive mid-life capture
+       * detector - fires inside createPageWithCapture's own catches, where every caller of the acquisition reaches it rather than only this one.
+       */
       const isCaptureError = isCaptureInfrastructureError(errorMessage);
-
-      // A capture-infrastructure failure may mean the browser, though still connected, can no longer start captures. Hand it to the passive mid-life detector, which
-      // (guarded and single-flight, in the background) re-verifies capture readiness and marks the browser impaired if confirmed - its running captures continue, new
-      // capture starts are refused at acquire(), and the adapter relaunches it once no stream depends on it. Fire-and-forget: it must never delay this response.
-      if(isCaptureError) {
-
-        noteCaptureInfrastructureFailure();
-      }
 
       // A failed tune on a service currently marked needs-sign-in most likely failed AT the auth wall, so the user-facing message leads with the remedy.
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, withSignInGuidance("Failed to start stream.", channelName, serviceName), { cause: error });
@@ -1930,6 +1936,33 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
 
     return classifyCaptureProbeFailure(error);
   }
+}
+
+/**
+ * Classifies an establishment failure and, when it carries a capture-infrastructure signature, hands it to the passive mid-life detector.
+ *
+ * This sits at the acquisition chokepoint rather than in one caller's catch, so every path that establishes a capture gets the detection: a fresh stream's setup,
+ * a tab replacement, and anything added later. Both of createPageWithCapture's own catch blocks call it, which is what extends the coverage across phases - the
+ * acquisition catch sees a refused capture start, the establishment catch sees the playback-initialization timeout the pattern list also names.
+ *
+ * Every logical setup classifies at most once. What holds that rule at the two call sites is where each call sits: each classifies the failure it is about to
+ * rethrow raw, and never one it is about to wrap for a retry. So a failure blamed on a direct watch URL classifies nothing, and the standing attempt that follows
+ * it classifies for both. The alternative would hand the readiness detector two failures from one setup, which is two background probes deciding a single
+ * browser's fate.
+ *
+ * DirectUrlEstablishmentError is excluded here as well, as the backstop that keeps the rule true of a call site added later rather than as a filter the current
+ * two depend on: neither of them can reach this with one, because the type exists only to leave this function, and the path that wraps into it throws before
+ * the classification line is reached.
+ * @param error - The failure the establishment is about to rethrow.
+ */
+function noteClassifiedCaptureFailure(error: unknown): void {
+
+  if((error instanceof DirectUrlEstablishmentError) || !isCaptureInfrastructureError(error)) {
+
+    return;
+  }
+
+  noteCaptureInfrastructureFailure();
 }
 
 /**

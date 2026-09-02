@@ -4,6 +4,7 @@
  */
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, VideoState } from "../types/index.ts";
+import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { StreamHealthStatus } from "./statusEmitter.ts";
 
@@ -551,18 +552,22 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
  *
  * The "timed out" entry is deliberately a broad substring rather than one literal string per message: it covers every timeout raised within
  * createPageWithCapture's own pipeline - the capture lock's turn wait (whose message keeps the "Capture queue" wording, matched by that pattern too), stream
- * initialization, the playback-initialization safety net, and the capability probe - without hard-coding each message here. isCaptureInfrastructureError has a single
- * caller, the createPageWithCapture catch block in streaming/setup.ts, so the substring only ever sees errors surfaced from that pipeline. It stays safe there because
- * navigateToPage and reloadPage swallow Puppeteer's own navigation timeouts as warnings instead of throwing, and the evaluate-call timeout path (EvaluateTimeoutError)
- * belongs to the health monitor's own call chain, never this one.
+ * initialization, the playback-initialization safety net, and the capability probe - without hard-coding each message here. Every reader of this list sits on that
+ * pipeline's failure paths, so the substring only ever sees errors surfaced from it. It stays safe there because navigateToPage and reloadPage swallow Puppeteer's
+ * own navigation timeouts as warnings instead of throwing, and the evaluate-call timeout path (EvaluateTimeoutError) belongs to the health monitor's own call chain,
+ * never this one.
+ *
+ * The refusal Chrome answers a capture start with is referenced from the module that speaks that protocol rather than re-typed here, so a wording change in the
+ * extension's answer cannot leave the two spellings disagreeing.
  */
-const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", "Could not start video source", "No active tab", "capture extension",
+const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, "No active tab", "capture extension",
   "timed out" ] as const;
 
 /**
  * Classifies whether an error originates in Chrome's capture infrastructure (the extension, the capture lock, or stream initialization) rather than in a specific
- * site or stream. This is the single source of truth for that judgment: the stream-setup path uses it to decide a 503 back-off, and the browser supervisor uses it
- * to decide whether a setup failure is evidence the browser may no longer be capture-ready.
+ * site or stream. This is the single source of truth for that judgment, and it has two readers, both on the establishment's failure paths: the acquisition
+ * chokepoint uses it to decide whether a failure is evidence the browser may no longer be capture-ready, and the stream-setup path uses it to decide the
+ * client-facing 503 back-off. The judgment is shared; the side effect fires in exactly one of them.
  * @param error - The error or message to classify.
  * @returns True when the message carries a capture-infrastructure signature.
  */

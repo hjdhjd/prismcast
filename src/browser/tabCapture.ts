@@ -24,6 +24,7 @@
 import { LOG, formatError, pollUntil, realClock, startTimer } from "../utils/index.ts";
 import type { RawData, WebSocket, WebSocketServer } from "ws";
 import { getExtensionPage, wss } from "puppeteer-stream";
+import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE } from "../types/index.ts";
 import type { Clock } from "../utils/index.ts";
 import type { IncomingMessage } from "node:http";
 import type { Nullable } from "../types/index.ts";
@@ -46,9 +47,6 @@ declare function STOP_RECORDING(index: number): Promise<void>;
 // The extension's readiness predicate, stated once. The launch gate waits on it before publishing a browser, and the acquisition asserts it before preparing an
 // attempt, so both ask the same question of the same page.
 export const EXTENSION_READY_EXPRESSION = "typeof START_RECORDING === 'function'";
-
-// Chrome's rejection text when it cannot open a capture source for the tab. This is the failure the retry exists for.
-export const CAPTURE_SOURCE_UNAVAILABLE_MESSAGE = "Could not start video source";
 
 // Chrome's rejection text when the extension's activeTab grant has not landed for the page yet. The keyboard command that grants it is asynchronous, so this
 // answer means "ask again shortly" rather than "this cannot work".
@@ -194,8 +192,11 @@ type AttemptOutcome = { attempt: CaptureAttempt; kind: "started" } | { error: un
  * A start Chrome refused, carrying the state that explains the refusal. The state is read while the capture's tab is still selected, which is the only moment it
  * describes the conditions the start actually ran under. Chrome's own refusal text is the message, so the capture-infrastructure classifier and the retry's
  * substring test both keep matching on it.
+ *
+ * Module-private on purpose: the judgment "this is a capture-infrastructure failure" belongs to one mechanism, the pattern list in streaming/recovery.ts, which
+ * reads the message. This class is the internal typed carrier for the diagnostics that travel alongside it, not a second way to ask the same question.
  */
-export class CaptureStartRefusedError extends Error {
+class CaptureStartRefusedError extends Error {
 
   readonly diagnostics: { activeTab: Nullable<string>; windowState: Nullable<string> };
 
@@ -359,15 +360,15 @@ async function startRecording(extension: Page, attempt: CaptureAttempt, options:
  * @param collaborators.deps - The injected collaborators, read for the tab-selection primitive.
  * @param collaborators.extension - The extension's options page.
  * @param collaborators.server - The WebSocket server the extension connects back to.
- * @returns The attempt that started, with the tab it was aimed at.
+ * @returns The attempt that started.
  * @throws The last grant-pending rejection when the ceiling lapses, or the attempt's own rejection for any other failure.
  */
 async function acquireOnce(page: Page, options: CaptureStreamOptions,
-  collaborators: { clock: Clock; deps: TabCaptureDeps; extension: Page; server: WebSocketServer }): Promise<{ attempt: CaptureAttempt; tab: SelectedTab }> {
+  collaborators: { clock: Clock; deps: TabCaptureDeps; extension: Page; server: WebSocketServer }): Promise<CaptureAttempt> {
 
   const { clock, deps, extension, server } = collaborators;
 
-  return deps.withTabSelected(page, async (selected: SelectedTab): Promise<{ attempt: CaptureAttempt; tab: SelectedTab }> => {
+  return deps.withTabSelected(page, async (selected: SelectedTab): Promise<CaptureAttempt> => {
 
     const runAttempt = async (): Promise<AttemptOutcome> => {
 
@@ -407,7 +408,7 @@ async function acquireOnce(page: Page, options: CaptureStreamOptions,
       throw toError(outcome.value.error);
     }
 
-    return { attempt: outcome.value.attempt, tab: selected };
+    return outcome.value.attempt;
   });
 }
 
@@ -503,7 +504,7 @@ export async function acquireCaptureStream(page: Page, options: CaptureStreamOpt
 
       // eslint-disable-next-line no-await-in-loop -- The attempts are a retry sequence: each has to fail before the next is worth making.
       const started = await acquireOnce(page, options, { clock, deps, extension, server });
-      const stream = attachCaptureControls(started.attempt, extension, server);
+      const stream = attachCaptureControls(started, extension, server);
 
       /* Both close paths end the recording. The owner's disposer destroys the stream, which emits close; a page that dies takes its capture with it and fires
        * the page's own close. Registering here rather than inside the socket handler means a capture whose socket never connected still stops cleanly.

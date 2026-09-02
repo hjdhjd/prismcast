@@ -10,14 +10,15 @@
  * those fakes on purpose - the fingerprint and settings-shape pins read the installed library through import.meta.resolve, because the coupling this module takes
  * on is only safe while the source it was written against is the source that is installed.
  */
-import { ACTIVE_TAB_GRANT_CEILING_MS, ACTIVE_TAB_GRANT_POLL_MS, CAPTURE_FRAME_SIZE_MS, CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, CAPTURE_START_ATTEMPTS,
-  CAPTURE_STREAM_HIGH_WATER_MARK, EXTENSION_NOT_READY_MESSAGE, EXTENSION_READY_EXPRESSION, acquireCaptureStream } from "./tabCapture.ts";
+import { ACTIVE_TAB_GRANT_CEILING_MS, ACTIVE_TAB_GRANT_POLL_MS, CAPTURE_FRAME_SIZE_MS, CAPTURE_START_ATTEMPTS, CAPTURE_STREAM_HIGH_WATER_MARK,
+  EXTENSION_NOT_READY_MESSAGE, EXTENSION_READY_EXPRESSION, acquireCaptureStream } from "./tabCapture.ts";
 import type { Browser, Page } from "puppeteer-core";
 import type { CaptureStreamOptions, ExtensionRecordingSettings, TabCaptureDeps } from "./tabCapture.ts";
 import type { SelectedTab, WithTabSelectedContext } from "./tabSelection.ts";
 import type { WebSocket, WebSocketServer } from "ws";
 import { describe, test } from "node:test";
 import { makeAdvancingClock, makeFakeClock } from "../utils/clock.helpers.ts";
+import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE } from "../types/index.ts";
 import { EventEmitter } from "node:events";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import { TAB_NOT_SELECTED_MESSAGE } from "./tabSelection.ts";
