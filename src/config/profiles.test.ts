@@ -41,28 +41,42 @@ describe("resolveProfile", () => {
 
   test("resolves a base profile (no extends) by merging with default", () => {
 
-    // keyboardFullscreen is a base profile with fullscreenKey: "f". The resolved shape carries the key plus all default flags.
-    const result = resolveProfile("keyboardFullscreen");
+    // staticPage is a base profile that sets staticCapture: true. The resolved shape carries that flag plus all default flags.
+    const result = resolveProfile("staticPage");
 
-    assert.equal(result.fullscreenKey, "f");
+    assert.equal(result.staticCapture, true);
     assert.equal(result.useRequestFullscreen, false, "default flag inherited");
+  });
+
+  test("the builtin fullscreen families leave the native step off", () => {
+
+    /* Both fullscreen families name the native mechanism a site's player supports rather than one PrismCast invokes, so neither base profile contributes a
+     * flag and every descendant inherits the default. The third trigger, fullscreenSelector, is set by no builtin profile either, but the profiles that
+     * could carry it are registered by the provider modules, which this tier does not load - the static builtin tables alone are visible here.
+     */
+    assert.equal(resolveProfile("fullscreenApi").useRequestFullscreen, false, "the api family's base contributes no flag");
+    assert.equal(resolveProfile("keyboardFullscreen").fullscreenKey, null, "the keyboard family's base contributes no key");
+    assert.equal(resolveProfile("brightcove").useRequestFullscreen, false, "an api-family descendant inherits the default");
+    assert.equal(resolveProfile("keyboardDynamic").fullscreenKey, null, "a keyboard-family descendant inherits the default");
   });
 
   test("resolves a derived profile by merging parent then child (extends chain)", () => {
 
-    // keyboardDynamic extends keyboardFullscreen and sets waitForNetworkIdle: true. The resolved shape carries fullscreenKey from the parent and waitForNetworkIdle
-    // from the child.
-    const result = resolveProfile("keyboardDynamic");
+    // keyboardDynamicMultiVideo extends keyboardDynamic and sets selectReadyVideo: true. What the two assertions prove is that every ancestor contributing a
+    // flag is reached: the parent's network idle wait and the child's own video selection both land in the resolved shape.
+    const result = resolveProfile("keyboardDynamicMultiVideo");
 
-    assert.equal(result.fullscreenKey, "f", "inherited from keyboardFullscreen");
-    assert.equal(result.waitForNetworkIdle, true, "set on keyboardDynamic itself");
+    assert.equal(result.waitForNetworkIdle, true, "inherited from keyboardDynamic");
+    assert.equal(result.selectReadyVideo, true, "set on keyboardDynamicMultiVideo itself");
   });
 
   test("resolves multi-level inheritance (embeddedDynamicMultiVideo -> embeddedPlayer -> fullscreenApi)", () => {
 
+    // The chain is walked root-first, so each level that contributes a flag lands over the one below it. The root contributes none, which is why the API flag
+    // reads the default here.
     const result = resolveProfile("embeddedDynamicMultiVideo");
 
-    assert.equal(result.useRequestFullscreen, true, "from fullscreenApi via embeddedPlayer");
+    assert.equal(result.useRequestFullscreen, false, "the root contributes no behavior flag, so the default holds");
     assert.equal(result.needsIframeHandling, true, "from embeddedPlayer");
     assert.equal(result.waitForNetworkIdle, true, "from embeddedDynamicMultiVideo");
     assert.equal(result.selectReadyVideo, true, "from embeddedDynamicMultiVideo");

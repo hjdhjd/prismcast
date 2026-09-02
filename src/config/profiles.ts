@@ -28,7 +28,7 @@ export { DEFAULT_SITE_PROFILE, DOMAIN_CONFIG, PROVIDER_PROFILES, SITE_PROFILES, 
  * 2. Apply parent profile properties (if extends is set).
  * 3. Apply current profile properties (overriding parent).
  *
- * This allows profiles like "embeddedDynamicMultiVideo" to inherit iframe handling from "embeddedPlayer" which inherits API fullscreen from "fullscreenApi",
+ * This allows profiles like "keyboardDynamicMultiVideo" to inherit the network idle wait from "keyboardDynamic" and add their own multi-video selection on top,
  * building up the complete set of behavior flags through the inheritance chain.
  */
 

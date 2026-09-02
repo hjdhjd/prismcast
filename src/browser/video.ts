@@ -1025,9 +1025,9 @@ async function isNativeFullscreenActive(context: Frame | Page): Promise<boolean>
  * dispatches real pointer events that Chrome recognizes as user gestures. The click may toggle play/pause on some players - the health monitor handles
  * re-starting playback if needed.
  *
- * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() inside an iframe returns iframe-relative coordinates. The iframe-embedded
- * fullscreenApi profiles (the embeddedPlayer family) set both useRequestFullscreen and needsIframeHandling, so for those tunes the computed point can be offset
- * from the real video position. That is tolerated here: the click exists only to register a trusted user gesture for transient activation, which any in-page
+ * Note: page.mouse.click() uses page-level coordinates, while getBoundingClientRect() inside an iframe returns iframe-relative coordinates. A profile that turns
+ * the native call on for an iframe-embedded player carries both useRequestFullscreen and needsIframeHandling, so for those tunes the computed point can be
+ * offset from the real video position. That is tolerated here: the click exists only to register a trusted user gesture for transient activation, which any in-page
  * click satisfies - it does not need to land precisely on the video - and a missed activation is recovered by the health monitor.
  * @param page - The Puppeteer page object.
  * @param context - The frame or page containing the video element.
@@ -1197,9 +1197,9 @@ export async function ensureFullscreen(
  * Runs the fullscreen sequence with verification and retry logic. This function orchestrates the fullscreen process:
  *
  * 1. Initial attempt: Apply CSS styles and trigger fullscreen API
- * 2. Verify: Check video dimensions and, for fullscreenApi profiles, confirm document.fullscreenElement is set
+ * 2. Verify: Check video dimensions and, when the native Fullscreen API is in use, confirm document.fullscreenElement is set
  * 3. Simple retry: If verification fails, click the video for user activation and retry (the Fullscreen API requires a recent user gesture)
- * 4. Escalate: If simple retries fail, apply aggressive fullscreen techniques with a final Fullscreen API re-trigger
+ * 4. Escalate: If simple retries fail, apply aggressive fullscreen styling, with a final Fullscreen API re-trigger when the native call is in use
  *
  * The retry approach handles both timing issues (page still initializing) and user activation issues (requestFullscreen requires a recent user gesture).
  * On retry, clicking the video provides fresh activation so the subsequent requestFullscreen() call can succeed. Escalation to aggressive techniques is a
@@ -1226,7 +1226,7 @@ async function runFullscreenSequence(
 
   for(let attempt = 1; attempt <= maxSimpleRetries; attempt++) {
 
-    // On retry for fullscreenApi profiles, click the video to provide fresh user activation. The Fullscreen API requires a recent user gesture (transient
+    // On retry when the native Fullscreen API is in use, click the video to provide fresh user activation. The Fullscreen API requires a recent user gesture (transient
     // activation) to succeed - without it, requestFullscreen() is silently rejected. The initial attempt relies on activation from page navigation, but retries
     // need an explicit click.
     if((attempt > 1) && useNativeFullscreen) {
@@ -1295,19 +1295,13 @@ async function runFullscreenSequence(
   // All simple retries exhausted. Escalate to aggressive fullscreen techniques.
   LOG.warn("Fullscreen failed after %s attempts. Escalating to aggressive fullscreen.", maxSimpleRetries);
 
-  // Click for user activation before the aggressive attempt for fullscreenApi profiles.
+  // Click for user activation before the aggressive attempt when the native Fullscreen API is in use.
   if(useNativeFullscreen) {
 
     await clickVideoForActivation(page, context, selectorType);
   }
 
   await applyAggressiveFullscreen(context, selectorType);
-
-  // Also try keyboard "f" as a last resort if the profile doesn't already use it. Many players respond to the "f" key for fullscreen.
-  if(!profile.fullscreenKey) {
-
-    await page.keyboard.type("f");
-  }
 
   // Re-trigger the Fullscreen API after aggressive styling - the aggressive CSS ensures the video fills the viewport, and the API call hides site UI.
   if(useNativeFullscreen) {
@@ -1327,7 +1321,7 @@ async function runFullscreenSequence(
     return;
   }
 
-  // For fullscreenApi profiles, also verify native fullscreen is active after escalation.
+  // When the native Fullscreen API is in use, also verify native fullscreen is active after escalation.
   if(useNativeFullscreen) {
 
     const nativeActive = await isNativeFullscreenActive(context);

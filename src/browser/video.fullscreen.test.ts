@@ -205,5 +205,35 @@ describe("ensureFullscreen", () => {
     assert.ok(aggressive > 0, "the escalation ran");
     assert.ok(timeline.indexOf("click") < aggressive, "the activation click precedes the aggressive styling");
     assert.ok(timeline.lastIndexOf("verify") > aggressive, "and the final verification follows it, still inside the hold");
+    assert.deepEqual(timeline.filter((entry) => entry.startsWith("type:")), [], "and the escalation sends no keypress for a profile that carries no key");
+  });
+
+  test("the escalation presses no key for a profile without one", async () => {
+
+    /* A profile with no fullscreenKey has keyboard fullscreen turned off, and the escalation honors that rather than typing "f" on its own behalf. The row
+     * above is the same reading on the native path; this one is the CSS-only path, where the escalation is all that could send a keystroke.
+     */
+    const timeline: string[] = [];
+    const ceilings: (number | undefined)[] = [];
+
+    await ensureFullscreen(makePage(timeline), makeContext(timeline, { verified: false }), makeProfile({ useRequestFullscreen: false }), SELECTOR_TYPE, false,
+      makeDeps(timeline, ceilings));
+
+    assert.ok(timeline.includes("aggressive"), "the sequence escalated");
+    assert.deepEqual(timeline.filter((entry) => entry.startsWith("type:")), [], "and no keypress reached the page");
+  });
+
+  test("a profile that carries a key is still typed on every attempt, and never by the escalation", async () => {
+
+    // The complement, so the row above reads as a policy the profile sets rather than a keypress the sequence lost: triggerFullscreen sends the key once per
+    // simple retry, three times over the three of them, and the escalation adds none.
+    const timeline: string[] = [];
+    const ceilings: (number | undefined)[] = [];
+
+    await ensureFullscreen(makePage(timeline), makeContext(timeline, { verified: false }), makeProfile({ fullscreenKey: "f", useRequestFullscreen: false }),
+      SELECTOR_TYPE, false, makeDeps(timeline, ceilings));
+
+    assert.equal(timeline.filter((entry) => (entry === "type:f")).length, 3, "one keypress per simple retry");
+    assert.ok(timeline.lastIndexOf("type:f") < timeline.indexOf("aggressive"), "every keypress precedes the escalation");
   });
 });

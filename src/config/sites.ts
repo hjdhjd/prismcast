@@ -27,12 +27,18 @@ import { getUserDomains } from "./userProfiles.ts";
  *    channel's URL doesn't match the expected domain pattern, or when the same domain serves multiple channel types that need different handling.
  *
  * Profile resolution happens at stream startup and the resolved profile is passed through the entire streaming pipeline. The profile flags control:
- * - How fullscreen is triggered (keyboard shortcut vs JavaScript API)
+ * - Which native fullscreen mechanism a profile may invoke (a keyboard shortcut, the player's own control, or the JavaScript API)
  * - Whether to search for video elements in iframes
  * - Which video element to select when multiple exist
  * - Whether to wait for network activity to settle before playback
  * - Whether to lock volume properties to prevent auto-muting
  * - Whether the page is static content (no video element expected)
+ *
+ * Fullscreen is a family name here rather than an action. Each family names the native mechanism the site's player supports, and no builtin profile invokes
+ * one: PrismCast fills the capture by styling the video to the viewport instead (applyVideoStyles in browser/video.ts), which works from a background tab and
+ * leaves whatever application the user has in front of them where it is. The recording's dimensions come from the quality preset's emulated capture surface,
+ * not from the browser window, so the styling costs the picture nothing. A custom profile turns a native trigger on for one site through the option that
+ * carries it - fullscreenKey for the keypress, fullscreenSelector for the player's own control, useRequestFullscreen for the JavaScript API.
  *
  * When adding support for a new streaming site, first check if an existing profile matches its behavior. Only create a new profile if the site requires unique
  * handling not covered by existing profiles.
@@ -42,20 +48,20 @@ import { getUserDomains } from "./userProfiles.ts";
  * behavior patterns rather than site ownership. This makes it easier to identify the right profile when adding new channels.
  *
  * Base profiles (no extends):
- * - keyboardFullscreen: Sites using the f key for fullscreen toggle
- * - fullscreenApi: Sites requiring the JavaScript requestFullscreen() API
+ * - keyboardFullscreen: Sites whose player toggles fullscreen on the f key
+ * - fullscreenApi: Sites whose player exposes the JavaScript requestFullscreen() API
  * - staticPage: Non-video pages captured as static visual content
  *
  * General derived profiles (extends a base, user-selectable):
- * - keyboardDynamic: Keyboard fullscreen + network idle wait (extends keyboardFullscreen)
- * - keyboardMultiVideo: Keyboard fullscreen + multi-video selection (extends keyboardFullscreen)
- * - keyboardIframe: Keyboard fullscreen + iframe handling (extends keyboardFullscreen)
+ * - keyboardDynamic: Keyboard-fullscreen players + network idle wait (extends keyboardFullscreen)
+ * - keyboardMultiVideo: Keyboard-fullscreen players + multi-video selection (extends keyboardFullscreen)
+ * - keyboardIframe: Keyboard-fullscreen players + iframe handling (extends keyboardFullscreen)
  * - keyboardDynamicMultiVideo: Keyboard + network idle + multi-video selection via matchSelector (extends keyboardDynamic)
- * - clickToPlayKeyboard: Click to start playback + keyboard fullscreen (extends keyboardFullscreen)
- * - brightcove: Brightcove players using API fullscreen + network idle wait (extends fullscreenApi)
- * - clickToPlayApi: Click to start playback + API fullscreen (extends fullscreenApi)
- * - embeddedPlayer: Iframe-based players using fullscreen API (extends fullscreenApi)
- * - apiMultiVideo: API fullscreen + multi-video + auto-play tile channel selection via matchSelector (extends fullscreenApi)
+ * - clickToPlayKeyboard: Click to start playback, keyboard-fullscreen player (extends keyboardFullscreen)
+ * - brightcove: Brightcove players + network idle wait (extends fullscreenApi)
+ * - clickToPlayApi: Click to start playback, API-fullscreen player (extends fullscreenApi)
+ * - embeddedPlayer: Iframe-based API-fullscreen players (extends fullscreenApi)
+ * - apiMultiVideo: API-fullscreen player + multi-video + auto-play tile channel selection via matchSelector (extends fullscreenApi)
  * - embeddedDynamicMultiVideo: Embedded + network idle + multi-video selection (extends embeddedPlayer)
  * - embeddedVolumeLock: Embedded + volume property locking (extends embeddedPlayer)
  *
@@ -67,9 +73,9 @@ import { getUserDomains } from "./userProfiles.ts";
  */
 export const SITE_PROFILES: Record<string, SiteProfile> = {
 
-  // Profile for multi-channel live TV pages that present a shelf of live channel tiles where clicking a tile auto-plays the selected channel. Uses the fullscreen
-  // API and multi-video selection to find the actively playing stream after channel selection. Does not use iframe handling or network idle wait because these sites
-  // serve video directly in the main page and have persistent connections that prevent network idle. No playSelector - tile click is the final action.
+  // Profile for multi-channel live TV pages that present a shelf of live channel tiles where clicking a tile auto-plays the selected channel. Multi-video
+  // selection finds the actively playing stream after channel selection. Does not use iframe handling or network idle wait because these sites serve video
+  // directly in the main page and have persistent connections that prevent network idle. No playSelector - tile click is the final action.
   apiMultiVideo: {
 
     category: "multiChannel",
@@ -82,42 +88,43 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
 
   // Profile for sites using the Brightcove player platform. Brightcove players require waiting for network activity to settle before the video player is fully
   // initialized. The player dynamically loads its configuration and stream manifest, so waitForNetworkIdle ensures we don't try to interact with the player before
-  // it's ready. Uses the JavaScript fullscreen API rather than keyboard shortcuts because Brightcove intercepts keyboard events. Uses selectReadyVideo because
+  // it's ready. The player intercepts keyboard events for its own controls, so its native fullscreen is the JavaScript API. Uses selectReadyVideo because
   // pages may have multiple video elements (preroll ads alongside the main player), and the ad video reaches readyState >= 3 before the main player.
   brightcove: {
 
     category: "api",
-    description: "Brightcove player sites requiring network idle wait and API fullscreen.",
+    description: "Brightcove player sites requiring a network idle wait before the player is ready.",
     extends: "fullscreenApi",
     selectReadyVideo: true,
     summary: "Brightcove players (network wait)",
     waitForNetworkIdle: true
   },
 
-  // Profile for sites that require clicking to start playback. Some players don't autoplay and need user interaction to begin. Uses the JavaScript fullscreen API.
-  // Set clickSelector in the profile or channel definition to specify a play button element; otherwise clicks the video element directly.
+  // Profile for sites that require clicking to start playback, on players whose native fullscreen is the JavaScript API. Some players don't autoplay and need
+  // user interaction to begin. Set clickSelector in the profile or channel definition to specify a play button element; otherwise clicks the video element
+  // directly.
   clickToPlayApi: {
 
     category: "api",
     clickToPlay: true,
-    description: "Sites requiring a click to start playback, using the JavaScript fullscreen API. Use clickSelector for play button overlays.",
+    description: "Sites requiring a click to start playback, on players that expose the JavaScript fullscreen API. Use clickSelector for play button overlays.",
     extends: "fullscreenApi",
-    summary: "Click-to-play (API fullscreen)"
+    summary: "Click-to-play (fullscreen API player)"
   },
 
-  // Profile for sites that require clicking to start playback, using keyboard 'f' for fullscreen. Use this when clickToPlayApi doesn't work for fullscreen but the
-  // site responds to the 'f' key. Set clickSelector in the profile or channel definition to specify a play button element.
+  // Profile for sites that require clicking to start playback, on players that toggle fullscreen with the 'f' key. Use this rather than clickToPlayApi when the
+  // site's player offers no requestFullscreen() support. Set clickSelector in the profile or channel definition to specify a play button element.
   clickToPlayKeyboard: {
 
     category: "keyboard",
     clickToPlay: true,
-    description: "Sites requiring a click to start playback, using the 'f' key for fullscreen. Use clickSelector for play button overlays.",
+    description: "Sites requiring a click to start playback, on players that toggle fullscreen with the 'f' key. Use clickSelector for play button overlays.",
     extends: "keyboardFullscreen",
-    summary: "Click-to-play ('f' key fullscreen)"
+    summary: "Click-to-play ('f' key player)"
   },
 
   // Profile for iframe-embedded players that also have multiple video elements (ads, placeholders, main content) and need network activity to settle. The
-  // selectReadyVideo flag ensures we find the video with actual content rather than an ad placeholder. Combines iframe handling with API-based fullscreen.
+  // selectReadyVideo flag ensures we find the video with actual content rather than an ad placeholder. Extends embeddedPlayer, so it sits in the API family.
   embeddedDynamicMultiVideo: {
 
     category: "api",
@@ -128,12 +135,12 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     waitForNetworkIdle: true
   },
 
-  // Intermediate profile for sites that both embed their player in an iframe AND require the JavaScript fullscreen API. Many modern players use this architecture
-  // to isolate ad content and use programmatic fullscreen rather than keyboard shortcuts. This profile combines iframe handling with API-based fullscreen.
+  // Intermediate profile for sites that embed their player in an iframe and whose player exposes the JavaScript fullscreen API. Many modern players use this
+  // architecture to isolate ad content, and they answer to programmatic fullscreen rather than to keyboard shortcuts.
   embeddedPlayer: {
 
     category: "api",
-    description: "Intermediate base profile for iframe-embedded players using fullscreen API.",
+    description: "Intermediate base profile for iframe-embedded players that expose the fullscreen API.",
     extends: "fullscreenApi",
     needsIframeHandling: true,
     summary: "Embedded iframe players"
@@ -151,15 +158,13 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Embedded players that auto-mute"
   },
 
-  // Base profile for sites that require the JavaScript fullscreen API (element.requestFullscreen()) instead of keyboard shortcuts. Many modern players intercept
-  // keyboard events for their own controls, making the f key unreliable. Calling requestFullscreen() directly on the video element bypasses the player's keyboard
-  // handling and reliably enters fullscreen mode.
+  // Base profile for sites whose player exposes the JavaScript fullscreen API (element.requestFullscreen()) rather than a keyboard shortcut. Many modern players
+  // intercept keyboard events for their own controls, so the f key does nothing on them and the API is the mechanism a custom profile would reach for here.
   fullscreenApi: {
 
     category: "api",
-    description: "Base profile for sites requiring the JavaScript fullscreen API.",
-    summary: "Sites needing JavaScript fullscreen",
-    useRequestFullscreen: true
+    description: "Base profile for sites whose player exposes the JavaScript fullscreen API.",
+    summary: "Player exposes the fullscreen API"
   },
 
   // Profile for sites that use keyboard fullscreen and also need time for network activity to settle before the player is fully initialized. These sites dynamically
@@ -167,9 +172,9 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   keyboardDynamic: {
 
     category: "keyboard",
-    description: "Keyboard fullscreen sites requiring network idle wait for dynamic content loading.",
+    description: "Sites whose player toggles fullscreen with the 'f' key, requiring a network idle wait for dynamic content loading.",
     extends: "keyboardFullscreen",
-    summary: "Dynamic sites ('f' key fullscreen)",
+    summary: "Dynamic sites ('f' key player)",
     waitForNetworkIdle: true
   },
 
@@ -186,25 +191,24 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
     summary: "Multi-channel (thumbnail row, needs selector)"
   },
 
-  // Base profile for sites that respond to the f key for fullscreen toggle. This is the most common fullscreen mechanism, following YouTube-style keyboard
-  // shortcuts. The f key is sent as a keyboard event to the page, triggering the player's builtin fullscreen toggle. This works with most standard video players.
+  // Base profile for sites whose player toggles fullscreen on the f key, following YouTube-style keyboard shortcuts. This is the most common native mechanism
+  // and covers most standard video players, so it is the family a site lands in when its player offers no other fullscreen affordance.
   keyboardFullscreen: {
 
     category: "keyboard",
-    description: "Base profile for sites that respond to the f key for fullscreen toggle.",
-    fullscreenKey: "f",
-    summary: "Standard 'f' key fullscreen"
+    description: "Base profile for sites whose player toggles fullscreen on the f key.",
+    summary: "Player toggles fullscreen on 'f'"
   },
 
-  // Profile for sites using keyboard fullscreen with video players embedded in iframes. The video element is not directly in the main page DOM, so we need to search
-  // through all frames to find it. Once found, the player responds to the standard f key for fullscreen.
+  // Profile for iframe-embedded video players whose native fullscreen is the f key. The video element is not directly in the main page DOM, so we need to search
+  // through all frames to find it.
   keyboardIframe: {
 
     category: "keyboard",
-    description: "Keyboard fullscreen sites with video embedded in iframes.",
+    description: "Sites with video embedded in iframes, on players that toggle fullscreen with the 'f' key.",
     extends: "keyboardFullscreen",
     needsIframeHandling: true,
-    summary: "Iframe players ('f' key fullscreen)"
+    summary: "Iframe sites ('f' key player)"
   },
 
   // Profile for sites using keyboard fullscreen that load multiple video elements simultaneously - placeholder videos, ad videos, and the main content. We must find
@@ -212,10 +216,10 @@ export const SITE_PROFILES: Record<string, SiteProfile> = {
   keyboardMultiVideo: {
 
     category: "keyboard",
-    description: "Keyboard fullscreen sites with multiple video elements requiring ready-state selection.",
+    description: "Sites with multiple video elements requiring ready-state selection, on players that toggle fullscreen with the 'f' key.",
     extends: "keyboardFullscreen",
     selectReadyVideo: true,
-    summary: "Multi-video sites ('f' key fullscreen)"
+    summary: "Multi-video sites ('f' key player)"
   },
 
   // Profile for non-video pages captured as static visual content. Examples include weather displays (weatherscan.net), maps (windy.com), and diagnostic pages.
@@ -248,10 +252,10 @@ export const PROVIDER_PROFILES: Record<string, SiteProfile> = {
   },
 
   // Profile for Disney+ live channels. The live channel shelf displays tiles with network logos. Clicking a tile opens an entity modal with a "WATCH LIVE" button
-  // (playSelector) that must be clicked to start the stream. Extends fullscreenApi for requestFullscreen() behavior. The player uses Web Components with Shadow DOM
-  // for its controls - the native <toggle-fullscreen> button cannot be clicked by Puppeteer (Shadow DOM boundary), so fullscreen is handled entirely by the inherited
-  // requestFullscreen() API. The controls toolbar is hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the
-  // page has multiple video elements (previews, ads, main content).
+  // (playSelector) that must be clicked to start the stream. The player uses Web Components with Shadow DOM for its controls, and its native <toggle-fullscreen>
+  // button sits behind that Shadow DOM boundary where Puppeteer cannot click it, which is why the profile carries no fullscreenSelector. The controls toolbar is
+  // hidden via hideSelector to prevent it from appearing in the captured stream. Uses selectReadyVideo because the page has multiple video elements (previews,
+  // ads, main content).
   disneyPlus: {
 
     category: "multiChannel",
@@ -451,8 +455,8 @@ export function getRegisteredProviderModuleProfiles(): IterableIterator<[string,
  * - Don't require waiting for network activity
  * - Have video content (not static pages)
  *
- * Neither keyboard fullscreen nor API fullscreen is enabled by default because many sites work fine without explicit fullscreen triggering - the video is already
- * displayed at full size in the viewport. Fullscreen is only needed when the player has visible controls or surrounding content that we want to hide.
+ * All three native fullscreen triggers are off here, and that is the default every builtin profile inherits: the capture is filled by CSS styling, and a custom
+ * profile is where a single site turns a trigger on. The module walkthrough above states the rule in full.
  */
 
 export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
@@ -472,10 +476,10 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
   // No dismiss selector - most sites don't show intermittent modals.
   dismissSelector: null,
 
-  // No fullscreen key - many players work without explicit fullscreen.
+  // No fullscreen key - CSS styling fills the capture, so no keypress is sent.
   fullscreenKey: null,
 
-  // No fullscreen button selector - most sites don't have a dedicated fullscreen button we need to click.
+  // No fullscreen button selector - a player's own fullscreen control is clicked only where a profile names one.
   fullscreenSelector: null,
 
   // No overlay hiding - most sites don't have persistent overlays during fullscreen.
@@ -496,7 +500,7 @@ export const DEFAULT_SITE_PROFILE: ResolvedSiteProfile = {
   // Not a static page capture - wait for video element and monitor playback.
   staticCapture: false,
 
-  // Don't use requestFullscreen() API.
+  // No requestFullscreen() call - CSS styling fills the capture.
   useRequestFullscreen: false,
 
   // No per-domain video timeout override - use the global default.

@@ -960,7 +960,7 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
     // Profile for Comcast Polymer SPA live channels. The channelmap API at xtvapi.cloudtv.comcast.net returns the complete channel lineup. Tuning uses in-page SPA
     // channel switching: after the guide page loads the Polymer SPA, the strategy calls `_watchChannelEventHandler(null, { channel })` on the `TV-APP` element to
-    // switch channels in ~2-3 seconds without page navigation. Extends fullscreenApi for requestFullscreen() behavior on the player page.
+    // switch channels in ~2-3 seconds without page navigation. Extends fullscreenApi: the player page exposes the JavaScript fullscreen API.
     profile: {
 
       category: "multiChannel",

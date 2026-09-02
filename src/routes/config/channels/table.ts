@@ -291,7 +291,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 
     lines.push("<div class=\"profile-category\">");
     lines.push("<h4>Fullscreen API Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For single-channel sites that require JavaScript's requestFullscreen() API instead of keyboard shortcuts.</p>");
+    lines.push("<p class=\"category-desc\">For single-channel sites whose player exposes JavaScript's requestFullscreen() API.</p>");
     lines.push("<dl class=\"profile-list\">");
 
     for(const profile of groups.api) {
@@ -309,7 +309,7 @@ function generateProfileReference(profiles: ProfileInfo[]): string {
 
     lines.push("<div class=\"profile-category\">");
     lines.push("<h4>Keyboard Fullscreen Profiles</h4>");
-    lines.push("<p class=\"category-desc\">For single-channel sites that use the 'f' key to toggle fullscreen mode.</p>");
+    lines.push("<p class=\"category-desc\">For single-channel sites whose player toggles fullscreen with the 'f' key.</p>");
     lines.push("<dl class=\"profile-list\">");
 
     for(const profile of groups.keyboard) {

@@ -342,7 +342,7 @@ export const hboProvider: ProviderModule = {
 
   // Profile for HBO Max live channels (play.hbomax.com/channels). The /channels hub contains an "Everything You Love From HBO" rail showing the current live linear
   // channels (e.g., HBO, HBO Hits) as tiles. The hboGrid strategy reads the rail for the watch URL matching the channelSelector name and navigates to it. Extends
-  // fullscreenApi for requestFullscreen() behavior inherited by the watch page.
+  // fullscreenApi: the watch page's player exposes the JavaScript fullscreen API.
   profile: {
 
     category: "multiChannel",

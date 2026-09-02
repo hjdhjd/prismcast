@@ -2185,9 +2185,9 @@ export const huluProvider: ProviderModule = {
 
   // Profile for Hulu Live TV which presents a guide grid of live channels. The channel list is revealed by clicking the #CHANNELS tab (listSelector), then the
   // target channel is located by matching its normalized name against the data-testid="live-guide-channel-kyber-{name}" attribute on the virtualized guide rows
-  // (binary search to scroll the target into the render window, with position-based affiliate inference). Uses the fullscreen API (inherited from fullscreenApi)
-  // plus a dedicated fullscreen button selector for the player's native
-  // maximize control. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses waitForNetworkIdle because
+  // (binary search to scroll the target into the render window, with position-based affiliate inference). Extends fullscreenApi: the watch page's player exposes
+  // the JavaScript fullscreen API. Requires selectReadyVideo because the page may have multiple video elements (ads, previews, main content). Uses
+  // waitForNetworkIdle because
   // Hulu's SPA has heavy async initialization that often prevents the load event from firing within the retryOperation timeout; the graceful networkidle2 fallback
   // in navigateToPage() allows execution to continue to channel selection even when background requests are still pending.
   profile: {
@@ -2196,7 +2196,6 @@ export const huluProvider: ProviderModule = {
     channelSelection: { listSelector: "#CHANNELS", playSelector: "[data-testid=\"generic-tile-thumbnail\"]", strategy: "guideGrid" },
     description: "Hulu Live TV with guide grid channel selection. Set Channel Selector to the channel's internal guide name (may differ from logo).",
     extends: "fullscreenApi",
-    fullscreenSelector: "[aria-label=\"Maximize\"]",
     selectReadyVideo: true,
     summary: "Hulu Live TV (guide grid, needs selector)",
     waitForNetworkIdle: true

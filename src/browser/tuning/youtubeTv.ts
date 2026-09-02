@@ -420,8 +420,7 @@ export const yttvProvider: ProviderModule = {
   // direct watch URL. The youtubeGrid strategy enumerates every channel in a single evaluate round-trip - one querySelectorAll reads all channel names and watch
   // URLs into the unified cache - then resolves the target channel's watch URL from that cache and navigates directly, with no scrolling, clicking, or timing
   // workarounds needed. Uses selectReadyVideo because the watch page has ~36 video elements (live preview thumbnails from the guide) but only one active stream
-  // with readyState >= 3 and videoWidth > 0. Extends fullscreenApi because requestFullscreen() works directly on the active video element without gesture
-  // requirements.
+  // with readyState >= 3 and videoWidth > 0. Extends fullscreenApi: the watch page's player exposes the JavaScript fullscreen API on the active video element.
   profile: {
 
     category: "multiChannel",

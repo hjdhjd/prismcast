@@ -87,10 +87,11 @@ export interface ChannelSelectionConfig {
  */
 
 /**
- * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by their fullscreen mechanism and special characteristics.
- * - "api": Profiles using the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
+ * UI category for profile grouping in dropdowns and reference documentation. Profiles are grouped by the native fullscreen mechanism their sites' players
+ * support, and by special characteristics.
+ * - "api": Profiles for players that expose the JavaScript fullscreen API (including embedded iframe and click-to-play variants).
  * - "custom": User-defined profiles created via the profile builder wizard or imported from service packs.
- * - "keyboard": Profiles using keyboard shortcuts (typically the 'f' key) for fullscreen.
+ * - "keyboard": Profiles for players that toggle fullscreen with a keyboard shortcut (typically the 'f' key).
  * - "multiChannel": Multi-channel profiles requiring a channel selector for tile or thumbnail-based channel selection.
  * - "special": Special-purpose profiles like static page capture.
  */
@@ -144,9 +145,9 @@ export interface SiteProfile {
   // after playback begins. Set to null to disable keyboard fullscreen and rely on CSS-based fullscreen styling instead.
   fullscreenKey?: Nullable<string>;
 
-  // CSS selector for a fullscreen button element to click. When set, this button is clicked before attempting keyboard or API fullscreen methods. This is useful
-  // for sites that have a native fullscreen button in their player UI (e.g., a "MAXIMIZE" button). The element is verified to exist before clicking, so toggle
-  // buttons that disappear after activation are handled gracefully.
+  // CSS selector for a fullscreen button element to click. When set, this button is clicked before the keypress and the API call. This is useful for sites that
+  // have a native fullscreen button in their player UI (e.g., a "MAXIMIZE" button). The element is verified to exist before clicking, so toggle buttons that
+  // disappear after activation are handled gracefully.
   fullscreenSelector?: Nullable<string>;
 
   // CSS selector for site-specific overlay elements to hide during capture. When set, a persistent stylesheet is injected into the page that applies
