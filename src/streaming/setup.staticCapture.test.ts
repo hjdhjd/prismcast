@@ -201,7 +201,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
      * The two re-affirmation steps bracket capture acquisition for a reason of their own. Acquisition selects the capture's tab - the capture extension targets
      * whichever tab is active - so the composition it starts from is the window's fitted view of the page; the re-issue that follows moves it to the emulated
      * surface. The activation heal is installed before all of that, so the page carries its focus listener from its first document onward. The static branch this
-     * test drives reaches both, which is what makes the assertion honest here.
+     * test drives reaches both, which is what makes the assertion valid here.
      */
     const profile = makeProfile({ staticCapture: true });
 

@@ -235,7 +235,7 @@ export class CdpProxySession {
   private autoAttach = false;
 
   /* Whether start() completed successfully and the "CDP client attached." log fired. cleanup() consults this so the paired "detached" log only emits when an
-   * "attached" log preceded it - keeping the audit trail honest when setup fails before the proxy is ever usable.
+   * "attached" log preceded it - keeping the audit trail accurate when setup fails before the proxy is ever usable.
    */
   private attached = false;
 

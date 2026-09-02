@@ -34,7 +34,7 @@ const KEYFRAME_DEBUG = false;
 /* What a fresh segmenter picks up from the sequence it continues, gathered as one value the segmenter module owns rather than five fields every producer and
  * consumer threads by hand. A sixth continuity fact then forces every side of the handoff at once instead of relying on a mental checklist across modules.
  *
- * Every member is individually optional because absence carries meaning, and different producers honestly hold different subsets: a tab replacement snapshots a
+ * Every member is individually optional because absence carries meaning, and different producers in fact hold different subsets: a tab replacement snapshots a
  * live segmenter and has all five, while a resume from disk has timestamps, an index, and an init version but no session statistics at all. The
  * priorSessionStats member is the sharpest case - its presence is what tells the constructor a live prior session is continuing, which is what increments the
  * tab replacement counter, so a resume that fabricated an empty stats object would mint a phantom replacement into every resumed stream's session summary.

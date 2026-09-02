@@ -247,7 +247,7 @@ describe("readPersistedJson / writePersistedJson", () => {
 
     /* The signature returns unknown deliberately. Callers cannot pretend the on-disk shape matches a TypeScript type they declared at the call site - that
      * would be a lie because production code controls what gets written. This test verifies the contract by performing a runtime narrow rather than an unsafe
-     * cast: assert object-ness, assert key presence via `in`, then assert the value's type. No `as { value: number }` cast - we narrow honestly.
+     * cast: assert object-ness, assert key presence via `in`, then assert the value's type. No `as { value: number }` cast - we narrow at runtime.
      */
     await using ctx = await createIntegrationContext();
 

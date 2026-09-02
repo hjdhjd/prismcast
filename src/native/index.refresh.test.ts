@@ -207,7 +207,7 @@ function makeFetchRouter(routes: Record<string, FetchHandler>): void {
   });
 }
 
-/* The re-establishment capability every row that never reaches the reload strategy carries. Declining is the honest default for them: they either short-circuit
+/* The re-establishment capability every row that never reaches the reload strategy carries. Declining is the default for them: they either short-circuit
  * ahead of the strategy or settle on the direct fetch, so a capability resolving an interception would describe a path they do not take.
  */
 const declineReestablishment = async (): Promise<Nullable<ManifestInterceptionResult>> => null;

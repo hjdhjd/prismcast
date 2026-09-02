@@ -869,7 +869,7 @@ export function createTabReplacementHandler(
     }
 
     /* The encoder facts the replacement carries forward, read now off the identity that is still serving the stream. A replacement changes the page, not the
-     * codec decision, so this is the only honest source for them: the fresh capture result carries no codec or acceleration of its own.
+     * codec decision, so this is the only source for them: the fresh capture result carries no codec or acceleration of its own.
      */
     const oldCaptureCodec = isCaptureIdentity(stream) ? stream.identity.captureCodec : null;
     const oldHardwareAccelerated = isCaptureIdentity(stream) && stream.identity.hardwareAccelerated;
@@ -1547,7 +1547,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
    * stamp assembled from a frame holding only part of the binding would silently describe a different stream than the one the tune reaches.
    *
    * The effective profile is the query override when one was supplied, otherwise the stored profile: an overridden tune reaches a different stream than the
-   * stored profile would, so the stamp honestly differs and an entry cached under the stored profile re-probes once under the override rather than answering
+   * stored profile would, so the stamp differs and an entry cached under the stored profile re-probes once under the override rather than answering
    * for a page it never described.
    */
   const probeIdentity: ProbeCacheIdentity = {

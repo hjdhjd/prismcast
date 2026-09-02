@@ -496,7 +496,7 @@ describe("exportDurableLineup registration", () => {
   test("every published hook reports nothing while its cache is cold", () => {
 
     // A hook that answered with an empty array on a cold cache would look to the recorder like a statement that the provider carries no channels. Null is the
-    // only honest answer before a walk has happened, and the store's own empty-array guard is what would otherwise have to catch the mistake.
+    // only answer the state supports before a walk has happened, and the store's own empty-array guard is what would otherwise have to catch the mistake.
     clearChannelSelectionCaches();
 
     for(const slug of [ "hbomax", "spectrum", "yttv" ]) {
@@ -534,7 +534,7 @@ describe("resolveDirectUrl persisted fallback", () => {
 
   test("never crosses providers: a hint persisted under another slug is invisible", async () => {
 
-    /* The guard that keeps the fallback honest. A lineup seeded under a real but different provider proves the slug lookup is doing work - without it, a
+    /* The guard that keeps the fallback accurate. A lineup seeded under a real but different provider proves the slug lookup is doing work - without it, a
      * selector-only match would hand an HBO tune a YouTube TV address, and the assertion would pass vacuously against an empty store.
      */
     await withTempDir(async (dir) => {

@@ -21,7 +21,7 @@
  *
  *   3. The harness (createIntegrationContext / initializePersistence) is omitted on purpose. recovery.ts has no module-level singletons, no persistence, and
  *      no I/O. Importing the harness for consistency would obscure what is being tested - a reader would expect filesystem state to matter, find none, and
- *      have to reverse-engineer the actual scope. Better to keep the test surface honest: this is a sequence-driven integration test of pure state mutators.
+ *      have to reverse-engineer the actual scope. Better to keep the test surface accurate: this is a sequence-driven integration test of pure state mutators.
  */
 import type { CircuitBreakerState, RecoveryMetrics } from "../../../src/streaming/recovery.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, createRecoveryMetrics, getRecoveryMethod, getTotalRecoveryAttempts, recordRecoveryAttempt,

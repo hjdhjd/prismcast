@@ -127,7 +127,7 @@ export async function observeHlsPlaylists(page: Page, options: HlsPlaylistObserv
 
   // Wire-arrival sequence counter. Each eligible unique URL is assigned the next ordinal synchronously at the dedup gate - before its body fetch begins - so the
   // ordinal reflects the order responses arrived on the wire rather than the order their independent, racing body fetches happen to resolve. Sequences start at 1,
-  // so a currentSequence() of 0 means nothing has been observed yet and an epoch fenced at 0 reads every later observation as post-epoch. The honest bound: the
+  // so a currentSequence() of 0 means nothing has been observed yet and an epoch fenced at 0 reads every later observation as post-epoch. The bound: the
   // ordinal reflects CDP-event arrival order at the client, and Chrome does not guarantee cross-session event ordering for OOPIF targets, so the fence approximates
   // wire order within event-delivery latency - a residual window of milliseconds, in place of the seconds-wide body-fetch race a delivery-time ordering would carry.
   let sequenceCounter = 0;

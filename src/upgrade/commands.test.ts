@@ -547,8 +547,8 @@ describe("handleUpgradeCommand - handoff lifecycle (Windows)", () => {
 
   test("handoff outcome bypasses the in-process success path: no 'Upgrade complete' line, no service-manager-restart message", async () => {
 
-    // Locks the structural separation between the two outcomes. The handoff branch's messaging is platform-honest ("running in the background, log at X");
-    // the in-process branch's messaging is platform-honest the other way ("complete, restarting via service manager" or "restart manually"). A regression that
+    // Locks the structural separation between the two outcomes. The handoff branch's messaging is accurate to the platform ("running in the background, log at X");
+    // the in-process branch's messaging is accurate to the platform the other way ("complete, restarting via service manager" or "restart manually"). A regression that
     // mixed the two would confuse the user about what just happened.
     const cap = makeUpgradeContext({
 
@@ -564,7 +564,7 @@ describe("handleUpgradeCommand - handoff lifecycle (Windows)", () => {
 
     // The handoff branch must not leak the in-process completion line nor the POSIX service-manager restart line - both are wrong on Windows because the
     // helper, not the parent, drives the restart. The "restart PrismCast manually" string is permitted in the handoff banner because the conditional second
-    // clause acknowledges the no-service case honestly; the POSIX fallback line is "Please restart PrismCast manually to use the new version", which is the
+    // clause acknowledges the no-service case; the POSIX fallback line is "Please restart PrismCast manually to use the new version", which is the
     // string we verify is absent here.
     assert.doesNotMatch(text, /Upgrade complete/, "handoff branch must not print the in-process completion line");
     assert.doesNotMatch(text, /Restarting PrismCast via service manager/, "handoff branch must not print the POSIX service-manager restart line");

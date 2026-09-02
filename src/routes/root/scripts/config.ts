@@ -594,7 +594,7 @@ export function generateConfigSubtabScript(): string {
     "          const data = await res.json();",
     "          if(res.ok && data.success) {",
     // A rejected change means the import was written to disk but a handler refused to apply it live, so the message carries a rejection notice. Demote the toast
-    // from green success to an informational notice in that case - reserving green for a clean import keeps the positive signal honest.
+    // from green success to an informational notice in that case - reserving green for a clean import keeps the positive signal accurate.
     "            showToast(data.message || 'Configuration imported.', (data.rejectedCount > 0) ? 'info' : 'success');",
     "            if(data.willRestart) {",
     "              if(data.deferred) {",

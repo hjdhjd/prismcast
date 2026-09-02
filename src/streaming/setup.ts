@@ -1027,7 +1027,7 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
  * here...the promise's settle time belongs only to the paths that consume it. Verification is gated to master-kind selections because a provider verifier like
  * Fox's reads the channel call sign from a fixed segment of the master CDN URL, and a media (chunklist) URL has a different path shape the verifier was never
  * calibrated for - a false tune-failure on a correct stream. Providers without a verifier, profiles without a channelSelector, non-master selections, and a null
- * interception all verify vacuously: the gates upstream are the only identity signal we have there, so the honest answer is no objection rather than a guess.
+ * interception all verify vacuously: the gates upstream are the only identity signal we have there, so the answer the state supports is no objection rather than a guess.
  *
  * @param interceptionPromise - The interception promise from the handle the tune finalized, awaited only once the gates above admit a verifier.
  * @param profile - The resolved site profile whose strategy names the provider and whose channelSelector names the expected channel.
@@ -1151,7 +1151,7 @@ export async function establishChannelPlayback(page: Page, profile: ResolvedSite
 }
 
 /**
- * Adjudicates what an establishment's interception selected: finalize it against the honest direct-tune kind, then confirm the manifest belongs to the channel
+ * Adjudicates what an establishment's interception selected: finalize it against the accurate direct-tune kind, then confirm the manifest belongs to the channel
  * the profile names. The tune path and the native refresh capability both run this, so finalize-then-verify is written exactly once.
  *
  * The stage hands on the interception promise rather than a resolved result, which is what keeps verifyManifestSelection's latency rule holding - its provider
@@ -1604,7 +1604,7 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
         }
       });
 
-      // Adjudicate honestly: the kind formula gets no cached-direct-URL term here, because the route above never takes one.
+      // Adjudicate against this route's facts: the kind formula gets no cached-direct-URL term here, because the route above never takes one.
       const verifyError = await adjudicateChannelSelection(handle, profile, computeDirectTuneKind({ profile, strategyDirectTune: tuneResult.directTune ?? false }));
 
       // On a verifier-bearing master path the adjudication has already awaited this promise; on the vacuous path this await is the one that waits out the

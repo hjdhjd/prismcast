@@ -75,7 +75,7 @@ describe("PathHandle.hasSegmentChain", () => {
 
   test("returns false for an empty chain (no vacuous-truth match)", () => {
 
-    // An empty rest-parameter expansion must not silently match every path. Returning false defensively keeps the API honest...callers who hand in an empty
+    // An empty rest-parameter expansion must not silently match every path. Returning false defensively keeps the API accurate...callers who hand in an empty
     // array (e.g., via a buggy spread) get a clean negative rather than an accidental positive on every install.
     const handle = createPathHandle("/Users/me/anywhere/x.js", { platform: "linux" });
 

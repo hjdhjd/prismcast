@@ -4,7 +4,7 @@
  * fires PRETUNE_LEAD_MS (30s) before each upcoming recording, and tears down unclaimed pretuned streams after a safety timeout. The public surface is the
  * startPretunePolling()/stopPretunePolling() lifecycle pair plus clearPretuneSafetyTimer(), which terminateStream() calls to drop a pretuned stream's safety timer
  * when the stream is claimed and torn down normally. The polling functions depend on side effects (intervals, async DVR fetches, stream initialization) that
- * require deep mocking, so the honest test surface is verifying the start/stop pair is safe to call more than once, that stop cleanly drains active
+ * require deep mocking, so the reachable test surface is verifying the start/stop pair is safe to call more than once, that stop cleanly drains active
  * timers, and that clearPretuneSafetyTimer is a safe no-op for the non-pretuned streams that dominate the terminate path.
  */
 import { describe, test } from "node:test";

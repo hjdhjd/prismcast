@@ -83,6 +83,6 @@ export function parsePid1StartTicks(raw: string): Nullable<string> {
   }
 
   // Coalesce to null even though the length guard above proves the index is in range; TypeScript's noUncheckedIndexedAccess still types fields[19] as
-  // string | undefined and the explicit ?? null keeps the return type honest.
+  // string | undefined and the explicit ?? null keeps the return type exact.
   return fields[19] ?? null;
 }

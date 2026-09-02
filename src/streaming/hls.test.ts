@@ -3,7 +3,7 @@
  * hls.test.ts: Unit tests for the synchronous helpers in the HLS request handler module. hls.ts orchestrates the entire HLS streaming pipeline (channel
  * validation, pending-stream registration, native vs capture path selection, segmenter creation, monitor wiring) and the orchestration entrypoints
  * (handleHLSPlaylist, handleHLSSegment, ensureChannelStream, initializeStream, startHLSStream, completeStreamSetup) require a real Chrome browser, FFmpeg
- * subprocess, and Express runtime to exercise honestly. The unit-testable surface here is the module's pure, browser-free helpers, which translate inputs to
+ * subprocess, and Express runtime to exercise as written. The unit-testable surface here is the module's pure, browser-free helpers, which translate inputs to
  * values without touching the browser or the registry beyond config lookups.
  *
  * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts), which drives the real isLoginModeActive() flag through the setBrowserAccessors()

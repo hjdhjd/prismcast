@@ -1011,7 +1011,7 @@ describe("withTabSelected", () => {
 
     /* A report is a statement that Chrome activated a tab, so every give-back path that issues no update has to be silent. Three of them: one that finds
      * something else selected and leaves the newer choice standing, one whose page already held the selection so there is nothing to restore, and one whose
-     * update is refused because the tab it was for has closed. All three still perform the selection's own activation, so the honest reading of each is exactly
+     * update is refused because the tab it was for has closed. All three still perform the selection's own activation, so the accurate reading of each is exactly
      * one report - which is also what tells a silent give-back from a hold that stopped reporting altogether.
      */
     const reported: number[] = [];

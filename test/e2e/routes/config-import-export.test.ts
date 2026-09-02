@@ -165,7 +165,7 @@ describe("GET /config/export - sorted-key attachment round-trips the current con
 });
 
 /* The import handler validates raw JSON values, so it is the only ingress that can present a value whose runtime type is wrong. The form save coerces every
- * submitted field to its declared type before validation, which means a form-path fixture cannot tell a type-honest validator apart from one that assumes
+ * submitted field to its declared type before validation, which means a form-path fixture cannot tell a validator true to the declared types apart from one that assumes
  * coercion already ran - every assertion below therefore goes through POST /config/import.
  *
  * A mistyped value that passes validation is not a cosmetic problem: it is written to config.json verbatim and read back at the next boot, so a quoted "false"

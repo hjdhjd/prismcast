@@ -171,7 +171,7 @@ describe("getDataDir", () => {
 
     /* The module's `resolvedDataDir` cache is set by initializeDataDir, but earlier tests in this file have already called it. The contract is "throws when
      * the cache is unset"; without a way to reset the module's cache to undefined we cannot exercise the throw path here. Locking the contract under a skip
-     * keeps the documentation honest.
+     * keeps the documentation accurate.
      */
     assert.doesNotThrow(() => getDataDir(), "after initialization the function returns the resolved path");
   });

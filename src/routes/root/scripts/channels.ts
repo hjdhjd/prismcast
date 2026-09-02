@@ -553,9 +553,9 @@ export function generateChannelsSubtabScript(): string {
 
     // Save the profile to the server. Concurrent edits of the same profile resolve last-save-wins: the rebuild starts from the snapshot fetched when the wizard opened,
     // matching the server's whole-replace semantics. The profile is a copy of the full fetched profile (empty for a new one) with only the wizard's rendered vocabulary
-    // deleted and
-    // re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server's whole-replace
-    // semantics are unchanged; a field outside the SiteProfile allowlist that passes through here surfaces as an explicit validation error, which is the honest outcome.
+    // deleted and re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server's
+    // whole-replace semantics are unchanged; a field outside the SiteProfile allowlist that passes through here surfaces as an explicit validation error rather than a
+    // silent one.
     "  window.saveProfile = async (andTest) => {",
     "    const s = profileWizard.state;",
     // The wizard's rendered vocabulary: every field id it renders plus the structural keys it owns. Deleting these from the base copy is what makes a cleared field a

@@ -458,7 +458,7 @@ export function buildServiceGroups(channels: Record<string, ResolvedChannel>): s
 
       const variant = channels[variantKey];
 
-      // Defensive: every variantKey in variantKeys came from Pass 1's scan of this same channels map, so the lookup succeeds. The narrowing keeps the types honest.
+      // Defensive: every variantKey in variantKeys came from Pass 1's scan of this same channels map, so the lookup succeeds. The narrowing keeps the types exact.
       if(variant) {
 
         variants.push({ key: variantKey, label: getChannelServiceLabel(variant), tag: resolveServiceTag(variant) });

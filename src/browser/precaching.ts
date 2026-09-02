@@ -694,7 +694,7 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
       return;
     }
 
-    // Defer to an in-flight precache cycle rather than overlapping it. Honest limitation: if the flagged provider is not in that cycle's configured service set,
+    // Defer to an in-flight precache cycle rather than overlapping it. Limitation: if the flagged provider is not in that cycle's configured service set,
     // the flag persists until the next successful discovery or tune for the domain - an in-flight cycle cannot be retargeted.
     if(precacheInProgress) {
 

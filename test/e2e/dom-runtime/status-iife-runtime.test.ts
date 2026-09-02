@@ -206,7 +206,7 @@ describe("status.ts: the active stream count channel (script-tag runtime)", () =
 
     /* config.ts's restart dialog and upgrade flow read the stream count from this channel, and neither can be trusted further than the channel itself. The
      * sibling assertion in status.test.ts asserts that the assignment is emitted; it cannot say what number the getter yields, because it never runs the script.
-     * This test does, and it reaches the count the only honest way: the state object the getter closes over is IIFE-local by design, so the test drives it
+     * This test does, and it reaches the count the only way available: the state object the getter closes over is IIFE-local by design, so the test drives it
      * through the SSE handlers the IIFE registers rather than reaching around them.
      *
      * Tracking matters as much as the initial reading. The channel is a getter over live state rather than a value captured at definition time, so a snapshot

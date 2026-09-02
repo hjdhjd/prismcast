@@ -6,7 +6,7 @@
  *
  * These helpers intentionally do NOT reuse buildPacket / encodeStringTlv from protocol.ts. Tests construct packets by hand so they can exercise the parser
  * with byte sequences the production builders cannot emit (malformed lengths, bad CRCs, unknown packet codes). Sharing the framing constant set with protocol.ts
- * (tag and packet-code numerics) keeps the two layers honest about the wire format without coupling test fixtures to the production code path.
+ * (tag and packet-code numerics) keeps the two layers true to the wire format without coupling test fixtures to the production code path.
  */
 import { PACKET_DISCOVER_REQUEST, PACKET_GET_REQUEST, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_GETSET_NAME, TLV_GETSET_VALUE } from "./protocol.ts";
 import { crc32 } from "node:zlib";

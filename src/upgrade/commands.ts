@@ -216,7 +216,7 @@ export async function handleUpgradeCommand(args: readonly string[], ctx: Upgrade
     // The restart message is deliberately phrased as a conditional rather than an unconditional promise. The helper only restarts the scheduled task when one
     // is registered; a user who invokes `prismcast upgrade` against a non-service install will need to restart PrismCast manually after the helper finishes.
     // We cannot know which branch will apply without probing Task Scheduler from our process, and that would add a synchronous PowerShell call to every
-    // upgrade. The honest two-clause message keeps both audiences correctly informed without that cost.
+    // upgrade. The two-clause message keeps both audiences correctly informed without that cost.
     ctx.stdout("Upgrade is running in the background.");
     ctx.stdout("If PrismCast is registered as a Windows service, the helper will restart it when the upgrade completes; otherwise, restart PrismCast manually.");
     ctx.stdout("Helper log: " + step.logPath);

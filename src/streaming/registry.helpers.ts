@@ -50,7 +50,7 @@ export const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
 
 /**
  * Constructs a NativeStreamIdentity with neutral defaults for tests, to be handed to makeRegistryEntry as a whole-identity override exactly as production writes
- * one. The proxy is the single member with no honest neutral value - the type says a native stream always has one - so the factory widens a stand-in into the
+ * one. The proxy is the single member with no neutral value the type admits - the type says a native stream always has one - so the factory widens a stand-in into the
  * handle here, once, rather than every suite repeating the same widening around its own partial.
  *
  * The stand-in answers the two calls termination makes of any registered stream's proxy, so a native fixture is safe to tear down without every suite building

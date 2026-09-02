@@ -556,7 +556,7 @@ export function validateConfiguration(): void {
 
   const coercions = collectCoercions(CONFIG);
 
-  // Record whether a capture coercion was applied so persistCoercedConfig can write the corrected values back to disk and keep the on-disk state honest.
+  // Record whether a capture coercion was applied so persistCoercedConfig can write the corrected values back to disk and keep the on-disk state accurate.
   captureConfigCoercedAtStartup = hasCoercions(coercions);
 
   applyCoercions(CONFIG, coercions);

@@ -6,7 +6,7 @@
  * interception is finalized before anything reads its promise. establishChannelPlayback composes on the browser boundary through its EstablishChannelPlaybackDeps
  * collaborator, so playback initialization is a recording stub and the page is a bare reference no stub ever dereferences - no Chrome, no CDP, no real timers.
  *
- * Honest bounds, stated rather than masked. The timeout-lapse choreography is not driven here: the playback bound is a module-private 45-second constant by
+ * Bounds, stated rather than masked. The timeout-lapse choreography is not driven here: the playback bound is a module-private 45-second constant by
  * design, and the bounded-wait primitive owns its own suite under utils, so a row reaching for the lapse would either wait out real time or re-implement the
  * primitive. The bodies that consume the composition (the tune's capture phase and the capability's recovery frame) stay Chrome-entangled and are covered
  * structurally elsewhere, so what is asserted here is the composition's own contract, not their integrated behavior.

@@ -675,7 +675,7 @@ export function monitorPlaybackHealth(
 
     /* The refresh probes under the identity the tune established, which the entry holds. It is null only for a pending entry whose setup has not filled it in,
      * and a stream with a running native proxy is past that point - so this answers a window that recovery does not reach rather than papering over one.
-     * Declining is the honest response either way: an identity assembled here would stamp a binding this frame cannot see, and the stall escalates to L3.
+     * Declining is the answer either way: an identity assembled here would stamp a binding this frame cannot see, and the stall escalates to L3.
      */
     const probeIdentity = entry.probeIdentity;
 
@@ -823,7 +823,7 @@ export function monitorPlaybackHealth(
          * native relay it has been running all along. Restoring the held identity whole hands back the same live proxy, and the window sync lets the presentation
          * settle now that no capture is being attempted.
          *
-         * The restore is honest in both entry conditions. A proxy that is still healthy simply resumes. A proxy that had already stopped itself on its error
+         * The restore is correct in both entry conditions. A proxy that is still healthy simply resumes. A proxy that had already stopped itself on its error
          * threshold re-triggers this fallback on a later tick - deliberately: the grace window throttles each cycle and the circuit breaker bounds the count, so a
          * native stream whose relay died and whose capture fallback keeps failing escalates to termination rather than resting in a silent limbo.
          */
