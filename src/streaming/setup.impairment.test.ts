@@ -8,9 +8,9 @@
  * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup.directUrlFallback.test.ts uses: the injected browser accessor rejects, so
  * no Chrome, no CDP, and no page are involved at all.
  */
+import type { Browser, Page } from "puppeteer-core";
 import { BrowserCaptureImpairedError, BrowserUnavailableError } from "../browser/index.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
-import type { Browser } from "puppeteer-core";
 import type { BrowserPurpose } from "../browser/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
@@ -64,6 +64,11 @@ function makeDeps(failure: Error): CreatePageWithCaptureDeps {
       throw failure;
     },
     installActivationHeal: async (): Promise<void> => { /* No page is ever created to heal. */ },
+
+    openSharedWindowTab: async (): Promise<Page> => {
+
+      throw new Error("No page is opened at all when the browser accessor refuses.");
+    },
     reaffirmCaptureSurface: async (): Promise<void> => { /* No surface is ever acquired to re-affirm. */ },
     startOverlayHandling: async (): Promise<void> => { /* No page is ever created to poll. */ },
     syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }

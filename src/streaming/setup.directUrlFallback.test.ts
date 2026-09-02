@@ -77,6 +77,7 @@ const deps: CreatePageWithCaptureDeps = {
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
+  openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }

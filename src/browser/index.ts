@@ -12,7 +12,7 @@ import { getCachedTabId, onTabActivation } from "./tabSelection.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
-import { minimizeWindow, readWindowPlacement, reaffirmCaptureSurface, unminimizeWindow } from "./cdp.ts";
+import { minimizeWindow, readWindowPlacement, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
@@ -286,6 +286,127 @@ export function isCarrierPage(page: Nullable<Page>): page is Page {
 export function pickCarrierPage(pages: readonly Page[]): Nullable<Page> {
 
   return pages.find(isCarrierPage) ?? null;
+}
+
+/* Which window Chrome's own tables call the shared one, keyed on the browser that owns it. The value belongs to CDP's window table and is never comparable with
+ * the capture extension's chrome.windows ids: those are two independent tables, and this is the only place a value from the CDP side is held.
+ *
+ * Keyed on the browser and never cleared, for the reason the own-window mark above is: the identity is a fact about how that browser was created, an entry dies
+ * with the browser holding it, and a relaunch records its own. An id that outlived its browser is exactly what would place a capture tab in the wrong window
+ * while every check agreed, so there is deliberately no way to write one a live browser did not report.
+ */
+const sharedWindowIds = new WeakMap<Browser, number>();
+
+/* The window each page was found in, cached for the page's life in the tabIds idiom of tabSelection.ts. The lookup below attaches a CDP session the shared helper
+ * does not detach, so reading a candidate fresh on every tune would leave a session behind on each launch-era page every time. A page a user drags into another
+ * window keeps the window it was first read in; a stale entry costs a carrier that has since moved out of the shared window, which the placement confirmation
+ * catches and answers with the plain create rather than with a tab in the wrong place.
+ */
+const pageWindowIds = new WeakMap<Page, number>();
+
+// The URL prefix the capture extension's own pages carry. The resolver reads it to prefer a plain-origin carrier, since an open evaluated on the extension's
+// options page is territory nothing has measured.
+const EXTENSION_PAGE_PREFIX = "chrome-extension://";
+
+/**
+ * Reads the window a page sits in, answering from the cache once the page has been read.
+ * @param page - The page to locate.
+ * @returns The window's CDP id, or undefined when the window cannot be read at all - a closed page, a target that yields no window, or a CDP failure.
+ */
+async function readPageWindow(page: Page): Promise<number | undefined> {
+
+  const cached = pageWindowIds.get(page);
+
+  if(cached !== undefined) {
+
+    return cached;
+  }
+
+  const windowId = await withCDPSession(page, async (_session, id): Promise<number> => id);
+
+  if(windowId !== undefined) {
+
+    pageWindowIds.set(page, windowId);
+  }
+
+  return windowId;
+}
+
+/**
+ * Records which window the shared one is, reading it from a page that sits in it.
+ *
+ * This is the one way an identity is written. The launch path calls it once the launch-era pages exist, so every browser this process publishes carries the
+ * answer before anything asks for a capture tab, and a probe running against a browser of its own calls the same function rather than reaching for the map.
+ * @param browser - The browser whose shared window is being recorded.
+ * @param page - A page that sits in that window.
+ */
+export async function noteSharedWindow(browser: Browser, page: Page): Promise<void> {
+
+  const windowId = await readPageWindow(page);
+
+  if(windowId === undefined) {
+
+    LOG.debug("browser:lifecycle", "The shared browser window could not be identified, so capture tabs will open wherever Chrome places them.");
+
+    return;
+  }
+
+  sharedWindowIds.set(browser, windowId);
+}
+
+/**
+ * Picks the page an opener-anchored tab should be opened from: one the browser has open, living in the shared window rather than a window of its own, and
+ * confirmed to sit in the window this process recorded.
+ *
+ * A plain-origin page is preferred over the capture extension's own options page, which is the carrier of last resort. The options page is recognized by the URL
+ * prefix its own pages carry rather than through the library's resolver, whose wait for a missing extension would spend thirty seconds inside a caller's turn.
+ * When no identity was ever recorded the confirmation has nothing to test against, and the first qualifying page is the answer: an anchor to some window of the
+ * browser's is still better than letting Chrome choose one.
+ * @param browser - The browser to resolve a carrier in.
+ * @returns The page to evaluate the open on, or null when none of the browser's pages qualifies.
+ */
+export async function resolveSharedWindowCarrier(browser: Browser): Promise<Nullable<Page>> {
+
+  const sharedWindowId = sharedWindowIds.get(browser);
+  const candidates = (await browser.pages()).filter(isCarrierPage);
+
+  for(const page of [ ...candidates.filter((candidate) => !candidate.url().startsWith(EXTENSION_PAGE_PREFIX)),
+    ...candidates.filter((candidate) => candidate.url().startsWith(EXTENSION_PAGE_PREFIX)) ]) {
+
+    if(sharedWindowId === undefined) {
+
+      return page;
+    }
+
+    // eslint-disable-next-line no-await-in-loop -- A candidate is only asked for its window once the candidates ahead of it have failed to qualify.
+    if((await readPageWindow(page)) === sharedWindowId) {
+
+      return page;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Reports whether a page ended up in the shared window.
+ *
+ * Advisory when no identity was ever recorded: there is nothing to contradict the placement with, so the answer is true and the caller proceeds. A window that
+ * cannot be READ is the opposite answer, though, and deliberately so - the shared lookup reports undefined for a closed page, an empty response, and a CDP
+ * failure alike, and reading any of those as a confirmation would confirm a wrong-window tab in exactly the case this check exists for.
+ * @param page - The page to test.
+ * @returns True when the page sits in the recorded window, or when no window was ever recorded.
+ */
+export async function confirmSharedWindowPlacement(page: Page): Promise<boolean> {
+
+  const sharedWindowId = sharedWindowIds.get(page.browser());
+
+  if(sharedWindowId === undefined) {
+
+    return true;
+  }
+
+  return (await readPageWindow(page)) === sharedWindowId;
 }
 
 // Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
@@ -1706,12 +1827,17 @@ async function launchReadyBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
 
-    /* The tab the window rests on. It is created once, selected by construction because nothing asks otherwise, and never referenced again, so whatever the window
-     * shows when nothing has asked for a tab is a blank page rather than the capture extension's own options page - which the library opens selected at launch.
-     * It is left unmanaged, as stale page cleanup judges only the pages stream setup and discovery create; it carries no correctness duty, so it needs no
-     * re-validation, and a user closing it costs nothing.
+    /* The tab the window rests on. It is created once and selected by construction because nothing asks otherwise, so whatever the window shows when nothing has
+     * asked for a tab is a blank page rather than the capture extension's own options page - which the library opens selected at launch. It is left unmanaged, as
+     * stale page cleanup judges only the pages stream setup and discovery create; it carries no correctness duty, so it needs no re-validation, and a user
+     * closing it costs nothing.
+     *
+     * It is also the page the shared window's identity is read from. This tab is in that window by construction, and reading it here - before the capture probe,
+     * the capability detection, or any stream - is what lets every later capture tab be anchored to the window rather than placed by Chrome.
      */
-    await browser.newPage();
+    const restingTab = await browser.newPage();
+
+    await noteSharedWindow(browser, restingTab);
 
     // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real capture acquisition against a throwaway page on THIS
     // instance - so "ready" means "really captured," not merely "the extension handshake responded." This predicate must run at every (re)launch:

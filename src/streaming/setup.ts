@@ -3,9 +3,10 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, emulateLayoutSurface,
-  getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe,
-  syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, confirmSharedWindowPlacement,
+  emulateCaptureSurface, emulateLayoutSurface, getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal,
+  noteBrowserCaptureImpaired, registerManagedPage, resolveSharedWindowCarrier, setCaptureProbe, syncWindowVisibility,
+  unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
@@ -36,6 +37,7 @@ import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
+import { openSharedWindowTab } from "../browser/tabSelection.ts";
 import { pipeline } from "node:stream/promises";
 import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { startOverlayHandling } from "../browser/consent.ts";
@@ -527,8 +529,10 @@ function disposePage(page: Page): void {
  * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering pin
  * has to observe it landing there. So are the two surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
  * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
- * pipeline it drives. The remaining browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page
- * set, so they need no substitution. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+ * pipeline it drives. So is the page creation itself, which is a queued turn on the tab-selection executor rather than a bare browser call, so a test observes
+ * that the capture page is asked for through that primitive rather than opened wherever Chrome would put it. The remaining browser calls (registerManagedPage,
+ * unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the collaborator-injection form of the
+ * Clock port (utils/clock.ts).
  */
 export interface CreatePageWithCaptureDeps {
 
@@ -536,13 +540,20 @@ export interface CreatePageWithCaptureDeps {
   readonly emulateCaptureSurface: typeof emulateCaptureSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly installActivationHeal: typeof installActivationHeal;
+  readonly openSharedWindowTab: typeof openSharedWindowTab;
   readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
 const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, emulateCaptureSurface, getCurrentBrowser, installActivationHeal,
-  reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
+  openSharedWindowTab, reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
+
+/* The window-topology answers the open primitive needs and cannot reach for itself: tabSelection.ts speaks to the capture extension alone, so the CDP-side carrier
+ * resolution and placement confirmation arrive from here, where both modules are already in view. One record, referenced by both call sites, because the two call
+ * sites want the identical pair.
+ */
+const SHARED_WINDOW_TOPOLOGY = { confirmPlacement: confirmSharedWindowPlacement, resolveCarrier: resolveSharedWindowCarrier };
 
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
@@ -582,12 +593,13 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // would otherwise be repeated in each failure path, and closes the navigation-path leak of the manifest interceptor.
   using resources = new DisposableStack();
 
-  /* Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists. The page
-   * opens behind whatever the window is showing: its capture start selects it for the length of that start and hands the selection back, so a user working in
-   * another tab is never moved out of it.
+  /* Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists. The page is
+   * opened as a tab of the shared window rather than wherever Chrome would place it, because a capture tab rooted in a discovery window keeps that window alive
+   * and leaves the visibility policy managing a window the capture is not in. The tab is selected for the moment it arrives and the selection goes straight back,
+   * so a user working in another tab is never moved out of it.
    */
   const browser = await deps.getCurrentBrowser("capture");
-  const page = await browser.newPage({ background: true });
+  const page = await deps.openSharedWindowTab(browser, { deps: SHARED_WINDOW_TOPOLOGY });
 
   // Register in-flight: the registry does not record this page against the stream until setup finishes, so the mark is what keeps stale page cleanup from closing
   // it mid-tune.
@@ -1693,8 +1705,12 @@ type CaptureProbeMode = { boundMs: number; kind: "gate" } | { boundMs: number; k
  */
 async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clock: Clock = realClock): Promise<Nullable<string>> {
 
-  // The probe page opens behind whatever the window is showing; it needs its tab selected only for its own capture start, which takes the selection itself.
-  const page = await browser.newPage({ background: true });
+  /* The mid-life probe runs against a browser that is serving streams, so its page is opened as a tab of the shared window for the reason a stream's page is: a
+   * probe tab rooted in a discovery window would hold that window open for as long as the probe took. The launch gate keeps the plain create: it runs pre-publish,
+   * when the browser has exactly one window and no discovery window can exist yet, so its tab has no wrong window to land in - and a gate that has to stay bounded
+   * gains nothing from queuing behind the selection executor to prove it.
+   */
+  const page = (mode.kind === "midlife") ? await openSharedWindowTab(browser, { deps: SHARED_WINDOW_TOPOLOGY }) : await browser.newPage({ background: true });
 
   registerManagedPage(page);
 
@@ -1810,6 +1826,17 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
     }
 
     return errorMessage;
+  } finally {
+
+    /* The mid-life open restores the shared window on its way in, so the presentation is settled back here, on every exit this arm has: the success return, the
+     * self-timed bound return, and the catch. It settles inside the probe rather than in the detector above it because the capture lock's outer deadline can
+     * abandon this task while it runs on detached - a settle placed in the detector would fire before a detached probe's open had restored anything. The launch
+     * gate opens no such tab and touches no window, so the settle is the mid-life arm's alone.
+     */
+    if(mode.kind === "midlife") {
+
+      await syncWindowVisibility();
+    }
   }
 }
 

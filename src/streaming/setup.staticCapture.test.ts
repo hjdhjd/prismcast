@@ -16,6 +16,7 @@ import { before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
+import type { OpenSharedWindowTabContext } from "../browser/tabSelection.ts";
 import { PassThrough } from "node:stream";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
 import assert from "node:assert/strict";
@@ -44,8 +45,9 @@ let surfacePages: Page[] = [];
 let healPages: Page[] = [];
 let reaffirmPages: Page[] = [];
 
-// The options each page creation was asked for, so the pin can read that the capture page opens in the background rather than taking the user's tab selection.
-let newPageOptions: unknown[] = [];
+// The context each routed open was asked for, so a row can read that the capture page is opened through the tab-selection executor with the window-topology
+// answers that executor cannot resolve for itself, rather than created wherever Chrome would place it.
+let openContexts: OpenSharedWindowTabContext[] = [];
 
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
  * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
@@ -92,17 +94,22 @@ const deps: CreatePageWithCaptureDeps = {
   },
   getCurrentBrowser: async (): Promise<Browser> => ({
 
-    newPage: async (options?: unknown): Promise<Page> => {
+    newPage: async (): Promise<Page> => {
 
-      newPageOptions.push(options);
-
-      return makeStubPage();
+      throw new Error("The capture page is opened through the tab-selection executor, never created directly on the browser.");
     }
   } as unknown as Browser),
   installActivationHeal: async (page: Page): Promise<void> => {
 
     depsCalls.push("installActivationHeal");
     healPages.push(page);
+  },
+  openSharedWindowTab: async (_browser: Browser, context: OpenSharedWindowTabContext): Promise<Page> => {
+
+    depsCalls.push("openSharedWindowTab");
+    openContexts.push(context);
+
+    return makeStubPage();
   },
   reaffirmCaptureSurface: async (page: Page): Promise<void> => {
 
@@ -127,7 +134,7 @@ beforeEach(() => {
 
   depsCalls = [];
   healPages = [];
-  newPageOptions = [];
+  openContexts = [];
   overlayCalls = [];
   pageGotos = [];
   reaffirmPages = [];
@@ -200,14 +207,18 @@ describe("createPageWithCapture - window visibility ordering", () => {
     result.captureSession.dispose();
 
     assert.deepEqual(depsCalls,
-      [ "syncWindowVisibility", "emulateCaptureSurface", "installActivationHeal", "acquireCaptureStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
-      "the window sync leads the establishment and closes it, with the surface emulated, the activation heal installed, capture acquired, and the surface " +
-      "re-affirmed in between");
+
+      [ "syncWindowVisibility", "openSharedWindowTab", "emulateCaptureSurface", "installActivationHeal", "acquireCaptureStream", "reaffirmCaptureSurface",
+        "syncWindowVisibility" ],
+      "the window sync leads the establishment and closes it, with the page opened through the selection executor, the surface emulated, the activation heal " +
+      "installed, capture acquired, and the surface re-affirmed in between");
     assert.equal(syncPages[0], undefined, "the leading pass has no page yet - it runs before the capture page exists");
     assert.equal(syncPages[1], result.page, "the closing pass receives the page the establishment built");
     assert.equal(surfacePages[0], result.page, "the surface is emulated on the very page the establishment captured and handed back");
     assert.equal(healPages[0], result.page, "the activation heal is installed on that same page");
     assert.equal(reaffirmPages[0], result.page, "the closing re-affirmation is issued against that same page");
-    assert.deepEqual(newPageOptions, [{ background: true }], "the capture page opens behind whatever the window is showing, its own capture start selecting it");
+    assert.equal(openContexts.length, 1, "exactly one open, routed through the tab-selection executor rather than created on the browser");
+    assert.equal(typeof openContexts[0]?.deps.resolveCarrier, "function", "the call site supplies the carrier resolver the executor cannot reach for itself");
+    assert.equal(typeof openContexts[0]?.deps.confirmPlacement, "function", "and the placement confirmation beside it");
   });
 });

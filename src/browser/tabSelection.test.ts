@@ -8,13 +8,14 @@
  * the source text of the callback it is handed, a page double that records the title token it is given and answers with the title it replaced, and a shared
  * timeline every call appends to. A two-window fixture backs the rows that care which window a read was scoped to.
  */
-import type { Browser, Page } from "puppeteer-core";
-import type { SelectedTab, TabSelectionDeps } from "./tabSelection.ts";
-import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE, getCachedTabId, onTabActivation, withTabSelected } from "./tabSelection.ts";
+import type { Browser, Page, Target } from "puppeteer-core";
+import type { SelectedTab, SharedWindowTabDeps, TabSelectionDeps } from "./tabSelection.ts";
+import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE, getCachedTabId, onTabActivation, openSharedWindowTab, withTabSelected } from "./tabSelection.ts";
 import { beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
+import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { makeFakeClock } from "../utils/clock.helpers.ts";
@@ -208,6 +209,264 @@ function makeFixture(options: { lastFocusedWindowId?: number; ownTitle?: string;
 function makeDeps(fixture: Fixture): TabSelectionDeps {
 
   return { getExtensionPage: async (): Promise<Page> => fixture.extension };
+}
+
+// A tab an open produced: the page behind it, the URL it wears, the tab that was selected before it arrived, and whether it has been closed.
+interface OpenedTab {
+
+  closed: boolean;
+  id: number;
+  page: Page;
+  previousActiveId?: number;
+  url: string;
+}
+
+/* The world an open runs in. The extension double and the tab table are the hold rows' own, so a tab arriving selected and a selection handed back are the same
+ * reads those rows make; what is new is a carrier page for the open to be evaluated on, a browser that reports its pages and resolves the target an open
+ * produced, and the dials a row turns to make each degradation happen.
+ */
+interface OpenWorld {
+
+  browser: Browser;
+
+  // The page the resolver hands back, and how many times it was asked. Two resolves is the retry.
+  carrier: Nullable<Page>;
+  carrierResolves: number;
+
+  // The pages the placement confirmation was handed, in order.
+  confirmedPages: Page[];
+
+  // The options each fallback creation was asked for, and the pages it handed back.
+  createdOptions: unknown[];
+  createdPages: Page[];
+
+  fixture: Fixture;
+
+  // The URL each open was asked for, so a row can read the nonce the tab wears.
+  openUrls: string[];
+
+  // The tabs the opens produced, in order.
+  opened: OpenedTab[];
+
+  // Whether the carrier's window.open reports a window at all. False is Chrome refusing the open.
+  opens: boolean;
+
+  // The answers the placement confirmation gives, taken in order. An exhausted list confirms.
+  placements: boolean[];
+
+  // Whether the tab an open produced ever turns up as a target.
+  targetAppears: boolean;
+
+  // Whether the target wait hangs until the turn's own ceiling cancels it, which is the only other way this double ends a wait.
+  targetHangs: boolean;
+}
+
+/**
+ * Builds the page behind a tab an open produced: it answers the identification against its own tab, reports the nonce URL a scan looks for, and takes its tab out
+ * of the table when it is closed - handing the selection back to whatever had it before the tab arrived, the way Chrome does.
+ * @param world - The world the tab belongs to.
+ * @param id - The tab id the identification should name.
+ * @param url - The URL the tab wears.
+ * @returns The page double.
+ */
+function makeOpenedPage(world: OpenWorld, id: number, url: string): Page {
+
+  const fixture = world.fixture;
+
+  let closed = false;
+
+  return {
+
+    browser: (): Browser => world.browser,
+
+    close: async (): Promise<void> => {
+
+      closed = true;
+
+      fixture.timeline.push("close:" + String(id));
+      fixture.tabs = fixture.tabs.filter((tab) => tab.id !== id);
+
+      const entry = world.opened.find((tab) => tab.id === id);
+
+      if(entry) {
+
+        entry.closed = true;
+      }
+
+      const restored = fixture.tabs.find((tab) => tab.id === entry?.previousActiveId);
+
+      if(restored) {
+
+        restored.active = true;
+      }
+    },
+
+    evaluate: async (target: unknown, arg?: unknown): Promise<unknown> => {
+
+      if(!String(target).includes("document.title = marker")) {
+
+        fixture.timeline.push("opened:restore");
+
+        return undefined;
+      }
+
+      fixture.timeline.push("opened:title");
+
+      const tab = fixture.tabs.find((candidate) => candidate.id === id);
+
+      if(tab) {
+
+        tab.title = String(arg);
+      }
+
+      return "";
+    },
+    isClosed: (): boolean => closed,
+    url: (): string => url
+  } as unknown as Page;
+}
+
+/**
+ * Builds the world an open runs in: the extension double from makeFixture, a carrier page whose identification names tab 42 of window 1, and a browser that
+ * reports its pages, resolves the target an open produced, and records the pages the fallback creates. Every dial starts at its healthy setting.
+ * @returns The world.
+ */
+function makeOpenWorld(): OpenWorld {
+
+  const fixture = makeFixture();
+
+  const world: OpenWorld = {
+
+    browser: null as unknown as Browser,
+    carrier: null,
+    carrierResolves: 0,
+    confirmedPages: [],
+    createdOptions: [],
+    createdPages: [],
+    fixture,
+    openUrls: [],
+    opened: [],
+    opens: true,
+    placements: [],
+    targetAppears: true,
+    targetHangs: false
+  };
+
+  let nextOpenedTabId = 100;
+  let carrierClosed = false;
+
+  /* The carrier. Its identification is the fixture page's own - the token it writes names tab 42, the tab the window's other tab is selected beside - and the one
+   * call it serves beyond that is the open, which delivers the tab the way Chrome does: in the carrier's window, and selected.
+   */
+  world.carrier = {
+
+    browser: (): Browser => world.browser,
+    close: async (): Promise<void> => { carrierClosed = true; },
+
+    evaluate: async (target: unknown, arg?: unknown): Promise<unknown> => {
+
+      if(!String(target).includes("window.open")) {
+
+        return fixture.page.evaluate(target as never, arg as never);
+      }
+
+      const url = String(arg);
+
+      fixture.timeline.push("open");
+      world.openUrls.push(url);
+
+      if(!world.opens) {
+
+        return false;
+      }
+
+      const id = nextOpenedTabId++;
+      const previousActiveId = fixture.tabs.find((tab) => tab.active && (tab.windowId === 1))?.id;
+
+      // Chrome delivers the tab selected, which is what leaves the window's previous selection needing to be handed back.
+      for(const tab of fixture.tabs) {
+
+        if(tab.windowId === 1) {
+
+          tab.active = false;
+        }
+      }
+
+      fixture.tabs.push({ active: true, id, url, windowId: 1 });
+      world.opened.push({ closed: false, id, page: makeOpenedPage(world, id, url), previousActiveId, url });
+
+      return true;
+    },
+    isClosed: (): boolean => carrierClosed,
+    url: (): string => "https://example.test/carrier"
+  } as unknown as Page;
+
+  world.browser = {
+
+    newPage: async (options?: unknown): Promise<Page> => {
+
+      const created = { isClosed: (): boolean => false, url: (): string => "about:blank" } as unknown as Page;
+
+      world.createdOptions.push(options);
+      world.createdPages.push(created);
+
+      return created;
+    },
+    pages: async (): Promise<Page[]> => [ ...(world.carrier ? [world.carrier] : []), ...world.opened.filter((tab) => !tab.closed).map((tab) => tab.page) ],
+
+    waitForTarget: async (predicate: (target: Target) => boolean, options?: { signal?: AbortSignal }): Promise<Target> => {
+
+      fixture.timeline.push("waitForTarget");
+
+      // The only way this wait ends without a target is the caller's own ceiling, which is what makes a row that hangs it a test of the signal being threaded.
+      if(world.targetHangs) {
+
+        const hung = Promise.withResolvers<Target>();
+
+        options?.signal?.addEventListener("abort", () => { hung.reject(options.signal?.reason as Error); });
+
+        return hung.promise;
+      }
+
+      const match = world.opened.find((tab) => !tab.closed && predicate({ url: (): string => tab.url } as unknown as Target));
+
+      if(!match || !world.targetAppears) {
+
+        throw new Error("Waiting for target failed: timeout 3000 ms exceeded.");
+      }
+
+      return { page: async (): Promise<Nullable<Page>> => match.page } as unknown as Target;
+    }
+  } as unknown as Browser;
+
+  return world;
+}
+
+/**
+ * Composes the deps an open runs against: the extension lookup the hold rows use, and the two topology answers the module cannot resolve for itself.
+ * @param world - The world the open runs in.
+ * @returns The deps.
+ */
+function makeOpenDeps(world: OpenWorld): SharedWindowTabDeps {
+
+  return {
+
+    confirmPlacement: async (page: Page): Promise<boolean> => {
+
+      world.fixture.timeline.push("confirm");
+      world.confirmedPages.push(page);
+
+      return world.placements.shift() ?? true;
+    },
+    getExtensionPage: async (): Promise<Page> => world.fixture.extension,
+
+    resolveCarrier: async (): Promise<Nullable<Page>> => {
+
+      world.carrierResolves++;
+
+      return world.carrier;
+    }
+  };
 }
 
 /* Every row runs against the one module-level selection chain, so a row that leaves a hold outstanding would be observed by the next. The rows that lapse a
@@ -855,5 +1114,219 @@ describe("withTabSelected", () => {
 
     assert.deepEqual(reported, [ 42, 7 ], "the subscriber behind the failing one received both reports");
     assert.equal(fixture.timeline.at(-1), "update:7", "and the give-back still ran");
+  });
+});
+
+/* The open rows share the module-level chain with the hold rows above, so each one settles its turn before it finishes. Every degradation ends at the same plain
+ * create, which is what makes the recorded creation options the evidence that an anchor was given up rather than never attempted.
+ */
+describe("openSharedWindowTab", () => {
+
+  test("opens the tab on a page of the shared window, hands the selection straight back, and returns the tab it opened", async () => {
+
+    /* The whole turn as one ordered log. The carrier is identified and its window read first, because the window a page sits in is the only route to the tab that
+     * will want the selection back; the open follows; the tab is waited for by its nonce, confirmed where it landed, identified, and only then does the selection
+     * go back. An implementation that opened before reading the previous selection, or handed the tab over before giving it back, reorders or shortens this log.
+     */
+    const world = makeOpenWorld();
+
+    const page = await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    assert.deepEqual(world.fixture.timeline,
+
+      [ "page:title", "query:all", "page:restore", "get:42", "query:window:1", "open", "waitForTarget", "confirm", "opened:title", "query:all", "opened:restore",
+        "get:100", "update:7" ],
+      "identify the carrier, read its window, read that window's selected tab, open, wait for the tab, confirm where it landed, identify it, give the selection " +
+      "back");
+    assert.equal(world.createdOptions.length, 0, "nothing was created the plain way");
+    assert.equal(page, world.opened[0]?.page, "the tab the open produced is what comes back");
+    assert.match(world.openUrls[0] ?? "", /^about:blank#prismcast-open-\d+$/, "the open carries a nonce fragment, which is what the target wait matches on");
+    assert.equal(world.confirmedPages[0], page, "the placement confirmation is asked about the tab that arrived, not about the carrier it came from");
+    assert.equal(world.fixture.tabs.find((tab) => tab.id === 7)?.active, true, "and the tab that had the selection has it again");
+    assert.equal(getCachedTabId(page), 100, "the opened tab is identified here, so the capture start that follows finds the answer already cached");
+  });
+
+  test("queues behind a hold, beginning only once the hold has given the selection back", async () => {
+
+    /* An open takes the selection too - the tab arrives selected - so an open running beside a hold would be two holders alternating under each other, and a
+     * capture start whose tab was deselected mid-acquisition records whatever tab replaced it. The chain is what makes that unrepresentable rather than unlikely.
+     */
+    const held = makeFixture();
+    const world = makeOpenWorld();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise, resolve } = Promise.withResolvers<void>();
+
+    const holding = withTabSelected(held.page, async (): Promise<void> => { await promise; }, { clock: makeFakeClock().clock, deps: makeDeps(held) });
+    const opening = openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    await Promise.resolve();
+
+    assert.equal(world.fixture.timeline.length, 0, "the open has not touched the extension while the hold is holding");
+    assert.equal(world.carrierResolves, 0, "and it has not so much as resolved a carrier");
+
+    resolve();
+
+    await holding;
+    await opening;
+
+    assert.equal(held.timeline.at(-1), "update:7", "the hold gave its tab back before the open began");
+    assert.equal(world.fixture.timeline.at(-1), "update:7", "and the open then ran its own turn through to its own give-back");
+  });
+
+  test("falls back to a plain background page when the carrier refuses the open", async () => {
+
+    // Chrome answers a blocked open with a null window rather than an error, so the return value is the whole of the evidence. Nothing was opened, so nothing is
+    // closed and nothing is reported above debug: a page created the plain way is a working page, just not an anchored one.
+    const world = makeOpenWorld();
+
+    world.opens = false;
+
+    const warnings = await captureWarnings(async () => {
+
+      assert.equal(await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) }), world.createdPages[0], "the plainly created page comes back");
+    });
+
+    assert.deepEqual(world.createdOptions, [{ background: true }], "created behind whatever the window is showing, exactly as an unanchored create always was");
+    assert.equal(world.opened.length, 0, "no tab was produced to close");
+    assert.equal(world.fixture.timeline.includes("waitForTarget"), false, "and no target was waited for");
+    assert.equal(warnings.length, 0, "a degradation with nothing left to try is a debug matter");
+  });
+
+  test("closes the tab it never found a target for, finding it by the nonce its URL carries, and falls back", async () => {
+
+    /* The one failure path holding no page at all: the target never arrived, so the tab is looked up among the browser's pages by its nonce. A tab left behind
+     * here is one nothing registered, which means the staleness sweep never judges it and it sits in the window for the life of the browser.
+     */
+    const world = makeOpenWorld();
+
+    world.targetAppears = false;
+
+    const page = await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    assert.equal(world.opened.length, 1, "the open did produce a tab");
+    assert.equal(world.opened[0]?.closed, true, "which was closed on the way out");
+    assert.equal(world.fixture.timeline.includes("close:100"), true, "through the page the nonce scan found");
+    assert.equal(page, world.createdPages[0], "and the caller receives a plainly created page instead");
+  });
+
+  test("resolves a carrier again when the one it had could not carry the open, and opens on the second pass", async () => {
+
+    /* A carrier can close between the moment it is resolved and the moment the open is evaluated on it. That is evidence about the carrier rather than about the
+     * open, so the answer is to ask for another one - and the resolve count is what tells a second resolve from a bare retry against the same page.
+     */
+    const world = makeOpenWorld();
+    const carrier = world.carrier!;
+    const carrierEvaluate = carrier.evaluate.bind(carrier);
+
+    let firstPass = true;
+
+    (carrier as unknown as { evaluate: (target: unknown, arg?: unknown) => Promise<unknown> }).evaluate =
+      async (target: unknown, arg?: unknown): Promise<unknown> => {
+
+        if(firstPass) {
+
+          firstPass = false;
+
+          throw new Error("Attempted to use detached Frame.");
+        }
+
+        return carrierEvaluate(target as never, arg as never);
+      };
+
+    const page = await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    assert.equal(world.carrierResolves, 2, "the carrier was resolved again rather than reused");
+    assert.equal(page, world.opened[0]?.page, "and the second pass opened the tab");
+    assert.equal(world.createdOptions.length, 0, "nothing was created the plain way");
+  });
+
+  test("closes a tab that landed in the wrong window, retries once, and abandons the anchor with a warning when the second lands wrong too", async () => {
+
+    /* The placement confirmation is the whole of what stands between a capture tab and a discovery window, so a tab it rejects is closed rather than handed over.
+     * A wrong window is evidence the carrier was wrong, which earns exactly one more resolve; giving the guarantee up after that is the one abandonment an
+     * operator wants to see, so it is the one reported above debug.
+     */
+    const world = makeOpenWorld();
+
+    world.placements = [ false, false ];
+
+    const warnings = await captureWarnings(async () => {
+
+      assert.equal(await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) }), world.createdPages[0], "the plainly created page comes back");
+    });
+
+    assert.equal(world.opened.length, 2, "two opens, one per pass");
+    assert.deepEqual(world.opened.map((tab) => tab.closed), [ true, true ], "and both tabs were closed rather than handed over");
+    assert.equal(world.carrierResolves, 2, "the carrier was resolved once per pass");
+    assert.equal(warnings.length, 1, "the abandonment is reported once");
+    assert.match(warnings[0]?.message ?? "", /Chrome chose the window for it/, "naming what happened in its place");
+  });
+
+  test("keeps the tab the second pass placed correctly, and reports nothing", async () => {
+
+    // The other half of the retry: one wrong window is no reason to give the guarantee up, and a pass that lands right hands its tab over with the selection
+    // returned exactly as an uncontested open would.
+    const world = makeOpenWorld();
+
+    world.placements = [ false, true ];
+
+    const warnings = await captureWarnings(async () => {
+
+      assert.equal(await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) }), world.opened[1]?.page, "the second pass's tab is what comes back");
+    });
+
+    assert.equal(world.opened[0]?.closed, true, "the tab that landed in the wrong window was closed");
+    assert.equal(world.opened[1]?.closed, false, "the one that landed right was kept");
+    assert.equal(world.fixture.tabs.find((tab) => tab.id === 7)?.active, true, "and the tab that had the selection has it back");
+    assert.equal(warnings.length, 0, "nothing was abandoned, so nothing is reported");
+  });
+
+  test("falls back at debug when the capture extension cannot be reached at all", async () => {
+
+    // Extension trouble must not become a new way for an establishment to fail: the caller needs a page, and a page created the plain way is still a page. The
+    // turn never begins, so nothing is resolved, opened, or reported.
+    const world = makeOpenWorld();
+
+    const warnings = await captureWarnings(async () => {
+
+      const deps: SharedWindowTabDeps = {
+
+        ...makeOpenDeps(world),
+        getExtensionPage: async (): Promise<Page> => { throw new Error("The capture extension is not loaded."); }
+      };
+
+      assert.equal(await openSharedWindowTab(world.browser, { deps }), world.createdPages[0], "the plainly created page comes back");
+    });
+
+    assert.equal(world.carrierResolves, 0, "no carrier was resolved");
+    assert.equal(world.fixture.timeline.length, 0, "and the extension was never spoken to");
+    assert.equal(warnings.length, 0, "an unreachable extension degrades quietly");
+  });
+
+  test("stops at its ceiling, closes the tab it opened, and lets the next holder begin", async () => {
+
+    /* A turn that lapsed and carried on could still land its tab, give the selection back, or close a tab after the queue had moved on to the next holder, which
+     * is the alternating-holders race the executor exists to prevent - so this ceiling CANCELS the turn rather than detaching it the way a hold's does. The
+     * target wait here ends only when the ceiling's signal fires, which is what makes this row a test of that signal reaching the wait at all.
+     */
+    const world = makeOpenWorld();
+    const queuedFixture = makeFixture();
+
+    world.targetHangs = true;
+
+    const warnings = await captureWarnings(async () => {
+
+      const opening = openSharedWindowTab(world.browser, { ceilingMs: 150, deps: makeOpenDeps(world) });
+      const queued = withTabSelected(queuedFixture.page, async (): Promise<void> => undefined, { clock: makeFakeClock().clock, deps: makeDeps(queuedFixture) });
+
+      assert.equal(await opening, world.createdPages[0], "the caller receives a plainly created page");
+
+      await queued;
+    });
+
+    assert.equal(world.opened[0]?.closed, true, "the tab the lapsed turn opened was closed rather than left in the window");
+    assert.equal(queuedFixture.timeline.at(-1), "update:7", "and the hold behind it ran its own turn to completion");
+    assert.equal(warnings.length, 0, "a lapse degrades at debug like every other path with nothing left to try");
   });
 });

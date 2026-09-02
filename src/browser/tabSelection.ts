@@ -22,11 +22,11 @@
  * not this module's: an extension evaluate has no timeout of its own, and one wedged body would otherwise block every later capture start and fullscreen request
  * for the life of the process, a condition no browser relaunch could clear.
  */
-import { LOG, formatError, realClock } from "../utils/index.ts";
+import type { Browser, Page, Target } from "puppeteer-core";
+import { LOG, evaluateWithAbort, formatError, realClock, timeoutSignal, waitWithTimeout } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
-import type { Page } from "puppeteer-core";
 import { getExtensionPage } from "puppeteer-stream";
 
 /* The extension's options page can reach the chrome.* APIs, and this Node program cannot. Declaring the two namespaces at module scope rather than in the
@@ -54,6 +54,18 @@ export const TAB_NOT_FOUND_MESSAGE = "The capture extension could not find the p
 // The failure when Chrome did not honor the selection. Neither a capture start nor a fullscreen request can proceed against a tab that is not the selected one.
 export const TAB_NOT_SELECTED_MESSAGE = "The capture extension did not select the page's tab.";
 
+// How long an open waits for the tab it asked for to show up as a target. Chrome has already been told to open it, so this bounds an event arriving rather than
+// any work: an open with no target by now is one that produced none.
+const OPEN_TARGET_WAIT_MS = 3000;
+
+// The ceiling on a whole open turn, its one retry included. It sits under the deadline a capture start already runs under, so a turn that lapses still leaves the
+// caller that is waiting on it time to get a page the plain way.
+const OPEN_TURN_CEILING_MS = 8000;
+
+// How many times a turn resolves a carrier and opens against it. The second pass is the retry a wrong-window tab and a carrier that closed under the evaluate
+// both earn: each is evidence about the carrier rather than about the open, so resolving again is the only thing worth doing differently.
+const OPEN_ATTEMPTS = 2;
+
 // Types.
 
 // A tab as the extension reports it. Every field is optional in Chrome's own API, so a read is narrowed before anything depends on it.
@@ -72,6 +84,37 @@ interface ExtensionTab {
 export interface TabSelectionDeps {
 
   readonly getExtensionPage: typeof getExtensionPage;
+}
+
+/**
+ * The collaborators an open runs through: the window topology, and the library lookup this module already talks to.
+ *
+ * A sibling of TabSelectionDeps rather than an extension of it, because TabSelectionDeps has to stay satisfiable by its own default for the three consumers that
+ * take it that way. The two topology functions answer questions about CDP's window table, which this module structurally cannot ask - it speaks to the capture
+ * extension and to nothing else - so they carry no default at all and arrive from a call site that can see both modules.
+ */
+export interface SharedWindowTabDeps {
+
+  // Reports whether a page ended up in the shared window. True when no identity was ever recorded, false when the page's window cannot be read.
+  readonly confirmPlacement: (page: Page) => Promise<boolean>;
+
+  // The library's lookup for the extension's options page. Defaults to the real one.
+  readonly getExtensionPage?: typeof getExtensionPage;
+
+  // Picks the page the open is evaluated on, or null when the browser has none that qualifies.
+  readonly resolveCarrier: (browser: Browser) => Promise<Nullable<Page>>;
+}
+
+/**
+ * Per-call context for an open: how long the whole turn may take, and the collaborators it runs through.
+ */
+export interface OpenSharedWindowTabContext {
+
+  // The ceiling on the whole turn. Defaults to this module's own, which sits under the deadline a capture start runs under.
+  readonly ceilingMs?: number;
+
+  // The topology collaborators and the library lookup.
+  readonly deps: SharedWindowTabDeps;
 }
 
 /**
@@ -115,6 +158,10 @@ const tabIds = new WeakMap<Page, number>();
 
 // The counter behind each identification's title token. It only moves forward, so no two identifications in this process can match one another's marker.
 let nextTitleToken = 0;
+
+// The counter behind each open's nonce. It only moves forward for the same reason the title token's does: two opens must never be able to wait for one another's
+// tab, and the nonce is the whole of what tells them apart.
+let nextOpenNonce = 0;
 
 // The tail of the selection chain. Each hold is queued onto it and replaces it with its own release signal, so the next hold begins when the selection was handed
 // back rather than when the caller before it finished reading its result.
@@ -250,6 +297,53 @@ async function identifyTab(page: Page, extension: Page): Promise<number> {
 }
 
 /**
+ * Hands the selection back to the tab that had it before this module took it.
+ *
+ * Three readings, three answers: the tab this module selected is still the selected one, so the tab that was selected before gets it back; something else is
+ * selected, so whoever moved it since - a user clicking a tab, login mode opening its page - chose more recently and their choice stands; or the tab cannot be
+ * read at all, which means it has gone and nothing of ours is holding the selection either way. Every path a selection is taken on comes back through here, so
+ * the hold and the open give the tab back on identical terms.
+ * @param extension - The extension's options page.
+ * @param selectedId - The tab this module selected.
+ * @param previousId - The tab that was selected before, when the window had one.
+ */
+async function returnSelection(extension: Page, selectedId: number, previousId: number | undefined): Promise<void> {
+
+  if((previousId === undefined) || (previousId === selectedId)) {
+
+    return;
+  }
+
+  let stillSelected = true;
+
+  try {
+
+    stillSelected = (await readTab(extension, selectedId)).active === true;
+  } catch(error) {
+
+    LOG.debug("browser:lifecycle", "The capture extension could not re-read the tab before returning the selection: %s.", formatError(error));
+  }
+
+  if(!stillSelected) {
+
+    return;
+  }
+
+  try {
+
+    await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), previousId);
+
+    // The tab handed the selection back can be another stream's capture tab, which is the activation the report matters most for. It sits inside the try so an
+    // update that never happened is never announced.
+    reportActivation(previousId);
+  } catch(error) {
+
+    // The tab that was selected before may have closed while the selection was held, and there is nothing else to return the selection to.
+    LOG.debug("browser:lifecycle", "The capture extension could not return the selection to the tab that had it: %s.", formatError(error));
+  }
+}
+
+/**
  * Runs a body with a page's tab selected in its window, and hands back the tab that was selected before it afterwards.
  *
  * Holds are serialized: this queues onto the chain, and the hold that follows begins when this one has given the selection back - not when this caller has
@@ -352,46 +446,6 @@ async function hold<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, conte
       }
     };
 
-    /* Hands the selection back. Three readings, three answers: this page's tab is still the selected one, so the tab that was selected before the hold gets it
-     * back; something else is selected, so whoever moved it since - a user clicking a tab, login mode opening its page - chose more recently and their choice
-     * stands; or the tab cannot be read at all, which means the page has gone and nothing of ours is holding the selection either way.
-     */
-    const giveBack = async (): Promise<void> => {
-
-      if((previousId === undefined) || (previousId === id)) {
-
-        return;
-      }
-
-      let stillSelected = true;
-
-      try {
-
-        stillSelected = (await readTab(extension, id)).active === true;
-      } catch(error) {
-
-        LOG.debug("browser:lifecycle", "The capture extension could not re-read the tab before returning the selection: %s.", formatError(error));
-      }
-
-      if(!stillSelected) {
-
-        return;
-      }
-
-      try {
-
-        await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), previousId);
-
-        // The tab handed the selection back can be another stream's capture tab, which is the activation the report matters most for. It sits inside the try so
-        // an update that never happened is never announced.
-        reportActivation(previousId);
-      } catch(error) {
-
-        // The tab that was selected before may have closed while the hold ran, and there is nothing else to return the selection to.
-        LOG.debug("browser:lifecycle", "The capture extension could not return the selection to the tab that had it: %s.", formatError(error));
-      }
-    };
-
     try {
 
       await selectTab();
@@ -441,10 +495,236 @@ async function hold<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, conte
       }
     } finally {
 
-      await giveBack();
+      await returnSelection(extension, id, previousId);
     }
   } finally {
 
+    released.resolve();
+  }
+}
+
+// Opening.
+
+/**
+ * Opens a page as a tab of the shared browser window, and hands the selection straight back to the tab that had it.
+ *
+ * The open belongs here because the open IS a selection change. Chrome picks the window for a plain background page and skips a minimized one, so a capture tab
+ * created while the shared window rests minimized beside a discovery window takes root in the discovery window instead and keeps that window alive long past the
+ * walk it was opened for. The one anchor Chrome honors in every window state is the opener relationship: a window.open evaluated on a page of the shared window
+ * opens its tab in that window, minimized or not, and restores the window on the way in (measured 2026-08-31, both window states).
+ *
+ * Running it as a turn on this module's executor closes two races rather than one. chrome.tabCapture records whichever tab is selected and page creation runs
+ * outside the capture lock, so a bare open could land between a concurrent stream's re-assert and its recording start and put a blank tab on that stream's
+ * recording; and two overlapping opens on one page silently lose all but the first, because a page carries a single transient activation. Serialized turns make
+ * both unrepresentable rather than unlikely.
+ *
+ * Two id spaces meet at this call and are never compared. The window identity a placement is confirmed against belongs to CDP's table, and this module never sees
+ * it - it arrives as an injected answer of true or false. Every id this module reads or writes itself, the tab that was selected and the tab that gets it back,
+ * is the capture extension's.
+ *
+ * Three side effects belong to somebody else. The tab arrives selected, which is why the selection goes back inside this same turn. The open restores a minimized
+ * window, which the window-visibility policy settles afterwards. And the give-back's activation report re-affirms whichever tab regains the selection, so when
+ * that is another stream's capture page its composition wobbles for about a second until the re-affirm ladder lands - the same self-healing wobble a capture
+ * start already causes once, now possible a second time at page creation.
+ * @param browser - The browser to open the tab in.
+ * @param context - The turn's ceiling and the collaborators it runs through.
+ * @returns The opened page, or a page created the plain way when the anchor could not be had.
+ */
+export async function openSharedWindowTab(browser: Browser, context: OpenSharedWindowTabContext): Promise<Page> {
+
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const released = Promise.withResolvers<void>();
+
+  // The open queues onto the same chain a hold does, and the chain advances on the release signal for the same reason: the next holder begins when this turn has
+  // genuinely finished with the selection.
+  const run = selectionQueue.then(async () => openTurn(browser, context, released));
+
+  selectionQueue = released.promise;
+
+  return run;
+}
+
+/**
+ * Opens the tab under the selection, gives the selection back, and settles - degrading to a plain background page whenever the anchor cannot be had.
+ * @param browser - The browser to open the tab in.
+ * @param context - The turn's ceiling and collaborators.
+ * @param released - The signal the executor chains the next turn on, settled once this turn has genuinely finished.
+ * @returns The page, opened as a tab of the shared window or created plainly.
+ */
+async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, released: PromiseWithResolvers<void>): Promise<Page> {
+
+  const { ceilingMs = OPEN_TURN_CEILING_MS, deps } = context;
+  const { confirmPlacement, getExtensionPage: lookup = getExtensionPage, resolveCarrier } = deps;
+
+  // The fragment the opened tab wears, and the whole of what tells it from any other tab. Chrome reports a fragment on the target verbatim, so the target that
+  // turns up wearing this one is this turn's and nobody else's.
+  const nonce = "prismcast-open-" + String(++nextOpenNonce);
+  const nonceUrl = "about:blank#" + nonce;
+
+  /* The turn's one ceiling. It is expressed as a signal because that is the form the target wait takes, and it reaches every other await through the bound below.
+   * It CANCELS rather than detaching, which is the opposite of what a hold's ceiling does and deliberately so: a hold's body belongs to its caller and is left to
+   * finish, while a detached open could still land its tab, give the selection back, or close a tab after the queue had already moved on to the next holder -
+   * the alternating-holders race this executor exists to make unrepresentable.
+   */
+  const lapse = new Error("The capture extension's window did not take a new tab within " + String(ceilingMs) + " ms.");
+  const deadline = realClock.now() + ceilingMs;
+  const ceiling = timeoutSignal(ceilingMs, lapse);
+  const bounded = async <T>(work: Promise<T>): Promise<T> => waitWithTimeout(work, Math.max(1, deadline - realClock.now()), lapse);
+
+  // The tab this turn opened, for as long as there is one that might still need closing.
+  let opened: Nullable<Page> = null;
+
+  /* Closes the tab an abandoned open produced. The target-timeout path holds no page at all, so the tab is looked up among the browser's pages by the nonce its
+   * URL still carries: a tab left behind here is one nothing registered, which means the staleness sweep never judges it and it would sit in the window for the
+   * life of the browser.
+   */
+  const closeOpenedTab = async (): Promise<void> => {
+
+    const tab = opened ?? (await browser.pages()).find((page) => page.url().includes(nonce)) ?? null;
+
+    opened = null;
+
+    if(!tab || tab.isClosed()) {
+
+      return;
+    }
+
+    try {
+
+      await tab.close();
+    } catch(error) {
+
+      LOG.debug("browser:lifecycle", "The tab an abandoned open produced could not be closed: %s.", formatError(error));
+    }
+  };
+
+  /* Creates the page the plain way, which is where every degradation ends: no carrier, an open Chrome refused, a spent retry, a lapsed turn, or an extension this
+   * module could not reach at all. That last one is why the fallback exists rather than a throw - extension trouble must not become a new way for an
+   * establishment to fail, because the page still has to exist either way. Giving the guarantee up after the retry was spent is the one case an operator wants to
+   * see, so it is the one case reported above debug.
+   */
+  const fallback = async (reason: string, retriesSpent: boolean): Promise<Page> => {
+
+    if(retriesSpent) {
+
+      LOG.warn("A capture tab could not be opened in PrismCast's own browser window, so Chrome chose the window for it.", { reason });
+    } else {
+
+      LOG.debug("browser:lifecycle", "A capture tab was created without the shared window's opener anchor: %s.", reason);
+    }
+
+    return browser.newPage({ background: true });
+  };
+
+  try {
+
+    const extension = await bounded(lookup(browser));
+
+    /* Why the anchor was given up, when it was given up before both passes were spent. A reason set inside the loop is a degradation with nothing left to try, so
+     * it reports at debug; falling out of the loop with none set means the carrier was resolved twice and the tab still did not land in the shared window, which
+     * is the one abandonment an operator wants to see.
+     */
+    let declined: Nullable<string> = null;
+
+    for(let attempt = 1; attempt <= OPEN_ATTEMPTS; attempt++) {
+
+      // eslint-disable-next-line no-await-in-loop -- Each pass is a fresh resolve and open, and the second only runs because the first told us the carrier was wrong.
+      const carrier = await bounded(resolveCarrier(browser));
+
+      if(!carrier) {
+
+        declined = "no page of the shared window was available to open from";
+
+        break;
+      }
+
+      let previousId: number | undefined;
+
+      try {
+
+        /* The window's own selected tab, read exactly the way a hold reads it: the carrier names its tab, the tab names its window, and the window names the tab
+         * that will want the selection back. Every id in this block is the capture extension's, which is the only table this module is ever allowed to reason in.
+         */
+        // eslint-disable-next-line no-await-in-loop -- The carrier read belongs to the pass that resolved it.
+        const carrierTab = await bounded(readTab(extension, await bounded(identifyTab(carrier, extension))));
+
+        if(carrierTab.windowId === undefined) {
+
+          throw new Error(TAB_NOT_FOUND_MESSAGE);
+        }
+
+        // eslint-disable-next-line no-await-in-loop -- The previous selection has to be read before this pass's open, not before the loop.
+        const [previous] = await bounded(extension.evaluate((target: number) => chrome.tabs.query({ active: true, windowId: target }), carrierTab.windowId));
+
+        previousId = previous?.id;
+
+        // A blocked open answers with a null window rather than throwing, so the return value is read rather than assumed. Chrome runs with popup blocking off,
+        // which leaves a null answer as evidence about the carrier's own state.
+        // eslint-disable-next-line no-await-in-loop -- The open is the pass.
+        if(!(await bounded(evaluateWithAbort(carrier, (target: string): boolean => window.open(target, "_blank") !== null, [nonceUrl])))) {
+
+          declined = "the page the open was evaluated on refused it";
+
+          break;
+        }
+      } catch(error) {
+
+        if(error === lapse) {
+
+          throw error;
+        }
+
+        // A carrier can close between the moment it was resolved and the moment the open is evaluated on it, which is the one failure another resolve can answer.
+        LOG.debug("browser:lifecycle", "The page an open was to be evaluated on could not carry it: %s.", formatError(error));
+
+        continue;
+      }
+
+      // eslint-disable-next-line no-await-in-loop -- The tab this pass opened is what this pass then confirms.
+      const target = await browser.waitForTarget((candidate: Target): boolean => candidate.url() === nonceUrl,
+        { signal: ceiling.signal, timeout: OPEN_TARGET_WAIT_MS });
+
+      // eslint-disable-next-line no-await-in-loop -- Same pass, same tab.
+      const page = await bounded(target.page());
+
+      if(!page) {
+
+        throw new Error("The capture extension's window produced a tab with no page behind it.");
+      }
+
+      opened = page;
+
+      // eslint-disable-next-line no-await-in-loop -- The confirmation is what decides whether this pass was the last one.
+      if(!(await bounded(confirmPlacement(page)))) {
+
+        // eslint-disable-next-line no-await-in-loop -- A tab in the wrong window is closed before the next pass opens another.
+        await closeOpenedTab();
+
+        continue;
+      }
+
+      /* The tab arrived selected, so the selection goes back inside this same turn rather than being left for the capture start that follows. Identifying the tab
+       * first is what makes the give-back's three readings exact, and it is work the capture start would otherwise do moments later against this same page.
+       */
+      // eslint-disable-next-line no-await-in-loop -- The give-back closes the pass that took the selection.
+      await bounded(returnSelection(extension, await bounded(identifyTab(page, extension)), previousId));
+
+      opened = null;
+
+      return page;
+    }
+
+    await closeOpenedTab();
+
+    return await fallback(declined ?? "the tab did not open in PrismCast's own browser window", declined === null);
+  } catch(error) {
+
+    await closeOpenedTab();
+
+    return await fallback((error === lapse) ? lapse.message : formatError(error), false);
+  } finally {
+
+    ceiling.cancel();
     released.resolve();
   }
 }

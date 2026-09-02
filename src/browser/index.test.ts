@@ -14,6 +14,8 @@
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
  *   - pickCarrierPage / isCarrierPage (the one rule for a page whose session may carry a command aimed at the shared window)
+ *   - noteSharedWindow / resolveSharedWindowCarrier / confirmSharedWindowPlacement (the shared window's recorded identity, and the two topology answers the
+ *     tab-selection executor is given so an opener-anchored tab can be placed and confirmed)
  *   - mirrorPlacement (the pure derivation from a window's placement to the bounds a window opened beside it is created with)
  *   - createDiscoveryPage (the own-window guide page, driven through a recording browser double)
  *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue and an injected clock)
@@ -27,10 +29,10 @@
  */
 import type { Browser, Page } from "puppeteer-core";
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory,
-  findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab,
-  installActivationHeal, isBrowserConnected, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement, pickCarrierPage,
-  registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+import { buildLaunchOptions, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface,
+  ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab,
+  installActivationHeal, isBrowserConnected, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement, noteSharedWindow, pickCarrierPage,
+  registerManagedPage, resolveSharedWindowCarrier, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
@@ -642,30 +644,44 @@ describe("emulateLayoutSurface", () => {
  */
 interface WindowPageStub {
 
+  // The browser the page names as its own, which is the identity the placement confirmation reads its recorded window from. Set by the browser double below.
+  browser: Nullable<Browser>;
+
   page: Page;
+
+  // How many times the page's session was asked which window it sits in, so a row can tell a fresh lookup from a cached answer.
+  windowLookups: number;
   windowReads: number;
 }
 
 /**
- * Builds a page double for the carrier and creator rows. A page given no bounds stands in for one whose window cannot be read at all.
- * @param options - Whether the page reports itself closed, and the bounds its CDP session answers with.
+ * Builds a page double for the carrier, creator, and topology rows. A page given no bounds stands in for one whose bounds cannot be read at all, and one marked
+ * unreadable stands in for a target that yields no window id - the answer a closed page and a CDP failure both come back as.
+ * @param options - What the page reports about itself and what its CDP session answers with.
  * @param options.bounds - The bounds the page's session answers Browser.getWindowBounds with. Omitted means the response carries none.
  * @param options.closed - Whether the page reports itself closed.
- * @returns The double plus the count of window reads its session served.
+ * @param options.unreadableWindow - Whether the page's session answers Browser.getWindowForTarget with no window id at all.
+ * @param options.url - The URL the page reports. Defaults to a plain-origin one.
+ * @param options.windowId - The window the page's session says it sits in.
+ * @returns The double plus the counts of the lookups and reads its session served.
  */
-function makeWindowPage(options: { bounds?: Record<string, number | string>; closed?: boolean } = {}): WindowPageStub {
+function makeWindowPage(options: { bounds?: Record<string, number | string>; closed?: boolean; unreadableWindow?: boolean; url?: string;
+  windowId?: number; } = {}): WindowPageStub {
 
-  const stub: WindowPageStub = { page: null as unknown as Page, windowReads: 0 };
+  const stub: WindowPageStub = { browser: null, page: null as unknown as Page, windowLookups: 0, windowReads: 0 };
 
   stub.page = {
 
+    browser: (): Nullable<Browser> => stub.browser,
     createCDPSession: async (): Promise<unknown> => ({
 
       send: async (method: string): Promise<unknown> => {
 
         if(method === "Browser.getWindowForTarget") {
 
-          return { windowId: 7 };
+          stub.windowLookups++;
+
+          return options.unreadableWindow ? {} : { windowId: options.windowId ?? 7 };
         }
 
         if(method === "Browser.getWindowBounds") {
@@ -678,10 +694,29 @@ function makeWindowPage(options: { bounds?: Record<string, number | string>; clo
         return undefined;
       }
     }),
-    isClosed: (): boolean => options.closed ?? false
+    isClosed: (): boolean => options.closed ?? false,
+    url: (): string => options.url ?? "https://example.test/page"
   } as unknown as Page;
 
   return stub;
+}
+
+/**
+ * Builds a browser double over a set of page doubles and tells each page which browser owns it, which is what lets the placement confirmation reach the window
+ * this process recorded for that browser. Each row builds its own, so one row's recorded identity is never another's.
+ * @param stubs - The page doubles the browser reports, in the order it reports them.
+ * @returns The browser double.
+ */
+function makeTopologyBrowser(stubs: WindowPageStub[]): Browser {
+
+  const browser = { pages: async (): Promise<Page[]> => stubs.map((stub) => stub.page) } as unknown as Browser;
+
+  for(const stub of stubs) {
+
+    stub.browser = browser;
+  }
+
+  return browser;
 }
 
 /**
@@ -766,6 +801,131 @@ describe("pickCarrierPage", () => {
 
     assert.equal(pickCarrierPage([ ownWindow.page, makeWindowPage({ closed: true }).page ]), null, "no candidate qualifies");
     assert.equal(pickCarrierPage([]), null, "an empty list has no candidate either");
+  });
+});
+
+/* The identity is a WeakMap keyed on the browser, so every row here builds its own browser double and its own pages: one row's recorded window can never be
+ * another's, and there is nothing to reset between them.
+ */
+describe("noteSharedWindow, resolveSharedWindowCarrier, and confirmSharedWindowPlacement", () => {
+
+  test("takes the first plain-origin page of the recorded window, passing over own-window, closed, and other-window pages", async () => {
+
+    /* The resolver's whole rule in one row. The open is evaluated on whichever page this answers with, so a page living in a window of its own would anchor the
+     * tab to that window - the exact placement the identity exists to prevent - and a page that has since moved to another window is no better.
+     */
+    const ownWindow = await makeOwnWindowPage();
+    const closed = makeWindowPage({ closed: true });
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const carrier = makeWindowPage({ url: "https://example.test/live" });
+    const resting = makeWindowPage();
+    const browser = makeTopologyBrowser([ ownWindow, closed, elsewhere, carrier, resting ]);
+
+    await noteSharedWindow(browser, resting.page);
+
+    assert.equal(await resolveSharedWindowCarrier(browser), carrier.page, "the first open, shared-window, plain-origin page is the carrier");
+    assert.equal(ownWindow.windowLookups, 0, "a page in a window of its own is never even asked which window that is");
+    assert.equal(closed.windowLookups, 0, "and neither is a closed one");
+    assert.equal(elsewhere.windowLookups, 1, "the page in another window was asked, and passed over on the answer");
+  });
+
+  test("prefers a plain-origin page and takes the capture extension's own options page only when there is no other", async () => {
+
+    /* An open evaluated on the extension's options page is territory nothing has measured, so it is the carrier of last resort rather than the first candidate -
+     * and it would be the first candidate otherwise, because the library opens it at launch and the browser reports its pages oldest first.
+     */
+    const optionsPage = makeWindowPage({ url: "chrome-extension://jjndjgheafjngoipoacpjgeicjeomjli/options.html" });
+    const plain = makeWindowPage();
+    const withPlain = makeTopologyBrowser([ optionsPage, plain ]);
+
+    await noteSharedWindow(withPlain, plain.page);
+
+    assert.equal(await resolveSharedWindowCarrier(withPlain), plain.page, "the plain-origin page wins even though the options page came first");
+
+    const lonely = makeWindowPage({ url: "chrome-extension://jjndjgheafjngoipoacpjgeicjeomjli/options.html" });
+    const withoutPlain = makeTopologyBrowser([lonely]);
+
+    await noteSharedWindow(withoutPlain, lonely.page);
+
+    assert.equal(await resolveSharedWindowCarrier(withoutPlain), lonely.page, "and it is still a carrier when it is the only page there is");
+  });
+
+  test("reports no carrier when every page is closed, lives in its own window, or sits in another one", async () => {
+
+    // The state the open answers by creating its page the plain way. The identity is read from a page that is not among the browser's own, which is what a
+    // resting tab the user closed leaves behind: a recorded window with nothing left in it to open from.
+    const ownWindow = await makeOwnWindowPage();
+    const closed = makeWindowPage({ closed: true });
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const departed = makeWindowPage();
+    const browser = makeTopologyBrowser([ ownWindow, closed, elsewhere ]);
+
+    await noteSharedWindow(browser, departed.page);
+
+    assert.equal(await resolveSharedWindowCarrier(browser), null, "no candidate qualifies");
+    assert.equal(await resolveSharedWindowCarrier(makeTopologyBrowser([])), null, "and a browser reporting no pages has none either");
+  });
+
+  test("takes the first qualifying page when no window was ever recorded, and confirms any placement", async () => {
+
+    /* With nothing recorded there is nothing to contradict a placement with, so both answers go advisory: an anchor to some window of the browser's is still
+     * better than letting Chrome choose one, and a confirmation that could only ever answer "unknown" would refuse every tab there is.
+     */
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const browser = makeTopologyBrowser([elsewhere]);
+
+    assert.equal(await resolveSharedWindowCarrier(browser), elsewhere.page, "the first qualifying page is the carrier, whatever window it is in");
+    assert.equal(elsewhere.windowLookups, 0, "and it is not asked which window that is");
+    assert.equal(await confirmSharedWindowPlacement(elsewhere.page), true, "a placement there is nothing to check against is confirmed");
+  });
+
+  test("asks a candidate's session which window it is in once, and answers from the cache afterwards", async () => {
+
+    /* The lookup attaches a CDP session the shared helper does not detach, so a resolver that re-read every candidate on every tune would leave one behind on
+     * each launch-era page every time. The count is what makes that a fact rather than an intention.
+     */
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const carrier = makeWindowPage();
+    const browser = makeTopologyBrowser([ elsewhere, carrier ]);
+
+    await noteSharedWindow(browser, carrier.page);
+
+    await resolveSharedWindowCarrier(browser);
+    await resolveSharedWindowCarrier(browser);
+
+    assert.equal(elsewhere.windowLookups, 1, "the page that did not qualify was asked once across both resolves");
+    assert.equal(carrier.windowLookups, 1, "and the one that did was asked when the identity was recorded and never again");
+  });
+
+  test("confirms a page in the recorded window, and refuses one in another window or one whose window cannot be read", async () => {
+
+    /* The refusal on an unreadable window is the deliberate half. The shared lookup reports nothing for a closed page, an empty response, and a CDP failure
+     * alike, and reading any of those as a confirmation would confirm a wrong-window tab in exactly the case this check exists for.
+     */
+    const anchor = makeWindowPage();
+    const inWindow = makeWindowPage();
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const unreadable = makeWindowPage({ unreadableWindow: true });
+    const browser = makeTopologyBrowser([ anchor, inWindow, elsewhere, unreadable ]);
+
+    await noteSharedWindow(browser, anchor.page);
+
+    assert.equal(await confirmSharedWindowPlacement(inWindow.page), true, "a page in the recorded window is confirmed");
+    assert.equal(await confirmSharedWindowPlacement(elsewhere.page), false, "a page in another window is refused");
+    assert.equal(await confirmSharedWindowPlacement(unreadable.page), false, "and so is a page whose window cannot be read at all");
+  });
+
+  test("records nothing when the page it reads the identity from cannot name a window", async () => {
+
+    // An identity recorded from a reading that never happened would refuse every placement afterwards, so an unreadable page leaves both answers advisory.
+    const unreadable = makeWindowPage({ unreadableWindow: true });
+    const elsewhere = makeWindowPage({ windowId: 11 });
+    const browser = makeTopologyBrowser([ unreadable, elsewhere ]);
+
+    await noteSharedWindow(browser, unreadable.page);
+
+    assert.equal(await confirmSharedWindowPlacement(elsewhere.page), true, "with nothing recorded the confirmation stays advisory");
+    assert.equal(await resolveSharedWindowCarrier(browser), unreadable.page, "and the resolver takes the first qualifying page");
   });
 });
 

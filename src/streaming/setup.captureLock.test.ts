@@ -28,7 +28,7 @@ function makeClosedStubPage(): Page {
   } as unknown as Page;
 }
 
-// The injected browser-boundary collaborators. Each newPage hands back a fresh closed stub page, so every recursion sees a dead page. The acquisition must never be
+// The injected browser-boundary collaborators. Each open hands back a fresh closed stub page, so every recursion sees a dead page. The acquisition must never be
 // reached; it throws to make a regression that skipped the isClosed() check surface loudly.
 const deps: CreatePageWithCaptureDeps = {
 
@@ -39,6 +39,7 @@ const deps: CreatePageWithCaptureDeps = {
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeClosedStubPage() } as unknown as Browser),
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
+  openSharedWindowTab: async (): Promise<Page> => makeClosedStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* The closed-page path never reaches the establishment's re-affirmation. */ },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
