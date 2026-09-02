@@ -89,7 +89,7 @@ export function generateThemeStyles(): string {
     // Stream row tint colors - subtle background tints for health status.
     "  --stream-tint-buffering: rgba(243, 156, 18, 0.08);",
     "  --stream-tint-recovering: rgba(230, 126, 34, 0.08);",
-    "  --stream-tint-stalled: rgba(230, 126, 34, 0.12);",
+    "  --stream-tint-stalled: rgba(231, 76, 60, 0.12);",
     "  --stream-tint-error: rgba(192, 57, 43, 0.1);",
 
     // Badge colors.
@@ -229,9 +229,9 @@ export function generateThemeStyles(): string {
     "    --stream-error: #c0392b;",
 
     // Stream row tint colors - slightly stronger for dark backgrounds.
-    "    --stream-tint-buffering: rgba(243, 156, 18, 0.15);",
+    "    --stream-tint-buffering: rgba(241, 196, 15, 0.15);",
     "    --stream-tint-recovering: rgba(230, 126, 34, 0.15);",
-    "    --stream-tint-stalled: rgba(230, 126, 34, 0.2);",
+    "    --stream-tint-stalled: rgba(231, 76, 60, 0.2);",
     "    --stream-tint-error: rgba(192, 57, 43, 0.2);",
 
     // Badge colors - adjusted for dark backgrounds.
