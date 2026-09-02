@@ -8,7 +8,7 @@
  * likewise not unit-tested in this file (see the explanatory block comment below).
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { handleMpegTsStream, resolveMpegTsInitSource } from "./mpegts.ts";
+import { handleMpegTsStream, initSegmentChangesPipeline, resolveMpegTsInitSource } from "./mpegts.ts";
 import { makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { setChannelStreamId, terminateStream } from "./lifecycle.ts";
@@ -204,6 +204,35 @@ describe("resolveMpegTsInitSource (T14)", () => {
   });
 });
 
+describe("initSegmentChangesPipeline", () => {
+
+  test("a connection primed with nothing ends on any initialization at all", () => {
+
+    /* The native fallback direction. A pass-through connection was primed with no initialization because its source carried none, so the first initialization to
+     * take effect says the stream now produces fMP4 that a video/mpeg socket cannot carry, whatever those bytes happen to be.
+     */
+    assert.equal(initSegmentChangesPipeline(null, Buffer.from("ftyp+moov")), true, "a pass-through connection ends on the first initialization to take effect");
+  });
+
+  test("a byte-identical initialization changes nothing, and the comparison reads content rather than identity", () => {
+
+    /* The property the whole design rests on: a replacement whose encoder came back with the same parameters leaves every connection alone. The copy is what
+     * makes the row meaningful - a comparison written against object identity would report a change here and end a connection that had no reason to end.
+     */
+    const primed = Buffer.from("ftyp+moov");
+
+    assert.equal(initSegmentChangesPipeline(primed, Buffer.from(primed)), false, "a same-parameter replacement leaves the connection undisturbed");
+  });
+
+  test("an initialization whose bytes differ ends the connection", () => {
+
+    /* The replacement direction. The connection's output was primed for one set of decoder parameters, and fragments built against another would not play, so
+     * the connection ends and the player reconnects into the new pipeline.
+     */
+    assert.equal(initSegmentChangesPipeline(Buffer.from("ftyp+moov"), Buffer.from("ftyp+moov2")), true, "differing bytes put the connection on a new pipeline");
+  });
+});
+
 describe("serveMpegTsStream: container-aware branch selection", () => {
 
   test("a native fMP4 stream with no video init reaches the remux guard rather than the pass-through", async () => {
@@ -256,6 +285,74 @@ describe("serveMpegTsStream: container-aware branch selection", () => {
     } finally {
 
       terminateStream(entry.id, "ts-native-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("a pass-through connection stops delivering and ends itself the first time an initialization takes effect", async () => {
+
+    /* The native fallback read end to end through a real connection. A pass-through was built for a source that carries its codec configuration in every segment,
+     * so the moment a capture's first moov lands the stream is producing fMP4 this connection cannot carry. The row reads its counts in sequence: delivery is
+     * live before the announcement, the announcement ends the connection, nothing is delivered behind that end, and a second announcement adds nothing.
+     */
+    const entry = makeRegistryEntry({ channelName: "ts-flip-channel", identity: makeNativeIdentity({ nativeContainer: "ts" }) });
+
+    entry.hls.signalInitSegmentReady();
+    registerStream(entry);
+    setChannelStreamId("ts-flip-channel", entry.id);
+
+    try {
+
+      const { end, req, res, triggerReqEvent, write } = makeReqRes({ ip: "192.168.1.50", params: { name: "ts-flip-channel" } });
+
+      await handleMpegTsStream(req, res);
+
+      entry.hls.segmentEmitter.emit("segment", "segment0.m4s", Buffer.from("segment-zero"));
+      assert.equal(write.mock.calls.length, 1, "delivery is live while the pipeline beneath the connection is unchanged");
+
+      entry.hls.segmentEmitter.emit("initSegment", Buffer.from("ftyp+moov"));
+      assert.equal(end.mock.calls.length, 1, "the stream started producing fMP4, so the connection ended itself");
+
+      entry.hls.segmentEmitter.emit("segment", "segment1.m4s", Buffer.from("segment-one"));
+      assert.equal(write.mock.calls.length, 1, "and no segment is delivered behind the end");
+
+      entry.hls.segmentEmitter.emit("initSegment", Buffer.from("ftyp+moov-again"));
+      assert.equal(end.mock.calls.length, 1, "a second announcement adds nothing, because the end runs exactly once");
+
+      triggerReqEvent("close");
+      assert.equal(entry.mpegTsClientCount, 0, "and the close that follows reaches cleanup through the request's close event");
+    } finally {
+
+      terminateStream(entry.id, "ts-flip-channel", "test cleanup");
+      unregisterStream(entry.id);
+    }
+  });
+
+  test("termination and a pipeline change share one funnel, so the connection ends exactly once", async () => {
+
+    /* The triggers meeting at the same callback. Termination ends the connection first, and the announcement that follows must add nothing - a second end on
+     * an output already closed is what a funnel with two entrances rather than one would produce.
+     */
+    const entry = makeRegistryEntry({ channelName: "ts-terminate-channel", identity: makeNativeIdentity({ nativeContainer: "ts" }) });
+
+    entry.hls.signalInitSegmentReady();
+    registerStream(entry);
+    setChannelStreamId("ts-terminate-channel", entry.id);
+
+    try {
+
+      const { end, req, res } = makeReqRes({ ip: "192.168.1.50", params: { name: "ts-terminate-channel" } });
+
+      await handleMpegTsStream(req, res);
+
+      entry.hls.segmentEmitter.emit("terminated");
+      assert.equal(end.mock.calls.length, 1, "the terminated event ended the connection");
+
+      entry.hls.segmentEmitter.emit("initSegment", Buffer.from("ftyp+moov"));
+      assert.equal(end.mock.calls.length, 1, "and the pipeline-change trigger found the connection already ending");
+    } finally {
+
+      terminateStream(entry.id, "ts-terminate-channel", "test cleanup");
       unregisterStream(entry.id);
     }
   });

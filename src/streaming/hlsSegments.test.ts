@@ -600,6 +600,46 @@ describe("named init segment storage", () => {
     assert.equal(registryEntry(streamId).hls.initSegmentBytes, afterFirst, "re-storing a reused name is byte-neutral");
     assert.equal(registryEntry(streamId).hls.initSegments.video.size, 1, "no duplicate entry is created");
   });
+
+  test("announces the initialization now in effect whenever the video track's current name changes", () => {
+
+    /* An MPEG-TS remux connection primes from the video track's current initialization and watches this event to learn that the initialization beneath it
+     * changed. The relay re-serves identical bytes under the name already in use when a token rotates, which is nothing a connection can act on, so the
+     * announcement follows the name rather than the store.
+     */
+    const announced: Buffer[] = [];
+    const entry = registryEntry(streamId);
+    const firstInit = Buffer.from("video-init-one");
+    const secondInit = Buffer.from("video-init-two");
+
+    entry.hls.segmentEmitter.on("initSegment", (data) => announced.push(data));
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", firstInit);
+
+    assert.deepEqual(announced, [firstInit], "the first video initialization announces once, carrying its bytes");
+
+    storeNamedInitSegment(streamId, "video", "init-v0.mp4", firstInit);
+
+    assert.equal(announced.length, 1, "re-storing the name already in use announces nothing");
+
+    storeNamedInitSegment(streamId, "video", "init-v1.mp4", secondInit);
+
+    assert.deepEqual(announced, [ firstInit, secondInit ], "a new video name announces again, carrying the initialization now in effect");
+  });
+
+  test("stores an audio initialization without announcing it", () => {
+
+    // The remux path primes from the video track alone and never consumes the relay's audio, so a change of the audio map is nothing a connection could act on.
+    const announced: Buffer[] = [];
+    const entry = registryEntry(streamId);
+
+    entry.hls.segmentEmitter.on("initSegment", (data) => announced.push(data));
+
+    storeNamedInitSegment(streamId, "audio", "init-a0.mp4", Buffer.from("audio-init-one"));
+    storeNamedInitSegment(streamId, "audio", "init-a1.mp4", Buffer.from("audio-init-two"));
+
+    assert.equal(announced.length, 0, "an audio initialization announces nothing");
+  });
 });
 
 describe("findNamedInitSegment", () => {

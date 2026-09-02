@@ -27,6 +27,11 @@ import { getChannelStreamId } from "./lifecycle.ts";
  *
  * Both modes share the same client lifecycle via connectMpegTsClient(): register the client, subscribe to segment events for real-time delivery, write existing
  * segments for catchup, and clean up on disconnect. The header flush for new streams prevents client timeouts during the 4-10+ second startup sequence.
+ *
+ * Every connection follows the pipeline beneath it. A tab replacement installs a fresh capture whose encoder can come back with other parameters, and a native
+ * stream can fall back to capture, which starts producing fMP4 where it produced MPEG-TS. A connection's output was primed for the pipeline it joined, so each
+ * connection watches the stream's initSegment announcement and ends itself when the initialization now in effect is not what it was primed for, letting the
+ * player reconnect into the new pipeline through its own retry. A byte-identical initialization carries the same decoder parameters and changes nothing.
  */
 
 // Public Endpoint Handler.
@@ -161,6 +166,21 @@ export function resolveMpegTsInitSource(stream: StreamRegistryEntry): Nullable<B
   return getNamedInitSegment(stream.id, videoInitName) ?? null;
 }
 
+/**
+ * Reports whether the initialization segment now in effect puts a connection on a pipeline its output cannot carry. A connection primed with nothing is a
+ * pass-through of an MPEG-TS source, so any initialization at all means the stream now produces fMP4 that a video/mpeg socket cannot carry. A primed connection is
+ * on a new pipeline when the bytes differ, which is the same byte equality the segmenter reads its own discontinuity from. Byte-identical means the same decoder
+ * parameters, so a same-parameter replacement leaves the connection undisturbed.
+ *
+ * @param primed - The initialization segment the connection's output was primed with, or null when it was primed with none.
+ * @param incoming - The initialization segment now in effect.
+ * @returns True when the connection is on a pipeline its output cannot carry.
+ */
+export function initSegmentChangesPipeline(primed: Nullable<Buffer>, incoming: Buffer): boolean {
+
+  return (primed === null) || !incoming.equals(primed);
+}
+
 // Internal Helpers.
 
 /**
@@ -195,6 +215,14 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
     return;
   }
 
+  /* Resolve the FFmpeg binary before the stream is read. From the registry read onward the mode branch, the priming, the spawn, and the subscription all run in
+   * one synchronous frame, so an initialization stored after that frame reaches the connection as an initSegment event rather than landing unseen between the
+   * priming and the subscription. The resolver is memoized, so a pass-through connection pays one cached read for a value it never uses.
+   *
+   * The fallback to "ffmpeg" leaves spawn() to a PATH lookup when the resolver found no binary; the spawn then fails with ENOENT if PATH is also empty.
+   */
+  const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
+
   // Get the stream from the registry.
   const stream = getStream(streamId);
 
@@ -219,14 +247,15 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
     connectMpegTsClient({
 
-      logLabel: "Native MPEG-TS",
-      onStreamTerminated: () => {
+      endDelivery: () => {
 
         if(!res.writableEnded) {
 
           res.end();
         }
       },
+      logLabel: "Native MPEG-TS",
+      primedInit: null,
       req,
       res,
       stream,
@@ -243,12 +272,10 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
     return;
   }
 
-  /* Resolve the initialization segment once for this connection, before the guard. The guard tests this captured value and the write below sends the same one,
-   * so no store change across the FFmpeg-path resolution between them can split what the guard validated from what the remuxer actually receives.
+  /* Resolve the initialization segment once for this connection. The one value serves the guard below, the priming the remuxer receives, and every comparison
+   * the connection makes against a later announcement, so they can never disagree about which initialization this connection was built for.
    *
-   * This does mean a new client connecting while a same-mode initialization re-store lands in that gap remuxes against the initialization the guard saw rather
-   * than the freshest one - one connection, one store behind. Reading the store twice trades that for the mirror problem, a guard-validated buffer swapped
-   * before the write, so neither shape avoids the race; capturing is chosen because the guard and the write can never disagree with each other.
+   * Nothing asynchronous separates this read from the subscription that follows, so a re-store can only land once the connection is already subscribed to hear it.
    */
   const initSource = resolveMpegTsInitSource(stream);
 
@@ -274,9 +301,6 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
 
   const streamLog = LOG.withStreamId(stream.streamIdStr);
 
-  // Resolved FFmpeg binary path. Falls back to "ffmpeg" so spawn() defers to a PATH lookup if the resolver couldn't find one; the spawn then fails with ENOENT if
-  // PATH is also empty.
-  const ffmpegBin = (await resolveFFmpegPath()) ?? "ffmpeg";
   const remuxer = spawnMpegTsRemuxer(ffmpegBin, (error) => {
 
     streamLog.debug("streaming:mpegts", "MPEG-TS remuxer error: %s.", formatError(error));
@@ -304,15 +328,16 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
       // Write the init segment first - FFmpeg needs the ftyp and moov boxes before it can process any media segments.
       remuxer.stdin.write(initSource);
     },
+    endDelivery: () => {
+
+      remuxer.stdin.end();
+    },
     extraCleanup: () => {
 
       remuxer.kill();
     },
     logLabel: "MPEG-TS",
-    onStreamTerminated: () => {
-
-      remuxer.stdin.end();
-    },
+    primedInit: initSource,
     req,
     res,
     stream,
@@ -330,9 +355,11 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
  *
  * @param options.beforeCatchup - Optional callback invoked after event subscription and headers but before writing existing segments. Used by the capture path to
  *   pipe FFmpeg output and write the init segment before catchup begins.
+ * @param options.endDelivery - Callback invoked when the stream terminates and when the pipeline beneath the connection changes. The remux path ends FFmpeg's
+ *   stdin so the remuxer flushes and its stdout closes the response; the pass-through path ends the response.
  * @param options.extraCleanup - Optional callback invoked during cleanup for mode-specific teardown (e.g., killing the FFmpeg remuxer).
  * @param options.logLabel - Label for connect/disconnect debug messages (e.g., "MPEG-TS", "Native MPEG-TS").
- * @param options.onStreamTerminated - Callback invoked when the stream emits a "terminated" event. Capture mode ends FFmpeg stdin; native mode ends the response.
+ * @param options.primedInit - The initialization segment the connection's output was primed with, or null when it was primed with none.
  * @param options.req - Express request object.
  * @param options.res - Express response object.
  * @param options.stream - The stream registry entry.
@@ -340,11 +367,12 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
  * @param options.writeSegment - Callback to write segment data to the output target (FFmpeg stdin or HTTP response).
  * @returns Cleanup function. The capture path wires this to the FFmpeg error handler; the native path does not need it.
  */
-function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTerminated, req, res, stream, streamId, writeSegment }: {
+function connectMpegTsClient({ beforeCatchup, endDelivery, extraCleanup, logLabel, primedInit, req, res, stream, streamId, writeSegment }: {
   beforeCatchup?: () => void;
+  endDelivery: () => void;
   extraCleanup?: () => void;
   logLabel: string;
-  onStreamTerminated: () => void;
+  primedInit: Nullable<Buffer>;
   req: Request;
   res: Response;
   stream: StreamRegistryEntry;
@@ -366,10 +394,13 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
   const sentSegments = new Set<string>();
   let cleanedUp = false;
 
+  // Set when the connection is being brought to a graceful end, so delivery stops at once while the output drains and the close that follows runs the cleanup.
+  let ending = false;
+
   // Handler for new media segments. Writes each segment to the output target and updates the last access timestamp to prevent idle timeout.
   const onSegment = (filename: string, data: Buffer): void => {
 
-    if(cleanedUp || sentSegments.has(filename)) {
+    if(ending || cleanedUp || sentSegments.has(filename)) {
 
       return;
     }
@@ -379,15 +410,40 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
     updateLastAccess(streamId);
   };
 
-  // Handler for stream termination.
-  const onTerminated = (): void => {
+  /* Brings the connection to a graceful end exactly once, whichever event asks first. Delivery stops the moment the flag is set, because a write
+   * behind an output that is already draining would raise and take the remuxer down mid-flush. The output's own close then reaches cleanup through the request's
+   * close event, exactly as a client disconnect does, so the client accounting and the unsubscription keep their one path.
+   */
+  const endConnection = (): void => {
 
-    if(cleanedUp) {
+    if(ending || cleanedUp) {
 
       return;
     }
 
-    onStreamTerminated();
+    ending = true;
+    endDelivery();
+  };
+
+  // Handler for stream termination.
+  const onTerminated = (): void => {
+
+    endConnection();
+  };
+
+  /* Handler for the initialization now in effect, which the stream announces on every store whichever segmenter produced it. This connection's output was primed
+   * for one pipeline, so an announcement that does not match that priming means the pipeline beneath the connection changed and the output cannot carry
+   * what the stream produces. A byte-identical initialization carries the same decoder parameters, so a same-parameter replacement is ignored.
+   */
+  const onInitSegment = (data: Buffer): void => {
+
+    if(ending || cleanedUp || !initSegmentChangesPipeline(primedInit, data)) {
+
+      return;
+    }
+
+    streamLog.info("Ending the %s client connection - the pipeline beneath it changed, and the player reconnects to pick up the new parameters.", logLabel);
+    endConnection();
   };
 
   // Cleanup function that is safe to call more than once. The cleanedUp flag ensures the underlying work runs only once regardless of which event triggers it first
@@ -418,6 +474,7 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
 
     unregisterClient(streamId, clientAddress, "mpegts");
 
+    stream.hls.segmentEmitter.off("initSegment", onInitSegment);
     stream.hls.segmentEmitter.off("segment", onSegment);
     stream.hls.segmentEmitter.off("terminated", onTerminated);
     extraCleanup?.();
@@ -432,6 +489,7 @@ function connectMpegTsClient({ beforeCatchup, extraCleanup, logLabel, onStreamTe
   });
 
   // Subscribe to segment events BEFORE writing existing segments to avoid missing any segments added during the catchup phase.
+  stream.hls.segmentEmitter.on("initSegment", onInitSegment);
   stream.hls.segmentEmitter.on("segment", onSegment);
   stream.hls.segmentEmitter.on("terminated", onTerminated);
 

@@ -247,7 +247,7 @@ export function storeInitSegment(streamId: number, data: Buffer): void {
 
   stream.hls.initSegment = data;
 
-  // Notify MPEG-TS consumers that the init segment is available.
+  // Announce the initialization now in effect, which the MPEG-TS connections watch to learn that the pipeline beneath them changed.
   stream.hls.segmentEmitter.emit("initSegment", data);
 
   if(isFirstInit) {
@@ -294,14 +294,17 @@ export function getInitSegment(streamId: number): Buffer | undefined {
  * relay mints. They are deliberately separate from the single-slot storeInitSegment above: capture owns its encoder and overwrites one init in place, while a
  * relayed fMP4 source can change its init mid-stream and must keep the outgoing one fetchable until the last segment referencing it leaves the window.
  *
- * The "initSegment" emitter event is deliberately not emitted here. Its only subscribers are the capture path's MPEG-TS consumers, which read the single slot;
- * a native fMP4 client resolves its init through resolveMpegTsInitSource instead, so emitting would notify no one.
+ * The "initSegment" emitter event announces the initialization now in effect for whichever store holds it: the capture path's single slot on every store, and
+ * this store on each change of the video track's current name, the track the MPEG-TS remux path primes from. A remux connection compares the announced bytes
+ * against the initialization its output was primed for and ends itself on a difference, so a relay whose upstream map changes mid-stream sends its clients back
+ * through their own reconnect and into the new parameters.
  */
 
 /**
  * Stores a named initialization segment for one track and updates that track's current served name. Readiness is signaled from the VIDEO track's first init
  * only: the consumer that waits on it is the MPEG-TS remux path, which resolves the video init, so signaling on an audio-first arrival would release a client
- * before the buffer it needs exists.
+ * before the buffer it needs exists. The announcement of a changed initialization follows the same track for the same consumer: only a change of the video
+ * track's current name is something a primed remux connection can act on, so an audio store stays silent.
  *
  * The byte counter moves by the delta against whatever was already stored under this filename, so re-storing a name whose bytes the relay is reusing is
  * byte-neutral and safe to call more than once. That differs from storeSegmentToMap's always-add shape, which is correct there because its callers only ever
@@ -327,9 +330,21 @@ export function storeNamedInitSegment(streamId: number, track: InitSegmentTrack,
   const existing = initSegments.get(filename);
   const isFirstVideoInit = (track === "video") && (stream.hls.initSegments.video.size === 0);
 
+  /* A change of the video track's current name is the moment the initialization in effect changes for the consumer that primes from it, the MPEG-TS remux path.
+   * The relay mints a new name only for genuinely new bytes: it resolves a name by content before storing, and its pruning always retains the current name, so a
+   * token rotation that re-serves identical bytes reuses the name already in use and announces nothing. The connection's own comparison ignores an announcement
+   * whose bytes match its priming, so only a real parameter change ends a connection.
+   */
+  const videoInitChanges = (track === "video") && (stream.hls.currentInitNames.video !== filename);
+
   initSegments.set(filename, data);
   stream.hls.initSegmentBytes += data.length - (existing?.length ?? 0);
   stream.hls.currentInitNames[track] = filename;
+
+  if(videoInitChanges) {
+
+    stream.hls.segmentEmitter.emit("initSegment", data);
+  }
 
   if(isFirstVideoInit) {
 
@@ -437,6 +452,10 @@ export function clearNativeInitState(streamId: number): void {
   stream.hls.initSegments.audio.clear();
   stream.hls.initSegments.video.clear();
   stream.hls.initSegmentBytes = 0;
+
+  /* The clear announces nothing. The capture pipeline that takes the relay's place announces its own initialization through storeInitSegment, and that
+   * announcement is what sends a connected remux client back through its reconnect.
+   */
   stream.hls.currentInitNames.audio = null;
   stream.hls.currentInitNames.video = null;
 }
