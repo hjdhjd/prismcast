@@ -44,6 +44,9 @@ let surfacePages: Page[] = [];
 let focusHookPages: Page[] = [];
 let reaffirmPages: Page[] = [];
 
+// The options each page creation was asked for, so the pin can read that the capture page opens in the background rather than taking the user's tab selection.
+let newPageOptions: unknown[] = [];
+
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
  * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
  * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder);
@@ -87,7 +90,15 @@ const deps: CreatePageWithCaptureDeps = {
 
     return { height: 1080, width: 1920 };
   },
-  getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
+  getCurrentBrowser: async (): Promise<Browser> => ({
+
+    newPage: async (options?: unknown): Promise<Page> => {
+
+      newPageOptions.push(options);
+
+      return makeStubPage();
+    }
+  } as unknown as Browser),
   installCaptureFocusHook: async (page: Page): Promise<void> => {
 
     depsCalls.push("installCaptureFocusHook");
@@ -116,6 +127,7 @@ beforeEach(() => {
 
   depsCalls = [];
   focusHookPages = [];
+  newPageOptions = [];
   overlayCalls = [];
   pageGotos = [];
   reaffirmPages = [];
@@ -196,5 +208,6 @@ describe("createPageWithCapture - window visibility ordering", () => {
     assert.equal(surfacePages[0], result.page, "the surface is emulated on the very page the establishment captured and handed back");
     assert.equal(focusHookPages[0], result.page, "the activation heal is installed on that same page");
     assert.equal(reaffirmPages[0], result.page, "the closing re-affirmation is issued against that same page");
+    assert.deepEqual(newPageOptions, [{ background: true }], "the capture page opens behind whatever the window is showing, its own capture start selecting it");
   });
 });

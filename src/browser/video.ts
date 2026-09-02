@@ -11,6 +11,7 @@ import type { OverlayPhase } from "./consent.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
 import { markDomainAuthRequired } from "../config/health.ts";
 import { startOverlayHandling } from "./consent.ts";
+import { withTabSelected } from "./tabSelection.ts";
 
 /* These functions manage the video element lifecycle for streaming capture. The key challenges we solve:
  *
@@ -87,10 +88,32 @@ export async function injectVideoSelector(page: Page): Promise<void> {
   });
 }
 
-// Fullscreen activation queue. Chrome's Fullscreen API requires the target tab to be in the foreground (focused). When multiple streams start concurrently, each
-// tab must call page.bringToFront() before requestFullscreen() - but without serialization, tabs steal foreground from each other, causing silent failures. We
-// serialize the bringToFront -> triggerFullscreen -> verify sequence using a promise chain so each tab gets exclusive foreground access during fullscreen activation.
+/* Fullscreen activation queue. Chrome grants the Fullscreen API to the tab its window has selected, so a sequence has to run with its own tab selected, and two
+ * streams activating at once would otherwise take the selection from each other mid-sequence. The queue serializes the sequences of concurrent streams and bounds
+ * each at ten seconds; inside a queue entry, the sequence holds the tab selection for its whole run through the selection executor and gives it back when it
+ * returns. The wrapper's lapse ends the queue entry, while the sequence's own steps are each bounded and finish the hold.
+ */
 let fullscreenQueue: Promise<void> = Promise.resolve();
+
+/* The ceiling on a fullscreen sequence's hold of the tab selection. A sequence is three attempts of roughly 1.2 s - the retry click, the styles, the trigger with
+ * its 300 ms settle, the 200 ms verify wait, the 500 ms retry delay - plus the escalation tail, so about 4.4 s on a responsive page. Six seconds leaves that room
+ * and still bounds a slow page: past the ceiling the selection goes back and the sequence's remaining steps run deselected into its own escalation and warning,
+ * and a capture start queued behind it keeps at least four seconds of its default ten-second deadline.
+ */
+const FULLSCREEN_SELECTION_CEILING_MS = 6000;
+
+/**
+ * The collaborator the fullscreen path composes on: the tab-selection primitive a native sequence runs inside. It is injected as a default parameter for the same
+ * reason CreatePageWithCaptureDeps is in streaming/setup.ts - a test drives the sequence and observes the selection it takes with no live Chrome, while production
+ * uses the real primitive this module already imports.
+ */
+export interface FullscreenDeps {
+
+  readonly withTabSelected: typeof withTabSelected;
+}
+
+// The production collaborator.
+export const defaultFullscreenDeps: FullscreenDeps = { withTabSelected };
 
 /**
  * Video state information returned by getVideoState(). Contains all properties needed to assess playback health.
@@ -1113,21 +1136,24 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
 
 /**
  * Ensures the video is displayed fullscreen with verification and retry logic. For profiles that use the native Fullscreen API, this serializes through a
- * promise-chain mutex so only one tab activates fullscreen at a time - Chrome requires the tab to be in the foreground for requestFullscreen() to succeed, and
- * concurrent tabs would steal foreground from each other. When skipNativeFullscreen is true (monitor recovery), the mutex is bypassed entirely.
+ * promise-chain mutex so only one tab activates fullscreen at a time - Chrome grants the API to the tab its window has selected, and concurrent tabs would take
+ * the selection from each other. When skipNativeFullscreen is true (monitor recovery), the mutex is bypassed entirely.
  * @param page - The Puppeteer page object for keyboard input.
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
  * @param selectorType - The video selector type for finding the element.
  * @param skipNativeFullscreen - When true, skips Fullscreen API-specific actions (click-for-activation, native fullscreen verification, API retries). CSS styling
  *   and keyboard shortcuts still run. Used during monitor recovery where user activation is unavailable and click-for-activation can interfere with playback.
+ * @param deps - The injected tab-selection collaborator; defaults to defaultFullscreenDeps. Threaded so a test observes the selection a sequence takes without a
+ *   live Chrome, the same collaborator-injection boundary CreatePageWithCaptureDeps uses in streaming/setup.ts.
  */
 export async function ensureFullscreen(
   page: Page,
   context: Frame | Page,
   profile: ResolvedSiteProfile,
   selectorType: VideoSelectorType,
-  skipNativeFullscreen?: boolean
+  skipNativeFullscreen?: boolean,
+  deps: FullscreenDeps = defaultFullscreenDeps
 ): Promise<void> {
 
   const useNativeFullscreen = profile.useRequestFullscreen && !skipNativeFullscreen;
@@ -1148,16 +1174,16 @@ export async function ensureFullscreen(
     return runFullscreenSequence(page, context, profile, selectorType, false);
   }
 
-  // Native fullscreen path. Serialize through the fullscreen queue so only one tab at a time goes through bringToFront -> requestFullscreen -> verify. Without
-  // this, concurrent streams steal foreground from each other and all fullscreen attempts silently fail.
+  // Native fullscreen path. Serialize through the fullscreen queue so only one tab at a time goes through select -> requestFullscreen -> verify. Without this,
+  // concurrent streams take the selection from each other and all fullscreen attempts silently fail.
   const FULLSCREEN_QUEUE_TIMEOUT = 10000;
 
   fullscreenQueue = fullscreenQueue.then(async () => {
 
     try {
 
-      await waitWithTimeout(runFullscreenSequence(page, context, profile, selectorType, true), FULLSCREEN_QUEUE_TIMEOUT,
-        new Error("Fullscreen queue entry timed out."));
+      await waitWithTimeout(deps.withTabSelected(page, async (): Promise<void> => runFullscreenSequence(page, context, profile, selectorType, true),
+        { ceilingMs: FULLSCREEN_SELECTION_CEILING_MS }), FULLSCREEN_QUEUE_TIMEOUT, new Error("Fullscreen queue entry timed out."));
     } catch(error) {
 
       LOG.warn("Fullscreen queue entry failed: %s.", formatError(error));
@@ -1182,7 +1208,8 @@ export async function ensureFullscreen(
  * @param context - The frame or page containing the video element.
  * @param profile - The site profile indicating fullscreen method.
  * @param selectorType - The video selector type for finding the element.
- * @param useNativeFullscreen - Whether to use the native Fullscreen API (bringToFront, click-for-activation, API verification).
+ * @param useNativeFullscreen - Whether to use the native Fullscreen API (click-for-activation, API verification). The caller selects the tab for the whole
+ *   sequence when this is set, because Chrome grants the API to the selected tab.
  */
 async function runFullscreenSequence(
   page: Page,
@@ -1211,13 +1238,6 @@ async function runFullscreenSequence(
     // Apply CSS styles to make the video fill the viewport.
     // eslint-disable-next-line no-await-in-loop
     await applyVideoStyles(context, selectorType);
-
-    // Bring the tab to the foreground before requesting fullscreen. Chrome requires the tab to be focused for requestFullscreen() to succeed.
-    if(useNativeFullscreen) {
-
-      // eslint-disable-next-line no-await-in-loop
-      await page.bringToFront();
-    }
 
     // Trigger native fullscreen using the site's preferred method (keyboard shortcut or JavaScript API).
     // eslint-disable-next-line no-await-in-loop
@@ -1289,11 +1309,9 @@ async function runFullscreenSequence(
     await page.keyboard.type("f");
   }
 
-  // Re-trigger the Fullscreen API after aggressive styling - the aggressive CSS ensures the video fills the viewport, and the API call hides site UI. Bring the
-  // tab to foreground first, since other tabs may have stolen focus while we were escalating.
+  // Re-trigger the Fullscreen API after aggressive styling - the aggressive CSS ensures the video fills the viewport, and the API call hides site UI.
   if(useNativeFullscreen) {
 
-    await page.bringToFront();
     await triggerFullscreen(page, context, profile, selectorType);
   }
 

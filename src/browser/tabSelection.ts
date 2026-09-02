@@ -1,0 +1,379 @@
+/* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
+ *
+ * tabSelection.ts: PrismCast's conversation with the capture extension about which tab its window has selected.
+ *
+ * Two things need a page's tab to be the selected tab of its window for a while. Starting a tab capture is one: chrome.tabCapture.capture records whichever tab is
+ * selected, and the tab id the extension receives is only logged. A site's Fullscreen API request is the other: Chrome grants fullscreen to the selected tab. Both
+ * needs are momentary, and both end with the user entitled to the tab they had.
+ *
+ * Puppeteer's own way of selecting a tab, page.bringToFront and the CDP Page.bringToFront command behind it, also activates the window at the operating-system
+ * level and pulls Chrome over whatever application the user is working in. The capture extension's chrome.tabs.update selects a tab without touching the window's
+ * focus, so this module speaks to the extension rather than to the page - which is also why it resolves the extension's own options page through the library's
+ * resolver on every hold rather than taking a page as a parameter: video.ts consumes this primitive and must never import the library itself.
+ *
+ * A window has exactly one selected tab, so this module is also the one place that decides who holds it. Every selection runs through one executor, the shape
+ * windowSync.ts gives the window's presentation: holds run one after another, each takes the selection, runs its caller's work, and hands the previous tab back
+ * before the next hold begins, so two holders can never alternate the selection under each other. Every hold carries a ceiling, because the work a hold wraps is
+ * not this module's: an extension evaluate has no timeout of its own, and one wedged body would otherwise block every later capture start and fullscreen request
+ * for the life of the process, a condition no browser relaunch could clear.
+ */
+import { LOG, formatError, realClock } from "../utils/index.ts";
+import { CONFIG } from "../config/index.ts";
+import type { Clock } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
+import type { Page } from "puppeteer-core";
+import { getExtensionPage } from "puppeteer-stream";
+
+/* The extension's options page can reach the chrome.* APIs, and this Node program cannot. Declaring the two namespaces at module scope rather than in the
+ * project's global declarations keeps them spellable in exactly the one file whose evaluate callbacks execute inside that page, which is the same reason
+ * tabCapture.ts declares the extension's recording entry points at its own module scope.
+ */
+declare const chrome: {
+
+  tabs: {
+
+    get(tabId: number): Promise<ExtensionTab>;
+    query(query: { active?: boolean; lastFocusedWindow?: boolean; windowId?: number }): Promise<ExtensionTab[]>;
+    update(tabId: number, properties: { active: boolean }): Promise<ExtensionTab>;
+  };
+  windows: { update(windowId: number, properties: { focused: boolean }): Promise<unknown> };
+};
+
+// Constants.
+
+// The failure when the extension cannot name the tab a page is showing in. Both messages carry the phrase "capture extension" on purpose: streaming/recovery.ts
+// classifies a capture-start failure as capture infrastructure by substring, which is what earns a 503 back-off and a re-verification of the browser rather than a
+// 500 the client would not retry.
+export const TAB_NOT_FOUND_MESSAGE = "The capture extension could not find the page's tab.";
+
+// The failure when Chrome did not honor the selection. Neither a capture start nor a fullscreen request can proceed against a tab that is not the selected one.
+export const TAB_NOT_SELECTED_MESSAGE = "The capture extension did not select the page's tab.";
+
+// Types.
+
+// A tab as the extension reports it. Every field is optional in Chrome's own API, so a read is narrowed before anything depends on it.
+interface ExtensionTab {
+
+  readonly active?: boolean;
+  readonly id?: number;
+  readonly title?: string;
+  readonly url?: string;
+  readonly windowId?: number;
+}
+
+/**
+ * The library value this module talks to, injected so a test can drive a whole hold without a browser.
+ */
+export interface TabSelectionDeps {
+
+  readonly getExtensionPage: typeof getExtensionPage;
+}
+
+/**
+ * The selected tab handed to a hold's body: what it is, and the way to be sure of it again at a moment of the body's own choosing.
+ */
+export interface SelectedTab {
+
+  readonly id: number;
+
+  // Re-takes the selection: re-selects this page's tab if something deselected it during the hold, and re-focuses its window if another window took the focus. A
+  // body whose work spans several round trips calls this before each one rather than trusting a selection taken at the start.
+  readonly reassert: () => Promise<void>;
+
+  readonly url: Nullable<string>;
+  readonly windowId: number;
+}
+
+/**
+ * Per-call context for a hold: how long the selection may be held, the clock that bound runs on, and the collaborators it talks through.
+ */
+export interface WithTabSelectedContext {
+
+  // The ceiling on this hold. Defaults to the deadline a capture start already runs under, so the default hold cannot outlive the caller waiting on it.
+  readonly ceilingMs?: number;
+
+  // The time port the ceiling runs on. Defaults to realClock; tests inject a fake.
+  readonly clock?: Clock;
+
+  // The library collaborators. Defaults to the real ones.
+  readonly deps?: TabSelectionDeps;
+}
+
+// The production collaborators.
+export const defaultTabSelectionDeps: TabSelectionDeps = { getExtensionPage };
+
+/* The tab id each page was identified as, cached for the page's life. A tab id survives navigation, so one identification per page is enough - while the window
+ * that tab sits in can change under us at any time (a user can drag a tab into another window), which is why the window is read fresh at every hold and never
+ * cached beside the id.
+ */
+const tabIds = new WeakMap<Page, number>();
+
+// The counter behind each identification's title token. It only moves forward, so no two identifications in this process can match one another's marker.
+let nextTitleToken = 0;
+
+// The tail of the selection chain. Each hold is queued onto it and replaces it with its own release signal, so the next hold begins when the selection was handed
+// back rather than when the caller before it finished reading its result.
+let selectionQueue: Promise<void> = Promise.resolve();
+
+// Selection.
+
+/**
+ * Reads a tab's current state from the extension.
+ * @param extension - The extension's options page.
+ * @param tabId - The tab to read.
+ * @returns The tab as the extension reports it.
+ */
+async function readTab(extension: Page, tabId: number): Promise<ExtensionTab> {
+
+  return extension.evaluate((id: number) => chrome.tabs.get(id), tabId);
+}
+
+/**
+ * Names the tab a page is showing in, caching the answer for the page's life.
+ *
+ * The extension cannot see CDP target ids, and a capture page is a fresh about:blank when it is first selected - its capture start precedes its navigation - so
+ * there is nothing on the page to match against. A unique token written into the page's own title is something both sides can see: the page sets it, the extension
+ * finds the tab wearing it, and the title it replaced goes back in a finally so a navigated page is never left carrying the marker.
+ * @param page - The page to identify.
+ * @param extension - The extension's options page.
+ * @returns The page's tab id.
+ * @throws When no tab wears the token, or the tab that does carries no id.
+ */
+async function identifyTab(page: Page, extension: Page): Promise<number> {
+
+  const cached = tabIds.get(page);
+
+  if(cached !== undefined) {
+
+    return cached;
+  }
+
+  const token = "prismcast-tab-" + String(++nextTitleToken);
+
+  const replaced = await page.evaluate((marker: string): string => {
+
+    const previousTitle = document.title;
+
+    document.title = marker;
+
+    return previousTitle;
+  }, token);
+
+  try {
+
+    const tabs = await extension.evaluate(() => chrome.tabs.query({}));
+    const match = tabs.find((tab) => tab.title === token);
+
+    if(match?.id === undefined) {
+
+      throw new Error(TAB_NOT_FOUND_MESSAGE);
+    }
+
+    tabIds.set(page, match.id);
+
+    return match.id;
+  } finally {
+
+    try {
+
+      await page.evaluate((title: string): void => { document.title = title; }, replaced);
+    } catch(error) {
+
+      // Restoring the title is housekeeping, and a page that has gone away mid-identification has taken its title with it. Letting this reach the caller would
+      // replace the identification's own verdict with a note about the cleanup.
+      LOG.debug("browser:lifecycle", "The page's title could not be restored after identifying its tab: %s.", formatError(error));
+    }
+  }
+}
+
+/**
+ * Runs a body with a page's tab selected in its window, and hands back the tab that was selected before it afterwards.
+ *
+ * Holds are serialized: this queues onto the chain, and the hold that follows begins when this one has given the selection back - not when this caller has
+ * finished reading its result, which is what lets a body that outlives its ceiling keep running without holding the selection or the queue.
+ * @param page - The page whose tab the body needs selected.
+ * @param body - The work to run while the tab is selected. It receives the selected tab.
+ * @param context - The ceiling, clock, and collaborators. Defaults to the capture start's own deadline on the real clock with the production collaborators.
+ * @returns Whatever the body resolves with, even when the hold's ceiling lapsed first.
+ * @throws The body's own rejection, or a selection failure of this module's own.
+ */
+export async function withTabSelected<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, context: WithTabSelectedContext = {}): Promise<T> {
+
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+  const released = Promise.withResolvers<void>();
+
+  /* The chain advances on the release signal rather than on this call's own promise. Those are different moments whenever a body outlives the ceiling: chaining
+   * the queue on the caller's promise would either hold the selection until the body finally settled, or hand the caller a result the body never produced.
+   * hold() settles the release in a finally on every path, including the paths where the selection was never taken, so the chain cannot wedge on a failure.
+   */
+  const run = selectionQueue.then(async () => hold(page, body, context, released));
+
+  selectionQueue = released.promise;
+
+  return run;
+}
+
+/**
+ * Takes the selection, runs the body under it, and gives the previous tab back.
+ * @param page - The page whose tab is selected.
+ * @param body - The work to run while it is selected.
+ * @param context - The ceiling, clock, and collaborators.
+ * @param released - The signal the executor chains the next hold on, settled as soon as the selection has been handed back.
+ * @returns Whatever the body resolves with.
+ */
+async function hold<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, context: WithTabSelectedContext,
+  released: PromiseWithResolvers<void>): Promise<T> {
+
+  const { ceilingMs = CONFIG.streaming.navigationTimeout, clock = realClock, deps = defaultTabSelectionDeps } = context;
+
+  try {
+
+    const extension = await deps.getExtensionPage(page.browser());
+    const id = await identifyTab(page, extension);
+    const tab = await readTab(extension, id);
+
+    // The window is read fresh on every hold, and the fields the selection depends on are narrowed here rather than asserted downstream, so SelectedTab's
+    // required fields are earned by a read that actually carried them.
+    if((tab.id === undefined) || (tab.windowId === undefined)) {
+
+      throw new Error(TAB_NOT_FOUND_MESSAGE);
+    }
+
+    const windowId = tab.windowId;
+    const [previous] = await extension.evaluate((target: number) => chrome.tabs.query({ active: true, windowId: target }), windowId);
+    const previousId = previous?.id;
+
+    // Whether this hold has already reported another window holding the focus. The correction itself runs as often as it is needed - the selection step and every
+    // re-assert perform it - while one report is what an operator needs to see per hold.
+    let focusReported = false;
+
+    /* Makes this page's window the one Chrome treats as current, and only then. chrome.tabCapture.capture records the active tab of the LAST-FOCUSED window, so a
+     * tab that is merely active in a window Chrome does not consider current is not selected in the sense either caller needs - a site popup holding the focus
+     * would have its own tab recorded instead. This is the one deliberate raise in the module, taken only when the read names a tab in another window.
+     */
+    const focusWindow = async (): Promise<void> => {
+
+      const [focused] = await extension.evaluate(() => chrome.tabs.query({ active: true, lastFocusedWindow: true }));
+
+      if((focused?.id === undefined) || (focused.windowId === undefined) || (focused.windowId === windowId)) {
+
+        return;
+      }
+
+      if(!focusReported) {
+
+        focusReported = true;
+
+        LOG.warn("Another browser window held the focus while a tab was selected for capture, so PrismCast brought its own window forward.",
+          { focusedTab: focused.url ?? null });
+      }
+
+      await extension.evaluate((target: number) => chrome.windows.update(target, { focused: true }), windowId);
+    };
+
+    // Selects this page's tab and confirms Chrome honored it. A selection Chrome did not take is a failure to report rather than one to run a capture start or a
+    // fullscreen request against.
+    const selectTab = async (): Promise<void> => {
+
+      await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), id);
+
+      const confirmed = await readTab(extension, id);
+
+      if(confirmed.active !== true) {
+
+        throw new Error(TAB_NOT_SELECTED_MESSAGE);
+      }
+    };
+
+    /* Hands the selection back. Three readings, three answers: this page's tab is still the selected one, so the tab that was selected before the hold gets it
+     * back; something else is selected, so whoever moved it since - a user clicking a tab, login mode opening its page - chose more recently and their choice
+     * stands; or the tab cannot be read at all, which means the page has gone and nothing of ours is holding the selection either way.
+     */
+    const giveBack = async (): Promise<void> => {
+
+      if((previousId === undefined) || (previousId === id)) {
+
+        return;
+      }
+
+      let stillSelected = true;
+
+      try {
+
+        stillSelected = (await readTab(extension, id)).active === true;
+      } catch(error) {
+
+        LOG.debug("browser:lifecycle", "The capture extension could not re-read the tab before returning the selection: %s.", formatError(error));
+      }
+
+      if(!stillSelected) {
+
+        return;
+      }
+
+      try {
+
+        await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), previousId);
+      } catch(error) {
+
+        // The tab that was selected before may have closed while the hold ran, and there is nothing else to return the selection to.
+        LOG.debug("browser:lifecycle", "The capture extension could not return the selection to the tab that had it: %s.", formatError(error));
+      }
+    };
+
+    try {
+
+      await selectTab();
+      await focusWindow();
+
+      const selected: SelectedTab = {
+
+        id,
+        reassert: async (): Promise<void> => {
+
+          if((await readTab(extension, id)).active !== true) {
+
+            await selectTab();
+          }
+
+          await focusWindow();
+        },
+        url: tab.url ?? null,
+        windowId
+      };
+
+      /* The ceiling is raced against the body rather than enforced by cancelling it, because the body belongs to the caller and this module has no way to stop it.
+       * The lapse error is this hold's own object, so a lapse is told from the body's own rejection by identity rather than by message.
+       */
+      const lapse = new Error("The tab selection was held longer than " + String(ceilingMs) + " ms.");
+      const running = body(selected);
+
+      try {
+
+        return await clock.waitWithTimeout(running, ceilingMs, lapse);
+      } catch(error) {
+
+        if(error !== lapse) {
+
+          throw error;
+        }
+
+        LOG.warn("A tab selection was held past its ceiling, so the selection was returned while the operation that took it continues.", { ceilingMs });
+
+        /* The body keeps running detached and its result still reaches the caller...what ends here is the hold, so the next capture start or fullscreen request
+         * is not queued behind work this module cannot bound. The promise is returned unawaited on purpose: awaiting it here would put the wait INSIDE the try,
+         * so the give-back in the finally would sit behind the very body the ceiling just gave up on, and the selection would be held for exactly as long as if
+         * there were no ceiling at all.
+         */
+        // eslint-disable-next-line @typescript-eslint/return-await -- Awaiting here would defer the give-back until the body settles, defeating the ceiling.
+        return running;
+      }
+    } finally {
+
+      await giveBack();
+    }
+  } finally {
+
+    released.resolve();
+  }
+}

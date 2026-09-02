@@ -2,10 +2,10 @@
  *
  * tabCapture.ts: PrismCast's own conversation with the capture extension.
  *
- * Starting a tab capture is four steps against the browser: bring the page to the front, send the keyboard command that grants the extension its activeTab
- * permission for that page, ask which tab is active, and hand the extension a settings object it turns into a MediaRecorder feeding a WebSocket. Every piece
- * those steps need - the extension's options page, the WebSocket server, the browser launch - is exported by puppeteer-stream, so PrismCast speaks the protocol
- * itself rather than through a convenience wrapper, and three things follow from that.
+ * Starting a tab capture is four steps against the browser: select the page's tab through the capture extension and hold it, send the keyboard command that grants
+ * the extension its activeTab permission for that tab, hand the extension a settings object it turns into a MediaRecorder feeding a WebSocket, and give the tab
+ * that was selected before back. Every piece those steps need - the extension's options page, the WebSocket server, the browser launch - is exported by
+ * puppeteer-stream, so PrismCast speaks the protocol itself rather than through a convenience wrapper, and three things follow from that.
  *
  * There is one capture lock in this process, and streaming/setup.ts owns it. A wrapper that carries a lock of its own would serialize the same work twice, and a
  * rejection escaping such a lock's unguarded section leaves it held for the life of the process - a condition no Chrome restart can clear, because the state is
@@ -13,9 +13,9 @@
  * controls.
  *
  * A rejected start is a retry rather than an outage. Chrome answers a start it cannot serve with "Could not start video source", and that answer is worth one
- * more attempt against a fresh socket index; a second refusal is a real failure carrying the window and active-tab state that explains it. The activeTab grant
- * gets the same treatment: rather than sleeping a fixed interval after the keyboard command and hoping the grant landed, the start is attempted and Chrome's own
- * "has not been invoked for the current page" answer drives a short poll, so a grant that lands immediately costs nothing.
+ * more attempt against a fresh socket index; a second refusal is a real failure carrying the window and selected-tab state that explains it, read while that tab
+ * is still selected. The activeTab grant gets the same treatment: rather than sleeping a fixed interval after the keyboard command and hoping the grant landed,
+ * the start is attempted and Chrome's own "has not been invoked for the current page" answer drives a short poll, so a grant that lands immediately costs nothing.
  *
  * The coupling this module takes on is the extension's protocol, and it is pinned rather than trusted: tabCapture.test.ts fingerprints the three library files
  * this module was written against and derives the settings-object shape from the extension's own source, so a dependency bump that changes either fails the
@@ -30,15 +30,16 @@ import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
 import { PassThrough } from "node:stream";
 import type { Readable } from "node:stream";
+import type { SelectedTab } from "./tabSelection.ts";
 import { readWindowState } from "./cdp.ts";
+import { withTabSelected } from "./tabSelection.ts";
 
-/* The extension's options page publishes these three names on its global scope, and they exist only there. Declaring them at module scope rather than in the
+/* The extension's options page publishes these two names on its global scope, and they exist only there. Declaring them at module scope rather than in the
  * project's global declarations is deliberate: a global START_RECORDING would typecheck anywhere in the Node program and fail only when it ran, while these
  * declarations keep the names spellable in exactly the one file whose evaluate callbacks execute inside that page.
  */
 declare function START_RECORDING(settings: ExtensionRecordingSettings): Promise<void>;
 declare function STOP_RECORDING(index: number): Promise<void>;
-declare const chrome: { tabs: { query(query: { active: boolean }): Promise<{ id?: number; url?: string }[]> } };
 
 // Constants.
 
@@ -57,17 +58,14 @@ export const ACTIVE_TAB_GRANT_PENDING_MESSAGE = "has not been invoked for the cu
 // this means the extension went away underneath a published browser.
 export const EXTENSION_NOT_READY_MESSAGE = "The capture extension is not ready on this browser.";
 
-// The failure when Chrome reports no active tab to capture. tabCapture always targets the active tab, so there is nothing to point the recorder at.
-export const NO_ACTIVE_TAB_MESSAGE = "No active tab was found for capture.";
-
 // How many times a start is attempted before the acquisition fails. Two: the first attempt, and one retry for the source-unavailable answer that a fresh attempt
 // against a fresh socket index has been observed to clear.
 export const CAPTURE_START_ATTEMPTS = 2;
 
 // The cadence between start attempts while Chrome is still reporting the activeTab grant pending, and the ceiling on that wait. A grant that lands with the
 // keyboard command costs one attempt and no wait at all; the ceiling bounds the case where it never lands, so the caller sees Chrome's own message rather than
-// a hang. One attempt is a handful of CDP round trips - the front, the five key events, the tab query, the start - so the ceiling is sized to afford several of
-// them rather than to a multiple of the cadence alone.
+// a hang. One attempt is a handful of CDP round trips - the selection re-assert, the five key events, the start - taken inside a selection held across the whole
+// poll, so the ceiling is sized to afford several of them rather than to a multiple of the cadence alone.
 export const ACTIVE_TAB_GRANT_POLL_MS = 50;
 export const ACTIVE_TAB_GRANT_CEILING_MS = 1000;
 
@@ -150,11 +148,13 @@ export interface CaptureStream extends Readable {
 }
 
 /**
- * The two library values this module talks to, injected so a test can drive the whole acquisition without a browser or a listening socket.
+ * The collaborators this module talks through, injected so a test can drive the whole acquisition without a browser or a listening socket: the two library values
+ * and the tab-selection primitive whose hold the acquisition runs inside.
  */
 export interface TabCaptureDeps {
 
   readonly getExtensionPage: typeof getExtensionPage;
+  readonly withTabSelected: typeof withTabSelected;
   readonly wss: typeof wss;
 }
 
@@ -185,20 +185,31 @@ interface CaptureAttempt {
   readonly stream: PassThrough;
 }
 
-// The active tab a start was aimed at, reduced to the two fields anything here reads.
-interface ActiveTab {
-
-  readonly id: number;
-  readonly url: Nullable<string>;
-}
-
 /* What one attempt produced. A started attempt carries its resources forward; a grant-pending attempt carries only the rejection that said so, because its
  * resources were discarded before this value was returned. Every other rejection throws rather than becoming an outcome.
  */
-type AttemptOutcome = { attempt: CaptureAttempt; kind: "started"; tab: ActiveTab } | { error: unknown; kind: "grant-pending" };
+type AttemptOutcome = { attempt: CaptureAttempt; kind: "started" } | { error: unknown; kind: "grant-pending" };
+
+/**
+ * A start Chrome refused, carrying the state that explains the refusal. The state is read while the capture's tab is still selected, which is the only moment it
+ * describes the conditions the start actually ran under. Chrome's own refusal text is the message, so the capture-infrastructure classifier and the retry's
+ * substring test both keep matching on it.
+ */
+export class CaptureStartRefusedError extends Error {
+
+  readonly diagnostics: { activeTab: Nullable<string>; windowState: Nullable<string> };
+
+  constructor(message: string, diagnostics: { activeTab: Nullable<string>; windowState: Nullable<string> }) {
+
+    super(message);
+
+    this.diagnostics = diagnostics;
+    this.name = "CaptureStartRefusedError";
+  }
+}
 
 // The production collaborators.
-export const defaultTabCaptureDeps: TabCaptureDeps = { getExtensionPage, wss };
+export const defaultTabCaptureDeps: TabCaptureDeps = { getExtensionPage, withTabSelected, wss };
 
 // The socket index each capture publishes under. It only ever moves forward, so no two captures in this process - including two attempts of the same
 // acquisition - can be confused for one another on the shared server.
@@ -290,7 +301,9 @@ function discardAttempt(server: WebSocketServer, attempt: CaptureAttempt): void 
 }
 
 /**
- * Sends the keyboard command the extension's manifest binds, which is what grants it activeTab permission for the page in front.
+ * Sends the keyboard command the extension's manifest binds, which is the extension's documented way of being invoked and grants it activeTab permission for the
+ * selected tab. On current Chrome the allowlist flag the launch passes already grants what this grants - a capture with no command ever sent succeeded, measured
+ * 2026-08-30 - so this is kept as the documented path rather than as the thing that makes capture work, and it is only ever aimed at the tab the hold selected.
  * @param page - The page the capture is being acquired for.
  */
 async function grantActiveTab(page: Page): Promise<void> {
@@ -302,24 +315,6 @@ async function grantActiveTab(page: Page): Promise<void> {
   await page.keyboard.press("KeyY");
   await page.keyboard.up("Shift");
   await page.keyboard.up(modifier);
-}
-
-/**
- * Asks the extension which tab is active. tabCapture always targets the active tab, so this is the tab the recorder will be pointed at.
- * @param extension - The extension's options page.
- * @returns The active tab.
- * @throws When Chrome reports no active tab, or one without an id to capture.
- */
-async function queryActiveTab(extension: Page): Promise<ActiveTab> {
-
-  const [tab] = await extension.evaluate(() => chrome.tabs.query({ active: true }));
-
-  if(tab?.id === undefined) {
-
-    throw new Error(NO_ACTIVE_TAB_MESSAGE);
-  }
-
-  return { id: tab.id, url: tab.url ?? null };
 }
 
 /**
@@ -348,87 +343,72 @@ async function startRecording(extension: Page, attempt: CaptureAttempt, options:
 }
 
 /**
- * Reads the two pieces of state that explain a capture-start refusal. Both are best-effort: a diagnostic that threw would replace the failure it was meant to
- * describe.
- * @param page - The page the capture was being acquired for.
- * @param extension - The extension's options page.
- * @returns The active tab's URL and the window's reported state, either of which may be null when it could not be read.
- */
-async function readAcquisitionDiagnostics(page: Page, extension: Page): Promise<{ activeTab: Nullable<string>; windowState: Nullable<string> }> {
-
-  const windowState = await readWindowState(page);
-
-  let activeTab: Nullable<string> = null;
-
-  try {
-
-    const [tab] = await extension.evaluate(() => chrome.tabs.query({ active: true }));
-
-    activeTab = tab?.url ?? null;
-  } catch(error) {
-
-    LOG.debug("browser:lifecycle", "The active tab could not be read for the capture-start diagnostic: %s.", formatError(error));
-  }
-
-  return { activeTab, windowState };
-}
-
-/**
  * Attempts one start, waiting out an activeTab grant that has not landed yet. The keyboard command that grants the permission is asynchronous, so rather than
  * sleeping a fixed interval and hoping, this attempts the start and reads Chrome's own answer: "has not been invoked for the current page" means ask again on
  * the cadence, anything else is this attempt's verdict. A grant already in place costs exactly one attempt and no wait.
  *
+ * The whole poll runs inside ONE tab selection. Chrome records whichever tab is selected, so the selection has to hold across every attempt, and taking it once
+ * means the user's tab is handed back once rather than flickering per attempt. Each attempt re-asserts the selection before it acts, so a login page opening or a
+ * user's click between attempts is corrected rather than recorded.
+ *
  * Each poll iteration prepares a wholly fresh attempt and discards it before the next, so no listener, socket, or index is ever reused across a refusal.
  * @param page - The page to capture.
  * @param options - What the caller asked the capture for.
- * @param collaborators - The extension page, the socket server, and the clock the cadence runs on.
+ * @param collaborators - The extension page, the socket server, the clock the cadence runs on, and the deps the selection is taken through.
  * @param collaborators.clock - The clock driving the grant cadence.
+ * @param collaborators.deps - The injected collaborators, read for the tab-selection primitive.
  * @param collaborators.extension - The extension's options page.
  * @param collaborators.server - The WebSocket server the extension connects back to.
  * @returns The attempt that started, with the tab it was aimed at.
  * @throws The last grant-pending rejection when the ceiling lapses, or the attempt's own rejection for any other failure.
  */
 async function acquireOnce(page: Page, options: CaptureStreamOptions,
-  collaborators: { clock: Clock; extension: Page; server: WebSocketServer }): Promise<{ attempt: CaptureAttempt; tab: ActiveTab }> {
+  collaborators: { clock: Clock; deps: TabCaptureDeps; extension: Page; server: WebSocketServer }): Promise<{ attempt: CaptureAttempt; tab: SelectedTab }> {
 
-  const { clock, extension, server } = collaborators;
+  const { clock, deps, extension, server } = collaborators;
 
-  const runAttempt = async (): Promise<AttemptOutcome> => {
+  return deps.withTabSelected(page, async (selected: SelectedTab): Promise<{ attempt: CaptureAttempt; tab: SelectedTab }> => {
 
-    const attempt = prepareAttempt(server);
+    const runAttempt = async (): Promise<AttemptOutcome> => {
 
-    try {
+      const attempt = prepareAttempt(server);
 
-      await page.bringToFront();
-      await grantActiveTab(page);
+      try {
 
-      const tab = await queryActiveTab(extension);
+        await selected.reassert();
+        await grantActiveTab(page);
+        await startRecording(extension, attempt, options, selected.id);
 
-      await startRecording(extension, attempt, options, tab.id);
+        return { attempt, kind: "started" };
+      } catch(error) {
 
-      return { attempt, kind: "started", tab };
-    } catch(error) {
+        discardAttempt(server, attempt);
 
-      discardAttempt(server, attempt);
+        if(formatError(error).includes(ACTIVE_TAB_GRANT_PENDING_MESSAGE)) {
 
-      if(formatError(error).includes(ACTIVE_TAB_GRANT_PENDING_MESSAGE)) {
+          return { error, kind: "grant-pending" };
+        }
 
-        return { error, kind: "grant-pending" };
+        /* Every other rejection is this attempt's verdict, and the window state that explains it is only truthful while the capture's tab is still selected -
+         * which is here, inside the hold, rather than after it has been handed back. The read is best-effort by construction, so a diagnostic can never replace
+         * the failure it describes.
+         */
+        const windowState = await readWindowState(page);
+
+        throw new CaptureStartRefusedError(formatError(error), { activeTab: selected.url, windowState });
       }
+    };
 
-      throw toError(error);
+    const outcome = await pollUntil({ cadenceMs: ACTIVE_TAB_GRANT_POLL_MS, ceilingMs: ACTIVE_TAB_GRANT_CEILING_MS, clock, read: runAttempt,
+      until: (result: AttemptOutcome): boolean => result.kind === "started" });
+
+    if(outcome.value.kind === "grant-pending") {
+
+      throw toError(outcome.value.error);
     }
-  };
 
-  const outcome = await pollUntil({ cadenceMs: ACTIVE_TAB_GRANT_POLL_MS, ceilingMs: ACTIVE_TAB_GRANT_CEILING_MS, clock, read: runAttempt,
-    until: (result: AttemptOutcome): boolean => result.kind === "started" });
-
-  if(outcome.value.kind === "grant-pending") {
-
-    throw toError(outcome.value.error);
-  }
-
-  return { attempt: outcome.value.attempt, tab: outcome.value.tab };
+    return { attempt: outcome.value.attempt, tab: selected };
+  });
 }
 
 /**
@@ -487,14 +467,14 @@ function attachCaptureControls(attempt: CaptureAttempt, extension: Page, server:
 /**
  * Acquires a tab capture for a page: one started recording, its chunks arriving as a readable stream, and the two controls that end it.
  *
- * A start Chrome refuses with "Could not start video source" is retried once against a fresh attempt, with the window's reported state and the active tab logged
+ * A start Chrome refuses with "Could not start video source" is retried once against a fresh attempt, with the window's reported state and the selected tab logged
  * so the refusal explains itself. A second refusal, any other rejection, and a refusal arriving after the caller's signal has aborted all fail the acquisition
  * unchanged - there is nothing left to retry into.
  * @param page - The page to capture.
  * @param options - What the capture is asked for.
  * @param context - The clock, collaborators, and caller abort signal. Defaults to the production collaborators on the real clock, with no signal.
  * @returns The started capture.
- * @throws When the extension is not ready, no tab is active, or the start fails on every attempt.
+ * @throws When the extension is not ready, its tab cannot be selected, or the start fails on every attempt.
  */
 export async function acquireCaptureStream(page: Page, options: CaptureStreamOptions,
   context: AcquireCaptureStreamContext = {}): Promise<CaptureStream> {
@@ -522,7 +502,7 @@ export async function acquireCaptureStream(page: Page, options: CaptureStreamOpt
     try {
 
       // eslint-disable-next-line no-await-in-loop -- The attempts are a retry sequence: each has to fail before the next is worth making.
-      const started = await acquireOnce(page, options, { clock, extension, server });
+      const started = await acquireOnce(page, options, { clock, deps, extension, server });
       const stream = attachCaptureControls(started.attempt, extension, server);
 
       /* Both close paths end the recording. The owner's disposer destroys the stream, which emits close; a page that dies takes its capture with it and fires
@@ -545,8 +525,9 @@ export async function acquireCaptureStream(page: Page, options: CaptureStreamOpt
         break;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- The diagnostics describe the refusal that just happened, so they are read before the retry, not alongside it.
-      const diagnostics = await readAcquisitionDiagnostics(page, extension);
+      // The refusal carries the state it was read under, gathered inside the hold while the capture's tab was still the selected one. A refusal that arrives
+      // without that state is one no selection was live for, so its fields are simply absent.
+      const diagnostics = (error instanceof CaptureStartRefusedError) ? error.diagnostics : { activeTab: null, windowState: null };
 
       LOG.warn("Chrome could not start the tab capture on the first attempt; retrying once.",
         { activeTab: diagnostics.activeTab, attempt, elapsedMs: acquisitionElapsed(), windowState: diagnostics.windowState });

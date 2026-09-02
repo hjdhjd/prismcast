@@ -7,7 +7,7 @@
  * builds an instance with recording fakes, and the primitives are held open with deferred promises where the order of "the command was issued" against "the caller's
  * promise resolved" is the thing under assertion - a microtask coincidence would otherwise let a broken drain look correct.
  */
-import { createWindowVisibilitySync, decideForegroundBlank, decideWindowVisibility } from "./windowSync.ts";
+import { createWindowVisibilitySync, decideWindowVisibility } from "./windowSync.ts";
 import { describe, test } from "node:test";
 import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
@@ -69,8 +69,6 @@ interface Harness {
  * an input between passes exactly as production state does.
  * @param options - The resolver behavior and any starting input values.
  * @param options.captureActive - Whether the capture predicate starts out true.
- * @param options.ensureForegroundBlank - Behavior to run in place of fronting the blank tab. Silent by default, so a row that says nothing about the foreground
- * step observes exactly the command log it always did; a row that does care overrides it with one that records.
  * @param options.loginActive - Whether the login predicate starts out true.
  * @param options.minimize - Extra behavior to run after the minimize command is recorded, used to hold a pass open.
  * @param options.resolve - The page resolver, receiving the preferred page and the harness so it can record and steer.
@@ -79,7 +77,6 @@ interface Harness {
  */
 function makeHarness(options: {
   captureActive?: boolean;
-  ensureForegroundBlank?: (harness: Harness) => Promise<void>;
   loginActive?: boolean;
   minimize?: (page: Page, harness: Harness) => Promise<void>;
   resolve?: (preferred: Nullable<Page>, harness: Harness) => Nullable<{ dispose: Nullable<() => Promise<void>>; page: Page }>;
@@ -100,13 +97,6 @@ function makeHarness(options: {
 
   const deps: WindowSyncDeps = {
 
-    ensureForegroundBlank: async (): Promise<void> => {
-
-      if(options.ensureForegroundBlank) {
-
-        await options.ensureForegroundBlank(harness);
-      }
-    },
     hasActiveCaptureStreams: (): boolean => harness.captureActive,
     isLoginModeActive: (): boolean => harness.loginActive,
     isShuttingDown: (): boolean => harness.shuttingDown,
@@ -186,32 +176,6 @@ describe("decideWindowVisibility", () => {
      * and hold the window on screen for streams that have no use for it.
      */
     assert.equal(decideWindowVisibility({ captureActive: false, loginActive: false }), "minimized", "with no reason to be on screen the window minimizes");
-  });
-});
-
-describe("decideForegroundBlank", () => {
-
-  test("capture alone puts the blank tab in front", () => {
-
-    // A selected capture tab is composed from the window's fitted view rather than from the emulated surface, so the blank tab in front is what leaves the
-    // recording whole.
-    assert.equal(decideForegroundBlank({ captureActive: true, loginActive: false }), true, "a running capture wants the blank tab in front");
-  });
-
-  test("login beats capture", () => {
-
-    // The negation this row protects: a user signing in has to see and click the page they are working in, even while a capture runs.
-    assert.equal(decideForegroundBlank({ captureActive: true, loginActive: true }), false, "an authenticating user keeps the foreground");
-  });
-
-  test("login alone leaves the foreground alone", () => {
-
-    assert.equal(decideForegroundBlank({ captureActive: false, loginActive: true }), false, "nothing is being captured, so nothing needs protecting");
-  });
-
-  test("an idle window needs nothing in front", () => {
-
-    assert.equal(decideForegroundBlank({ captureActive: false, loginActive: false }), false, "with no capture running there is no composition to protect");
   });
 });
 
@@ -654,99 +618,5 @@ describe("createWindowVisibilitySync - shutdown and errors", () => {
     await sync();
 
     assert.equal(harness.ops.length, 2, "the run slot was released, so the next trigger drove another pass");
-  });
-});
-
-describe("createWindowVisibilitySync - the foreground blank tab", () => {
-
-  test("fronts the blank tab once a capture-active pass has presented the window, and in that order", async () => {
-
-    /* Fronting a tab inside a minimized window settles nothing, so the foreground step follows the window command rather than racing it. The recorded order is
-     * the pin: an implementation that fronted first, or that never fronted at all, reorders or shortens this log.
-     */
-    const { deps, harness } = makeHarness({
-
-      captureActive: true,
-      ensureForegroundBlank: async (h: Harness): Promise<void> => { h.ops.push("foreground"); }
-    });
-
-    const sync = createWindowVisibilitySync(deps);
-
-    await sync();
-
-    assert.deepEqual(harness.ops, [ "unminimize:default", "foreground" ], "the window is presented first and the blank tab fronted after it, exactly once");
-  });
-
-  test("leaves the foreground alone while login mode is active", async () => {
-
-    // The window still comes on screen - a user is authenticating in it - but the tab they are working in is theirs to keep.
-    const { deps, harness } = makeHarness({
-
-      captureActive: true,
-      ensureForegroundBlank: async (h: Harness): Promise<void> => { h.ops.push("foreground"); },
-      loginActive: true
-    });
-
-    const sync = createWindowVisibilitySync(deps);
-
-    await sync();
-
-    assert.deepEqual(harness.ops, ["unminimize:default"], "the window is presented and the user's tab is left in front");
-  });
-
-  test("fronts nothing on an idle pass", async () => {
-
-    // The complementary control against a gate widened to always: a minimizing window has no composition to protect.
-    const { deps, harness } = makeHarness({
-
-      ensureForegroundBlank: async (h: Harness): Promise<void> => { h.ops.push("foreground"); }
-    });
-
-    const sync = createWindowVisibilitySync(deps);
-
-    await sync();
-
-    assert.deepEqual(harness.ops, ["minimize:default"], "an idle pass minimizes and fronts nothing");
-  });
-
-  test("a failing foreground step ends the loop without rejecting the waiters", async () => {
-
-    // The step runs inside the pass's try, so a browser that refuses to front a tab costs the caller nothing - the same contract the window command carries.
-    const { deps, harness } = makeHarness({
-
-      captureActive: true,
-      ensureForegroundBlank: async (h: Harness): Promise<void> => {
-
-        h.ops.push("foreground");
-
-        throw new Error("synthetic bringToFront failure");
-      }
-    });
-
-    const sync = createWindowVisibilitySync(deps);
-
-    await assert.doesNotReject(() => sync(), "a failed foreground step resolves its waiters rather than rejecting them");
-
-    assert.deepEqual(harness.ops, [ "unminimize:default", "foreground" ], "the step was attempted once and the loop stopped");
-  });
-
-  test("decides the foreground from the pass's own input reads, not from a re-read taken later", async () => {
-
-    /* Both decisions in a pass come from one pair of reads taken at its start. Here login mode turns on while the window command is in flight: the pass-start
-     * reads say capture without login, so the blank tab is fronted, while an implementation that re-read the collaborators for the foreground step would see the
-     * flipped login flag and skip it. The visibility arm is unchanged by the flip, which is what isolates the foreground step's source of truth.
-     */
-    const { deps, harness } = makeHarness({
-
-      captureActive: true,
-      ensureForegroundBlank: async (h: Harness): Promise<void> => { h.ops.push("foreground"); },
-      unminimize: async (_page: Page, h: Harness): Promise<void> => { h.loginActive = true; }
-    });
-
-    const sync = createWindowVisibilitySync(deps);
-
-    await sync();
-
-    assert.deepEqual(harness.ops, [ "unminimize:default", "foreground" ], "the foreground step followed the reads its pass began with");
   });
 });

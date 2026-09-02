@@ -664,7 +664,7 @@ describe("getCachedProviderChannels persisted fallback", () => {
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
  * - selectChannel dispatch into strategy.execute for any of the registered providers (every provider tune flow drives page.evaluate, page.waitForSelector,
- *   page.click, page.bringToFront, page.mouse.click, page.keyboard, etc.).
+ *   page.click, page.mouse.click, page.keyboard, etc.).
  *
  * - selectChannel scroll-to-bottom and scrollSelector/scrollTarget paths (both call page.evaluate, page.waitForSelector, page.keyboard.press).
  *

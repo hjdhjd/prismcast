@@ -271,22 +271,12 @@ export { endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, st
 export { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
 export type { BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
 
-/* The blank tab the presentation policy keeps in front of the capture tabs whenever captures run outside login mode. It is held by reference rather than found by
- * URL, because the pages that would match an about:blank search include ones this application must never front: the capability probe parks its own temporary page
- * there for the life of the browser, and a user is free to open blank tabs of their own.
- *
- * Nothing else caches it, so its whole lifecycle is the re-validation the executor's dependency performs on every pass: a browser relaunch or crash leaves the
- * reference pointing at a page belonging to a browser that is gone, a user closing the tab leaves it closed, and either reading opens another one. Shutdown never
- * reaches it, because the executor abandons the pass before the foreground step.
- */
-let blankUtilityPage: Nullable<Page> = null;
-
 /* The one window-presentation executor for the process lifetime. Its collaborators all live in this module: the registry predicate that says whether capture is
- * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, the blank tab above, and a page resolver built on the supervisor.
+ * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, and a page resolver built on the supervisor.
  *
  * The resolver prefers the page its caller handed over, borrows any page the browser already has open when there is none, and creates a temporary page only when
- * the browser has nothing open at all. That order matters on macOS, where creating a page activates the window - the very thing a minimize pass is trying to undo.
- * A temporary page is the only resolution that carries a dispose, so the executor releases what the resolver created and leaves a borrowed page alone.
+ * the browser has nothing open at all. A temporary page is the only resolution that carries a dispose, so the executor releases what the resolver created and
+ * leaves a borrowed page alone.
  *
  * The instance stays private to this module and every caller reaches it through the exported function just below. That split is what makes the symbol safe to
  * reference at module-evaluation time: a function declaration is hoisted, so the setBrowserAccessors call further down - and any sibling module whose own body
@@ -295,27 +285,6 @@ let blankUtilityPage: Nullable<Page> = null;
  */
 const windowVisibilitySync = createWindowVisibilitySync({
 
-  ensureForegroundBlank: async (): Promise<void> => {
-
-    const browser = supervisor.current();
-
-    if(!browser?.connected) {
-
-      return;
-    }
-
-    /* The reference is re-validated on every pass rather than trusted: a browser relaunch leaves the tab it created behind with the process that owned it, and
-     * the user is free to close it at any time. Both read as a page this browser cannot front, and both are answered by opening another one.
-     */
-    if(!blankUtilityPage || blankUtilityPage.isClosed() || (blankUtilityPage.browser() !== browser)) {
-
-      // Deliberately created in the foreground and deliberately left unmanaged: fronting it is the entire point, and stale page cleanup judges only the pages
-      // stream setup and discovery create. It carries no URL anything matches on either - the reference is what identifies it.
-      blankUtilityPage = await browser.newPage();
-    }
-
-    await blankUtilityPage.bringToFront();
-  },
   hasActiveCaptureStreams,
   isLoginModeActive,
   isShuttingDown: isGracefulShutdown,
@@ -342,7 +311,8 @@ const windowVisibilitySync = createWindowVisibilitySync({
       return { dispose: null, page: borrowed };
     }
 
-    const temporary = await browser.newPage();
+    // A page that exists only to carry a CDP command never needs its tab selected.
+    const temporary = await browser.newPage({ background: true });
 
     // Registered so stale page cleanup recognizes the page as ours for the moment it exists.
     registerManagedPage(temporary);
@@ -1240,7 +1210,8 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
 
     if(!targetPage) {
 
-      tempPage = await browser.newPage();
+      // A probe page never needs its tab selected either.
+      tempPage = await browser.newPage({ background: true });
       targetPage = tempPage;
     }
 
@@ -1530,6 +1501,13 @@ async function launchReadyBrowser(): Promise<Browser> {
     }
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
+
+    /* The tab the window rests on. It is created once, selected by construction because nothing asks otherwise, and never referenced again, so whatever the window
+     * shows when nothing has asked for a tab is a blank page rather than the capture extension's own options page - which the library opens selected at launch.
+     * It is left unmanaged, as stale page cleanup judges only the pages stream setup and discovery create; it carries no correctness duty, so it needs no
+     * re-validation, and a user closing it costs nothing.
+     */
+    await browser.newPage();
 
     // Readiness gate, capability tier (the authoritative arbiter). Run the injected capture probe - a real capture acquisition against a throwaway page on THIS
     // instance - so "ready" means "really captured," not merely "the extension handshake responded." This predicate must run at every (re)launch:

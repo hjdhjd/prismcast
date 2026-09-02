@@ -1,23 +1,26 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * tabCapture.test.ts: Unit tests for PrismCast's own capture acquisition. The module speaks the capture extension's protocol directly, so what is pinned here is
- * that protocol as a sequence of observable acts: a socket handler registered before the extension is invoked, one bringToFront ahead of the activeTab keyboard
- * command, the tab query between that command and the start, and a settings object whose fields are exactly the ones the extension destructures.
+ * that protocol as a sequence of observable acts: a socket handler registered before the extension is invoked, one tab selection taken ahead of the activeTab
+ * keyboard command and released after the start, and a settings object whose fields are exactly the ones the extension destructures.
  *
  * Everything is faked in this file rather than mocked at the loader, following the convention the bespoke page doubles in browser/tuning use: an EventEmitter
- * standing in for the WebSocket server, an emitter-backed socket, an extension page whose evaluate dispatches on the source text of the callback it is handed, and
- * a page that records its keyboard traffic. Two rows reach outside those fakes on purpose - the fingerprint and settings-shape pins read the installed library
- * through import.meta.resolve, because the coupling this module takes on is only safe while the source it was written against is the source that is installed.
+ * standing in for the WebSocket server, an emitter-backed socket, an extension page whose evaluate dispatches on the source text of the callback it is handed, a
+ * page that records its keyboard traffic, and a tab-selection primitive that records the hold it takes rather than talking to a browser. Two rows reach outside
+ * those fakes on purpose - the fingerprint and settings-shape pins read the installed library through import.meta.resolve, because the coupling this module takes
+ * on is only safe while the source it was written against is the source that is installed.
  */
 import { ACTIVE_TAB_GRANT_CEILING_MS, ACTIVE_TAB_GRANT_POLL_MS, CAPTURE_FRAME_SIZE_MS, CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, CAPTURE_START_ATTEMPTS,
-  CAPTURE_STREAM_HIGH_WATER_MARK, EXTENSION_NOT_READY_MESSAGE, EXTENSION_READY_EXPRESSION, NO_ACTIVE_TAB_MESSAGE, acquireCaptureStream } from "./tabCapture.ts";
+  CAPTURE_STREAM_HIGH_WATER_MARK, EXTENSION_NOT_READY_MESSAGE, EXTENSION_READY_EXPRESSION, acquireCaptureStream } from "./tabCapture.ts";
 import type { Browser, Page } from "puppeteer-core";
 import type { CaptureStreamOptions, ExtensionRecordingSettings, TabCaptureDeps } from "./tabCapture.ts";
+import type { SelectedTab, WithTabSelectedContext } from "./tabSelection.ts";
 import type { WebSocket, WebSocketServer } from "ws";
 import { describe, test } from "node:test";
 import { makeAdvancingClock, makeFakeClock } from "../utils/clock.helpers.ts";
 import { EventEmitter } from "node:events";
 import type { LogEntry } from "../utils/logEmitter.ts";
+import { TAB_NOT_SELECTED_MESSAGE } from "./tabSelection.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createHash } from "node:crypto";
@@ -68,15 +71,16 @@ interface FakeServer {
   server: WebSocketServer;
 }
 
-// The extension page double, with the record of every protocol call it served.
+// The extension page double, with the record of every protocol call it served and the shared ordering record its deps write into.
 interface FakeExtension {
 
   calls: ExtensionCall[];
   disconnect: () => void;
   page: Page;
+  timeline: string[];
 }
 
-// The capture page double, with the keyboard and front-bringing traffic it recorded and the close handler it was given.
+// The capture page double, with the keyboard traffic it recorded and the close handler it was given.
 interface FakePage {
 
   emitClose: () => void;
@@ -215,12 +219,13 @@ function makeFakeExtension(timeline: string[], options: { onStart?: (settings: E
       browser: (): Browser => ({ connected } as unknown as Browser),
       evaluate,
       isClosed: (): boolean => false
-    } as unknown as Page
+    } as unknown as Page,
+    timeline
   };
 }
 
 /**
- * Builds the capture-page double, recording the front-bringing and keyboard traffic the activeTab grant is made of.
+ * Builds the capture-page double, recording the keyboard traffic the activeTab grant is made of.
  * @param timeline - The shared ordering record.
  * @returns The page double.
  */
@@ -233,7 +238,6 @@ function makeFakePage(timeline: string[]): FakePage {
     emitClose: (): void => { emitter.emit("close"); },
     page: {
 
-      bringToFront: async (): Promise<void> => { timeline.push("bringToFront"); },
       browser: (): Browser => ({ connected: true } as unknown as Browser),
 
       /* The retry's diagnostic reads the window's state through this page, so the double answers the two commands that read takes. Both answers are the ordinary
@@ -286,24 +290,58 @@ async function captureWarnings(body: () => Promise<void>): Promise<LogEntry[]> {
 
 /**
  * Composes the deps an acquisition runs against.
+ *
+ * The selection primitive is a fake rather than the real one: this file pins what the ACQUISITION does inside a hold, while tabSelection.test.ts pins what a hold
+ * itself does. It records the hold's two boundaries and every re-assert into the shared timeline, so a row can assert that exactly one selection spans a poll of
+ * several attempts, and hands the body a tab whose url the refusal diagnostics are expected to carry.
  * @param extension - The extension double.
  * @param server - The server double.
+ * @param onSelect - Behavior to run in place of taking the selection, for the rows where the selection itself fails. Resolves silently by default.
  * @returns The deps.
  */
-function makeDeps(extension: FakeExtension, server: FakeServer): TabCaptureDeps {
+function makeDeps(extension: FakeExtension, server: FakeServer, onSelect?: () => Promise<void>): TabCaptureDeps {
+
+  const timeline = extension.timeline;
 
   // The two resolutions of the ws types (this file's and the library declaration's) are structurally the same server with different nominal identities, so the
   // fake is handed over through the same cast every page double in the suite uses.
-  return { getExtensionPage: async (): Promise<Page> => extension.page, wss: Promise.resolve(server.server) as unknown as TabCaptureDeps["wss"] };
+  return {
+
+    getExtensionPage: async (): Promise<Page> => extension.page,
+    withTabSelected: async <T>(_page: Page, body: (tab: SelectedTab) => Promise<T>, _context?: WithTabSelectedContext): Promise<T> => {
+
+      await onSelect?.();
+
+      timeline.push("select");
+
+      const selected: SelectedTab = {
+
+        id: 42,
+        reassert: async (): Promise<void> => { timeline.push("reassert"); },
+        url: "https://example.test/live",
+        windowId: 1
+      };
+
+      try {
+
+        return await body(selected);
+      } finally {
+
+        timeline.push("release");
+      }
+    },
+    wss: Promise.resolve(server.server) as unknown as TabCaptureDeps["wss"]
+  };
 }
 
 describe("acquireCaptureStream", () => {
 
-  test("registers the socket handler before invoking the extension, and grants activeTab before asking which tab is active", async () => {
+  test("registers the socket handler before invoking the extension, and holds one tab selection around the grant and the start", async () => {
 
     /* The order is the protocol, not a preference. START_RECORDING opens its socket before it asks Chrome for the capture, so a handler registered afterwards
-     * misses the connection outright. The keyboard command is what grants the extension activeTab for the page in front, so it has to follow bringToFront and
-     * precede the query whose answer the start is aimed at.
+     * misses the connection outright. Chrome records whichever tab is selected, so the selection has to be taken before the keyboard command that grants the
+     * extension activeTab for it, held across the start, and handed back after - the release at the end of the log is the user getting their tab back. The
+     * selection opens the log because one hold spans the whole grant poll, and each attempt inside it prepares its own socket handler.
      */
     const timeline: string[] = [];
     const server = makeFakeServer(timeline);
@@ -313,8 +351,10 @@ describe("acquireCaptureStream", () => {
 
     await acquireCaptureStream(page.page, OPTIONS, { clock, deps: makeDeps(extension, server) });
 
-    assert.deepEqual(timeline, [ "ready", "handler:on", "bringToFront", "down:Meta", "down:Shift", "press:KeyY", "up:Shift", "up:Meta", "tabs", "start" ],
-      "readiness, then the handler, then the front, the grant keys in order, the query, and only then the start");
+    assert.deepEqual(timeline,
+      [ "ready", "select", "handler:on", "reassert", "down:Meta", "down:Shift", "press:KeyY", "up:Shift", "up:Meta", "start", "release" ],
+      "readiness, then the selection, the attempt's handler and its re-assert, the grant keys in order, the start, and only then the give-back");
+    assert.ok(timeline.indexOf("handler:on") < timeline.indexOf("start"), "the socket handler is registered before the extension is ever invoked");
 
     const start = extension.calls.find((call) => call.kind === "start");
 
@@ -422,7 +462,8 @@ describe("acquireCaptureStream", () => {
 
     /* The refusal arrives as a bare string, which is how puppeteer delivers a page-side rejection that is not an Error - classifying on .message would miss it
      * entirely. The retry has to be a wholly fresh attempt: the extension opens its socket before Chrome refuses, so reusing the index would leave the second
-     * attempt sharing a socket with the first.
+     * attempt sharing a socket with the first. The two state fields the warning carries are read inside the hold, while the capture's tab was still the selected
+     * one, so the tab in the log is the tab the refused start was aimed at rather than whatever was selected by the time the warning was written.
      */
     const timeline: string[] = [];
     const server = makeFakeServer(timeline);
@@ -622,23 +663,56 @@ describe("acquireCaptureStream", () => {
     assert.equal(server.listeners(), 0, "no handler was ever registered");
   });
 
-  test("rejects when Chrome reports no capturable active tab, leaving no attempt behind", async () => {
+  test("a selection that fails fails the acquisition and leaves no attempt behind", async () => {
 
-    for(const tabs of [ [], [{ url: "https://example.test/live" }] ]) {
+    /* Chrome records whichever tab is selected, so a selection the extension could not take leaves nothing to point the recorder at. The failure has to travel
+     * before any attempt is prepared - a listener or a socket index spent on a start that cannot happen would outlive the acquisition that gave up.
+     */
+    const timeline: string[] = [];
+    const server = makeFakeServer(timeline);
+    const extension = makeFakeExtension(timeline);
+    const page = makeFakePage(timeline);
+    const { clock } = makeFakeClock();
 
-      const timeline: string[] = [];
-      const server = makeFakeServer(timeline);
-      const extension = makeFakeExtension(timeline, { tabs });
-      const page = makeFakePage(timeline);
-      const { clock } = makeFakeClock();
+    const deps = makeDeps(extension, server, async (): Promise<void> => { throw new Error(TAB_NOT_SELECTED_MESSAGE); });
 
-      // eslint-disable-next-line no-await-in-loop -- Each shape is a separate acquisition and has to settle before the next is set up.
-      await assert.rejects(acquireCaptureStream(page.page, OPTIONS, { clock, deps: makeDeps(extension, server) }),
-        (error: unknown) => (error instanceof Error) && (error.message === NO_ACTIVE_TAB_MESSAGE), "a tab without an id is no more capturable than no tab at all");
+    await assert.rejects(acquireCaptureStream(page.page, OPTIONS, { clock, deps }),
+      (error: unknown) => (error instanceof Error) && (error.message === TAB_NOT_SELECTED_MESSAGE), "the selection's own message is the acquisition's verdict");
 
-      assert.equal(extension.calls.filter((call) => call.kind === "start").length, 0, "no start was attempted");
-      assert.equal(server.listeners(), 0, "the prepared attempt was discarded whole");
-    }
+    assert.equal(extension.calls.filter((call) => call.kind === "start").length, 0, "no start was attempted");
+    assert.equal(server.listeners(), 0, "no handler was left registered");
+  });
+
+  test("a grant-pending poll of several attempts runs inside ONE selection, re-asserting it per attempt", async () => {
+
+    /* The selection is taken once for the whole poll rather than per attempt: taking it per attempt would hand the user's tab back and take it again between
+     * refusals, and the flicker would be theirs to watch. Each attempt still re-asserts before it acts, so a login page opening or a click landing between two
+     * attempts is corrected rather than recorded. Exactly one select and one release bracket the whole log, with a re-assert opening each attempt.
+     */
+    const timeline: string[] = [];
+    const server = makeFakeServer(timeline);
+    const extension = makeFakeExtension(timeline, {
+
+      onStart: async (_settings, attempt): Promise<void> => {
+
+        if(attempt === 1) {
+
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- Chrome's rejection arrives as a bare string.
+          throw "Extension has not been invoked for the current page (see activeTab permission)";
+        }
+      }
+    });
+    const page = makeFakePage(timeline);
+    const { clock } = makeFakeClock();
+
+    await acquireCaptureStream(page.page, OPTIONS, { clock, deps: makeDeps(extension, server) });
+
+    assert.equal(timeline.filter((entry) => entry === "select").length, 1, "one selection covers the whole poll");
+    assert.equal(timeline.filter((entry) => entry === "release").length, 1, "and it is handed back exactly once");
+    assert.equal(timeline.filter((entry) => entry === "reassert").length, 2, "each of the two attempts re-asserts the selection first");
+    assert.ok(timeline.indexOf("select") < timeline.findIndex((entry) => entry === "reassert"), "the selection precedes the first attempt's re-assert");
+    assert.equal(timeline[timeline.length - 1], "release", "the give-back closes the log, after the start that succeeded");
+    assert.equal(timeline.lastIndexOf("start"), timeline.length - 2, "with the successful start immediately before it");
   });
 
   test("never retries after the caller's signal has already aborted", async () => {

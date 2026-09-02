@@ -8,6 +8,7 @@ import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./se
 import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, describeResolutionOutcome, formatIssueType,
   getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError, isResolutionDegraded, resolutionAreaRatio, shouldTriggerRecovery,
   updateResolutionPeak } from "./recovery.ts";
+import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE } from "../browser/tabSelection.ts";
 import { describe, test } from "node:test";
 import { CaptureTurnTimeoutError } from "./captureLock.ts";
 import type { VideoState } from "../types/index.ts";
@@ -195,6 +196,14 @@ describe("isCaptureInfrastructureError", () => {
     assert.equal(isCaptureInfrastructureError(new Error("Could not start video source")), true);
     assert.equal(isCaptureInfrastructureError(new Error("The capture extension is not ready on this browser.")), true);
     assert.equal(isCaptureInfrastructureError(new Error("No active tab was found for capture.")), true);
+  });
+
+  test("classifies the tab-selection primitive's own failures as capture infrastructure", () => {
+
+    // Both messages carry the phrase "capture extension", which is the classifier's hook: a capture start that could not select its tab is a browser-side fault,
+    // so it earns the 503 back-off and the browser's capture re-verification rather than a 500 the client would not retry.
+    assert.equal(isCaptureInfrastructureError(new Error(TAB_NOT_FOUND_MESSAGE)), true);
+    assert.equal(isCaptureInfrastructureError(new Error(TAB_NOT_SELECTED_MESSAGE)), true);
   });
 
   test("accepts either an Error or a bare string", () => {

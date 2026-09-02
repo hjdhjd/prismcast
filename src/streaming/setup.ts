@@ -572,7 +572,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   /* Bring the window on screen before anything else. Capture reads the compositor's output for the shared window, and that output is only composed correctly for a
    * window the desktop is presenting, so the sync has to land ahead of capture acquisition rather than alongside it. The pending registry entry is already in
-   * capture mode by the time any caller reaches here, on both request paths, so the policy reads capture-active and this resolves to a visible window.
+   * capture mode by the time any caller reaches here, on both request paths, so the policy reads capture-active and this resolves to a window on screen.
    */
   await deps.syncWindowVisibility();
 
@@ -582,9 +582,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // would otherwise be repeated in each failure path, and closes the navigation-path leak of the manifest interceptor.
   using resources = new DisposableStack();
 
-  // Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists.
+  /* Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists. The page
+   * opens behind whatever the window is showing: its capture start selects it for the length of that start and hands the selection back, so a user working in
+   * another tab is never moved out of it.
+   */
   const browser = await deps.getCurrentBrowser("capture");
-  const page = await browser.newPage();
+  const page = await browser.newPage({ background: true });
 
   // Register in-flight: the registry does not record this page against the stream until setup finishes, so the mark is what keeps stale page cleanup from closing
   // it mid-tune.
@@ -897,15 +900,15 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     throw error;
   }
 
-  /* Both establishment branches join here, which is why the re-affirmation sits at this point: capture acquisition selects this tab by design (the capture
-   * extension targets the active tab), and a tune of a fullscreen-activating profile selects it again while it drives the Fullscreen API. Re-issuing the page's
-   * own declared metrics is what leaves the capture composing the emulated surface rather than the window's fitted view of it, whatever the establishment did with
-   * the foreground.
+  /* Both establishment branches join here, which is why the re-affirmation sits at this point: capture acquisition selects this tab for the length of the start
+   * and hands the selection back, and a tune of a fullscreen-activating profile selects it again for its fullscreen sequence and hands it back once more.
+   * Re-issuing the page's own declared metrics is what leaves the capture composing the emulated surface rather than the window's fitted view of it, whatever the
+   * establishment did with the selection.
    */
   await deps.reaffirmCaptureSurface(page);
 
   // Re-settle the window now that the page is established, handing the sync the page it should use for the CDP session. Navigation activates the window on macOS,
-  // so a pass here confirms the presentation the policy asks for rather than whatever the tune left behind, and restores the blank tab to the foreground.
+  // so a pass here settles it against the policy after the tune, as every other transition does.
   await deps.syncWindowVisibility(page);
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
@@ -1690,7 +1693,8 @@ type CaptureProbeMode = { boundMs: number; kind: "gate" } | { boundMs: number; k
  */
 async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clock: Clock = realClock): Promise<Nullable<string>> {
 
-  const page = await browser.newPage();
+  // The probe page opens behind whatever the window is showing; it needs its tab selected only for its own capture start, which takes the selection itself.
+  const page = await browser.newPage({ background: true });
 
   registerManagedPage(page);
 
