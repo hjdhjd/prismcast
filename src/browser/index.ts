@@ -5,7 +5,7 @@
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
-import { getAllStreams, getStreamCount } from "../streaming/registry.ts";
+import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../streaming/registry.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
@@ -19,6 +19,7 @@ import type { ProcessInfo } from "../utils/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
 import { createBrowserSupervisor } from "./browserSupervisor.ts";
+import { createWindowVisibilitySync } from "./windowSync.ts";
 import { emitSystemStatusChanged } from "../streaming/statusEmitter.ts";
 import { evaluateStalePages } from "./pageStaleness.ts";
 import fs from "node:fs";
@@ -241,9 +242,88 @@ export { endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, st
 // when a launch was abandoned mid-flight by a readiness-loss.
 export { BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
 
-// Inject browser accessors into the login module. This breaks the circular dependency (login needs getBrowserInstance/minimizeBrowserWindow, index needs login
-// functions) using the same setter/getter pattern as setChromeUserAgent in chromeFetch.ts. Function declarations are hoisted, so both accessors are available here.
-setBrowserAccessors({ getBrowserInstance, minimizeBrowserWindow });
+/* The one window-visibility executor for the process lifetime. Its collaborators all live in this module: the registry predicate that says whether capture is
+ * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, and a page resolver built on the supervisor.
+ *
+ * The resolver prefers the page its caller handed over, borrows any page the browser already has open when there is none, and creates a temporary page only when
+ * the browser has nothing open at all. That order matters on macOS, where creating a page activates the window - the very thing a minimize pass is trying to undo.
+ * A temporary page is the only resolution that carries a dispose, so the executor releases what the resolver created and leaves a borrowed page alone.
+ *
+ * The instance stays private to this module and every caller reaches it through the exported function just below. That split is what makes the symbol safe to
+ * reference at module-evaluation time: a function declaration is hoisted, so the setBrowserAccessors call further down - and any sibling module whose own body
+ * evaluates while this module is still evaluating, precaching.ts among them - resolves it whatever the declaration order turns out to be. A bare exported const
+ * would leave those readers in the temporal dead zone, which no placement inside this file can fix for a reader in another file.
+ */
+const windowVisibilitySync = createWindowVisibilitySync({
+
+  hasActiveCaptureStreams,
+  isLoginModeActive,
+  isShuttingDown: isGracefulShutdown,
+  minimize: minimizeWindow,
+
+  resolvePage: async (preferred: Nullable<Page>): Promise<Nullable<{ dispose: Nullable<() => Promise<void>>; page: Page }>> => {
+
+    const browser = supervisor.current();
+
+    if(!browser?.connected) {
+
+      return null;
+    }
+
+    if(preferred && !preferred.isClosed()) {
+
+      return { dispose: null, page: preferred };
+    }
+
+    const borrowed = (await browser.pages()).find((candidate) => !candidate.isClosed());
+
+    if(borrowed) {
+
+      return { dispose: null, page: borrowed };
+    }
+
+    const temporary = await browser.newPage();
+
+    // Registered so stale page cleanup recognizes the page as ours for the moment it exists.
+    registerManagedPage(temporary);
+
+    return {
+
+      dispose: async (): Promise<void> => {
+
+        unregisterManagedPage(temporary);
+
+        try {
+
+          await temporary.close();
+        } catch(error) {
+
+          // The browser may already have taken the page with it. Nothing downstream depends on the close succeeding.
+          LOG.debug("browser:lifecycle", "Could not close the temporary window-sync page: %s.", formatError(error));
+        }
+      },
+      page: temporary
+    };
+  },
+  unminimize: unminimizeWindow
+});
+
+/**
+ * Brings the shared browser window into agreement with the visibility policy. This is the one entry point every layer uses - streaming, recovery, login,
+ * precaching, and startup all call it and none of them decide window state themselves.
+ * @param page - The page whose CDP session should carry the command, when the caller has one in hand. The executor falls back to any open page, or a temporary
+ * one, when it is omitted or the page has closed.
+ * @returns A promise that resolves once a pass that began at or after this call has completed.
+ */
+export async function syncWindowVisibility(page?: Page): Promise<void> {
+
+  return windowVisibilitySync(page);
+}
+
+// Inject browser accessors into the login module. This breaks the circular dependency (login needs getBrowserInstance and the window sync, index needs login
+// functions) using the same setter/getter pattern as setChromeUserAgent in chromeFetch.ts. Both accessors are hoisted function declarations, so this call reads
+// them at module evaluation time regardless of where they sit in the file.
+setBrowserAccessors({ getBrowserInstance, syncWindowVisibility });
 
 /**
  * Computes the current system status and emits it to SSE subscribers. Called when browser state changes significantly or when streams are added/removed.
@@ -868,8 +948,8 @@ export function buildLaunchOptions(): LaunchOptions {
     // Path to the Chrome executable, either from environment variable or autodetected.
     executablePath: getExecutablePath(),
 
-    // Run Chrome in headed (visible) mode, not headless. The puppeteer-stream extension requires a visible browser window to capture the screen. We minimize
-    // the window after launch to reduce GPU usage while still allowing capture.
+    // Run Chrome in headed (visible) mode, not headless. The puppeteer-stream extension captures the compositor's output for a real window, which a headless
+    // browser does not have. The window is minimized whenever no capture stream is running, and returns to normal for as long as one is.
     headless: false,
 
     /* Prevent Puppeteer from adding certain default arguments that would interfere with streaming:
@@ -1431,72 +1511,6 @@ export function isBrowserConnected(): boolean {
 }
 
 /**
- * Minimizes the browser window. The window's presentation state is all this touches - the surface pages render at is emulated from the configured preset and is
- * unaffected by whether the window is on screen.
- *
- * To avoid issues with creating temporary pages (which can cause the window to restore on macOS), we prefer using an existing page if one is available. Only if
- * no pages exist do we create a temporary page.
- */
-export async function minimizeBrowserWindow(): Promise<void> {
-
-  // Guard against calling this when no browser is running.
-  const browser = supervisor.current();
-
-  if(!browser?.connected) {
-
-    return;
-  }
-
-  let tempPage: Nullable<Page> = null;
-
-  try {
-
-    // Try to use an existing page first. Creating a new page can cause the window to restore/activate on macOS, which defeats the purpose of minimizing.
-    const existingPages = await browser.pages();
-    let targetPage: Nullable<Page> = existingPages.find((p) => !p.isClosed()) ?? null;
-
-    // If no existing pages, we must create a temporary one. This is less ideal but necessary to get a CDP session target.
-    if(!targetPage) {
-
-      tempPage = await browser.newPage();
-
-      // Register the temp page so stale cleanup knows it's ours.
-      registerManagedPage(tempPage);
-      targetPage = tempPage;
-    }
-
-    // Delegate to the CDP helper for the window-state change, so every minimize in the codebase issues the same command sequence.
-    await minimizeWindow(targetPage);
-
-    // Clean up the temporary page if we created one.
-    if(tempPage) {
-
-      unregisterManagedPage(tempPage);
-
-      await tempPage.close();
-    }
-  } catch(error) {
-
-    // If we created a temp page, make sure to unregister it even on error.
-    if(tempPage) {
-
-      unregisterManagedPage(tempPage);
-
-      try {
-
-        await tempPage.close();
-      } catch(_closeError) {
-
-        // Ignore close errors during error handling.
-      }
-    }
-
-    // Minimizing is not critical - log a warning but don't fail the operation.
-    LOG.debug("browser:lifecycle", "Could not minimize the browser window: %s.", formatError(error));
-  }
-}
-
-/**
  * Gets all open browser pages (tabs). This is used by the health check endpoint to report page count.
  * @returns Array of pages, or empty array if the browser is not connected.
  */
@@ -1931,8 +1945,9 @@ async function executeBrowserRestart(): Promise<void> {
     // Launch a fresh browser instance so it is ready for the next stream request.
     await getCurrentBrowser();
 
-    // Minimize the new window to reduce GPU usage and desktop clutter.
-    await minimizeBrowserWindow();
+    // Bring the fresh window into agreement with the policy. A scheduled restart only runs against an idle registry, so this settles it minimized; a stream
+    // arriving while the relaunch is in flight triggers its own sync during establishment.
+    await syncWindowVisibility();
 
     LOG.info("Browser restart complete. Fresh instance is ready.");
   } catch(error) {

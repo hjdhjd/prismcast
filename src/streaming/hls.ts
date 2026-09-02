@@ -11,7 +11,7 @@ import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
-import { emitCurrentSystemStatus, isLoginModeActive, unregisterManagedPage } from "../browser/index.ts";
+import { emitCurrentSystemStatus, isLoginModeActive, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
 import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
 import { getAudioPlaylist, getAudioSegment, getInitSegment, getNamedInitSegment, getPlaylist, getSegment, getVideoPlaylist,
@@ -1301,6 +1301,10 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   currentStream.nativeResolution = nativeResult.resolution;
   currentStream.reestablishManifest = reestablishManifest;
   currentStream.streamingMode = "native";
+
+  // The capture that was reading the compositor has ended, so this stream has no further claim on the window. Fire-and-forget: a native stream does not depend on
+  // the window at all, and the executor is serialized, so nothing here waits on a presentation change.
+  void syncWindowVisibility();
 
   // Start the native proxy. Init readiness is conditional on the container. An MPEG-TS source carries its own PAT/PMT codec configuration in every segment and
   // has no separate init to wait for, so readiness is signaled here and MPEG-TS clients are released immediately rather than blocking on waitForInitSegment()

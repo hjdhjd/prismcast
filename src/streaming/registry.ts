@@ -327,6 +327,20 @@ export function getStreamCount(): number {
 }
 
 /**
+ * Reports whether any registered stream is in capture mode. The browser window's visibility policy reads this, so it is evaluated fresh on every call - the answer
+ * flips with every stream start and end, and a cached copy would be stale exactly when it matters.
+ *
+ * Registry presence is the test rather than a live captureSession reference. A pending entry registers in capture mode before physical capture starts, and an entry
+ * leaves the registry only after teardown, so membership brackets the entire window during which Chrome is reading the compositor. The capture session attaches
+ * partway through establishment, which would leave the predicate reading false across the whole tune - the moment the window most needs to be visible.
+ * @returns True when at least one registered stream is in capture mode.
+ */
+export function hasActiveCaptureStreams(): boolean {
+
+  return getAllStreams().some((entry) => entry.streamingMode === "capture");
+}
+
+/**
  * Updates the last playlist request timestamp for a stream. This should be called whenever a playlist or segment is requested to keep the idle timeout accurate.
  * @param id - The numeric stream ID.
  */

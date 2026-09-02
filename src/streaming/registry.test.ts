@@ -3,11 +3,11 @@
  * registry.test.ts: Unit tests for the stream registry SSOT. registry.ts owns the in-memory state for every active streaming session: the streamRegistry Map keyed by
  * numeric stream ID, the monotonic streamIdCounter, and the createHLSState/getStreamMemoryUsage helpers used across capture, native, and lifecycle code paths. These
  * tests lock the registry's contract: register/unregister round-trips, ID monotonicity, getAllStreams snapshot independence, lookup with getStream, byte counter
- * arithmetic in getStreamMemoryUsage, and the shape of a freshly-minted HLSState.
+ * arithmetic in getStreamMemoryUsage, the capture-activity predicate the browser window's visibility policy reads, and the shape of a freshly-minted HLSState.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { cancelPrerollTimer, createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
-  getStreamMemoryUsage, getTotalSegmentMemory, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
+  getStreamMemoryUsage, getTotalSegmentMemory, hasActiveCaptureStreams, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -223,6 +223,73 @@ describe("getStreamCount", () => {
 
     unregisterStream(b.id);
     assert.equal(getStreamCount(), 0);
+  });
+});
+
+describe("hasActiveCaptureStreams", () => {
+
+  beforeEach(() => {
+
+    clearRegistry();
+  });
+
+  test("returns false for an empty registry", () => {
+
+    assert.equal(hasActiveCaptureStreams(), false, "nothing registered means nothing capturing");
+  });
+
+  test("returns true for a single capture entry", () => {
+
+    registerStream(makeRegistryEntry({ streamingMode: "capture" }));
+
+    assert.equal(hasActiveCaptureStreams(), true, "one capture stream is enough");
+  });
+
+  test("returns false when every entry is native", () => {
+
+    // Native streams are relayed in Node and never read the compositor, so a registry full of them leaves the window with no reason to be on screen.
+    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+
+    assert.equal(hasActiveCaptureStreams(), false, "native-only streams do not count as capture");
+  });
+
+  test("finds a capture entry that is not the first in a mixed registry", () => {
+
+    // The case a first-entry-only implementation gets wrong: the capture stream sits behind several native ones, so the predicate has to look at all of them.
+    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+    registerStream(makeRegistryEntry({ streamingMode: "capture" }));
+
+    assert.equal(hasActiveCaptureStreams(), true, "a capture entry behind native ones still counts");
+  });
+
+  test("follows a live mode flip in both directions", () => {
+
+    /* The predicate is evaluated fresh on every call rather than cached, which is what lets the native upgrade and the failed capture fallback move the window
+     * without anything having to invalidate a stored answer.
+     */
+    const entry = makeRegistryEntry({ streamingMode: "capture" });
+
+    registerStream(entry);
+    assert.equal(hasActiveCaptureStreams(), true, "the entry starts in capture mode");
+
+    entry.streamingMode = "native";
+    assert.equal(hasActiveCaptureStreams(), false, "flipping to native drops the last capture stream");
+
+    entry.streamingMode = "capture";
+    assert.equal(hasActiveCaptureStreams(), true, "flipping back raises it again");
+  });
+
+  test("drops back to false once the last capture entry unregisters", () => {
+
+    const entry = makeRegistryEntry({ streamingMode: "capture" });
+
+    registerStream(entry);
+    unregisterStream(entry.id);
+
+    assert.equal(hasActiveCaptureStreams(), false, "a torn-down stream has no claim on the window");
   });
 });
 

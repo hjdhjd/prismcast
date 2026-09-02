@@ -8,9 +8,9 @@ import { LOG, delay, formatError } from "../utils/index.ts";
 /* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:
  *
- * - Window presentation: moving the shared browser window between its normal and minimized states. That state is the only window property this application
- *   drives. The surface a page renders at belongs to Puppeteer's viewport, which emulates the configured quality preset on every page independently of how large
- *   the OS window is, so window bounds carry no capture meaning...minimizing is about desktop clutter and GPU cost alone.
+ * - Window presentation: moving the shared browser window between its normal and minimized states. That state is the only window property this application drives,
+ *   and it is not cosmetic: Chrome's tab capture consumes the compositor's output for the shared window, and a minimized window's output is not composed for
+ *   capture to read. Which state the window should be in is decided in one place, by decideWindowVisibility in windowSync.ts; these primitives only carry it out.
  *
  * - Browser-level operations: Operations that affect the browser rather than a specific page, like getting the window ID for a page's target.
  *
@@ -81,8 +81,9 @@ export async function withCDPSession<T>(
 }
 
 /**
- * Minimizes the browser window to reduce GPU usage and keep the desktop clear. Minimizing does not interrupt capture: the capture extension reads the compositor's
- * surface rather than the visible display, and that surface is the page's emulated viewport, which the window's presentation state does not touch.
+ * Minimizes the browser window, which keeps the desktop clear and the GPU idle while nothing is capturing. Only the window-visibility executor should call this:
+ * the window has to stay on screen for as long as any capture stream is reading the compositor, and that decision belongs to decideWindowVisibility in
+ * windowSync.ts.
  * @param page - The Puppeteer page object.
  */
 export async function minimizeWindow(page: Page): Promise<void> {
@@ -110,8 +111,9 @@ export async function minimizeWindow(page: Page): Promise<void> {
 }
 
 /**
- * Un-minimizes the browser window, restoring it to normal state. This is used when the user needs to interact with the browser, such as during the authentication
- * login flow where the user must complete TV provider authentication in the visible browser window.
+ * Un-minimizes the browser window, restoring it to normal state. The window belongs on screen while a capture stream is reading the compositor's output for it, and
+ * while a user is completing TV provider authentication in it. The capability probe calls this directly to make its environment representative of the one capture
+ * runs in; every other caller goes through the window-visibility executor, which owns the policy.
  * @param page - The Puppeteer page object.
  */
 export async function unminimizeWindow(page: Page): Promise<void> {

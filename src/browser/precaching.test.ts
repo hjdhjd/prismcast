@@ -332,8 +332,8 @@ describe("recordDiscoveryOutcome", () => {
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
  * precaching.revalidation.test.ts already covers runPrecacheCycle's deps threading through to precacheService, precacheService's navigation, mute injection,
- * cleanup ordering, and login-mode minimize guard, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection seam without a real
- * browser. What remains genuinely deferred is:
+ * cleanup ordering, and the window sync on discovery-page cleanup, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection seam
+ * without a real browser. What remains genuinely deferred is:
  *
  * - runPrecacheCycle's succeeded/empty/skipped counters and the completion sentence they compose, which requires driving a full multi-service cycle rather than
  *   the single-service deps-threading check above.

@@ -3,8 +3,8 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser, minimizeBrowserWindow,
-  registerManagedPage, setCaptureProbe, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserSupersededError, BrowserUnavailableError, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser, registerManagedPage,
+  setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
@@ -34,7 +34,6 @@ import { getPresetViewport } from "../config/presets.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { isChannelSelectionProfile } from "../types/index.ts";
-import { minimizeWindow } from "../browser/cdp.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
 import { pipeline } from "node:stream/promises";
@@ -378,8 +377,8 @@ export interface CreatePageWithCaptureOptions {
   // The stream ID string for logging (e.g., "cnn-5jecl6").
   streamId: string;
 
-  // When true, adds a settling delay between fullscreen setup and window minimize during tab replacement. Chrome's compositor may not fully stabilize the video
-  // surface after fullscreen is established, and minimizing too quickly can cause the captured content to appear zoomed into the top-left corner.
+  // When true, this establishment is replacing the page of a stream that is already running rather than starting a new one. It gates manifest interception: a
+  // replacement has nothing to adjudicate, because the channel was verified on the tune that first established the stream.
   tabReplacement?: boolean;
 
   // The URL to navigate to and capture.
@@ -526,8 +525,9 @@ function disposePage(page: Page): void {
  * puppeteer-stream capture launcher, and the overlay-handling poll the static-capture branch fires. It is injected as a default parameter, mirroring VideoTuneDeps in
  * browser/video.ts and PrecachingDeps in browser/precaching.ts, so a test can substitute stubs at the same collaborator-injection boundary - no loader mock -
  * while production uses the real
- * defaultCreatePageWithCaptureDeps built from the functions this module already imports. The remaining browser calls (registerManagedPage, unregisterManagedPage,
- * minimizeBrowserWindow) stay direct imports: they mutate an in-process page set or early-return without a live browser, so they need no substitution. This is the
+ * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
+ * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window. The remaining
+ * browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the
  * collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface CreatePageWithCaptureDeps {
@@ -535,9 +535,10 @@ export interface CreatePageWithCaptureDeps {
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly getStream: typeof getStream;
   readonly startOverlayHandling: typeof startOverlayHandling;
+  readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { getCurrentBrowser, getStream, startOverlayHandling };
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { getCurrentBrowser, getStream, startOverlayHandling, syncWindowVisibility };
 
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
@@ -564,6 +565,12 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
   const captureElapsed = startTimer();
   const { comment, numericStreamId, onFFmpegError, profile, streamId, url } = options;
+
+  /* Bring the window on screen before anything else. Capture reads the compositor's output for the shared window, and that output is only composed correctly for a
+   * window the desktop is presenting, so the sync has to land ahead of capture acquisition rather than alongside it. The pending registry entry is already in
+   * capture mode by the time any caller reaches here, on both request paths, so the policy reads capture-active and this resolves to a visible window.
+   */
+  await deps.syncWindowVisibility();
 
   // Acquire every resource on a DisposableStack so that any throw - in capture initialization, navigation, or playback setup - disposes them structurally as the
   // function unwinds, in last-acquired-first order (capture session before page, so the capture stream is destroyed and STOP_RECORDING fires while the browser is
@@ -883,10 +890,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     // the URL and reports that verdict back. The retention policy lives there and is read from there - this file never re-derives which failures count.
     const urlEvidence = usedDirectUrl && invalidateDirectUrl(profile, error);
 
-    // Re-minimize the browser window. Navigation may have un-minimized it (new tab activation on macOS), and without this the window stays visible after the failed
-    // attempt. Fire-and-forget since we're about to throw. Resource teardown (capture session, interceptor, page) is handled by the DisposableStack as this throw
-    // unwinds the function scope; the capture session disposes first, destroying the capture stream before the page closes, so STOP_RECORDING ordering is preserved.
-    minimizeBrowserWindow().catch(() => { /* Fire-and-forget; we're about to throw. */ });
+    // Window presentation is deliberately left alone here. The failing stream's registry entry is still registered in capture mode at this point, so the policy
+    // would read capture-active and hold the window on screen anyway; the terminate path that tears the entry down is the moment that genuinely settles it.
+    // Resource teardown (capture session, interceptor, page) is handled by the DisposableStack as this throw unwinds the function scope; the capture session
+    // disposes first, destroying the capture stream before the page closes, so STOP_RECORDING ordering is preserved.
 
     /* A failure the coordinator blamed on the URL is worth one more attempt down the guide path, so it leaves this function typed for setupStream to act on. An
      * establishment timeout qualifies: the retry is a whole fresh invocation, so there is no abandoned first attempt still driving a page, no one-shot manifest
@@ -901,15 +908,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     throw error;
   }
 
-  // During tab replacement, allow Chrome's compositor to fully stabilize the fullscreen video surface before minimizing. Without this delay, the compositor may
-  // snapshot an incorrect scaling state during the minimize transition, causing the captured content to appear zoomed into the top-left corner.
-  if(options.tabReplacement && !profile.staticCapture) {
-
-    await delay(500);
-  }
-
-  // Minimize the window now that the page is fully established.
-  await minimizeWindow(page);
+  // Re-settle the window now that the page is established, handing the sync the page it should use for the CDP session. Navigation activates the window on macOS,
+  // so a pass here confirms the presentation the policy asks for rather than whatever the tune left behind.
+  await deps.syncWindowVisibility(page);
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());
 
@@ -1407,8 +1408,6 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       if(verifyError) {
 
-        await minimizeBrowserWindow();
-
         const failureLabel = channel?.name ?? channelName ?? url;
 
         throw new StreamSetupError("Tune verification failed: " + verifyError, 502,
@@ -1448,8 +1447,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       captureSession.dispose();
       disposePage(page);
 
-      // Re-minimize the browser window.
-      await minimizeBrowserWindow();
+      // Settle the window against the policy now that this stream's resources are gone.
+      await deps.syncWindowVisibility();
     };
 
     // Success: transfer ownership out of the scope guard. The cleanup closure and, once the session is installed on the registry entry, terminateStream become

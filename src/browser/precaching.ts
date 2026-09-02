@@ -5,7 +5,7 @@
 import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
-import { getCurrentBrowser, isGracefulShutdown, minimizeBrowserWindow, registerManagedPage, unregisterManagedPage } from "./index.ts";
+import { getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility, unregisterManagedPage } from "./index.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
@@ -95,15 +95,15 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
   startPrecaching(deps);
 }
 
-/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate, the
- * provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup write the discovery-outcome policy performs. It is injected as a default
- * parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader mock - while production uses the
- * real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same reason the browser accessors do: run
- * for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and abort timing without a live poll.
- * persistProviderLineup belongs here for the same reason again: run for real it writes a file, so a test observes the write - and injects a failing one - at this
- * boundary. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts imports startPrecaching and precaching.ts imports these accessors,
- * so a separate adapter file would sit inside that value-import cycle, whereas the in-module const adds no new import edge. This is the collaborator-injection form of
- * the Clock port (utils/clock.ts).
+/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate,
+ * the window-visibility sync, the provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup write the discovery-outcome policy performs.
+ * It is injected as a default parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader
+ * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same
+ * reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and
+ * abort timing without a live poll. persistProviderLineup belongs here for the same reason again: run for real it writes a file, so a test observes the write - and
+ * injects a failing one - at this boundary. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts imports startPrecaching and
+ * precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the in-module const adds no new import edge.
+ * This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface PrecachingDeps {
 
@@ -111,10 +111,10 @@ export interface PrecachingDeps {
   readonly getProviderBySlug: typeof getProviderBySlug;
   readonly getProvidersForDomain: typeof getProvidersForDomain;
   readonly isGracefulShutdown: typeof isGracefulShutdown;
-  readonly minimizeBrowserWindow: typeof minimizeBrowserWindow;
   readonly persistProviderLineup: typeof persistProviderLineup;
   readonly registerManagedPage: typeof registerManagedPage;
   readonly startOverlayHandling: typeof startOverlayHandling;
+  readonly syncWindowVisibility: typeof syncWindowVisibility;
   readonly unregisterManagedPage: typeof unregisterManagedPage;
 }
 
@@ -124,10 +124,10 @@ export const defaultPrecachingDeps: PrecachingDeps = {
   getProviderBySlug,
   getProvidersForDomain,
   isGracefulShutdown,
-  minimizeBrowserWindow,
   persistProviderLineup,
   registerManagedPage,
   startOverlayHandling,
+  syncWindowVisibility,
   unregisterManagedPage
 };
 
@@ -512,12 +512,9 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       // Page may already be closed if the browser disconnected during discovery or the abort handler already closed it.
     }
 
-    // Re-minimize the browser window. Opening the temporary discovery page may have restored the window on macOS. Skipped while login mode is active so a
-    // discovery finishing mid-login never minimizes the window under the user.
-    if(!isLoginModeActive()) {
-
-      await deps.minimizeBrowserWindow();
-    }
+    // Settle the browser window against the policy. Opening the temporary discovery page may have restored the window on macOS. The call is unconditional
+    // because the policy already accounts for a login session or a running capture holding the window on screen.
+    await deps.syncWindowVisibility();
   }
 }
 

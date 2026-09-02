@@ -3,7 +3,8 @@
  * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
  * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), and unminimizeWindow (the inverse
  * one-shot that restores it). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's
- * dimensions never enter the picture because the surface pages render at is emulated from the configured preset, not taken from the window.
+ * dimensions never enter the picture because these primitives drive presentation state alone. Which state the window should be in is decided in windowSync.ts and
+ * pinned there; these tests cover only the command each primitive issues.
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { describe, test } from "node:test";
@@ -189,8 +190,8 @@ describe("minimizeWindow", () => {
 
   test("never reads the window bounds back (nothing is being verified)", async () => {
 
-    // The read-back existed to confirm a resize landed. With no resize to confirm, a getWindowBounds call here would be a round trip that costs latency on every
-    // tune and every recovery re-minimize and tells the caller nothing.
+    // A read-back would only be worth its round trip if there were a resize to confirm. There is not: the command carries a window state and nothing else, so a
+    // getWindowBounds call here would cost latency on every pass and tell the caller nothing.
     const cdpStub = makeCdpStub();
 
     await minimizeWindow(makePageStub({ cdpStub }));

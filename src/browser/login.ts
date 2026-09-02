@@ -5,12 +5,11 @@
 import type { Browser, Page } from "puppeteer-core";
 import { LOG, formatError } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
-import { unminimizeWindow } from "./cdp.ts";
 
 /* Login mode allows users to authenticate with TV providers directly from the PrismCast web UI. When login mode is active:
  *
  * - A dedicated login tab is open in the browser showing the channel's URL
- * - The browser window is un-minimized so the user can interact with it
+ * - The browser window is on screen so the user can interact with it
  * - New stream requests are blocked to prevent interference with the login process
  * - A 15-minute timeout automatically ends login mode if the user forgets
  *
@@ -19,10 +18,10 @@ import { unminimizeWindow } from "./cdp.ts";
  * The workflow:
  *
  * 1. User clicks "Login" on a channel in the web UI
- * 2. startLoginMode() opens a new tab with the channel's URL and un-minimizes the browser
+ * 2. startLoginMode() opens a new tab with the channel's URL and brings the browser window on screen
  * 3. User completes authentication in the visible browser window
  * 4. User clicks "Done" in the web UI, or closes the tab, or the 15-minute timeout fires
- * 5. endLoginMode() closes the login tab (if still open) and re-minimizes the browser
+ * 5. endLoginMode() closes the login tab (if still open) and settles the window against the visibility policy
  *
  * During login mode, new stream requests are blocked to prevent the browser from navigating away or creating conflicting tabs.
  */
@@ -47,13 +46,13 @@ let loginTimeoutHandle: Nullable<ReturnType<typeof setTimeout>> = null;
 // Login timeout duration (15 minutes).
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
 
-// Browser accessor functions injected by browser/index.ts via setBrowserAccessors(). This avoids a circular dependency - login.ts needs getBrowserInstance and
-// minimizeBrowserWindow from index.ts, which imports login functions. The setter/getter pattern matches setChromeUserAgent in chromeFetch.ts and
+// Browser accessor functions injected by browser/index.ts via setBrowserAccessors(). This avoids a circular dependency - login.ts needs getBrowserInstance and the
+// window-visibility sync from index.ts, which imports login functions. The setter/getter pattern matches setChromeUserAgent in chromeFetch.ts and
 // registerProviderModuleProfile in sites.ts.
 interface BrowserAccessors {
 
   getBrowserInstance: () => Nullable<Browser>;
-  minimizeBrowserWindow: () => Promise<void>;
+  syncWindowVisibility: (page?: Page) => Promise<void>;
 }
 
 let browserAccessors: Nullable<BrowserAccessors> = null;
@@ -111,7 +110,7 @@ function resetLoginState(): void {
 // Functions.
 
 /**
- * Starts login mode by opening a new browser tab with the specified URL and un-minimizing the browser window. The user can then authenticate with their TV
+ * Starts login mode by opening a new browser tab with the specified URL and bringing the browser window on screen. The user can then authenticate with their TV
  * provider in the visible browser.
  *
  * Login mode blocks new stream requests until it ends (via endLoginMode, tab close detection, or timeout).
@@ -167,16 +166,20 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
       }
     });
 
-    // Navigate to the login URL.
+    // Navigate to the login URL. This runs with loginModeActive still false, so the close listener above stays inert until there is a session for it to end and
+    // a failure here unwinds through the catch below rather than through login teardown.
     await page.goto(url, { waitUntil: "domcontentloaded" });
-
-    // Un-minimize the browser window so the user can see and interact with it.
-    await unminimizeWindow(page);
 
     // Set login state.
     loginModeActive = true;
     loginUrl = url;
     loginStartTime = Date.now();
+
+    /* Bring the window on screen through the policy rather than by issuing the CDP command here, and do it after the state above is set so the policy reads this
+     * session as active. Routing through the one executor is what keeps a concurrent pass from deciding "minimize" and landing after this one: a pass already in
+     * flight either lands first and is corrected by this one, or re-reads the flag inside its own loop and decides visible.
+     */
+    await browserAccessors?.syncWindowVisibility(page);
 
     // Set up the 15-minute timeout.
     loginTimeoutHandle = setTimeout(() => {
@@ -210,8 +213,8 @@ export async function startLoginMode(url: string): Promise<{ error?: string; suc
 }
 
 /**
- * Ends login mode by closing the login tab (if still open) and re-minimizing the browser window. This function is safe to call multiple times or when login
- * mode is not active.
+ * Ends login mode by closing the login tab (if still open) and settling the browser window against the visibility policy - which minimizes it unless a capture
+ * stream is running, in which case the window stays on screen for the capture. This function is safe to call multiple times or when login mode is not active.
  *
  * Called by:
  * - User clicking "Done" in the web UI (POST /auth/done)
@@ -250,12 +253,12 @@ export async function endLoginMode(): Promise<void> {
 
   resetLoginState();
 
-  // Re-minimize the browser window.
+  // Settle the browser window against the policy now that this session's claim on it is gone.
   if(wasActive) {
 
     if(browserAccessors?.getBrowserInstance()?.connected) {
 
-      await browserAccessors.minimizeBrowserWindow();
+      await browserAccessors.syncWindowVisibility();
     }
 
     LOG.info("Login mode ended.");

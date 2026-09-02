@@ -111,8 +111,8 @@ const stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as un
 
 /* The PrecachingDeps the REAL withProviderGuidePage runs against in the delegating deps below: getCurrentBrowser hands back a stub browser whose newPage returns a
  * recording page, startOverlayHandling records each poll's phase and abort signal in place of a live poll, and the managed-page bookkeeping, shutdown probe, window
- * minimize, and provider lookups are the remaining members the helper's dependency closure requires. Only the browser accessor and the overlay poll are exercised;
- * the rest are inert because the discovery success path never revalidates a domain or minimizes a real window.
+ * sync, and provider lookups are the remaining members the helper's dependency closure requires. Only the browser accessor and the overlay poll are exercised; the
+ * rest are inert because the discovery success path never revalidates a domain or drives a real window.
  */
 const stubPrecachingDeps: PrecachingDeps = {
 
@@ -120,7 +120,6 @@ const stubPrecachingDeps: PrecachingDeps = {
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),
   getProvidersForDomain: (): ProviderModule[] => [],
   isGracefulShutdown: (): boolean => false,
-  minimizeBrowserWindow: async (): Promise<void> => { /* No window to minimize on a stub browser. */ },
   persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
 
     persistedLineups.push({ channels, slug });
@@ -131,6 +130,7 @@ const stubPrecachingDeps: PrecachingDeps = {
     pageEvents.push("poll:" + options.phase);
     overlayHandlingCalls.push(options);
   },
+  syncWindowVisibility: async (): Promise<void> => { /* No window to drive on a stub browser. */ },
   unregisterManagedPage: (): void => { /* Stub pages need no bookkeeping. */ }
 };
 

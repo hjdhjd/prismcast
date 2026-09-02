@@ -16,8 +16,8 @@ import { validateChannel } from "./hls.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// Minimal login-page stub. startLoginMode opens a page and calls setViewport/goto/on/unminimizeWindow against it, none of which need real behavior here; the stub
-// mirrors the login.test.ts and precaching.revalidation.test.ts shape.
+// Minimal login-page stub. startLoginMode opens a page and calls setViewport/goto/on against it, none of which need real behavior here; the stub mirrors the
+// login.test.ts and precaching.revalidation.test.ts shape.
 function makeLoginPageStub(): Page {
 
   return {
@@ -63,7 +63,7 @@ describe("validateChannel - login mode 503 branch", () => {
     setBrowserAccessors({
 
       getBrowserInstance: (): Browser => makeStubBrowser(),
-      minimizeBrowserWindow: async (): Promise<void> => { /* Not exercised in this test. */ }
+      syncWindowVisibility: async (): Promise<void> => { /* Not exercised in this test. */ }
     });
 
     await startLoginMode("https://www.stub-login.test/login");

@@ -2,10 +2,9 @@
  *
  * login.test.ts: Unit tests for the login mode state machine in login.ts. The module owns its lifecycle exports plus two injection setters (setBrowserAccessors for
  * the browser-side dependencies, setLoginModeEndObserver for the composition root's login-end observer). Login mode is module-level singleton state, so each test
- * resets the slot via clearLoginState() and re-installs fresh accessors before running. The CDP-backed unminimizeWindow call inside startLoginMode receives a stub
- * Page whose isClosed() returns false, so cdp.ts's early-out guard does not fire; instead the stub omits createCDPSession entirely, so withCDPSession throws when it
- * tries to open a session, catches the error, and returns undefined. That error is swallowed inside withCDPSession and never reaches startLoginMode, so the happy
- * path still succeeds with no real browser, target, or CDP session involved.
+ * resets the slot via clearLoginState() and re-installs fresh accessors before running. Both window-presentation calls travel through the injected
+ * syncWindowVisibility accessor rather than CDP, so the happy path runs with no real browser, target, or CDP session involved, and the fake accessor is where the
+ * order of the login-state assignments against the sync is observed.
  */
 import type { Browser, Page } from "puppeteer-core";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
@@ -107,19 +106,23 @@ function makeBrowserStub(options: { connected?: boolean; newPageError?: Error; p
   } as unknown as Browser;
 }
 
-/* installAccessors installs a minimal browser-accessor pair and returns a fresh minimize-call counter the caller can read to verify minimize calls. The
- * browser reference is captured in a closure so tests can flip its connected flag mid-test by mutating the returned object.
+/* installAccessors installs a minimal browser-accessor pair and returns the record of window-sync calls a caller reads to verify them. The browser reference is
+ * captured in a closure so tests can flip its connected flag mid-test by mutating the returned object.
+ *
+ * The fake reads the module's live login state at the instant it is invoked and appends it to loginStateAtSync. That is what lets a test tell "state assigned,
+ * then sync" apart from the reverse ordering: a bare call counter is identical under both, whereas the recorded flag is true under one and false under the other.
  */
-function installAccessors(browser: Nullable<Browser>): { minimizeCalls: number } {
+function installAccessors(browser: Nullable<Browser>): { loginStateAtSync: boolean[]; syncCalls: number } {
 
-  const counters = { minimizeCalls: 0 };
+  const counters: { loginStateAtSync: boolean[]; syncCalls: number } = { loginStateAtSync: [], syncCalls: 0 };
 
   setBrowserAccessors({
 
     getBrowserInstance: (): Nullable<Browser> => browser,
-    minimizeBrowserWindow: async (): Promise<void> => {
+    syncWindowVisibility: async (): Promise<void> => {
 
-      counters.minimizeCalls++;
+      counters.syncCalls++;
+      counters.loginStateAtSync.push(isLoginModeActive());
     }
   });
 
@@ -305,6 +308,41 @@ describe("startLoginMode", () => {
     assert.deepEqual(pageStub.ops, [ "setViewport", "goto" ], "the clear precedes the first navigation");
   });
 
+  test("sets the login-state fields before asking for the window, so the policy sees the session as active", async () => {
+
+    /* The window-visibility policy reads isLoginModeActive(). If the sync fired before the flag was set, the policy would read no reason to be on screen and could
+     * minimize the window under the user who is about to authenticate in it. The fake accessor records the live flag at invocation, so this pin fails if the
+     * assignments move below the sync call rather than merely counting that both happened.
+     */
+    const pageStub = makePageStub();
+    const counters = installAccessors(makeBrowserStub({ pageStub }));
+
+    await startLoginMode("https://example.test/login");
+
+    assert.equal(counters.syncCalls, 1, "the start path asks for the window exactly once");
+    assert.deepEqual(counters.loginStateAtSync, [true], "login mode was already active when the sync fired");
+  });
+
+  test("hands the login page to the sync so the window command targets the tab the user is working in", async () => {
+
+    // The page argument is what lets the executor prefer this tab's CDP session over an arbitrary open page.
+    const pageStub = makePageStub();
+    const pages: unknown[] = [];
+
+    setBrowserAccessors({
+
+      getBrowserInstance: (): Nullable<Browser> => makeBrowserStub({ pageStub }),
+      syncWindowVisibility: async (page?: Page): Promise<void> => {
+
+        pages.push(page);
+      }
+    });
+
+    await startLoginMode("https://example.test/login");
+
+    assert.deepEqual(pages, [pageStub as unknown as Page], "the sync received the login page");
+  });
+
   test("returns failure when login mode is already active (refuses to start a second session)", async () => {
 
     const pageStub = makePageStub();
@@ -325,7 +363,7 @@ describe("startLoginMode", () => {
     setBrowserAccessors({
 
       getBrowserInstance: (): Nullable<Browser> => null,
-      minimizeBrowserWindow: async (): Promise<void> => Promise.resolve()
+      syncWindowVisibility: async (): Promise<void> => Promise.resolve()
     });
 
     const result = await startLoginMode("https://example.test/x");
@@ -456,19 +494,23 @@ describe("endLoginMode", () => {
 
     await endLoginMode();
 
-    assert.equal(counters.minimizeCalls, 0, "no minimize call when nothing was active");
+    assert.equal(counters.syncCalls, 0, "no window sync when nothing was active");
   });
 
-  test("closes the login page and minimizes the browser when an active session exists", async () => {
+  test("closes the login page and settles the window against the policy when an active session exists", async () => {
 
     const pageStub = makePageStub();
     const counters = installAccessors(makeBrowserStub({ pageStub }));
 
     await startLoginMode("https://example.test/x");
+
+    // The start path syncs too; these tests are about the end path, so the record starts fresh here.
+    counters.syncCalls = 0;
+
     await endLoginMode();
 
     assert.equal(pageStub.closeCalls, 1, "page.close called exactly once");
-    assert.equal(counters.minimizeCalls, 1, "browser was minimized after the session ended");
+    assert.equal(counters.syncCalls, 1, "the window was settled after the session ended");
   });
 
   test("skips closing the page when isClosed reports true (avoids redundant close)", async () => {
@@ -478,12 +520,13 @@ describe("endLoginMode", () => {
 
     await startLoginMode("https://example.test/x");
 
+    counters.syncCalls = 0;
     pageStub.isClosedReturn = true;
 
     await endLoginMode();
 
     assert.equal(pageStub.closeCalls, 0, "page.close NOT called on an already-closed page");
-    assert.equal(counters.minimizeCalls, 1, "browser still minimized regardless");
+    assert.equal(counters.syncCalls, 1, "the window is settled regardless");
   });
 
   test("swallows page.close errors and still completes the cleanup path", async () => {
@@ -495,28 +538,32 @@ describe("endLoginMode", () => {
 
     await startLoginMode("https://example.test/x");
 
+    counters.syncCalls = 0;
+
     await assert.doesNotReject(() => endLoginMode(), "endLoginMode should swallow page.close errors");
 
-    assert.equal(counters.minimizeCalls, 1, "browser still minimized despite page.close failure");
+    assert.equal(counters.syncCalls, 1, "the window is still settled despite page.close failure");
     assert.equal(isLoginModeActive(), false, "state still reset");
   });
 
-  test("does not minimize when the browser disconnected during the session", async () => {
+  test("does not touch the window when the browser disconnected during the session", async () => {
 
-    // Boundary: if the browser dropped between start and end, minimizeBrowserWindow should not be called - the accessor returns a disconnected browser. This
-    // ensures we don't try to drive CDP against a dead connection.
+    // Boundary: if the browser dropped between start and end, the sync should not be called - the accessor returns a disconnected browser. This ensures we don't
+    // try to drive CDP against a dead connection.
     const pageStub = makePageStub();
     const browser = makeBrowserStub({ connected: true, pageStub });
     const counters = installAccessors(browser);
 
     await startLoginMode("https://example.test/x");
 
+    counters.syncCalls = 0;
+
     // Simulate the browser losing its connection.
     (browser as unknown as { connected: boolean }).connected = false;
 
     await endLoginMode();
 
-    assert.equal(counters.minimizeCalls, 0, "no minimize attempt against a disconnected browser");
+    assert.equal(counters.syncCalls, 0, "no window sync attempted against a disconnected browser");
     assert.equal(isLoginModeActive(), false, "state still cleared");
   });
 });
@@ -697,18 +744,21 @@ describe("clearLoginState", () => {
     assert.deepEqual(getLoginStatus(), { active: false, startTime: null, url: null }, "status fully reset");
   });
 
-  test("does NOT call page.close or minimize (the browser-crash variant of cleanup)", async () => {
+  test("does NOT call page.close or sync the window (the browser-crash variant of cleanup)", async () => {
 
     // The contract distinction between clearLoginState and endLoginMode: clearLoginState assumes the browser is gone, so it must not invoke any browser-touching
-    // operations. We assert by counting close calls and minimize calls.
+    // operations. We assert by counting close calls and window syncs.
     const pageStub = makePageStub();
     const counters = installAccessors(makeBrowserStub({ pageStub }));
 
     await startLoginMode("https://example.test/x");
+
+    counters.syncCalls = 0;
+
     clearLoginState();
 
     assert.equal(pageStub.closeCalls, 0, "page.close not invoked on the crash-cleanup path");
-    assert.equal(counters.minimizeCalls, 0, "minimize not invoked on the crash-cleanup path");
+    assert.equal(counters.syncCalls, 0, "no window sync on the crash-cleanup path");
   });
 
   test("a second call after a successful clear is a no-op (idempotent)", async () => {

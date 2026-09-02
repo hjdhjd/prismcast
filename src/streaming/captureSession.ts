@@ -36,10 +36,10 @@
  * fire-and-forget by design; no caller needs to await it. Keeping disposal synchronous keeps terminateStream() synchronous and the recovery hot
  * path allocation-free.
  *
- * Scope: the composite owns ONLY the three pipeline resources. It deliberately does NOT own the browser page, the managed-page registration, or window
- * minimization - those are the stream owner's concern and remain caller-owned steps (unregisterManagedPage, page.close, minimizeBrowserWindow) that must still
- * bracket dispose() at each teardown site. dispose() is the FULL-teardown entry point: tab replacement disposes the old session and constructs a fresh one rather
- * than mutating a live session in place.
+ * Scope: the composite owns ONLY the three pipeline resources. It deliberately does NOT own the browser page or the managed-page registration - those are the stream
+ * owner's concern and remain caller-owned steps (unregisterManagedPage, page.close) that must still bracket dispose() at each teardown site. Window presentation is
+ * not a teardown step at all: it follows from whether any stream is still capturing, which terminateStream settles once the registry entry is gone. dispose() is
+ * the FULL-teardown entry point: tab replacement disposes the old session and constructs a fresh one rather than mutating a live session in place.
  */
 import type { FFmpegProcess } from "../utils/index.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";

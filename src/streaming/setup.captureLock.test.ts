@@ -34,7 +34,8 @@ const deps: CreatePageWithCaptureDeps = {
 
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeClosedStubPage() } as unknown as Browser),
   getStream: async (): Promise<PuppeteerStream> => { throw new Error("getStream must not run when the page is already closed at turn grant."); },
-  startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ }
+  startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },
+  syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };
 
 before(() => {

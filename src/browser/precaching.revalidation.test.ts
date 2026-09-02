@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * precaching.revalidation.test.ts: Unit tests for the post-login revalidation flow (revalidateDomainAuth), the login-mode minimize guard, and the guarded guide-page
- * session (withProviderGuidePage) in precaching.ts. Running a revalidation or a guide-page walk drives getCurrentBrowser/newPage, which would launch a real Chrome;
- * precaching.ts accepts its browser accessors, provider-registry lookups, and the discovery-phase overlay-poll launcher as an injected PrecachingDeps parameter, so we
- * substitute stubs at that PrecachingDeps injection point and never drive a browser. The injected startOverlayHandling stub records each poll's options, so the
- * guide-page tests observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state assertions go through
- * getDomainAuthState, and login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
+ * precaching.revalidation.test.ts: Unit tests for the post-login revalidation flow (revalidateDomainAuth), the window sync on discovery-page cleanup, and the
+ * guarded guide-page session (withProviderGuidePage) in precaching.ts. Running a revalidation or a guide-page walk drives getCurrentBrowser/newPage, which would
+ * launch a real Chrome; precaching.ts accepts its browser accessors, provider-registry lookups, and the discovery-phase overlay-poll launcher as an injected
+ * PrecachingDeps parameter, so we substitute stubs at that PrecachingDeps injection point and never drive a browser. The injected startOverlayHandling stub records
+ * each poll's options, so the guide-page tests observe the discovery phase and its abort timing without a live poll. The health and login modules are real - state
+ * assertions go through getDomainAuthState, and login mode is driven through the real startLoginMode/clearLoginState with stub accessors.
  *
  * The same injection point carries two further surfaces: the lineup write the discovery-outcome recorder performs, observed rather than executed, and the
  * empty-walk retry the guarded session owns, whose rows drive a stub page that records what it was asked to do and a provider whose successive walks are scripted.
@@ -30,7 +30,7 @@ import { setImmediate as immediate } from "node:timers/promises";
 // Mutable state the deps stubs read, so each test can shape the provider registry and browser behavior without re-registering stubs.
 let mockGuideUrls: Record<string, string> = {};
 let mockProviders: Record<string, ProviderModule> = {};
-let minimizeCalls = 0;
+let windowSyncCalls = 0;
 let stubBrowser: Browser;
 
 // The overlay-handling options recorded by the injected startOverlayHandling stub (in call order), and an ordered log of the page operations the guarded session
@@ -42,11 +42,12 @@ let pageEvents: string[] = [];
 // hands the store without touching a real file.
 const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
-/* The injected precaching dependencies: the browser accessors and page bookkeeping, the provider-registry lookups, and the discovery-phase overlay-poll launcher,
- * substituted at precaching's PrecachingDeps boundary so revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state
- * above at call time, so a test shapes the registry and browser behavior by reassigning those lets. startOverlayHandling stands in for the real poll, recording each
- * call's options (phase and abort signal) into overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can pin the discovery phase and
- * its abort timing. Typed as the production port so the doubles cannot drift. The health and login modules stay real.
+/* The injected precaching dependencies: the browser accessors and page bookkeeping, the window-visibility sync, the provider-registry lookups, and the
+ * discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so revalidation and discovery run against stubs with no real Chrome.
+ * Each field reads the mutable module state above at call time, so a test shapes the registry and browser behavior by reassigning those lets. startOverlayHandling
+ * stands in for the real poll, recording each call's options (phase and abort signal) into overlayHandlingCalls and logging its launch into pageEvents so the
+ * guide-page tests can pin the discovery phase and its abort timing. Typed as the production port so the doubles cannot drift. The health and login modules stay
+ * real.
  */
 const deps: PrecachingDeps = {
 
@@ -55,10 +56,6 @@ const deps: PrecachingDeps = {
   getProvidersForDomain: (domain: string): ProviderModule[] => Object.entries(mockGuideUrls)
     .filter(([ , guideUrl ]) => extractDomain(guideUrl) === domain).flatMap(([slug]) => mockProviders[slug] ?? []),
   isGracefulShutdown: (): boolean => false,
-  minimizeBrowserWindow: async (): Promise<void> => {
-
-    minimizeCalls++;
-  },
   persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
 
     persistedLineups.push({ channels, slug });
@@ -68,6 +65,10 @@ const deps: PrecachingDeps = {
 
     pageEvents.push("poll:" + options.phase);
     overlayHandlingCalls.push(options);
+  },
+  syncWindowVisibility: async (): Promise<void> => {
+
+    windowSyncCalls++;
   },
   unregisterManagedPage: (): void => { /* Stub pages need no bookkeeping. */ }
 };
@@ -130,7 +131,7 @@ describe("revalidateDomainAuth", () => {
     originalServices = CONFIG.channels.precacheServices;
     CONFIG.channels.precacheServices = [];
 
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
     mockGuideUrls = { "stub-revalidate": "https://www.stub-revalidate.test/guide" };
     mockProviders = { "stub-revalidate": makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL) };
     stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
@@ -170,7 +171,7 @@ describe("revalidateDomainAuth", () => {
     setBrowserAccessors({
 
       getBrowserInstance: (): Nullable<Browser> => ({ connected: true, newPage: async (): Promise<Page> => makeLoginPageStub() } as unknown as Browser),
-      minimizeBrowserWindow: async (): Promise<void> => { /* Not measured here. */ }
+      syncWindowVisibility: async (): Promise<void> => { /* Not measured here. */ }
     });
 
     markDomainAuthRequired("stub-revalidate.test");
@@ -305,11 +306,11 @@ describe("revalidateDomainAuth", () => {
   });
 });
 
-describe("precacheService - login-mode minimize guard", () => {
+describe("precacheService - window sync on discovery-page cleanup", () => {
 
   beforeEach(() => {
 
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
     stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
 
     clearLoginState();
@@ -322,30 +323,31 @@ describe("precacheService - login-mode minimize guard", () => {
     mock.timers.reset();
   });
 
-  test("skips the window re-minimize while login mode is active", async () => {
+  /* Both login states are exercised at this call site because the call is unconditional: precacheService decides nothing about the window, it asks the policy, and
+   * the policy is what accounts for a login session. The login-active arm is the one that proves it - a re-introduced guard would suppress the call there and this
+   * test would fail. What the window then ends up as is decideWindowVisibility's login arm, pinned in windowSync.test.ts, not here.
+   */
+  test("asks for a window sync even while login mode is active", async () => {
 
-    /* Traced path: the isLoginModeActive() guard in precacheService's finally. A discovery finishing mid-login (a revalidation racing the wizard, or a cycle
-     * overlapping a login) must never minimize the window under the user.
-     */
     setBrowserAccessors({
 
       getBrowserInstance: (): Nullable<Browser> => ({ connected: true, newPage: async (): Promise<Page> => makeLoginPageStub() } as unknown as Browser),
-      minimizeBrowserWindow: async (): Promise<void> => { /* login.ts's own minimize path is not under test. */ }
+      syncWindowVisibility: async (): Promise<void> => { /* login.ts's own sync path is not under test. */ }
     });
 
     await startLoginMode("https://www.stub-revalidate.test/login");
 
     await precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), deps);
 
-    assert.equal(minimizeCalls, 0, "no minimize while login mode is active");
+    assert.equal(windowSyncCalls, 1, "the discovery page cleanup syncs the window regardless of login mode");
   });
 
-  test("re-minimizes the window when login mode is inactive", async () => {
+  test("asks for a window sync when login mode is inactive", async () => {
 
-    // The complementary arm: with login mode inactive, the pre-existing re-minimize behavior is unchanged.
+    // The complementary arm, which the retired login guard already allowed through.
     await precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), deps);
 
-    assert.equal(minimizeCalls, 1, "the discovery page cleanup re-minimizes as before");
+    assert.equal(windowSyncCalls, 1, "the discovery page cleanup syncs the window");
   });
 });
 
@@ -676,7 +678,7 @@ describe("runPrecacheCycle - deps threading through the internal precacheService
 
     originalServices = CONFIG.channels.precacheServices;
 
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
     mockGuideUrls = { "stub-revalidate": "https://www.stub-revalidate.test/guide" };
     mockProviders = { "stub-revalidate": makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL) };
     stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
@@ -737,7 +739,7 @@ describe("runPrecacheCycle - deps threading through the internal precacheService
 
     // Bounded macrotask drain: setImmediate always fires after the entire microtask queue - including continuations queued while draining - has emptied, so two
     // hops give ample margin for precacheService's full await chain (getCurrentBrowser -> newPage -> discoverChannels -> recordDiscoveryOutcome -> page.close ->
-    // minimizeBrowserWindow) to settle before we assert.
+    // the window sync) to settle before we assert.
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -750,7 +752,7 @@ describe("precacheService - navigation and cleanup", () => {
 
   beforeEach(() => {
 
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
 
     clearLoginState();
     mock.timers.enable({ apis: ["setTimeout"] });
@@ -860,7 +862,7 @@ describe("precacheService - the lineup write through the injection port", () => 
   beforeEach(() => {
 
     persistedLineups.length = 0;
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
 
     clearLoginState();
     mock.timers.enable({ apis: ["setTimeout"] });
@@ -921,7 +923,7 @@ describe("withProviderGuidePage", () => {
 
     overlayHandlingCalls = [];
     pageEvents = [];
-    minimizeCalls = 0;
+    windowSyncCalls = 0;
     stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
 
     clearLoginState();

@@ -74,7 +74,8 @@ const deps: CreatePageWithCaptureDeps = {
 
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
   getStream: async (): Promise<PuppeteerStream> => new Readable({ read: (): void => { /* Nothing is ever read from the stub capture. */ } }) as PuppeteerStream,
-  startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ }
+  startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },
+  syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };
 
 /**

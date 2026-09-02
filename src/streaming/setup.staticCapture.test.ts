@@ -1,13 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.staticCapture.test.ts: Unit test pinning that createPageWithCapture launches a bounded staticCapture overlay poll for static-capture profiles - and only for
- * those. createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no
- * Chrome launch), a PassThrough capture stream (no puppeteer-stream), and a recording overlay poll, while the real pipeline runs everything else. The stub page is
- * shaped so the static branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here); createCaptureSession merely wraps the injected
- * PassThrough; and minimizeWindow returns silently because the stub's CDP session reports no window to act on. Native capture mode skips the FFmpeg path and
- * skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as the only pipeline the call
- * exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage, minimizeBrowserWindow) run real: they mutate an in-process page set or
- * early-return without a live browser, so they are inert against the stub.
+ * setup.staticCapture.test.ts: Unit tests pinning two contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
+ * profiles and only for those, and that it brings the browser window on screen before it acquires capture. createPageWithCapture composes on the browser boundary
+ * through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome launch), a PassThrough capture stream (no
+ * puppeteer-stream), a recording overlay poll, and a recording window sync, while the real pipeline runs everything else. The stub page is shaped so the static
+ * branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here), and createCaptureSession merely wraps the injected PassThrough. Native
+ * capture mode skips the FFmpeg path and skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as
+ * the only pipeline the call exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage) run real: they mutate an in-process page set, so
+ * they are inert against the stub.
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { before, beforeEach, describe, test } from "node:test";
@@ -27,12 +27,18 @@ let overlayCalls: StartOverlayHandlingOptions[] = [];
 // The URLs the stub page navigated to, so a regression that dropped the goto surfaces (the poll only makes sense after the capture page has loaded its content).
 let pageGotos: string[] = [];
 
+// The injected collaborator calls the establishment makes, in order, so the ordering pin can read where the window sync lands relative to capture acquisition.
+let depsCalls: string[] = [];
+
+// The page argument each window sync received, in call order. The pass at the top of the establishment has no page yet; the pass that closes it hands over the page
+// it just built.
+let syncPages: (Page | undefined)[] = [];
+
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
- * and nothing else on the success path measures the page. createCDPSession hands back a session that reports no window for the target, which is the shape that
- * makes minimizeWindow return without issuing a command. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
- * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay
- * poll through the real consent module (not this file's injected recorder); the poll's tick-error taxonomy reads page.browser().connected, so the stub reports a
- * disconnected browser to resolve the tick to "stop" and let the fire-and-forget poll settle cleanly rather than leaving a rejected promise pending after the test.
+ * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
+ * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder);
+ * the poll's tick-error taxonomy reads page.browser().connected, so the stub reports a disconnected browser to resolve the tick to "stop" and let the
+ * fire-and-forget poll settle cleanly rather than leaving a rejected promise pending after the test.
  */
 function makeStubPage(): Page {
 
@@ -48,17 +54,30 @@ function makeStubPage(): Page {
   } as unknown as Page;
 }
 
-/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome), getStream yields
- * a real PassThrough so the real createCaptureSession has a stream to own (no puppeteer-stream), and startOverlayHandling records each poll's phase and abort signal in
- * place of a live poll. createPageWithCapture defaults every one of these to the real functions; substituting them here is what keeps the call off a live browser.
+/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome), getStream
+ * yields a real PassThrough so the real createCaptureSession has a stream to own (no puppeteer-stream), startOverlayHandling records each poll's phase and abort
+ * signal in place of a live poll, and syncWindowVisibility records the window passes in place of CDP traffic. createPageWithCapture defaults every one of these to
+ * the real functions; substituting them here is what keeps the call off a live browser, and recording getStream alongside the sync is what makes their order
+ * observable.
  */
 const deps: CreatePageWithCaptureDeps = {
 
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
+
   // getStream returns a real PassThrough augmented with a no-op stop so it satisfies puppeteer-stream's PuppeteerStream type, which requires a stop method, while
   // still handing createCaptureSession a genuine stream to own and destroy.
-  getStream: async (): Promise<PuppeteerStream> => Object.assign(new PassThrough(), { stop: (): Promise<void> => Promise.resolve() }),
-  startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); }
+  getStream: async (): Promise<PuppeteerStream> => {
+
+    depsCalls.push("getStream");
+
+    return Object.assign(new PassThrough(), { stop: (): Promise<void> => Promise.resolve() });
+  },
+  startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); },
+  syncWindowVisibility: async (page?: Page): Promise<void> => {
+
+    depsCalls.push("syncWindowVisibility");
+    syncPages.push(page);
+  }
 };
 
 before(() => {
@@ -69,8 +88,10 @@ before(() => {
 
 beforeEach(() => {
 
+  depsCalls = [];
   overlayCalls = [];
   pageGotos = [];
+  syncPages = [];
 });
 
 describe("createPageWithCapture - static-capture overlay poll", () => {
@@ -111,5 +132,29 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
       deps), "the tune path fails against the stub page rather than reaching a static poll");
 
     assert.equal(overlayCalls.filter((call) => call.phase === "staticCapture").length, 0, "no staticCapture poll runs for a non-static profile");
+  });
+});
+
+describe("createPageWithCapture - window visibility ordering", () => {
+
+  test("brings the window on screen before acquiring capture, and hands the established page to the closing pass", async () => {
+
+    /* Tab capture consumes the compositor's output for the shared window, and that output is only composed for capture to read while the window is presented - so
+     * the sync has to land before getStream, never alongside or after it. The recorded call order is the pin: moving the sync below capture acquisition swaps
+     * these two entries and fails here. The second entry is the pass that closes the establishment, which carries the page it just built so the executor can use
+     * that tab's CDP session rather than hunting for an open page.
+     */
+    const profile = makeProfile({ staticCapture: true });
+
+    const result = await createPageWithCapture(
+      { numericStreamId: 3, profile, skipManifestInterception: true, streamId: "order-test", url: "https://static.example/page" }, deps);
+
+    // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
+    result.captureSession.dispose();
+
+    assert.deepEqual(depsCalls, [ "syncWindowVisibility", "getStream", "syncWindowVisibility" ],
+      "the window sync leads the establishment and closes it, with capture acquired in between");
+    assert.equal(syncPages[0], undefined, "the leading pass has no page yet - it runs before the capture page exists");
+    assert.equal(syncPages[1], result.page, "the closing pass receives the page the establishment built");
   });
 });

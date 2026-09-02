@@ -6,8 +6,8 @@ import { CONFIG, displayConfiguration, initializeConfiguration, persistCoercedCo
 import type { Express, NextFunction, Request, Response } from "express";
 import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
   setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
-import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, minimizeBrowserWindow, prepareExtension, setGracefulShutdown,
-  setLoginModeEndObserver, startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup } from "./browser/index.ts";
+import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
+  startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
 import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
@@ -651,11 +651,11 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // codec capture will actually produce, and that choice reads the GPU capabilities the launch-time capability probe caches.
   await generatePreroll();
 
-  // Minimize the browser window to reduce GPU usage and desktop clutter. The browser must be visible (not headless) for capture to work, but minimizing it reduces
-  // resource consumption. CDP allows us to control window state without affecting capture. We defer minimization until after the browser capability probe and the
-  // launch-gate capture probe complete: the GPU probe wants an environment representative of the one capture runs in, and the display advisory reads the bounds
-  // the OS granted the window, which a minimized window does not report.
-  await minimizeBrowserWindow();
+  // Settle the window against the visibility policy. Nothing is streaming yet, so this leaves it minimized: the desktop stays clear and the GPU stays idle until a
+  // capture stream needs the window on screen. We defer the sync until after the browser capability probe and the launch-gate capture probe complete, because the
+  // GPU probe wants an environment representative of the one capture runs in, and the display advisory reads the bounds the OS granted the window, which a
+  // minimized window does not report.
+  await syncWindowVisibility();
 
   // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
   // and a future service cannot be started without also being torn down. These are order-independent background loops/timers, so LIFO disposal order is immaterial.

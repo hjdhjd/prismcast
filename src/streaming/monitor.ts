@@ -24,8 +24,8 @@ import { getClientSummary } from "./clients.ts";
 import { getPresetViewport } from "../config/presets.ts";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
-import { minimizeWindow } from "../browser/cdp.ts";
 import { refreshNativeManifest } from "../native/index.ts";
+import { syncWindowVisibility } from "../browser/index.ts";
 
 /* Live video streams can fail in many ways: the network can drop, the player can stall, the site can auto-pause, or ads can break playback. The health monitor
  * watches for these failures and attempts recovery. This is essential for unattended DVR recording where the user cannot manually intervene.
@@ -59,10 +59,6 @@ import { refreshNativeManifest } from "../native/index.ts";
  * 6. Escalation reset: After SUSTAINED_PLAYBACK_REQUIRED (60 seconds) of healthy playback, the escalation level resets to 0, the source reload tracking clears, every
  *    failure counter (including the consecutive navigation-failure tally) clears, and the circuit breaker resets. This allows a stream that recovered to start fresh,
  *    rather than immediately escalating to aggressive recovery on the next issue.
- *
- * 7. Window re-minimize: Recovery actions (especially fullscreen) can cause the browser window to un-minimize. After the recovery grace period passes and the first
- *    healthy check occurs, the window is re-minimized to reduce GPU usage. This happens sooner than the escalation reset (~5-10 seconds vs 60 seconds) because we
- *    don't need to wait for sustained playback to determine the window can be minimized.
  *
  * The monitor is designed to be resilient to page navigations and context changes. When a page navigation recovery is performed, the monitor updates its context
  * reference to the new video context.
@@ -206,10 +202,6 @@ export function monitorPlaybackHealth(
   // Counter for consecutive page navigation failures. If navigation fails twice in a row, we fall back to source reload (level 2) instead. This prevents getting
   // stuck in a loop when navigation itself is the problem.
   let consecutiveNavigationFailures = 0;
-
-  // Track whether the browser window needs to be re-minimized after recovery. Recovery actions (especially ensureFullscreen) can cause the window to un-minimize.
-  // We set this flag when recovery is triggered and clear it after the recovery grace period passes and we see a healthy check.
-  let pendingReMinimize = false;
 
   // Graduated fullscreen reinforcement counter. Counts consecutive ticks where verifyFullscreen() returns false. On tick 1 we apply basic CSS styles (sufficient
   // for well-behaved sites like Hulu). On tick 2+ we escalate to !important priority to override sites that actively fight style changes. Reset to 0 when the
@@ -665,6 +657,12 @@ export function monitorPlaybackHealth(
       entry.nativeProxy = null;
     }
 
+    /* Declare capture mode before the replacement rather than after it. The window-visibility policy reads the registry, and createPageWithCapture syncs the window
+     * at the top of establishment - so an entry still marked native there would let the policy minimize the window under a capture that is being acquired. Every
+     * outcome below either keeps this or reverts it, so the entry never rests on a mode it is not in.
+     */
+    entry.streamingMode = "capture";
+
     // Use the existing tab replacement infrastructure. It sets recoveryState.inProgress = true internally and clears it in finalizeTabReplacement. It creates a new
     // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (the page and the new capture session, with the segmenter
     // attached to it).
@@ -680,13 +678,13 @@ export function monitorPlaybackHealth(
 
     if(outcome.outcome === "success") {
 
-      // Tab replacement succeeded. Update the registry to reflect capture mode. The tab replacement handler already set the page and the new capture session (with
-      // its segmenter attached) on the registry entry. We just need to update the streaming mode and clear audio state.
-      entry.streamingMode = "capture";
-
-      // Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist (referencing
-      // video.m3u8 and audio.m3u8) instead of the capture segmenter's variant playlist. Clients that cached the master playlist structure would request stale audio
-      // and video variant playlists pointing to segments that are no longer being updated.
+      /* Tab replacement succeeded. The handler already set the page and the new capture session (with its segmenter attached) on the registry entry, and capture
+       * mode was declared before the replacement, so what remains is the state the native path left behind.
+       *
+       * Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist (referencing
+       * video.m3u8 and audio.m3u8) instead of the capture segmenter's variant playlist. Clients that cached the master playlist structure would request stale audio
+       * and video variant playlists pointing to segments that are no longer being updated.
+       */
       entry.hls.hasAudio = false;
       entry.hls.audioPlaylist = "";
       entry.hls.audioSegments.clear();
@@ -695,7 +693,7 @@ export function monitorPlaybackHealth(
 
       // Release the relay's initialization segments. They belong to a source this stream no longer consumes, and the memory report reads their byte counter with
       // no mode gate, so state left here would be counted for the rest of the stream's life. The nativeContainer label needs no matching reset: every consumer
-      // reads it behind the streaming-mode check the line above just flipped, exactly as the sibling native quality fields work.
+      // reads it behind the streaming-mode check this fallback already settled, exactly as the sibling native quality fields work.
       clearNativeInitState(entry.id);
 
       // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
@@ -711,7 +709,14 @@ export function monitorPlaybackHealth(
       LOG.warn("Capture fallback failed for %s: circuit breaker tripped.", entry.info.storeKey);
     } else {
 
-      // Tab replacement failed but stream wasn't terminated. The circuit breaker will handle it on the next failure.
+      /* Tab replacement failed but the stream continues un-terminated, so the entry has to go back to describing what it actually is: native mode, with the proxy
+       * already stopped and the breaker one failure short of tripping. Reverting keeps the registry, the monitor's mode branching, and the window-visibility policy
+       * reading the same truth, and the sync that follows lets the window settle now that no capture is being attempted.
+       */
+      entry.streamingMode = "native";
+
+      void syncWindowVisibility();
+
       LOG.warn("Capture fallback failed for %s: tab replacement unsuccessful.", entry.info.storeKey);
     }
   }
@@ -878,13 +883,12 @@ export function monitorPlaybackHealth(
   }
 
   /**
-   * Sets the recovery grace period and re-minimize flag after a recovery action. The grace period prevents the monitor from immediately detecting new issues while the
-   * recovery action takes effect.
+   * Sets the recovery grace period after a recovery action. The grace period prevents the monitor from immediately detecting new issues while the recovery action
+   * takes effect.
    * @param level - The recovery level (1-3) to determine grace period duration.
    */
   function setRecoveryGracePeriod(level: number): void {
 
-    pendingReMinimize = true;
     recoveryState.graceUntil = Date.now() + (recoveryGracePeriods[level] ?? 0);
   }
 
@@ -1313,7 +1317,6 @@ export function monitorPlaybackHealth(
     recoveryState.escalationLevel = 3;
     recoveryState.lastRecoveryTime = now;
     recoveryState.totalAttempts++;
-    pendingReMinimize = true;
     recoveryState.inProgress = true;
 
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.pageNavigation);
@@ -1560,8 +1563,6 @@ export function monitorPlaybackHealth(
         return true;
       }
 
-      pendingReMinimize = true;
-
       const recoveryResult = await performPageNavigationRecovery();
 
       // Same post-await stop check as the other navigation sites: a resumption after the monitor stopped applies neither the grace windows nor the ratchet step
@@ -1700,10 +1701,10 @@ export function monitorPlaybackHealth(
       LOG.warn("Proactive reload deferred - page navigation rate limit reached (%s in %s minutes).",
         CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
-      // Set a grace period to prevent this deferral from re-triggering every 2 seconds while the rate limit remains in effect. We set recoveryState.graceUntil
-      // directly rather than calling setRecoveryGracePeriod() because no recovery action was performed - the window state is unchanged and pendingReMinimize
-      // should not be set.
-      recoveryState.graceUntil = now + recoveryGracePeriods[3];
+      // Set a grace period so this deferral does not re-trigger every 2 seconds while the rate limit remains in effect. Level 3 is the bound a page navigation
+      // would have taken, which is the action being deferred.
+      setRecoveryGracePeriod(3);
+
       recoveryState.inProgress = false;
 
       emitStatusUpdate();
@@ -1810,7 +1811,6 @@ export function monitorPlaybackHealth(
     recoveryState.escalationLevel = nextLevel;
     recoveryState.lastRecoveryTime = now;
     recoveryState.totalAttempts++;
-    pendingReMinimize = true;
 
     // Get recovery method name for logging and metrics.
     const recoveryMethod = getRecoveryMethod(recoveryState.escalationLevel);
@@ -2174,18 +2174,6 @@ export function monitorPlaybackHealth(
         if(await monitorSegmentHealth(now, withinRecoveryGrace)) {
 
           return;
-        }
-
-        /* Re-minimize check. After recovery, the browser window may have been un-minimized by fullscreen actions. As soon as the stream is healthy (progressing without
-         * issues), we re-minimize to reduce GPU usage.
-         */
-        if(pendingReMinimize && isProgressing && !state.paused && !state.error && !state.ended) {
-
-          LOG.debug("recovery:general", "Re-minimizing browser window after successful recovery.");
-
-          pendingReMinimize = false;
-
-          await minimizeWindow(currentPage);
         }
 
         /* Fullscreen reinforcement. Some streaming sites (notably Hulu) revert the video to a mini-player or PiP layout in response to browser state changes such as

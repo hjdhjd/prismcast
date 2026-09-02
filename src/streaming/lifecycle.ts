@@ -7,7 +7,7 @@ import { LOG, formatDuration, formatError, getAbortController, unregisterAbortCo
 import { cancelPrerollTimer, getStream, unregisterStream } from "./registry.ts";
 import { formatKeyframeStatsSummary, formatSessionStatsSummary } from "./fmp4Segmenter.ts";
 import { formatRecoveryMetricsSummary, getTotalRecoveryAttempts } from "./recovery.ts";
-import { isGracefulShutdown, unregisterManagedPage } from "../browser/index.ts";
+import { isGracefulShutdown, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { RecoveryMetrics } from "./recovery.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
@@ -197,6 +197,16 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   }
 
   unregisterStream(streamId);
+
+  /* With the entry gone, the window-visibility policy can see whether anything is still capturing, so this is the moment the window settles. It lives here rather
+   * than at each caller for the same reason the rest of this cleanup does: nine paths reach termination, and a policy trigger any one of them could forget is a
+   * window left on screen for the rest of the session. Fire-and-forget, because the executor serializes and no caller of terminateStream waits on presentation.
+   *
+   * This differs from the SSE emission the notes above keep caller-owned: that exclusion is about emitCurrentSystemStatus's own import graph, whereas the sync
+   * travels the module edge this file already has to browser/index.ts.
+   */
+  void syncWindowVisibility();
+
   clearClients(streamId);
   clearPretuneSafetyTimer(streamId);
   clearShowName(streamId);

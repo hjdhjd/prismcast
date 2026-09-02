@@ -714,7 +714,8 @@ describe("seedProfilePreferences", () => {
  *
  * - startBrowserRestartChecking, stopBrowserRestartChecking, executeBrowserRestart (full restart cycle drives closeBrowser + getCurrentBrowser).
  *
- * - getBrowserPages, minimizeBrowserWindow (browser.pages() + CDP traffic against a real session).
+ * - getBrowserPages (browser.pages() against a real session). The window-visibility executor is not deferred: its factory takes injected primitives and an
+ *   injected page resolver, so windowSync.test.ts drives the whole loop with fakes and only the resolver wired in here needs a real browser.
  *
  * - prepareExtension (filesystem operations against the packaged executable layout).
  *

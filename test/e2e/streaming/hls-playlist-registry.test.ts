@@ -32,7 +32,7 @@ import { cleanupIdleStreams, handleHLSSegment } from "../../../src/streaming/hls
 import { deleteResumeData, getResumeSegmentIndex, loadResumeState, saveResumeState } from "../../../src/streaming/hlsResume.ts";
 import { describe, test } from "node:test";
 import { endLoginMode, setBrowserAccessors, startLoginMode } from "../../../src/browser/login.ts";
-import { getBrowserInstance, minimizeBrowserWindow } from "../../../src/browser/index.ts";
+import { getBrowserInstance, syncWindowVisibility } from "../../../src/browser/index.ts";
 import { getStream, registerStream } from "../../../src/streaming/registry.ts";
 import { setChannelStreamId, terminateStream } from "../../../src/streaming/lifecycle.ts";
 import { storeInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../../../src/streaming/hlsSegments.ts";
@@ -488,10 +488,9 @@ describe("handlePlayStream request guards", () => {
   test("answers 503 with the login-mode body while login mode is active", async () => {
 
     /* When login mode is active, new ad-hoc streams must be blocked so the authentication tab is not disrupted. We drive login mode active through the production
-     * accessor: startLoginMode requires a connected browser and un-minimizes a real tab via CDP, neither of which the integration tier hosts, so we inject a
-     * minimal browser double through the same setBrowserAccessors port browser/index.ts wires at startup. The fake page reports itself already closed so unminimizeWindow
-     * short-circuits before touching CDP. Cleanup calls endLoginMode (clearing the 15-minute safety timer and resetting the module singleton) and restores the real
-     * accessors so no later test observes the double.
+     * accessor: startLoginMode requires a connected browser and drives the window through the injected sync, neither of which the integration tier hosts, so we
+     * inject a minimal browser double through the same setBrowserAccessors port browser/index.ts wires at startup. Cleanup calls endLoginMode (clearing the
+     * 15-minute safety timer and resetting the module singleton) and restores the real accessors so no later test observes the double.
      */
     await using ctx = await createIntegrationContext();
 
@@ -508,12 +507,12 @@ describe("handlePlayStream request guards", () => {
 
     const fakeBrowser = { connected: true, newPage: async (): Promise<unknown> => fakePage } as unknown as Browser;
 
-    setBrowserAccessors({ getBrowserInstance: (): Browser => fakeBrowser, minimizeBrowserWindow: async (): Promise<void> => { /* No window to minimize in tests. */ } });
+    setBrowserAccessors({ getBrowserInstance: (): Browser => fakeBrowser, syncWindowVisibility: async (): Promise<void> => { /* No window to drive in tests. */ } });
 
     ctx.registerCleanup(async () => {
 
       await endLoginMode();
-      setBrowserAccessors({ getBrowserInstance, minimizeBrowserWindow });
+      setBrowserAccessors({ getBrowserInstance, syncWindowVisibility });
     });
 
     const started = await startLoginMode("https://example.test/login");
