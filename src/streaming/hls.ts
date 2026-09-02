@@ -27,6 +27,7 @@ import type { CaptureCodec } from "./codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
+import type { ResumeData } from "./hlsResume.ts";
 import type { SegmenterContinuity } from "./fmp4Segmenter.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";
@@ -1404,6 +1405,51 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
 }
 
 /**
+ * What a resuming segmenter is told to continue from.
+ */
+export interface BuildResumeContinuityOptions {
+
+  // The segment index the resume itself starts at, before any preroll range is added to it.
+  readonly baseSegmentIndex: number;
+
+  // How many preroll segments precede the real ones, or zero when no preroll window is in play.
+  readonly prerollSegmentCount: number;
+
+  // The prior session's state read back from disk, or null on a stream that starts from nothing.
+  readonly resumeData: Nullable<ResumeData>;
+}
+
+/**
+ * Derives what a segmenter continues from, which on a fresh stream is nothing at all. A resume carries the prior session's timestamps and init version, and its
+ * init segment only when no preroll window precedes it - the preroll init differs from the real one, so a byte match there would suppress a discontinuity the
+ * boundary genuinely needs. Session statistics are deliberately absent: a resume from disk has none, and inventing an empty set would tell the segmenter a live
+ * prior session is continuing and count a tab replacement that never happened. The starting index accounts for both the resume offset and the preroll segment
+ * range whenever either contributes one.
+ *
+ * Each member is present only when this resume genuinely carries it, because the segmenter reads presence rather than value: an absent member and a member set
+ * to an empty or zero stand-in mean different things to it.
+ *
+ * @param options - The resume record and the preroll accounting to derive from.
+ * @returns The continuity the segmenter is constructed with.
+ */
+export function buildResumeContinuity(options: BuildResumeContinuityOptions): SegmenterContinuity {
+
+  const { baseSegmentIndex, prerollSegmentCount, resumeData } = options;
+
+  return {
+
+    ...(resumeData ? {
+
+      initialTrackTimestamps: resumeData.trackTimestamps,
+      ...((prerollSegmentCount === 0) ? { previousInitSegment: resumeData.initSegment } : {}),
+      startingInitVersion: resumeData.initVersion
+    } : {}),
+
+    ...((resumeData || (prerollSegmentCount > 0)) ? { startingSegmentIndex: baseSegmentIndex + prerollSegmentCount } : {})
+  };
+}
+
+/**
  * Creates the fMP4 segmenter for capture mode streams. Reads resume data, creates the segmenter with preroll and resume configuration, and attaches it to the
  * capture session (which pipes the session's capture output into it). Resume data is consumed only after the segmenter is successfully attached to a non-disposed
  * session, ensuring it survives if the stream was terminated during setup.
@@ -1425,23 +1471,7 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
   // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly - no preroll playlist to be consistent with.
   const baseSegmentIndex = (prerollSegmentCount > 0) ? (currentStream?.hls.resumeSegmentIndex ?? 0) : (resumeData?.segmentIndex ?? 0);
 
-  /* What this segmenter continues from, which on a fresh stream is nothing at all. A resume carries the prior session's timestamps and init version, and its
-   * init segment only when no preroll window precedes it - the preroll init differs from the real one, so a byte match there would suppress a discontinuity the
-   * boundary genuinely needs. Session statistics are deliberately absent: a resume from disk has none, and inventing an empty set would tell the segmenter a
-   * live prior session is continuing and count a tab replacement that never happened. The starting index accounts for both the resume offset and the preroll
-   * segment range whenever either contributes one.
-   */
-  const continuity: SegmenterContinuity = {
-
-    ...(resumeData ? {
-
-      initialTrackTimestamps: resumeData.trackTimestamps,
-      ...((prerollSegmentCount === 0) ? { previousInitSegment: resumeData.initSegment } : {}),
-      startingInitVersion: resumeData.initVersion
-    } : {}),
-
-    ...((resumeData || (prerollSegmentCount > 0)) ? { startingSegmentIndex: baseSegmentIndex + prerollSegmentCount } : {})
-  };
+  const continuity = buildResumeContinuity({ baseSegmentIndex, prerollSegmentCount, resumeData });
 
   // Create the fMP4 segmenter. When preroll is active, it includes preroll entries in its sliding window via the compositor, and the pending discontinuity at the
   // preroll-to-real boundary is always needed.

@@ -3,20 +3,21 @@
  * hls.test.ts: Unit tests for the synchronous helpers in the HLS request handler module. hls.ts orchestrates the entire HLS streaming pipeline (channel
  * validation, pending-stream registration, native vs capture path selection, segmenter creation, monitor wiring) and the orchestration entrypoints
  * (handleHLSPlaylist, handleHLSSegment, ensureChannelStream, initializeStream, startHLSStream, completeStreamSetup) require a real Chrome browser, FFmpeg
- * subprocess, and Express runtime to exercise honestly. The unit-testable surface here is the pure validation helpers - validateChannel and sendValidationError
- * - which translate channel keys and validation results into HTTP-shaped error responses without touching the browser or registry beyond config lookups.
+ * subprocess, and Express runtime to exercise honestly. The unit-testable surface here is the module's pure, browser-free helpers, which translate inputs to
+ * values without touching the browser or the registry beyond config lookups.
  *
  * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts), which drives the real isLoginModeActive() flag through the setBrowserAccessors()
  * dependency injection point - the same one browser/index.ts wires at startup - with a stub browser and page, rather than substituting the accessor.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { handleHLSSegment, hasStreamCapacity, sendValidationError, validateChannel } from "./hls.ts";
+import { buildResumeContinuity, handleHLSSegment, hasStreamCapacity, sendValidationError, validateChannel } from "./hls.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { setChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { storeInitSegment, storeNamedInitSegment, storeSegment } from "./hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Response } from "express";
+import type { ResumeData } from "./hlsResume.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
@@ -340,5 +341,67 @@ describe("handleHLSSegment: named init segments (T5)", () => {
       terminateStream(entry.id, "missing-name-channel", "test cleanup");
       unregisterStream(entry.id);
     }
+  });
+});
+describe("buildResumeContinuity", () => {
+
+  /* The derivation reads as a set of conditional arms and the rows walk every one of them, because the segmenter reads this object by key presence rather than
+   * by value: a member that is absent and a member set to a zero or empty stand-in mean different things to it. So every row reads the returned object's own keys
+   * with the "in" operator rather than comparing values, which is the only way to tell an absent member from one present and undefined.
+   */
+
+  // The prior session a resume carries back from disk. One literal, reused by the rows that resume, so a shape change lands in one place.
+  const resumed: ResumeData = {
+
+    initSegment: Buffer.from([ 1, 2, 3 ]),
+    initVersion: 7,
+    segmentIndex: 42,
+    trackTimestamps: new Map([[ 1, 90000n ]])
+  };
+
+  test("a resume with no preroll ahead of it carries the whole prior session, and no session statistics", () => {
+
+    /* The both-spreads arm, and the row the absence assertion is really for. A resume from disk has no session statistics at all, so the object must not carry
+     * the member: present-but-empty would tell the segmenter a live prior session is continuing and mint a tab replacement that never happened into the resumed
+     * stream's summary.
+     */
+    const result = buildResumeContinuity({ baseSegmentIndex: 42, prerollSegmentCount: 0, resumeData: resumed });
+
+    assert.equal(result.initialTrackTimestamps, resumed.trackTimestamps, "the prior session's timestamps, by reference");
+    assert.equal(result.previousInitSegment, resumed.initSegment, "and its init segment, because no preroll window precedes this one");
+    assert.equal(result.startingInitVersion, 7, "and its init version");
+    assert.equal(result.startingSegmentIndex, 42, "starting where the resume left off, with no preroll range to add");
+    assert.equal("priorSessionStats" in result, false, "and no session statistics member at all, not an empty one");
+  });
+
+  test("a resume behind a preroll window drops the init segment and offsets the index by the preroll range", () => {
+
+    /* The inner-conditional arm. The preroll init differs from the real one, so handing the prior init segment across a preroll boundary would let a byte match
+     * suppress a discontinuity the boundary genuinely needs - the member is withheld rather than nulled.
+     */
+    const result = buildResumeContinuity({ baseSegmentIndex: 42, prerollSegmentCount: 5, resumeData: resumed });
+
+    assert.equal("previousInitSegment" in result, false, "the init segment is withheld across a preroll boundary");
+    assert.equal(result.startingSegmentIndex, 47, "and the index accounts for the resume offset and the preroll range together");
+    assert.equal(result.initialTrackTimestamps, resumed.trackTimestamps, "the timestamps still continue");
+    assert.equal(result.startingInitVersion, 7, "and so does the init version");
+    assert.equal("priorSessionStats" in result, false, "with no session statistics here either");
+  });
+
+  test("a fresh stream behind a preroll window carries the preroll offset and nothing else", () => {
+
+    // The index-only arm: there is no prior session to continue, but the preroll segments still occupy the range the real ones start after.
+    const result = buildResumeContinuity({ baseSegmentIndex: 0, prerollSegmentCount: 5, resumeData: null });
+
+    assert.deepEqual(Object.keys(result), ["startingSegmentIndex"], "exactly one member, and it is the index");
+    assert.equal(result.startingSegmentIndex, 5, "which is the preroll range the real segments follow");
+  });
+
+  test("a fresh stream with no preroll continues from nothing at all", () => {
+
+    // The empty arm. A stream that starts from nothing must hand the segmenter an object with no members, so every default the segmenter owns stays in force.
+    const result = buildResumeContinuity({ baseSegmentIndex: 0, prerollSegmentCount: 0, resumeData: null });
+
+    assert.equal(Object.keys(result).length, 0, "nothing to continue from, so nothing is carried");
   });
 });
