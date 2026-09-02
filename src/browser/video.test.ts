@@ -12,10 +12,10 @@ import type { Frame, Page } from "puppeteer-core";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, getVideoState, injectVideoSelector, lockVolumeProperties,
   reloadVideoSource, startVideoPlayback, suppressPageAudio, validateVideoElement, verifyFullscreen } from "./video.ts";
 import { describe, test } from "node:test";
+import { seedVideoSelector, withDocument } from "../testing.helpers.ts";
 import type { Window } from "happy-dom";
 import assert from "node:assert/strict";
 import { makeProfile } from "../config/profiles.helpers.ts";
-import { withDocument } from "../testing.helpers.ts";
 
 /* makeProfile builds a ResolvedSiteProfile literal with all required fields populated to safe defaults. Tests override only the fields they care about - typically
  * selectReadyVideo to flip the selector type. The object is intentionally minimal because video.ts only reads selectReadyVideo and a few other flags from
@@ -63,6 +63,12 @@ const STACKING_FIXTURE = "<header id=\"h\" style=\"position:relative;z-index:999
   "<main id=\"m\" style=\"position:static\"><div id=\"c\" style=\"position:relative;z-index:100\">" +
   "<div id=\"w\" style=\"position:absolute\"><div id=\"p\" style=\"position:static\"><video id=\"v\"></video></div></div></div></main>";
 
+/* The box properties the styling neutralizes beyond the margin and transform pair the rows below read by name: the maxes a stylesheet clamps the box with on
+ * either axis, and the independent transform properties that move the box exactly as a transform does. The rows read them through getPropertyValue and
+ * getPropertyPriority because the CSSOM view happy-dom builds carries no camelCase accessor for rotate, scale, or translate.
+ */
+const NEUTRALIZED_BOX_PROPERTIES = [ "max-height", "max-width", "rotate", "scale", "translate" ];
+
 /* Reads a fixture element's inline style declaration by id. A missing id is a broken fixture rather than a failed expectation, so it throws with the id named
  * instead of surfacing further down as a property read on null.
  * @param window - The window backing the fixture document.
@@ -81,28 +87,46 @@ function styleOf(window: Window, id: string): CSSStyleDeclaration {
   return (element as unknown as HTMLElement).style;
 }
 
-/* Seeds the page-side video selector the styling callback reads. happy-dom's Window carries no declaration for the binding production injects via
- * evaluateOnNewDocument, so the seeding goes through a narrow view of the window.
- * @param window - The window backing the fixture document.
- * @param video - What the selector returns, which the no-video row sets to null.
+/* The two in-page callbacks the DOM rows execute: the styling pass, which takes the selector type and the priority flag, and the verification, which takes the
+ * selector type and answers whether the video fills the viewport.
  */
-function seedVideoSelector(window: Window, video: unknown): void {
+type StyleCallback = (type: string, useImportant: boolean) => void;
+type VerifyCallback = (type: string) => boolean;
 
-  (window as unknown as { __prismcastSelectVideo?: (type: string) => unknown }).__prismcastSelectVideo = (): unknown => video;
-}
-
-/* Runs applyVideoStyles against a stub context, then returns the in-page callback it handed to evaluate. The DOM rows below invoke that callback directly against a
- * synthetic document, which is what lets them exercise the styling the page would apply without a browser.
- * @param important - The priority flag to forward, which the callback receives as its second argument.
- * @returns The callback and the arguments it was forwarded.
+/* Runs an evaluate-backed helper against a stub context, then returns the in-page callback it handed to evaluate. The DOM rows below invoke that callback directly
+ * against a synthetic document, which is what lets them exercise page-side behavior without a browser. One extractor serves every such helper: the row makes the
+ * call it wants and names the callback's signature as the type argument.
+ * @param invoke - Calls the helper under test with the stub context, carrying whatever arguments the row cares about.
+ * @returns The callback the helper handed to evaluate.
  */
-async function captureStyleCallback(important: boolean): Promise<(type: string, useImportant: boolean) => void> {
+async function captureCallback<T>(invoke: (context: Frame | Page) => Promise<unknown>): Promise<T> {
 
   const { context, stub } = makeContextStub(() => undefined);
 
-  await applyVideoStyles(context, "selectFirstVideo", important);
+  await invoke(context);
 
-  return stub.calls[0]?.fn as (type: string, useImportant: boolean) => void;
+  return stub.calls[0]?.fn as T;
+}
+
+/* Runs the verification callback against a video whose box is the given rect, in a 1920x1080 viewport. The viewport is set explicitly because happy-dom's bare
+ * window is 1024x768, at which a box shifted half a screen would still measure as filling and the rows would assert nothing. The video is a stand-in rather than a
+ * fixture element: the callback calls getBoundingClientRect and nothing else, so scripting that one method is what lets a row state a box no synthetic layout
+ * engine would produce.
+ * @param callback - The captured verification callback.
+ * @param rect - The video's viewport-relative box.
+ * @returns What the verification answered for that box.
+ */
+function verifyWithRect(callback: VerifyCallback, rect: { height: number; left: number; top: number; width: number }): boolean {
+
+  return withDocument("", (window) => {
+
+    window.innerHeight = 1080;
+    window.innerWidth = 1920;
+
+    seedVideoSelector(window, { getBoundingClientRect: (): typeof rect => rect });
+
+    return callback("selectFirstVideo");
+  });
 }
 
 /* makePageStub returns a Page-shaped stub whose evaluateOnNewDocument records its callback. Tests assert on the call count to lock the
@@ -357,7 +381,7 @@ describe("applyVideoStyles", () => {
      * positioned container ranks at, and a site header above that container paints over the capture. Lifting each ancestor to the video's layer within its own
      * context is what makes the styling's promise hold. The header is outside the chain and must be left exactly as authored.
      */
-    const callback = await captureStyleCallback(false);
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
 
     withDocument(STACKING_FIXTURE, (window) => {
 
@@ -380,12 +404,41 @@ describe("applyVideoStyles", () => {
     });
   });
 
+  test("clears every property that moves or clamps the video's own box, and leaves its ancestors' transforms alone", async () => {
+
+    /* The field failures this catches: a player centers its video with its own translate, which slides the anchored full-viewport box off-center and leaves the
+     * capture compositing a corner of the frame, and a stylesheet max holds the box to a fraction of the viewport without ever contesting the width and height
+     * the styling sets. Positioning alone answers neither, so the styling neutralizes the video's geometry and motion outright. The ancestors are the boundary -
+     * the standard tier deliberately does not reach into their transforms, which is the aggressive tier's business.
+     */
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
+
+    withDocument(STACKING_FIXTURE, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", false);
+
+      assert.equal(styleOf(window, "v").transform, "none", "a site's centering translate cannot survive the styling pass");
+      assert.equal(styleOf(window, "v").transition, "none", "and no transition is left to animate the clear into the verification window");
+      assert.equal(styleOf(window, "v").margin, "0px", "a negative margin cannot shift the anchored box either");
+
+      for(const property of NEUTRALIZED_BOX_PROPERTIES) {
+
+        assert.equal(styleOf(window, "v").getPropertyValue(property), "none", property + " is cleared on the video");
+      }
+
+      assert.equal(styleOf(window, "c").transform, "", "the container's transform is left where the page put it");
+      assert.equal(styleOf(window, "p").transform, "", "and so is the static parent's");
+    });
+  });
+
   test("leaves an ancestor that already ranks at or above the layer alone", async () => {
 
     /* The aggressive fullscreen path ranks ancestors at 999998, above this layer. A standard styling pass runs after it on every reinforcement tick, and lowering
      * those ancestors would undo the stronger path's work. The static parent in the same fixture shows the walk still lifts everything else.
      */
-    const callback = await captureStyleCallback(false);
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
 
     const fixture = "<div id=\"c\" style=\"position:relative;z-index:999998\"><div id=\"p\" style=\"position:static\"><video id=\"v\"></video></div></div>";
 
@@ -404,7 +457,7 @@ describe("applyVideoStyles", () => {
 
     // The flag governs the ancestors exactly as it governs the video: a site that fights style changes wins on the ancestors otherwise, and the video's own
     // important-flagged z-index would then be capped by an ancestor the site re-ranked.
-    const callback = await captureStyleCallback(true);
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", true));
 
     withDocument(STACKING_FIXTURE, (window) => {
 
@@ -414,6 +467,13 @@ describe("applyVideoStyles", () => {
 
       assert.equal(styleOf(window, "c").getPropertyPriority("z-index"), "important", "the lifted z-index carries the priority");
       assert.equal(styleOf(window, "p").getPropertyPriority("position"), "important", "the positioning carries the priority");
+      assert.equal(styleOf(window, "v").getPropertyPriority("transform"), "important", "and so does the cleared transform, which is what a site's own stylesheet " +
+        "rule would otherwise outrank");
+
+      for(const property of NEUTRALIZED_BOX_PROPERTIES) {
+
+        assert.equal(styleOf(window, "v").getPropertyPriority(property), "important", property + " is cleared at the same priority");
+      }
     });
   });
 
@@ -421,7 +481,7 @@ describe("applyVideoStyles", () => {
 
     // The other half of the flag's contract. Hardcoding the priority would override site styling on every ordinary establishment pass, which is the escalation the
     // aggressive path exists to make deliberate.
-    const callback = await captureStyleCallback(false);
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
 
     withDocument(STACKING_FIXTURE, (window) => {
 
@@ -431,6 +491,12 @@ describe("applyVideoStyles", () => {
 
       assert.equal(styleOf(window, "c").getPropertyPriority("z-index"), "", "the lifted z-index carries no priority");
       assert.equal(styleOf(window, "p").getPropertyPriority("position"), "", "the positioning carries no priority");
+      assert.equal(styleOf(window, "v").getPropertyPriority("transform"), "", "and the cleared transform carries none either");
+
+      for(const property of NEUTRALIZED_BOX_PROPERTIES) {
+
+        assert.equal(styleOf(window, "v").getPropertyPriority(property), "", property + " carries none either");
+      }
     });
   });
 
@@ -438,7 +504,7 @@ describe("applyVideoStyles", () => {
 
     // The early return covers the window between navigation and the player mounting its video. Without it the callback would dereference null and throw inside the
     // page, turning a routine timing gap into an evaluate failure the monitor has to classify.
-    const callback = await captureStyleCallback(false);
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
 
     withDocument(STACKING_FIXTURE, (window) => {
 
@@ -508,6 +574,84 @@ describe("verifyFullscreen", () => {
     await verifyFullscreen(context, "selectReadyVideo");
 
     assert.deepEqual(stub.calls[0]?.args, ["selectReadyVideo"], "selector type forwarded");
+  });
+
+  test("passes a video whose box fills the viewport", async () => {
+
+    // The ordinary success: styling applied, box anchored at the origin at the viewport's size. Every row below is measured against this one.
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: 0, top: 0, width: 1920 }), true, "a video filling the viewport verifies");
+  });
+
+  test("fails a full-sized video that a transform has shifted off-center", async () => {
+
+    /* The field failure: a player centers its video with translate(-50%, -50%), so a full-viewport box sits at (-960, -540) and only its bottom-right quarter
+     * lands on screen. The box still measures 1920x1080, which is why the raw dimensions cannot tell this case from the passing one above - what the capture
+     * composites is the quarter, and that is what the verification has to answer for.
+     */
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: -960, top: -540, width: 1920 }), false, "a shifted full-sized video does not verify");
+  });
+
+  test("fails a box that pillars itself inside the viewport", async () => {
+
+    /* A 1440-wide box centered in a 1920 viewport covers the full height and three quarters of the width. The styling gives the video the whole viewport and
+     * lets object-fit pillar the picture inside that box, so a pillared box is the styling defeated rather than a 4:3 feed rendered correctly - the content's
+     * own shape never reaches this measurement, which reads the element's box and nothing else.
+     */
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: 240, top: 0, width: 1440 }), false, "a pillared box does not verify");
+  });
+
+  test("fails a box that letterboxes itself inside the viewport", async () => {
+
+    /* The height axis of the same contract, and the row that states it most directly: a 700-tall band spanning the full width covers 0.648 of the height. A box
+     * that letterboxes itself has been clamped by the page, while letterboxed content inside a full box is object-fit's output and never reaches this rule.
+     */
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 700, left: 0, top: 190, width: 1920 }), false, "a banded box does not verify");
+  });
+
+  test("fails a box the page has halved along the width", async () => {
+
+    /* Taken from the field: a live player halved the styled video's width, leaving a full-height box covering half the viewport. Nothing else notices - the
+     * video plays, the health signals read clean, and the recording carries half a frame - so this measurement is the only place the defeat can surface.
+     */
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: 0, top: 0, width: 960 }), false, "a half-width box does not verify");
+  });
+
+  test("fails a video that is merely small", async () => {
+
+    // The mini-player reversion the monitor's reinforcement was written for: the video plays on, centered and a quarter of the size, and no other health signal
+    // notices. Coverage is what fails it rather than position, so the threshold alone decides this row.
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 270, left: 720, top: 405, width: 480 }), false, "a quarter-sized video does not verify");
+  });
+
+  test("fails a video parked entirely off-screen", async () => {
+
+    // A box pushed one full viewport down and to the right contributes nothing at all. Both extents clamp to zero rather than going negative, so the ratios read
+    // 0 and the check fails on a video the raw dimensions would have called fullscreen.
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: 1920, top: 1080, width: 1920 }), false, "an off-screen video does not verify");
+  });
+
+  test("fails a video pushed half off along one axis", async () => {
+
+    /* Half the width off screen leaves a full-sized box covering half the viewport horizontally. The measurement is the same one the half-width row above makes
+     * of a clamped box: what the capture composites is half a frame either way, and where the missing half went is not something the picture records.
+     */
+    const callback = await captureCallback<VerifyCallback>((context) => verifyFullscreen(context, "selectFirstVideo"));
+
+    assert.equal(verifyWithRect(callback, { height: 1080, left: 960, top: 0, width: 1920 }), false, "a box half off screen does not verify");
   });
 });
 

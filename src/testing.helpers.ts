@@ -5,7 +5,7 @@
  *
  *   - cdp.helpers.ts          FakeCdpSession, FakeConnection, makeFakeCdpPage, CapturedCdpCommand, CdpSessionListenerOp (puppeteer CDP stubs)
  *   - cleanup.helpers.ts      closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle
- *   - document.helpers.ts     withDocument (a happy-dom document and window installed as the process globals for a body's duration)
+ *   - document.helpers.ts     withDocument (a happy-dom document and window installed as the process globals for a body's duration), seedVideoSelector
  *   - exec.helpers.ts         FakeExecFileResult, FakeExecFile, bufferOrStringToString, makeExecFileError, execFileFromMap, execFileAlwaysSucceeds
  *   - fn.helpers.ts           noop, flushMicrotasks
  *   - fs.helpers.ts           TMPDIR_PREFIX, withTempDir
@@ -31,6 +31,6 @@ export { capturingLog, silentLog } from "./testing/loggers.helpers.ts";
 export { closePuppeteerStreamWss, closePuppeteerStreamWssOnIdle } from "./testing/cleanup.helpers.ts";
 export { firstOf, nthOf } from "./testing/narrowing.helpers.ts";
 export { flushMicrotasks, noop } from "./testing/fn.helpers.ts";
+export { seedVideoSelector, withDocument } from "./testing/document.helpers.ts";
 export { makeFakeCdpPage } from "./testing/cdp.helpers.ts";
 export { makeFakePage } from "./testing/page.helpers.ts";
-export { withDocument } from "./testing/document.helpers.ts";

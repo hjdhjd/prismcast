@@ -34,11 +34,12 @@ import { getUserDomains } from "./userProfiles.ts";
  * - Whether to lock volume properties to prevent auto-muting
  * - Whether the page is static content (no video element expected)
  *
- * Fullscreen is a family name here rather than an action. Each family names the native mechanism the site's player supports, and no builtin profile invokes
- * one: PrismCast fills the capture by styling the video to the viewport instead (applyVideoStyles in browser/video.ts), which works from a background tab and
- * leaves whatever application the user has in front of them where it is. The recording's dimensions come from the quality preset's emulated capture surface,
- * not from the browser window, so the styling costs the picture nothing. A custom profile turns a native trigger on for one site through the option that
- * carries it - fullscreenKey for the keypress, fullscreenSelector for the player's own control, useRequestFullscreen for the JavaScript API.
+ * Fullscreen is a family name here rather than an action. Each family names the native mechanism the site's player supports, and the builtin site profiles in
+ * these tables invoke none of them: PrismCast fills the capture by styling the video to the viewport instead (applyVideoStyles in browser/video.ts), which
+ * works from a background tab and leaves whatever application the user has in front of them where it is. The recording's dimensions come from the quality
+ * preset's emulated capture surface, not from the browser window, so the styling costs the picture nothing. A provider profile opts into the native path where
+ * its player requires one, and a custom profile turns a native trigger on for a single site; both do it through the option that carries the mechanism -
+ * fullscreenKey for the keypress, fullscreenSelector for the player's own control, useRequestFullscreen for the JavaScript API.
  *
  * When adding support for a new streaming site, first check if an existing profile matches its behavior. Only create a new profile if the site requires unique
  * handling not covered by existing profiles.

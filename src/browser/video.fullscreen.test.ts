@@ -10,11 +10,11 @@
  */
 import type { Frame, Page } from "puppeteer-core";
 import type { ResolvedSiteProfile, VideoSelectorType } from "../types/index.ts";
+import { closePuppeteerStreamWssOnIdle, seedVideoSelector, withDocument } from "../testing.helpers.ts";
 import { describe, test } from "node:test";
 import type { FullscreenDeps } from "./video.ts";
 import type { SelectedTab } from "./tabSelection.ts";
 import assert from "node:assert/strict";
-import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { ensureFullscreen } from "./video.ts";
 
 // The module under test reaches puppeteer-stream through its own imports, which spawns a WebSocketServer at load and would otherwise hold the runner open.
@@ -22,6 +22,9 @@ closePuppeteerStreamWssOnIdle();
 
 // The video selector type every row drives. Which strategy it names is immaterial here - it is carried through to the doubles unread.
 const SELECTOR_TYPE: VideoSelectorType = "selectFirstVideo";
+
+// The escalation's in-page styling callback, which takes the selector type and styles whatever the page-side selector hands it.
+type AggressiveCallback = (type: string) => void;
 
 /**
  * Builds the profile a row tunes with.
@@ -38,11 +41,13 @@ function makeProfile(overrides: Partial<ResolvedSiteProfile> = {}): ResolvedSite
  * and native-state reads without the production code needing a test-only branch.
  * @param timeline - The shared ordering record.
  * @param options - The scripted answers.
+ * @param options.aggressive - Receives the escalation's own styling callback, so a row can run it against a fixture instead of only recording that it ran.
  * @param options.nativeActive - What the native-fullscreen read answers. Defaults to true.
  * @param options.verified - What the dimension check answers. Defaults to true.
  * @returns The context double.
  */
-function makeContext(timeline: string[], options: { nativeActive?: boolean; verified?: boolean } = {}): Frame | Page {
+function makeContext(timeline: string[],
+  options: { aggressive?: (callback: AggressiveCallback) => void; nativeActive?: boolean; verified?: boolean } = {}): Frame | Page {
 
   return {
 
@@ -82,6 +87,7 @@ function makeContext(timeline: string[], options: { nativeActive?: boolean; veri
       if(source.includes("999999")) {
 
         timeline.push("aggressive");
+        options.aggressive?.(target as AggressiveCallback);
 
         return undefined;
       }
@@ -141,6 +147,27 @@ function makeDeps(timeline: string[], ceilings: (number | undefined)[]): Fullscr
       }
     }
   };
+}
+
+/**
+ * Drives a CSS-only sequence whose verifications never pass, so the escalation runs, and returns the styling callback that pass handed to evaluate. The callback
+ * carries both of the escalation's style lists - the video's own and its containers' - which is why the row that uses it executes it against a fixture: the two
+ * lists live in one function source, so reading that source cannot tell which element each list reaches.
+ * @returns The escalation's styling callback.
+ */
+async function captureAggressiveCallback(): Promise<AggressiveCallback> {
+
+  const timeline: string[] = [];
+  const captured: AggressiveCallback[] = [];
+
+  await ensureFullscreen(makePage(timeline), makeContext(timeline, { aggressive: (callback) => captured.push(callback), verified: false }),
+    makeProfile({ useRequestFullscreen: false }), SELECTOR_TYPE, false, makeDeps(timeline, []));
+
+  const [callback] = captured;
+
+  assert.ok(callback, "the sequence escalated and its styling callback was captured");
+
+  return callback;
 }
 
 describe("ensureFullscreen", () => {
@@ -235,5 +262,43 @@ describe("ensureFullscreen", () => {
 
     assert.equal(timeline.filter((entry) => (entry === "type:f")).length, 3, "one keypress per simple retry");
     assert.ok(timeline.lastIndexOf("type:f") < timeline.indexOf("aggressive"), "every keypress precedes the escalation");
+  });
+
+  test("the escalation clears the box properties on the video and the containing-block ones on the container above it", async () => {
+
+    /* What the escalation has to answer at its own tier: a player's centering translate slides the anchored video off-center, a stylesheet max holds its box to
+     * a fraction of the viewport, and a transformed ancestor is the harder case - it becomes the containing block for the video's fixed positioning, so the
+     * video anchors to that ancestor's box instead of to the viewport and no styling on the video alone corrects it. The independent transform properties do
+     * that to an ancestor exactly as a transform does, which is why the container list clears them too and the video list does not stop at the maxes. Running
+     * the callback against a fixture is what tells its style lists apart, since reading its source would only show that both strings are present somewhere in
+     * one function.
+     */
+    const callback = await captureAggressiveCallback();
+
+    withDocument("<div id=\"c\"><video id=\"v\"></video></div>", (window) => {
+
+      // happy-dom types getElementById as the base Element, which carries no inline style declaration, so the fixture reads go through a narrow view of each one.
+      const container = window.document.getElementById("c") as unknown as HTMLElement;
+      const video = window.document.getElementById("v") as unknown as HTMLElement;
+
+      seedVideoSelector(window, video);
+
+      callback(SELECTOR_TYPE);
+
+      assert.ok(video.style.cssText.includes("transform: none !important"), "the video's own transform is cleared at the escalation's priority");
+      assert.ok(video.style.cssText.includes("transition: none !important"), "and its transition with it, so the clear snaps rather than animating");
+      assert.ok(video.style.cssText.includes("margin: 0px !important"), "and its margin, which the CSSOM serializes as a zero length");
+      assert.ok(video.style.cssText.includes("max-height: none !important"), "the maxes go with them, since a stylesheet max clamps the box at any priority");
+      assert.ok(video.style.cssText.includes("max-width: none !important"), "on the width axis the field failure came from as well");
+      assert.ok(video.style.cssText.includes("rotate: none !important"), "and each independent transform property is cleared on its own");
+      assert.ok(video.style.cssText.includes("scale: none !important"), "because clearing transform reaches none of them");
+      assert.ok(video.style.cssText.includes("translate: none !important"), "and any one of them alone moves the box off the viewport");
+      assert.ok(container.style.cssText.includes("transform: none !important"), "the container's transform is cleared as well, so the video anchors to the " +
+        "viewport rather than to it");
+      assert.ok(container.style.cssText.includes("transition: none !important"), "and the container's transition, for the reason it is cleared on the video");
+      assert.ok(container.style.cssText.includes("rotate: none !important"), "the container's rotate goes too, since it makes the same containing block");
+      assert.ok(container.style.cssText.includes("scale: none !important"), "and its scale");
+      assert.ok(container.style.cssText.includes("translate: none !important"), "and its translate, the one a centering player is most likely to have set");
+    });
   });
 });

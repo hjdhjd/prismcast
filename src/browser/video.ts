@@ -730,6 +730,15 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
  * The styling:
  * - position: fixed - Removes the video from document flow and positions relative to viewport
  * - top: 0; left: 0; width: 100%; height: 100% - Fills the entire viewport
+ * - margin: 0 - A negative margin shifts an anchored box, so the offsets above are the whole position
+ * - max-height: none; max-width: none - A stylesheet max bounds the box without ever contesting the sizes above, because a max is a different property and the
+ *   cascade never puts them against each other: an author's max wins over an inline size at any priority, so an inline none is what keeps the box ours
+ * - transform: none - A transform moves the box after it is positioned: a player that centers its video with its own translate slides the full-viewport element
+ *   off-center, and the capture then composites whichever corner of the viewport the video still covers
+ * - rotate: none; scale: none; translate: none - The independent transform properties move, turn, and resize the box exactly as a transform does, and clearing
+ *   transform says nothing about them, so each one is cleared on its own
+ * - transition: none - A transition on transform would animate the clear rather than snapping it, leaving a verification sampled moments later reading a box
+ *   still in motion
  * - zIndex: 999000 on the video and, within each one's own stacking context, on every ancestor - a z-index only ranks within its nearest stacking context,
  *   so the ancestors are lifted to the same layer
  * - objectFit: contain - Maintains aspect ratio while fitting within the viewport
@@ -763,9 +772,17 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
     video.style.setProperty("cursor", "none", priority);
     video.style.setProperty("height", "100%", priority);
     video.style.setProperty("left", "0", priority);
+    video.style.setProperty("margin", "0", priority);
+    video.style.setProperty("max-height", "none", priority);
+    video.style.setProperty("max-width", "none", priority);
     video.style.setProperty("object-fit", "contain", priority);
     video.style.setProperty("position", "fixed", priority);
+    video.style.setProperty("rotate", "none", priority);
+    video.style.setProperty("scale", "none", priority);
     video.style.setProperty("top", "0", priority);
+    video.style.setProperty("transform", "none", priority);
+    video.style.setProperty("transition", "none", priority);
+    video.style.setProperty("translate", "none", priority);
     video.style.setProperty("width", "100%", priority);
     video.style.setProperty("z-index", layer, priority);
 
@@ -947,16 +964,14 @@ export async function triggerFullscreen(
 }
 
 /**
- * Verifies that the video element is filling the viewport, indicating that fullscreen styling was successfully applied. This function checks the video element's
- * bounding rectangle against the viewport dimensions to determine if the video appears fullscreen.
+ * Verifies that the video element is filling the viewport, indicating that fullscreen styling was successfully applied. The measurement is the part of the video's
+ * bounding rectangle that lands inside the viewport, which is what the capture composites. The raw box dimensions are the wrong instrument: a full-sized element
+ * that a site's own transform has moved off-center still reports its full width and height while showing only the slice that remains on screen.
  *
- * The verification allows for some tolerance because:
- * - The video may have letterboxing/pillarboxing due to aspect ratio differences
- * - Some browsers report slightly smaller dimensions due to scrollbars or UI chrome
- * - CSS rounding may cause small discrepancies
- *
- * We require the video to fill at least 85% of the viewport in at least one dimension (the constraining dimension for aspect ratio) and at least 50% in the
- * other dimension to catch obviously broken cases.
+ * The styling hands the video the viewport as its box and lets object-fit render the content's own aspect inside it, so a letterboxed picture is something the
+ * box shows rather than a smaller box. Both axes are therefore asked the same question: a box that covers one of them and falls short on the other has been
+ * clamped or moved by the page, which is the defeat this exists to catch. The threshold sits below a full viewport as measurement slack rather than shape
+ * slack - a scrollbar or a strip of browser chrome the viewport metric counts, and CSS rounding at the box's edges.
  * @param context - The frame or page containing the video element.
  * @param selectorType - The video selector type for finding the element.
  * @returns True if the video appears to be fullscreen, false if it does not, or null if the check could not be performed (e.g. context destroyed).
@@ -978,17 +993,22 @@ export async function verifyFullscreen(context: Frame | Page, selectorType: Vide
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
 
+      /* How much of the box lands inside the viewport along one axis: the overlap between the box's span and the viewport's, clamped at zero for a box that
+       * misses the viewport entirely. One helper serves both axes so the clip is expressed once, and it reads only the four values every rectangle carries.
+       */
+      const visibleExtent = (start: number, size: number, limit: number): number => Math.max(0, Math.min(start + size, limit) - Math.max(start, 0));
+
       // Calculate how much of the viewport the video fills in each dimension.
-      const widthRatio = rect.width / viewportWidth;
-      const heightRatio = rect.height / viewportHeight;
+      const widthRatio = visibleExtent(rect.left, rect.width, viewportWidth) / viewportWidth;
+      const heightRatio = visibleExtent(rect.top, rect.height, viewportHeight) / viewportHeight;
 
-      // The video should fill at least 85% in at least one dimension (accounting for aspect ratio letterboxing) and at least 50% in the other dimension (to
-      // catch obviously broken cases where the video is tiny or off-screen).
-      const fillsWidth = widthRatio >= 0.85;
-      const fillsHeight = heightRatio >= 0.85;
-      const minimumCoverage = (widthRatio >= 0.5) && (heightRatio >= 0.5);
+      // The share of each axis the box has to cover. What it leaves is room for the measurement to be slightly off, never room for a box of a different shape.
+      const FILL_THRESHOLD = 0.85;
 
-      return (fillsWidth || fillsHeight) && minimumCoverage;
+      const fillsWidth = widthRatio >= FILL_THRESHOLD;
+      const fillsHeight = heightRatio >= FILL_THRESHOLD;
+
+      return fillsWidth && fillsHeight;
     }, [selectorType]);
   } catch(_error) {
 
@@ -1094,9 +1114,17 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
       "cursor: none !important",
       "height: 100% !important",
       "left: 0 !important",
+      "margin: 0 !important",
+      "max-height: none !important",
+      "max-width: none !important",
       "object-fit: contain !important",
       "position: fixed !important",
+      "rotate: none !important",
+      "scale: none !important",
       "top: 0 !important",
+      "transform: none !important",
+      "transition: none !important",
+      "translate: none !important",
       "width: 100% !important",
       "z-index: 999999 !important"
     ].join("; ");
@@ -1115,7 +1143,13 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
       }
     }
 
-    // Expand parent containers up the DOM tree. Sites often wrap videos in multiple container divs with constrained dimensions. We need to break out of these.
+    /* Expand parent containers up the DOM tree. Sites often wrap videos in multiple container divs with constrained dimensions. We need to break out of these.
+     * Each container's transform is cleared alongside its dimensions because a transformed element becomes the containing block for fixed-position descendants
+     * inside it: the video would anchor to that ancestor's box rather than to the viewport, and no amount of styling on the video itself corrects that. The
+     * independent transform properties are cleared beside it because each one creates that containing block on its own, and clearing transform does not reach
+     * them. The paired transition clear makes the correction snap, so a verification sampled moments later reads the settled layout rather than a box still in
+     * motion.
+     */
     let container = video.parentElement;
 
     while(container && (container !== document.body)) {
@@ -1124,7 +1158,12 @@ async function applyAggressiveFullscreen(context: Frame | Page, selectorType: Vi
         "height: 100% !important",
         "left: 0 !important",
         "position: fixed !important",
+        "rotate: none !important",
+        "scale: none !important",
         "top: 0 !important",
+        "transform: none !important",
+        "transition: none !important",
+        "translate: none !important",
         "width: 100% !important",
         "z-index: 999998 !important"
       ].join("; ");

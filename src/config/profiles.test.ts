@@ -50,9 +50,9 @@ describe("resolveProfile", () => {
 
   test("the builtin fullscreen families leave the native step off", () => {
 
-    /* Both fullscreen families name the native mechanism a site's player supports rather than one PrismCast invokes, so neither base profile contributes a
-     * flag and every descendant inherits the default. The third trigger, fullscreenSelector, is set by no builtin profile either, but the profiles that
-     * could carry it are registered by the provider modules, which this tier does not load - the static builtin tables alone are visible here.
+    /* Both fullscreen families name the native mechanism a site's player supports rather than one the base profile invokes, so neither contributes a flag and
+     * every descendant inherits the default. The third trigger, fullscreenSelector, is absent from these tables for the same reason. A profile that does opt
+     * into a native mechanism is registered by a provider module, which this tier does not load - the static builtin tables alone are visible here.
      */
     assert.equal(resolveProfile("fullscreenApi").useRequestFullscreen, false, "the api family's base contributes no flag");
     assert.equal(resolveProfile("keyboardFullscreen").fullscreenKey, null, "the keyboard family's base contributes no key");
