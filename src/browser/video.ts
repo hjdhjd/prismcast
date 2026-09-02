@@ -707,7 +707,8 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
  * The styling:
  * - position: fixed - Removes the video from document flow and positions relative to viewport
  * - top: 0; left: 0; width: 100%; height: 100% - Fills the entire viewport
- * - zIndex: 999000 - Ensures the video appears above all other page content
+ * - zIndex: 999000 on the video and, within each one's own stacking context, on every ancestor - a z-index only ranks within its nearest stacking context,
+ *   so the ancestors are lifted to the same layer
  * - objectFit: contain - Maintains aspect ratio while fitting within the viewport
  * - background: black - Fills any letterbox/pillarbox areas with black
  * - cursor: none - Hides the mouse cursor for cleaner capture
@@ -732,6 +733,9 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
     // styles after our basic assignment.
     const priority = useImportant ? "important" : "";
 
+    // The layer the video and its ancestors paint at. One value for both, because an ancestor lifted to any other tier would not carry the video with it.
+    const layer = "999000";
+
     video.style.setProperty("background", "black", priority);
     video.style.setProperty("cursor", "none", priority);
     video.style.setProperty("height", "100%", priority);
@@ -740,7 +744,33 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
     video.style.setProperty("position", "fixed", priority);
     video.style.setProperty("top", "0", priority);
     video.style.setProperty("width", "100%", priority);
-    video.style.setProperty("z-index", "999000", priority);
+    video.style.setProperty("z-index", layer, priority);
+
+    /* A z-index ranks an element only inside its nearest stacking context, so a positioned ancestor with a modest z-index caps the video beneath any
+     * page element that outranks that ancestor - a site header ranked above the player's container covers the video's top edge even though the video
+     * carries the highest z-index on the page. Every ancestor is therefore lifted to the video's layer within its own context: it becomes positioned
+     * where it was static so a z-index applies to it, and takes the layer unless it already ranks at or above it, so the aggressive path's higher
+     * tiers are never lowered by a later standard pass. The ancestor's own box does not move; a static ancestor made relative does become the
+     * containing block for absolutely positioned descendants inside it. The walk stops at the body, where the root context decides the order.
+     */
+    let ancestor = video.parentElement;
+
+    while(ancestor && (ancestor !== document.body)) {
+
+      const computed = window.getComputedStyle(ancestor);
+
+      if(computed.position === "static") {
+
+        ancestor.style.setProperty("position", "relative", priority);
+      }
+
+      if(!(Number(computed.zIndex) >= Number(layer))) {
+
+        ancestor.style.setProperty("z-index", layer, priority);
+      }
+
+      ancestor = ancestor.parentElement;
+    }
   }, [ selectorType, important ]);
 }
 

@@ -12,8 +12,10 @@ import type { Frame, Page } from "puppeteer-core";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, getVideoState, injectVideoSelector, lockVolumeProperties,
   reloadVideoSource, startVideoPlayback, suppressPageAudio, validateVideoElement, verifyFullscreen } from "./video.ts";
 import { describe, test } from "node:test";
+import type { Window } from "happy-dom";
 import assert from "node:assert/strict";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { withDocument } from "../testing.helpers.ts";
 
 /* makeProfile builds a ResolvedSiteProfile literal with all required fields populated to safe defaults. Tests override only the fields they care about - typically
  * selectReadyVideo to flip the selector type. The object is intentionally minimal because video.ts only reads selectReadyVideo and a few other flags from
@@ -50,6 +52,57 @@ function makeContextStub(impl: (fn: unknown, ...args: unknown[]) => unknown): { 
   };
 
   return { context: stub as unknown as Frame | Page, stub };
+}
+
+/* The stacking fixture the applyVideoStyles DOM rows run against. A site header ranked high at the root sits outside the video's chain, and the chain itself mixes
+ * the positioning cases the ancestor walk has to handle: a positioned container carrying a modest z-index, an absolutely positioned wrapper, and two static
+ * elements. The positions are declared inline because happy-dom reports an unspecified position as the empty string rather than "static", and the walk's static
+ * test is what the fixture exists to exercise.
+ */
+const STACKING_FIXTURE = "<header id=\"h\" style=\"position:relative;z-index:99998\"></header>" +
+  "<main id=\"m\" style=\"position:static\"><div id=\"c\" style=\"position:relative;z-index:100\">" +
+  "<div id=\"w\" style=\"position:absolute\"><div id=\"p\" style=\"position:static\"><video id=\"v\"></video></div></div></div></main>";
+
+/* Reads a fixture element's inline style declaration by id. A missing id is a broken fixture rather than a failed expectation, so it throws with the id named
+ * instead of surfacing further down as a property read on null.
+ * @param window - The window backing the fixture document.
+ * @param id - The fixture element's id.
+ * @returns The element's inline style declaration.
+ */
+function styleOf(window: Window, id: string): CSSStyleDeclaration {
+
+  const element = window.document.getElementById(id);
+
+  if(!element) {
+
+    throw new Error("The fixture has no element with id " + id + ".");
+  }
+
+  return (element as unknown as HTMLElement).style;
+}
+
+/* Seeds the page-side video selector the styling callback reads. happy-dom's Window carries no declaration for the binding production injects via
+ * evaluateOnNewDocument, so the seeding goes through a narrow view of the window.
+ * @param window - The window backing the fixture document.
+ * @param video - What the selector returns, which the no-video row sets to null.
+ */
+function seedVideoSelector(window: Window, video: unknown): void {
+
+  (window as unknown as { __prismcastSelectVideo?: (type: string) => unknown }).__prismcastSelectVideo = (): unknown => video;
+}
+
+/* Runs applyVideoStyles against a stub context, then returns the in-page callback it handed to evaluate. The DOM rows below invoke that callback directly against a
+ * synthetic document, which is what lets them exercise the styling the page would apply without a browser.
+ * @param important - The priority flag to forward, which the callback receives as its second argument.
+ * @returns The callback and the arguments it was forwarded.
+ */
+async function captureStyleCallback(important: boolean): Promise<(type: string, useImportant: boolean) => void> {
+
+  const { context, stub } = makeContextStub(() => undefined);
+
+  await applyVideoStyles(context, "selectFirstVideo", important);
+
+  return stub.calls[0]?.fn as (type: string, useImportant: boolean) => void;
 }
 
 /* makePageStub returns a Page-shaped stub whose evaluateOnNewDocument records its callback. Tests assert on the call count to lock the
@@ -296,6 +349,105 @@ describe("applyVideoStyles", () => {
     await applyVideoStyles(context, "selectReadyVideo", true);
 
     assert.deepEqual(stub.calls[0]?.args, [ "selectReadyVideo", true ], "important flag forwarded");
+  });
+
+  test("lifts every ancestor up to the body into the video's layer, positioning the static ones", async () => {
+
+    /* The defect this pins: a z-index ranks an element only inside its nearest stacking context, so the video's own high z-index is capped by whatever its
+     * positioned container ranks at, and a site header above that container paints over the capture. Lifting each ancestor to the video's layer within its own
+     * context is what makes the styling's promise hold. The header is outside the chain and must be left exactly as authored.
+     */
+    const callback = await captureStyleCallback(false);
+
+    withDocument(STACKING_FIXTURE, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", false);
+
+      assert.equal(styleOf(window, "c").position, "relative", "an already-positioned container keeps its position");
+      assert.equal(styleOf(window, "c").zIndex, "999000", "the container is lifted out of its modest rank");
+      assert.equal(styleOf(window, "p").position, "relative", "a static parent is positioned so a z-index applies to it");
+      assert.equal(styleOf(window, "p").zIndex, "999000", "the static parent is lifted");
+      assert.equal(styleOf(window, "w").position, "absolute", "an absolutely positioned wrapper keeps its position");
+      assert.equal(styleOf(window, "w").zIndex, "999000", "the wrapper is lifted");
+      assert.equal(styleOf(window, "m").position, "relative", "the walk reaches every ancestor, not just the parent");
+      assert.equal(styleOf(window, "m").zIndex, "999000", "the outermost ancestor below the body is lifted");
+      assert.equal(styleOf(window, "h").zIndex, "99998", "an element outside the video's chain is untouched");
+      assert.equal(styleOf(window, "h").position, "relative", "the element outside the chain keeps its position too");
+      assert.equal(window.document.body.style.zIndex, "", "the walk stops at the body, where the root context decides the order");
+      assert.equal(styleOf(window, "v").zIndex, "999000", "the video carries the same layer as its ancestors");
+    });
+  });
+
+  test("leaves an ancestor that already ranks at or above the layer alone", async () => {
+
+    /* The aggressive fullscreen path ranks ancestors at 999998, above this layer. A standard styling pass runs after it on every reinforcement tick, and lowering
+     * those ancestors would undo the stronger path's work. The static parent in the same fixture shows the walk still lifts everything else.
+     */
+    const callback = await captureStyleCallback(false);
+
+    const fixture = "<div id=\"c\" style=\"position:relative;z-index:999998\"><div id=\"p\" style=\"position:static\"><video id=\"v\"></video></div></div>";
+
+    withDocument(fixture, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", false);
+
+      assert.equal(styleOf(window, "c").zIndex, "999998", "the higher tier survives a later standard pass");
+      assert.equal(styleOf(window, "p").zIndex, "999000", "the unranked parent is still lifted");
+    });
+  });
+
+  test("applies the lifted properties with important priority when the caller requests it", async () => {
+
+    // The flag governs the ancestors exactly as it governs the video: a site that fights style changes wins on the ancestors otherwise, and the video's own
+    // important-flagged z-index would then be capped by an ancestor the site re-ranked.
+    const callback = await captureStyleCallback(true);
+
+    withDocument(STACKING_FIXTURE, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", true);
+
+      assert.equal(styleOf(window, "c").getPropertyPriority("z-index"), "important", "the lifted z-index carries the priority");
+      assert.equal(styleOf(window, "p").getPropertyPriority("position"), "important", "the positioning carries the priority");
+    });
+  });
+
+  test("applies the lifted properties without priority when the caller does not request it", async () => {
+
+    // The other half of the flag's contract. Hardcoding the priority would override site styling on every ordinary establishment pass, which is the escalation the
+    // aggressive path exists to make deliberate.
+    const callback = await captureStyleCallback(false);
+
+    withDocument(STACKING_FIXTURE, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", false);
+
+      assert.equal(styleOf(window, "c").getPropertyPriority("z-index"), "", "the lifted z-index carries no priority");
+      assert.equal(styleOf(window, "p").getPropertyPriority("position"), "", "the positioning carries no priority");
+    });
+  });
+
+  test("styles nothing when the selector finds no video", async () => {
+
+    // The early return covers the window between navigation and the player mounting its video. Without it the callback would dereference null and throw inside the
+    // page, turning a routine timing gap into an evaluate failure the monitor has to classify.
+    const callback = await captureStyleCallback(false);
+
+    withDocument(STACKING_FIXTURE, (window) => {
+
+      seedVideoSelector(window, null);
+
+      assert.doesNotThrow(() => callback("selectFirstVideo", false), "the callback returns cleanly with no video");
+      assert.equal(styleOf(window, "c").zIndex, "100", "the container keeps its authored rank");
+      assert.equal(styleOf(window, "p").position, "static", "the static parent keeps its authored position");
+    });
   });
 });
 

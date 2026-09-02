@@ -16,8 +16,8 @@
  */
 import { ACCEPT_AFFORDANCE_SOURCE, CMP_REGISTRY, EMBED_GATE_SOURCE, EXCLUDE_SOURCE, clickSelectorInPage, locateSelectorCoordinate, scanForEmbedGate } from "./consent.ts";
 import { describe, test } from "node:test";
-import { Window } from "happy-dom";
 import assert from "node:assert/strict";
+import { withDocument } from "../testing.helpers.ts";
 
 /**
  * A minimal viewport rectangle, expanded to a full DOMRect by toDomRect. Only x, y, width, and height are meaningful inputs; the derived edges follow from them.
@@ -96,29 +96,6 @@ function requireElement(selector: string): Element {
 function gateArgs(act: boolean): { accept: string; act: boolean; exclude: string; gate: string } {
 
   return { accept: ACCEPT_AFFORDANCE_SOURCE, act, exclude: EXCLUDE_SOURCE, gate: EMBED_GATE_SOURCE };
-}
-
-/* Runs a body with the given fixture markup installed as the global document, backed by happy-dom. The in-page heuristics are self-contained functions that reference
- * the document global (they cross the page.evaluate boundary by source serialization), so a test supplies a synthetic document the same way a real page would supply
- * its own. node:test runs each test file in its own process and the tests here run sequentially, so the scoped global mutation cannot bleed across suites.
- */
-function withDocument<T>(html: string, body: () => T): T {
-
-  const window = new Window();
-
-  window.document.body.innerHTML = html;
-
-  const globalSlot = globalThis as { document?: unknown };
-
-  globalSlot.document = window.document;
-
-  try {
-
-    return body();
-  } finally {
-
-    delete globalSlot.document;
-  }
 }
 
 describe("scanForEmbedGate - embed-gate heuristic", () => {

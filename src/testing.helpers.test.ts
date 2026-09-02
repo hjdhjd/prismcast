@@ -43,6 +43,7 @@ const EXPECTED_FUNCTION_EXPORTS = [
   "noop",
   "nthOf",
   "silentLog",
+  "withDocument",
   "withTempDir"
 ] as const;
 

@@ -8,7 +8,7 @@
 import type { BlockedPageSignals, SignInContainerRecord } from "./blockedPage.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { classifyBlockedPage, collectSignInContainers, decideBlockedPage } from "./blockedPage.ts";
-import { closePuppeteerStreamWssOnIdle, firstOf } from "../testing.helpers.ts";
+import { closePuppeteerStreamWssOnIdle, firstOf, withDocument } from "../testing.helpers.ts";
 import type { Page } from "puppeteer-core";
 import { Window } from "happy-dom";
 import assert from "node:assert/strict";
@@ -37,29 +37,6 @@ function makeSignals(overrides: Partial<BlockedPageSignals> = {}): BlockedPageSi
 
 // A container record that satisfies the generic shape rule's email arm (text entry + submit + sign-in phrasing).
 const QUALIFYING_CONTAINER: SignInContainerRecord = { hasPasswordInput: false, hasSubmitAffordance: true, hasTextEntry: true, text: "Enter your email Continue" };
-
-/* Runs a body with the given fixture markup installed as the global document, backed by happy-dom. The collector is self-contained in-page code that references the
- * document global (it crosses the page.evaluate boundary by source serialization), so tests inject a synthetic document the same way the page would supply its own.
- * node:test runs each test file in its own process and tests in this file run sequentially, so the scoped global mutation cannot bleed across suites.
- */
-function withDocument<T>(html: string, body: () => T): T {
-
-  const window = new Window();
-
-  window.document.body.innerHTML = html;
-
-  const globalSlot = globalThis as { document?: unknown };
-
-  globalSlot.document = window.document;
-
-  try {
-
-    return body();
-  } finally {
-
-    delete globalSlot.document;
-  }
-}
 
 /* Builds a Page stub backed by a happy-dom document: url() returns the landed URL, $ resolves selectors against the fixture, and evaluate executes the real
  * serialized in-page function against the fixture document. This runs the production CMP probe, embed-gate locator, and container collector unmocked, so the
