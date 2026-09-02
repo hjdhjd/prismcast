@@ -470,14 +470,7 @@ export function monitorPlaybackHealth(
       nativeHealthState.issueType = "proxy error";
       nativeHealthState.issueTime = now;
 
-      /* The grace window is read here rather than being left to the replacement primitive alone, because a dead proxy stays dead: this condition holds on every
-       * tick once it is true, so the whole fallback cycle - the mode pre-flip, the attempt, the revert, the warning - would otherwise run twice a second inside a
-       * window every other trigger is respecting. Nothing is lost by waiting, since the proxy is not recovering in the meantime, and the status still goes out so
-       * the display keeps advancing.
-       */
-      if(isWithinRecoveryGrace()) {
-
-        emitNativeStatus(entry, identity, "recovering");
+      if(deferFallbackInsideGrace(entry, identity)) {
 
         return;
       }
@@ -556,6 +549,11 @@ export function monitorPlaybackHealth(
     // L3: at 4x target duration once an L2 attempt has already been made and the stall persists, fall back to capture mode via tab replacement.
     if(decision.action === "l3") {
 
+      if(deferFallbackInsideGrace(entry, identity)) {
+
+        return;
+      }
+
       LOG.warn("Falling back to capture mode for %s: native streaming stalled after recovery attempt.", storeKey);
 
       // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
@@ -565,6 +563,34 @@ export function monitorPlaybackHealth(
     }
 
     emitNativeStatus(entry, identity, decision.health);
+  }
+
+  /**
+   * Holds a native capture fallback at the decision site while the recovery grace window is open, reporting the stream as recovering instead of entering the
+   * fallback cycle. Every native trigger - a relay that stopped itself on its error threshold, a stall the ladder has escalated to its last rung - describes a
+   * condition that holds on every tick once it is true. Without this read the whole cycle - the mode pre-flip, the attempt, the revert, the window sync, the
+   * warning - would run twice a second inside a window every other trigger is respecting. Nothing is lost by waiting, since neither condition is curing itself in
+   * the meantime, and the status still goes out so the display keeps advancing. The replacement primitive's own entry gate stays the guarantee beneath this: a
+   * gate here can be forgotten, that one cannot be bypassed.
+   *
+   * The status is recovering for every trigger, because a fallback being held is a recovery in progress from the display's point of view.
+   *
+   * @param entry - The stream registry entry.
+   * @param identity - The stream's native identity, narrowed by the caller.
+   * @returns True when the fallback was held, which is the caller's signal to return without entering it.
+   */
+  function deferFallbackInsideGrace(entry: StreamRegistryEntry, identity: NativeStreamIdentity): boolean {
+
+    if(!isWithinRecoveryGrace()) {
+
+      return false;
+    }
+
+    LOG.debug("native:monitor", "Capture fallback for %s waits for the recovery grace window to close.", entry.info.storeKey);
+
+    emitNativeStatus(entry, identity, "recovering");
+
+    return true;
   }
 
   /**
@@ -812,8 +838,13 @@ export function monitorPlaybackHealth(
 
       case "deferred": {
 
-        // The replacement was declined before it started because the previous recovery's window is still open. Nothing was attempted, so the revert is the same
-        // one the failed arm performs and the narration is a breadcrumb rather than a warning.
+        /* The replacement was declined before it started because the previous recovery's window is still open. Nothing was attempted, so the revert is the same one
+         * the failed arm performs and the narration is a breadcrumb rather than a warning.
+         *
+         * No live native path reaches this arm: every native trigger holds its fallback at the decision site while the window is open, and nothing runs between
+         * that read and the primitive's own that could open a window. The arm stays because the outcome union is shared with the capture triggers and the switch
+         * is exhaustive by design.
+         */
         entry.identity = previousIdentity;
 
         void deps.syncWindowVisibility();
@@ -1038,8 +1069,8 @@ export function monitorPlaybackHealth(
   /**
    * Reports whether the monitor is inside the post-recovery grace window. One state, read here by every consumer that has to honour it: the tick computes the
    * value it threads into the health checks from this, and the triggers that sit outside that thread - the tiny-segment gate, the unresponsive-tab gate, the
-   * native error fast path, and the replacement primitive's own entry gate - call it directly. A second way of asking the same question is how a trigger ends up
-   * escalating inside a window every other trigger is respecting.
+   * native fallback triggers through deferFallbackInsideGrace, and the replacement primitive's own entry gate - call it directly. A second way of asking the
+   * same question is how a trigger ends up escalating inside a window every other trigger is respecting.
    * @returns True while the grace window from the last recovery action is still open.
    */
   function isWithinRecoveryGrace(): boolean {

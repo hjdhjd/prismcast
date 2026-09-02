@@ -458,11 +458,12 @@ describe("executeNativeL3Fallback: the relay is released on exactly the exits th
     assert.ok(relay.healthReads() > readsAfterFallback, "the restored relay is consulted again on the next native tick");
   });
 
-  test("a fallback declined inside the grace window reverts exactly as a failure does, without narrating one", async (t) => {
+  test("a stall inside the grace window holds the fallback at the ladder and enters nothing", async (t) => {
 
-    /* The deferred arm. It is reached here through the staleness ladder, which carries no window read of its own - the fast path above it does - so this is the
-     * shape a future trigger added without one would take. The revert must be identical to the failed arm's, because nothing was attempted, and the narration
-     * must not be: a deferral is the throttle working, not evidence about the stream.
+    /* The staleness ladder's own window read, which is the same discipline the fast path below applies to a dead relay. A stall persists tick after tick, so a
+     * ladder that escalated on every one of them would run the whole cycle - the pre-flip, the attempt, the revert, the window sync, the warning - twice a second
+     * inside a window every other trigger is respecting. The sync count is the instrument, because it advances once per cycle that actually entered the fallback,
+     * and the debug breadcrumb is what says the tick was seen and held rather than never reaching the decision at all.
      */
     t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
 
@@ -473,6 +474,10 @@ describe("executeNativeL3Fallback: the relay is released on exactly the exits th
 
     const held = entry.identity;
     const messages = captureLogs(t);
+    const breadcrumbs: string[] = [];
+
+    t.mock.method(LOG, "debug", (category: string, message: string) => { breadcrumbs.push(message); });
+
     const fake = makeFakePage();
 
     handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "l3-deferred-1", streamInfo(9312),
@@ -484,17 +489,28 @@ describe("executeNativeL3Fallback: the relay is released on exactly the exits th
     await advance(t, MONITOR_INTERVAL * 8);
 
     assert.equal(countMessages(messages, "Capture fallback failed for"), 1, "the first escalation ran and failed, arming the window");
+    assert.equal(syncs, 1, "one cycle ran and reverted");
 
-    const warningsAfterFailure = messages.length;
+    const heldBreadcrumb = "Capture fallback for %s waits for the recovery grace window to close.";
+    const narrationAfterFailure = messages.length;
+    const breadcrumbsAfterFailure = countMessages(breadcrumbs, heldBreadcrumb);
 
-    // The next stalled tick escalates again on the same evidence, and meets the window.
+    // Two more stalled ticks, each satisfying the same escalation condition, inside the window the failure armed.
     await advance(t, MONITOR_INTERVAL * 2);
 
-    assert.equal(entry.identity, held, "the deferred arm hands back the same identity object the failed arm does");
-    assert.equal(relay.stops(), 0, "and leaves the relay running, because nothing took the stream from it");
-    assert.equal(countMessages(messages, "Capture fallback failed for"), 1, "with no second failure narrated - nothing was attempted");
-    assert.equal(countMessages(messages, "Tab replacement was unsuccessful"), 1, "and no second exhaustion either, because no attempt was made to exhaust");
-    assert.ok(messages.length > warningsAfterFailure, "the ladder above the fallback keeps announcing the stall it is reacting to, which is its own concern");
+    assert.equal(syncs, 1, "and not one of those ticks re-entered the fallback");
+    assert.equal(entry.identity, held, "the entry was never even pre-flipped, so it still holds the identity it started with");
+    assert.equal(relay.stops(), 0, "and the relay keeps running, because nothing took the stream from it");
+    assert.equal(messages.length, narrationAfterFailure, "with nothing narrated at all - a held fallback is the throttle working, not evidence about the stream");
+    assert.equal(countMessages(breadcrumbs, heldBreadcrumb) - breadcrumbsAfterFailure, 2, "one breadcrumb for each of the two in-window ticks this drive fired");
+
+    /* Past the window, where the still-stalled stream is free to escalate again. This is the control: without it, a row asserting "nothing happened" would pass
+     * just as well against a monitor that had stopped detecting the stall at all.
+     */
+    await advance(t, RECOVERY_GRACE_MS);
+
+    assert.equal(countMessages(messages, "Capture fallback failed for"), 2, "the window closing releases exactly one more escalation");
+    assert.equal(syncs, 2, "which entered the fallback and reverted out of it, exactly once");
   });
 
   test("a dead relay does not re-enter the fallback on every tick inside the window", async (t) => {
