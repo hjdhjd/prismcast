@@ -693,7 +693,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, pendingDiscontinuity: true, previousInitSegment: init, startingInitVersion: 5, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { previousInitSegment: init, startingInitVersion: 5 }, onError, onStop, pendingDiscontinuity: true, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -810,5 +810,63 @@ describe("createFMP4Segmenter", () => {
     assert.equal(segmenter.getSegmentIndex(), 2, "the pending fragment was cut into a second segment");
     assert.match(getPlaylist(streamId) ?? "", /#EXT-X-DISCONTINUITY/, "the segment following markDiscontinuity carries the discontinuity marker");
     assert.equal(onError.mock.calls.length, 0);
+  });
+
+  test("a continuity carrying prior session statistics counts the handoff as a tab replacement", () => {
+
+    // The presence-keyed half of the continuity contract. Statistics in hand mean a live prior segmenter is being succeeded, which is exactly what a tab
+    // replacement is, so the counter advances and the summary at stream end covers the whole session rather than the last leg of it.
+    const onError = mock.fn();
+    const onStop = mock.fn();
+
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { priorSessionStats: { malformedMoofCount: 2, syncSpreadCount: 0, syncSpreadMaxMs: 0, syncSpreadMinMs: 0, syncSpreadSumMs: 0,
+        tabReplacementCount: 1 } },
+      onError,
+      onStop,
+      streamId
+    });
+
+    assert.equal(segmenter.getSessionStats().tabReplacementCount, 2, "succeeding a live segmenter counts as one more replacement");
+    assert.equal(segmenter.getSessionStats().malformedMoofCount, 2, "and the accumulated statistics carry across");
+  });
+
+  test("a continuity without prior session statistics is a fresh session, not a replacement", () => {
+
+    /* The other half, and the reason every continuity member is individually optional. The resume-from-disk path holds timestamps and an index but has no
+     * statistics to hand over, so it passes none - and must not be recorded as having replaced a tab. A migration that filled the gap with a zeroed statistics
+     * object rather than leaving it absent would mint a phantom replacement into every resumed stream's session summary, and this row is what catches it.
+     */
+    const onError = mock.fn();
+    const onStop = mock.fn();
+
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { initialTrackTimestamps: new Map<number, bigint>([[ 1, 90000n ]]), startingInitVersion: 3, startingSegmentIndex: 42 },
+      onError,
+      onStop,
+      streamId
+    });
+
+    assert.equal(segmenter.getSessionStats().tabReplacementCount, 0, "a resume is a fresh session, however much sequence state it carries");
+    assert.equal(segmenter.getSegmentIndex(), 42, "while the sequence state it does carry is honoured");
+    assert.equal(segmenter.getInitVersion(), 3);
+  });
+
+  test("the continuity snapshot reports what a successor needs, read live", () => {
+
+    // The read the swap depends on. It composes the same live values the individual getters expose, so a successor seeded from it continues the exact sequence
+    // the segmenter had reached at the instant of the call rather than at some earlier one.
+    const onError = mock.fn();
+    const onStop = mock.fn();
+    const segmenter = createFMP4Segmenter({ continuity: { startingInitVersion: 9, startingSegmentIndex: 17 }, onError, onStop, streamId });
+
+    const snapshot = segmenter.getContinuitySnapshot();
+
+    assert.equal(snapshot.startingSegmentIndex, 17);
+    assert.equal(snapshot.startingInitVersion, 9);
+    assert.deepEqual(snapshot.priorSessionStats, segmenter.getSessionStats(), "the snapshot's statistics are the segmenter's own");
+    assert.notEqual(snapshot.priorSessionStats, segmenter.getSessionStats(), "handed over as a copy, so a successor cannot mutate this segmenter's state");
   });
 });

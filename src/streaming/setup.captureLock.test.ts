@@ -41,6 +41,7 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   openSharedWindowTab: async (): Promise<Page> => makeClosedStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* The closed-page path never reaches the establishment's re-affirmation. */ },
+  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };

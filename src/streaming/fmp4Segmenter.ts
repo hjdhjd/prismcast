@@ -31,14 +31,43 @@ const KEYFRAME_DEBUG = false;
 
 // Types.
 
+/* What a fresh segmenter picks up from the sequence it continues, gathered as one value the segmenter module owns rather than five fields every producer and
+ * consumer threads by hand. A sixth continuity fact then forces every side of the handoff at once instead of relying on a mental checklist across modules.
+ *
+ * Every member is individually optional because absence carries meaning, and different producers honestly hold different subsets: a tab replacement snapshots a
+ * live segmenter and has all five, while a resume from disk has timestamps, an index, and an init version but no session statistics at all. The
+ * priorSessionStats member is the sharpest case - its presence is what tells the constructor a live prior session is continuing, which is what increments the
+ * tab replacement counter, so a resume that fabricated an empty stats object would mint a phantom replacement into every resumed stream's session summary.
+ */
+export interface SegmenterContinuity {
+
+  // Initial per-track timestamp counters. When provided, the segmenter continues writing timestamps from where the previous one left off, ensuring monotonic
+  // baseMediaDecodeTime across capture restarts. Absent, all tracks start at 0.
+  initialTrackTimestamps?: Map<number, bigint>;
+
+  // The init segment (ftyp + moov) from the previous segmenter. When provided alongside pendingDiscontinuity, the new init segment is compared against this buffer.
+  // If byte-identical, the discontinuity marker is suppressed because the decoder parameters have not changed.
+  previousInitSegment?: Nullable<Buffer>;
+
+  // Prior session stats to merge from the segmenter being succeeded. Present means a live prior session continues: the new segmenter inherits the accumulated
+  // stats and increments the tab replacement counter, so the summary at stream end covers the whole session. Absent means a fresh stats object.
+  priorSessionStats?: SessionStats;
+
+  // Starting init version for URI cache busting. Ensures the init URI increments monotonically across segmenter instances so HLS clients re-fetch the init
+  // segment when its content changes. Absent, it starts at 0.
+  startingInitVersion?: number;
+
+  // Starting segment index for playlist continuation. Absent, it starts at 0.
+  startingSegmentIndex?: number;
+}
+
 /**
  * Options for creating an fMP4 segmenter.
  */
 export interface FMP4SegmenterOptions {
 
-  // Initial per-track timestamp counters for continuation after tab replacement. When provided, the segmenter continues writing timestamps from where the previous
-  // segmenter left off, ensuring monotonic baseMediaDecodeTime across capture restarts. If not provided, all tracks start at 0.
-  initialTrackTimestamps?: Map<number, bigint>;
+  // What this segmenter continues from, when it continues from anything. Absent for a segmenter starting a stream from nothing.
+  continuity?: SegmenterContinuity;
 
   // Callback when the segmenter encounters an error.
   onError: (error: Error) => void;
@@ -46,8 +75,8 @@ export interface FMP4SegmenterOptions {
   // Callback when the segmenter stops (stream ended or error).
   onStop: () => void;
 
-  // If true, the first segment from this segmenter should have a discontinuity marker. Used after tab replacement to signal codec/timing change. When
-  // previousInitSegment is also provided, the marker is suppressed if the new init segment is byte-identical to the previous one.
+  // If true, the first segment from this segmenter should have a discontinuity marker. Used after tab replacement to signal codec/timing change. When the
+  // continuity carries a previous init segment, the marker is suppressed if the new init segment is byte-identical to it.
   pendingDiscontinuity?: boolean;
 
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
@@ -56,24 +85,10 @@ export interface FMP4SegmenterOptions {
   // The preroll codec variant for this segmenter's composite playlist. Determines which preroll variant is referenced in URLs and used for duration lookups.
   prerollCodec?: CaptureCodec;
 
-  // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below startingSegmentIndex
-  // that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic MEDIA-SEQUENCE.
+  // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below the continuity's
+  // starting segment index that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic
+  // MEDIA-SEQUENCE.
   prerollSegmentCount?: number;
-
-  // The init segment (ftyp + moov) from the previous segmenter. When provided alongside pendingDiscontinuity, the new init segment is compared against this buffer.
-  // If byte-identical, the discontinuity marker is suppressed because the decoder parameters have not changed.
-  previousInitSegment?: Nullable<Buffer>;
-
-  // Prior session stats to merge from the old segmenter during tab replacement. The new segmenter inherits these accumulated stats and increments the tab replacement
-  // counter, so the final stats at stream end reflect the entire session across all segmenter instances.
-  priorSessionStats?: SessionStats;
-
-  // Starting init version for URI cache busting after tab replacement. Ensures the init URI increments monotonically across segmenter instances so HLS clients
-  // re-fetch the init segment when its content changes. If not provided, starts at 0.
-  startingInitVersion?: number;
-
-  // Starting segment index for continuation after tab replacement. If not provided, starts at 0.
-  startingSegmentIndex?: number;
 
   // The numeric stream ID for storage.
   streamId: number;
@@ -136,6 +151,10 @@ export interface SessionStats {
  * Result of creating an fMP4 segmenter.
  */
 export interface FMP4SegmenterResult {
+
+  // Returns everything a successor segmenter needs to continue this one's sequence, read fresh at the moment of the call. Tab replacement reads it at the instant
+  // it splices the new pipeline in, because the index, the timestamps, and the session statistics all advance live while the replacement page is being tuned.
+  getContinuitySnapshot: () => SegmenterContinuity;
 
   // Returns the combined init segment (ftyp + moov) buffer, or null if the init segment has not been received yet. Used by tab replacement to pass the previous
   // init segment to the new segmenter for byte comparison.
@@ -489,8 +508,8 @@ export function computeDiscontinuitySequence(options: { discontinuityIndices: Se
  */
 export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4SegmenterResult {
 
-  const { initialTrackTimestamps, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, previousInitSegment, priorSessionStats,
-    startingInitVersion, startingSegmentIndex, streamId } = options;
+  const { continuity, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, streamId } = options;
+  const { initialTrackTimestamps, previousInitSegment, priorSessionStats, startingInitVersion, startingSegmentIndex } = continuity ?? {};
 
   // Initialize state.
   const state: SegmenterState = {
@@ -1203,11 +1222,27 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     onError(error);
   }
 
+  // The four live continuity reads, named once so the individual getters and the snapshot below are the same reads rather than two sets that could drift. Each
+  // copies what it returns, so a caller holding a snapshot is unaffected by the segments this segmenter goes on to produce.
+  const readInitVersion = (): number => state.initVersion;
+  const readSegmentIndex = (): number => state.segmentIndex;
+  const readSessionStats = (): SessionStats => ({ ...state.sessionStats });
+  const readTrackTimestamps = (): Map<number, bigint> => new Map(state.trackTimestamps);
+
   return {
+
+    getContinuitySnapshot: (): SegmenterContinuity => ({
+
+      initialTrackTimestamps: readTrackTimestamps(),
+      previousInitSegment: state.initSegment,
+      priorSessionStats: readSessionStats(),
+      startingInitVersion: readInitVersion(),
+      startingSegmentIndex: readSegmentIndex()
+    }),
 
     getInitSegment: (): Nullable<Buffer> => state.initSegment,
 
-    getInitVersion: (): number => state.initVersion,
+    getInitVersion: readInitVersion,
 
     getKeyframeStats: (): KeyframeStats => ({
 
@@ -1224,11 +1259,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     getLastSegmentSize: (): number => state.lastSegmentSize,
 
-    getSegmentIndex: (): number => state.segmentIndex,
+    getSegmentIndex: readSegmentIndex,
 
-    getSessionStats: (): SessionStats => ({ ...state.sessionStats }),
+    getSessionStats: readSessionStats,
 
-    getTrackTimestamps: (): Map<number, bigint> => new Map(state.trackTimestamps),
+    getTrackTimestamps: readTrackTimestamps,
 
     markDiscontinuity: (): void => {
 

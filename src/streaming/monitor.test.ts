@@ -19,6 +19,7 @@ import { closePuppeteerStreamWssOnIdle, flushMicrotasks, makeFakePage } from "..
 import { describe, test } from "node:test";
 import { emitStreamAdded, emitStreamRemoved, subscribeToStatus } from "./statusEmitter.ts";
 import { CONFIG } from "../config/index.ts";
+import type { CaptureCodec } from "./codec.ts";
 import type { CaptureImpairment } from "../browser/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { MonitorDeps } from "./monitor.ts";
@@ -113,12 +114,16 @@ const IMPAIRED: CaptureImpairment = { reason: "Could not start video source", si
 const IMPAIRED_DEPS: MonitorDeps = {
 
   getCaptureImpairment: (): Nullable<CaptureImpairment> => IMPAIRED,
+  getEffectiveCaptureCodec: (): CaptureCodec => "h264",
+  isCaptureHardwareAccelerated: (): boolean => false,
   syncWindowVisibility: async (): Promise<void> => undefined
 };
 
 const HEALTHY_DEPS: MonitorDeps = {
 
   getCaptureImpairment: (): Nullable<CaptureImpairment> => null,
+  getEffectiveCaptureCodec: (): CaptureCodec => "h264",
+  isCaptureHardwareAccelerated: (): boolean => false,
   syncWindowVisibility: async (): Promise<void> => undefined
 };
 

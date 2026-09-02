@@ -13,11 +13,12 @@ import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, com
   recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
   updateResolutionPeak } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
-import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage, getStreamSegmenter, isHardwareAccelerated,
-  makePendingCaptureIdentity } from "./registry.ts";
+import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage, getStreamSegmenter, isCaptureIdentity,
+  isHardwareAccelerated, makePendingCaptureIdentity } from "./registry.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
 import { getCaptureImpairment, syncWindowVisibility } from "../browser/index.ts";
+import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
 import { CONFIG } from "../config/index.ts";
 import { clearNativeInitState } from "./hlsSegments.ts";
 import { clearProbeCache } from "../native/probe.ts";
@@ -156,20 +157,25 @@ interface SegmentState {
   wasInTinyState: boolean;
 }
 
-/* MonitorDeps is the cross-module collaborator set the monitor reaches the browser boundary through: the capture-impairment read the recovery ladder consults
- * before offering tab replacement, and the window-visibility sync a mode revert settles the window with. It is injected as a default parameter, mirroring
- * CreatePageWithCaptureDeps in streaming/setup.ts and VideoTuneDeps in browser/video.ts, so a test can substitute stubs at the same collaborator-injection
- * boundary - no loader mock - while production uses the real defaultMonitorDeps built from the functions this module already imports. The impairment read belongs
- * here for a reason of its own: a replacement starts a fresh capture, so whether one can succeed is a fact about the browser, and injecting the read is what lets a
- * test drive the ladder's availability decision without a live Chrome. This is the collaborator-injection form of the Clock port (utils/clock.ts).
+/* MonitorDeps is the cross-module collaborator set the monitor reaches other layers through: the capture-impairment read the recovery ladder consults before
+ * offering tab replacement, the window-visibility sync a mode revert settles the window with, and the two capture-codec reads a completed native fallback
+ * re-derives its identity from. It is injected as a default parameter, mirroring CreatePageWithCaptureDeps in streaming/setup.ts and VideoTuneDeps in
+ * browser/video.ts, so a test can substitute stubs at the same collaborator-injection boundary - no loader mock - while production uses the real
+ * defaultMonitorDeps built from the functions this module already imports. The impairment read belongs here for a reason of its own: a replacement starts a fresh
+ * capture, so whether one can succeed is a fact about the browser, and injecting the read is what lets a test drive the ladder's availability decision without a
+ * live Chrome. The codec reads belong here for the mirror-image reason: their real answers depend on the host's GPU, so only an injected pair lets a test prove
+ * the fallback actually consults them rather than passing on values that happen to agree. This is the collaborator-injection form of the Clock port
+ * (utils/clock.ts).
  */
 export interface MonitorDeps {
 
   readonly getCaptureImpairment: typeof getCaptureImpairment;
+  readonly getEffectiveCaptureCodec: typeof getEffectiveCaptureCodec;
+  readonly isCaptureHardwareAccelerated: typeof isCaptureHardwareAccelerated;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultMonitorDeps: MonitorDeps = { getCaptureImpairment, syncWindowVisibility };
+const defaultMonitorDeps: MonitorDeps = { getCaptureImpairment, getEffectiveCaptureCodec, isCaptureHardwareAccelerated, syncWindowVisibility };
 
 /**
  * Monitors video playback health and attempts escalating recovery when issues are detected. This function runs on an interval, checking video state and triggering
@@ -461,10 +467,22 @@ export function monitorPlaybackHealth(
     // errors (HTTP 403, network failures) have already been detected by the proxy's internal retry loop.
     if(proxy.hasErrored()) {
 
-      LOG.debug("native:monitor", "Native proxy errored for %s. Initiating capture fallback.", storeKey);
-
       nativeHealthState.issueType = "proxy error";
       nativeHealthState.issueTime = now;
+
+      /* The grace window is read here rather than being left to the replacement primitive alone, because a dead proxy stays dead: this condition holds on every
+       * tick once it is true, so the whole fallback cycle - the mode pre-flip, the attempt, the revert, the warning - would otherwise run twice a second inside a
+       * window every other trigger is respecting. Nothing is lost by waiting, since the proxy is not recovering in the meantime, and the status still goes out so
+       * the display keeps advancing.
+       */
+      if(isWithinRecoveryGrace()) {
+
+        emitNativeStatus(entry, identity, "recovering");
+
+        return;
+      }
+
+      LOG.debug("native:monitor", "Native proxy errored for %s. Initiating capture fallback.", storeKey);
 
       // The caller establishes the stream context for this interval tick, so the fire-and-forget recovery promise inherits it across its async continuations.
       void executeNativeL3Fallback(entry);
@@ -684,8 +702,11 @@ export function monitorPlaybackHealth(
    * L3 recovery for native streams: falls back to capture mode via tab replacement. Stops the native proxy, creates a fresh page with capture pipeline, and switches
    * the stream to capture mode. The existing tab replacement infrastructure handles page creation, capture initialization, segmenter creation, and registry updates.
    *
+   * The relay keeps producing throughout the attempt and is stopped only on the exits that hand the stream to something else, so a fallback that cannot establish
+   * its capture leaves the stream exactly as it found it rather than stranded between two modes.
+   *
    * If the proxy's onError fires concurrently (from the poll loop hitting its failure threshold), terminateStream runs before this async function gets a chance to
-   * execute. By the time L3 runs, the stream is already terminated and executeTabReplacement returns null, which we handle as a failed outcome.
+   * execute. By the time L3 runs, the stream is already terminated and executeTabReplacement reports the stop.
    *
    * @param entry - The stream registry entry.
    */
@@ -710,70 +731,122 @@ export function monitorPlaybackHealth(
 
     LOG.debug("native:monitor", "Starting L3 fallback (capture mode) for %s.", entry.info.storeKey);
 
-    // Stop the native proxy before tab replacement closes the page. The proxy may still be polling and would encounter errors when the page navigates away.
-    previousIdentity.nativeProxy.stop();
-
     /* Declare capture mode before the replacement rather than after it. The window-visibility policy reads the registry, and createPageWithCapture syncs the window
      * at the top of establishment - so an entry still marked native there would let the policy minimize the window under a capture that is being acquired. Every
      * outcome below either keeps this or reverts it, so the entry never rests on a mode it is not in.
+     *
+     * The proxy is deliberately left running behind that declaration, right through the attempt. The replacement builds its capture on a new page and does not
+     * touch the old one until the swap, so there is nothing for a polling proxy to trip over, and a fallback that fails hands back a stream that never stopped
+     * relaying. Its token-refresh timer keeps running too: a refresh landing mid-window is ordinary native operation, and the registry's quality write skips it
+     * because the entry is holding a capture identity for the duration.
      */
     entry.identity = makePendingCaptureIdentity();
 
     // Use the existing tab replacement infrastructure. It sets recoveryState.inProgress = true internally and clears it in finalizeTabReplacement. It creates a new
-    // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (the page and the new capture session, with the segmenter
-    // attached to it).
+    // page with capture, navigates, sets up playback, creates a segmenter, and swaps the registry entry over to the new page and capture session.
     const outcome = await executeTabReplacement("native fallback to capture");
 
-    // The monitor stopped while tab replacement was in flight (the stream terminated). Nothing was applied and there is nothing to switch to, so return without
-    // mutating the entry or clearing the probe cache. This branch is explicit because the chain below ends in a catch-all else that would otherwise log a false
-    // "fallback failed" for a stop that is not a failure.
-    if(outcome.outcome === "stopped") {
+    /* An exhaustive switch rather than a chain, so a future outcome cannot be absorbed silently into a catch-all. No rejection handling wraps the await above:
+     * executeTabReplacement converts every throw into an outcome in its own catch, so there is no rejection to arm for.
+     */
+    switch(outcome.outcome) {
 
-      return;
+      case "success": {
+
+        /* The handler set the page and the new capture session (with its segmenter attached) on the entry, and capture mode was declared before the replacement,
+         * so what remains is the state the native path left behind.
+         *
+         * Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist
+         * (referencing video.m3u8 and audio.m3u8) instead of the capture segmenter's variant playlist. Clients that cached the master playlist structure would
+         * request stale audio and video variant playlists pointing to segments that are no longer being updated.
+         */
+        entry.hls.hasAudio = false;
+        entry.hls.audioPlaylist = "";
+        entry.hls.audioSegments.clear();
+        entry.hls.audioSegmentBytes = 0;
+        entry.hls.videoPlaylist = "";
+
+        // Release the relay's initialization segments. They belong to a source this stream no longer consumes, and the memory report reads their byte counter with
+        // no mode gate, so state left here would be counted for the rest of the stream's life. The nativeContainer label needs no matching reset: it lives on the
+        // native identity this entry no longer holds.
+        clearNativeInitState(entry.id);
+
+        // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
+        clearProbeCache(entry.info.storeKey);
+
+        /* Re-derive the codec facts from the capture decision. The identity the handler wrote carried forward what the pre-swap identity held, which on this path
+         * is the pending shape the pre-flip installed - and before that, the label read off the service's manifest, which describes a feed this stream is no
+         * longer consuming. The status display would otherwise report that stale label for the rest of the stream's life. This is the one sanctioned within-variant
+         * spread: the capture session and the page the handler installed are left exactly as they are.
+         */
+        if(isCaptureIdentity(entry)) {
+
+          entry.identity = { ...entry.identity, captureCodec: deps.getEffectiveCaptureCodec().toUpperCase(), hardwareAccelerated: deps.isCaptureHardwareAccelerated() };
+        }
+
+        LOG.info("Switched to capture mode for %s: native streaming failed.", entry.info.storeKey);
+
+        // The monitor's next tick sees a capture identity and runs the normal video element monitoring path. The state reset from applyTabReplacementSuccess
+        // (called by executeTabReplacement) already initialized all capture-mode monitor variables.
+        break;
+      }
+
+      case "failed": {
+
+        /* The replacement did not take, but the stream continues un-terminated - and because nothing was disposed before the swap, what it continues on is the
+         * native relay it has been running all along. Restoring the held identity whole hands back the same live proxy, and the window sync lets the presentation
+         * settle now that no capture is being attempted.
+         *
+         * The restore is honest in both entry conditions. A proxy that is still healthy simply resumes. A proxy that had already stopped itself on its error
+         * threshold re-triggers this fallback on a later tick - deliberately: the grace window throttles each cycle and the circuit breaker bounds the count, so a
+         * native stream whose relay died and whose capture fallback keeps failing escalates to termination rather than resting in a silent limbo.
+         */
+        entry.identity = previousIdentity;
+
+        void deps.syncWindowVisibility();
+
+        LOG.warn("Capture fallback failed for %s: tab replacement unsuccessful.", entry.info.storeKey);
+
+        break;
+      }
+
+      case "deferred": {
+
+        // The replacement was declined before it started because the previous recovery's window is still open. Nothing was attempted, so the revert is the same
+        // one the failed arm performs and the narration is a breadcrumb rather than a warning.
+        entry.identity = previousIdentity;
+
+        void deps.syncWindowVisibility();
+
+        LOG.debug("native:monitor", "Capture fallback for %s deferred inside the recovery grace window.", entry.info.storeKey);
+
+        break;
+      }
+
+      case "stopped": {
+
+        // The monitor stopped while the replacement was in flight, which means the stream terminated. Termination disposed what the registry held - the pending
+        // capture identity, which holds nothing - so the proxy is this frame's to release.
+        break;
+      }
+
+      case "terminated": {
+
+        // The circuit breaker tripped during the replacement and terminated the stream synchronously, again while the registry held the pending identity, so
+        // nothing else can reach the proxy.
+        LOG.warn("Capture fallback failed for %s: circuit breaker tripped.", entry.info.storeKey);
+
+        break;
+      }
     }
 
-    if(outcome.outcome === "success") {
+    /* One stop site owns the whole leak matrix. The two arms that put the held identity back are the two that hand the proxy on to a stream that is still using
+     * it; every other exit is the end of this proxy's life - the capture pipeline has taken over, or the stream is gone and took nothing with it - and an
+     * unstopped proxy would go on polling and refreshing forever.
+     */
+    if((outcome.outcome !== "failed") && (outcome.outcome !== "deferred")) {
 
-      /* Tab replacement succeeded. The handler already set the page and the new capture session (with its segmenter attached) on the registry entry, and capture
-       * mode was declared before the replacement, so what remains is the state the native path left behind.
-       *
-       * Clear separate audio state from the native proxy. Without this, hasAudio remains true and the HLS handler continues serving the master playlist (referencing
-       * video.m3u8 and audio.m3u8) instead of the capture segmenter's variant playlist. Clients that cached the master playlist structure would request stale audio
-       * and video variant playlists pointing to segments that are no longer being updated.
-       */
-      entry.hls.hasAudio = false;
-      entry.hls.audioPlaylist = "";
-      entry.hls.audioSegments.clear();
-      entry.hls.audioSegmentBytes = 0;
-      entry.hls.videoPlaylist = "";
-
-      // Release the relay's initialization segments. They belong to a source this stream no longer consumes, and the memory report reads their byte counter with
-      // no mode gate, so state left here would be counted for the rest of the stream's life. The nativeContainer label needs no matching reset: every consumer
-      // reads it behind the streaming-mode check this fallback already settled, exactly as the sibling native quality fields work.
-      clearNativeInitState(entry.id);
-
-      // Clear the probe cache so subsequent tunes to this channel don't re-attempt native streaming.
-      clearProbeCache(entry.info.storeKey);
-
-      LOG.info("Switched to capture mode for %s: native streaming failed.", entry.info.storeKey);
-
-      // The monitor's next tick will see streamingMode === "capture" and run the normal video element monitoring path. The state reset from
-      // applyTabReplacementSuccess (called by executeTabReplacement) already initialized all capture-mode monitor variables.
-    } else if(outcome.outcome === "terminated") {
-
-      // Circuit breaker tripped during tab replacement. Stream is being terminated.
-      LOG.warn("Capture fallback failed for %s: circuit breaker tripped.", entry.info.storeKey);
-    } else {
-
-      /* Tab replacement failed but the stream continues un-terminated, so the entry has to go back to describing what it actually is: native mode, with the proxy
-       * already stopped and the breaker one failure short of tripping. Restoring the held identity whole keeps the registry, the monitor's mode branching, and the
-       * window-visibility policy reading the same truth, and the sync that follows lets the window settle now that no capture is being attempted.
-       */
-      entry.identity = previousIdentity;
-
-      void deps.syncWindowVisibility();
-
-      LOG.warn("Capture fallback failed for %s: tab replacement unsuccessful.", entry.info.storeKey);
+      previousIdentity.nativeProxy.stop();
     }
   }
 
@@ -963,6 +1036,18 @@ export function monitorPlaybackHealth(
   }
 
   /**
+   * Reports whether the monitor is inside the post-recovery grace window. One state, read here by every consumer that has to honour it: the tick computes the
+   * value it threads into the health checks from this, and the triggers that sit outside that thread - the tiny-segment gate, the unresponsive-tab gate, the
+   * native error fast path, and the replacement primitive's own entry gate - call it directly. A second way of asking the same question is how a trigger ends up
+   * escalating inside a window every other trigger is respecting.
+   * @returns True while the grace window from the last recovery action is still open.
+   */
+  function isWithinRecoveryGrace(): boolean {
+
+    return Date.now() < recoveryState.graceUntil;
+  }
+
+  /**
    * Stops the monitoring interval. Pairs the two operations that must always happen together: setting intervalCleared so any in-flight async tick short-circuits at
    * its next stop check, and clearing the interval so no further ticks fire. Every path that stops the monitor - the tick's own guards, the circuit-breaker
    * terminations, and dispose() - routes through here, so a stopped monitor can never look un-stopped to a resuming await, which would go on to act on a stream
@@ -997,10 +1082,14 @@ export function monitorPlaybackHealth(
   };
 
   /**
-   * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), terminated (circuit breaker tripped), or was abandoned
-   * because the monitor stopped while the replacement was in flight (stopped - nothing was applied and the caller must not act on it).
+   * Tab replacement result type. Indicates whether the replacement succeeded, failed (but stream continues), terminated (circuit breaker tripped), was abandoned
+   * because the monitor stopped while the replacement was in flight (stopped - nothing was applied and the caller must not act on it), or was declined before it
+   * started because the previous attempt's grace window is still open (deferred - nothing was attempted, no attempt was counted, and the trigger will be back).
+   *
+   * Deferred is its own arm rather than a shade of failed because the difference matters to every consumer's narration: a failure is evidence about the stream and
+   * warrants a warning and a breaker count, while a deferral is the throttle working as designed and warrants neither.
    */
-  type TabReplacementOutcome = { outcome: "success" } | { outcome: "failed" } | { outcome: "terminated" } | { outcome: "stopped" };
+  type TabReplacementOutcome = { outcome: "success" } | { outcome: "failed" } | { outcome: "terminated" } | { outcome: "stopped" } | { outcome: "deferred" };
 
   /**
    * Handles tab replacement failure by checking the circuit breaker. If the breaker trips, terminates the stream. Returns the appropriate outcome for the caller.
@@ -1060,7 +1149,8 @@ export function monitorPlaybackHealth(
 
   /**
    * Handles tab replacement failure after all retry attempts are exhausted. Clears stale recovery metrics (preventing ghost "Recovered" logs from the
-   * deferred-success check), runs the circuit breaker, and detects zombie streams where the old page was destroyed but no replacement was created.
+   * deferred-success check), arms the grace window that throttles the next attempt, runs the circuit breaker, and catches the one state that still strands a
+   * stream.
    * @param context - Description of the failure for circuit breaker logging.
    * @returns The tab replacement outcome (failed or terminated).
    */
@@ -1078,13 +1168,23 @@ export function monitorPlaybackHealth(
     metrics.currentRecoveryStartTime = null;
     metrics.currentRecoveryMethod = null;
 
-    LOG.warn("Tab replacement unsuccessful after retry - stream will be terminated.");
+    LOG.warn("Tab replacement was unsuccessful. The stream continues on its existing capture.");
+
+    /* Arm the grace window on the way out, the same window a success arms. A failed replacement leaves the stream running on its old pipeline, still exhibiting
+     * whatever condition triggered the attempt - so without this the very next tick re-satisfies that condition and fires again, and a persistently degraded
+     * stream spends its life in a replacement loop. With it, the cadence is one real attempt per window (ten seconds at this level, from the monitor's grace
+     * table), each true failure counted by the circuit breaker, ending in termination when the breaker's threshold trips. Bounded escalation rather than a tight
+     * loop, and no log line per suppressed tick.
+     */
+    setRecoveryGracePeriod(3);
 
     const failureOutcome = handleTabReplacementFailure(context);
 
-    // If the circuit breaker did not trip but the old page is gone (handler destroyed it before createPageWithCapture failed), the stream is unrecoverable. The
-    // next monitor tick would silently clear the interval via currentPage.isClosed() with no termination log, no status emission, and no cleanup - creating a
-    // zombie entry in the registry. Terminate explicitly instead.
+    /* The safety net for the one state that still strands a stream: termination raced the exhaustion and took the page while this settled. A replacement that
+     * simply failed leaves the old page open and serving, so this does not fire for it - that stream continues on its existing capture with the breaker counting,
+     * which is the designed outcome. When the page really is gone, the next tick would silently clear the interval via currentPage.isClosed() with no termination
+     * log, no status emission, and no cleanup, leaving a zombie entry in the registry. Terminate explicitly instead.
+     */
     if((failureOutcome.outcome === "failed") && currentPage.isClosed()) {
 
       LOG.error("Tab replacement failed and the original page is no longer available - terminating stream.");
@@ -1100,12 +1200,14 @@ export function monitorPlaybackHealth(
 
   /**
    * Executes tab replacement recovery with full error handling. This unified helper handles all tab replacement triggers (tiny segments, stalled capture, unresponsive
-   * tab) consistently, including metrics recording, success/failure logging, circuit breaker checks, and state resets.
+   * tab, resolution degradation, native fallback) consistently, including metrics recording, success/failure logging, circuit breaker checks, and state resets.
    *
-   * On failure, retries onTabReplacement once before giving up. The handler destroys old resources (capture, segmenter, FFmpeg, page) before calling
-   * createPageWithCapture, so a retry is the only chance to save the stream when the first attempt fails. All handler cleanup steps are safe to call more than
-   * once on retry: rawCaptureStream.destroyed guard, segmenter stop() checks state.stopped, FFmpeg kill() checks ffmpeg.killed, page close checks
-   * !oldPage.isClosed(), and unregisterManagedPage is a no-op on repeat.
+   * The handler builds the replacement capture before disposing anything: it creates a fresh page, acquires its capture, and tunes it while the existing pipeline
+   * keeps producing, and only then swaps in one synchronous frame. So a failed attempt costs the stream nothing - the old capture is still running and still
+   * serving the recording - and the single retry below is a second chance rather than the last one. The retry re-reads continuity from the still-live old
+   * segmenter, and its own fresh resources are discarded on failure the same way the first attempt's were.
+   *
+   * Every entry runs through the grace check below, which is what keeps a persistently degraded stream from spending its life re-attempting.
    * @param issueType - Description of what triggered the replacement (for logging and UI display).
    * @returns The tab replacement outcome.
    */
@@ -1115,6 +1217,18 @@ export function monitorPlaybackHealth(
     if(!onTabReplacement || !canReplaceTab()) {
 
       return { outcome: "failed" };
+    }
+
+    /* The throttle, enforced at the one place every trigger passes through. Individual triggers consult the grace window in their own gates so their warnings and
+     * side effects stay quiet too, but a gate can be forgotten and a new trigger can be added, whereas this cannot be bypassed by construction. It sits ahead of
+     * every piece of bookkeeping - before the attempt metric, before the recovery flags, before the handler runs - so a deferral costs nothing and is
+     * indistinguishable from the attempt never having been asked for.
+     */
+    if(isWithinRecoveryGrace()) {
+
+      LOG.debug("recovery:tab", "Deferring the %s tab replacement: the previous recovery's grace window is still open.", issueType);
+
+      return { outcome: "deferred" };
     }
 
     recoveryState.inProgress = true;
@@ -1511,7 +1625,13 @@ export function monitorPlaybackHealth(
         LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
           segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);
 
-        if(segmentState.consecutiveTinySegments >= effectiveThreshold) {
+        /* Act on sustained undersized segments, but not inside the post-recovery grace window. The grace term is what keeps a stream that a replacement did not
+         * cure from re-escalating every two seconds: a fresh capture needs its window to start producing real segments, and a stream still emitting tiny ones
+         * when the window closes will satisfy this again immediately. Suppressing the whole branch - the warning and the circuit-breaker fallback alongside the
+         * replacement - is deliberate, and mirrors what the staleness branch below has always done with its own grace term. The counter keeps advancing
+         * meanwhile, so the evidence is not lost, only the reaction is deferred.
+         */
+        if((segmentState.consecutiveTinySegments >= effectiveThreshold) && !withinRecoveryGrace) {
 
           LOG.warn("Detected %d consecutive undersized segments (%dKB) - capture pipeline may have stalled.",
             segmentState.consecutiveTinySegments, Math.round(segmentSize / 1024));
@@ -2066,9 +2186,9 @@ export function monitorPlaybackHealth(
    * 2. tickInProgress, so a firing that lands while the previous body is still running skips instead of stacking a second body on the same counters.
    * 3. recoveryState.inProgress. On the capture path this covers the window a recovery await holds open inside a tick body; on the native path it is the only
    *    guard there is, since a native recovery is launched fire-and-forget and outlives the tick that started it.
-   * 4. currentPage.isClosed(), for page termination outside of recovery. It must come after the recovery check: during tab replacement the old page is
-   *    deliberately closed while the handler creates a new one, so testing isClosed() first would clear the interval mid-recovery and stop status updates
-   *    permanently.
+   * 4. currentPage.isClosed(), for page termination outside of recovery. It must come after the recovery check: the page reference this monitor holds is the one
+   *    a replacement is about to retire, and the swap closes it, so a tick landing between the close and applyTabReplacementSuccess's re-point would read the
+   *    closed page and clear the interval mid-recovery, stopping status updates permanently.
    */
   const interval = setInterval((): void => {
 
@@ -2281,7 +2401,7 @@ export function monitorPlaybackHealth(
         const withinBufferingGrace = isBuffering && bufferingStartTime && ((now - bufferingStartTime) < CONFIG.playback.bufferingGracePeriod);
 
         // Check if we're within the recovery grace period (recently performed a recovery action and waiting for it to take effect).
-        const withinRecoveryGrace = now < recoveryState.graceUntil;
+        const withinRecoveryGrace = isWithinRecoveryGrace();
 
         // Segment production monitoring: post-recovery verification and continuous size/staleness checks.
         if(await monitorSegmentHealth(now, withinRecoveryGrace)) {
@@ -2455,8 +2575,12 @@ export function monitorPlaybackHealth(
           /* After 3 consecutive timeouts the tab has stopped answering and only a replacement can save the stream. When one cannot be started, the stream is
            * unrecoverable: the ladder has nothing left to try, and leaving it in the registry would hold open the very relaunch that would cure a marked browser.
            * So the stream terminates through the breaker, exactly as the zombie case in handleExhaustedTabReplacement does.
+           *
+           * None of that runs inside the post-recovery grace window. A tab that has just been replaced is entitled to its settling time, and evaluate calls
+           * against a page mid-establishment time out for reasons that are not a wedged tab - so escalating here would spend an attempt, or terminate a stream,
+           * on evidence the window exists to discount. The timeout tally keeps climbing, so a genuinely wedged tab is acted on the moment the window closes.
            */
-          if(consecutiveTimeouts >= 3) {
+          if((consecutiveTimeouts >= 3) && !isWithinRecoveryGrace()) {
 
             if(canReplaceTab()) {
 

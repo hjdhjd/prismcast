@@ -201,6 +201,15 @@ export const resolvePrerollFFmpegPath = memoizeAsync<string | undefined>(async (
  */
 export interface FFmpegProcess {
 
+  /* Whether teardown has been requested on this process. The wrapper's own stderr, exit, and error handlers suppress themselves on it; this exposes the same
+   * answer to the handlers the caller attaches to the process's streams, so every listener on one pipeline reads one flag rather than approximating it.
+   *
+   * Read this rather than the child's own `killed`. The flag is set unconditionally the moment kill() is called, which is exactly "teardown was requested",
+   * whereas Node sets `killed` only when the signal is actually delivered - so a child that had already exited on its own leaves `killed` false and would let a
+   * stray teardown event through.
+   */
+  isShuttingDown: () => boolean;
+
   // Function to gracefully terminate the FFmpeg process.
   kill: () => void;
 
@@ -280,7 +289,7 @@ export function classifyFfmpegExit(code: number | null, signal: NodeJS.Signals |
  * @param options.label - Descriptive label for log messages and error strings (e.g., "FFmpeg", "MPEG-TS remuxer").
  * @param options.onError - Callback invoked when FFmpeg exits unexpectedly or encounters an error.
  * @param options.streamId - Optional stream identifier for log prefixing.
- * @returns FFmpeg process wrapper with stdin, stdout, and kill function.
+ * @returns FFmpeg process wrapper with stdin, stdout, a kill function, and the teardown-requested read its stream listeners gate on.
  */
 function spawnFFmpegProcess({ args, ffmpegBin, label, onError, streamId }: {
   args: string[];
@@ -357,6 +366,7 @@ function spawnFFmpegProcess({ args, ffmpegBin, label, onError, streamId }: {
 
   return {
 
+    isShuttingDown: (): boolean => shuttingDown,
     kill,
     process: ffmpeg,
     stdin: ffmpeg.stdin,

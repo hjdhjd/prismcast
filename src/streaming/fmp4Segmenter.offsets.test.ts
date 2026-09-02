@@ -190,7 +190,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // the unfixed full-map rewrite the video tfdt would be offset twice (3000 + 89000 + 89000 = 181000); the fix scopes the rewrite so it is offset once (92000).
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ initialTrackTimestamps, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -227,7 +227,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // corrective rewrite offsets both exactly once. This path is byte-identical between the scoped and unscoped rewrite - the pin guards against a regression on it.
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ initialTrackTimestamps, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -259,7 +259,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // alone applies each stored offset once. The second moof's tfdts are the original values plus one offset each (3000 + 89000 = 92000, 800 + 47500 = 48300).
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ initialTrackTimestamps, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);

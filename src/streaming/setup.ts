@@ -541,12 +541,16 @@ export interface CreatePageWithCaptureDeps {
   readonly installActivationHeal: typeof installActivationHeal;
   readonly openSharedWindowTab: typeof openSharedWindowTab;
   readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
+
+  // The FFmpeg spawn, injected for the same reason the capture acquisition is: the error wiring this function attaches to the child's streams decides when a fault
+  // reaches the caller, and proving both directions of that decision needs a child whose teardown state and stream events a test can drive.
+  readonly spawnFFmpeg: typeof spawnFFmpeg;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
 const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, emulateCaptureSurface, getCurrentBrowser, installActivationHeal,
-  openSharedWindowTab, reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
+  openSharedWindowTab, reaffirmCaptureSurface, spawnFFmpeg, startOverlayHandling, syncWindowVisibility };
 
 /* The window-topology answers the open primitive needs and cannot reach for itself: tabSelection.ts speaks to the capture extension alone, so the CDP-side carrier
  * resolution and placement confirmation arrive from here, where both modules are already in view. One record, referenced by both call sites, because the two call
@@ -718,7 +722,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(useFFmpeg) {
 
-      const ffmpeg = spawnFFmpeg(ffmpegBin, CONFIG.streaming.audioBitsPerSecond, (error) => {
+      const ffmpeg = deps.spawnFFmpeg(ffmpegBin, CONFIG.streaming.audioBitsPerSecond, (error) => {
 
         LOG.error("FFmpeg process error: %s.", formatError(error));
 
@@ -730,12 +734,22 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       ffmpegProcess = ffmpeg;
 
+      /* A disposed pipeline must never fire its error callback. The two listeners below sit on the process's own streams rather than inside the spawn wrapper,
+       * so they are the two places a post-kill teardown event can still reach a caller, and each gates on the same teardown flag the wrapper's own handlers use.
+       *
+       * The gate is what keeps a tab replacement's discard silent. A replacement disposes the outgoing pipeline in the same synchronous frame it installs the
+       * incoming one, so a stray event from the killed FFmpeg lands a tick later - against a registry that already holds a healthy new pipeline - and this
+       * closure's callback would break the circuit on the very stream the replacement just saved. String filters cannot cover that: they name the errors
+       * teardown is known to produce, and the point here is every error a killed pipeline produces.
+       */
+      const isTornDown = (): boolean => ffmpeg.isShuttingDown();
+
       // Handle pipe errors on stdout. Stdin errors are handled by pipeline() below.
       ffmpeg.stdout.on("error", (error) => {
 
         const errorMessage = formatError(error);
 
-        if(errorMessage.includes("EPIPE")) {
+        if(errorMessage.includes("EPIPE") || isTornDown()) {
 
           LOG.debug("streaming:ffmpeg", "FFmpeg stdout pipe closed: %s.", errorMessage);
         } else {
@@ -756,8 +770,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
         const errorMessage = formatError(error);
 
-        // EPIPE, "write after end", and "Premature close" errors are expected during cleanup when FFmpeg is killed or the capture stream is destroyed.
-        if(errorMessage.includes("EPIPE") || errorMessage.includes("write after end") || errorMessage.includes("Premature close")) {
+        // EPIPE, "write after end", and "Premature close" errors are expected during cleanup when FFmpeg is killed or the capture stream is destroyed, and a
+        // pipeline whose FFmpeg is being torn down produces whatever it produces.
+        if(errorMessage.includes("EPIPE") || errorMessage.includes("write after end") || errorMessage.includes("Premature close") || isTornDown()) {
 
           return;
         }

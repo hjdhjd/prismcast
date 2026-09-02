@@ -120,6 +120,7 @@ const deps: CreatePageWithCaptureDeps = {
     depsCalls.push("reaffirmCaptureSurface");
     reaffirmPages.push(page);
   },
+  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); },
   syncWindowVisibility: async (page?: Page): Promise<void> => {
 

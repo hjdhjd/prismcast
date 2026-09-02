@@ -2,12 +2,12 @@
  *
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
+import type { CreatePageWithCaptureResult, StreamSetupResult, TabReplacementHandlerFactory } from "./setup.ts";
 import type { HLSState, StreamRegistryEntry } from "./registry.ts";
 import { LOG, formatError, formatResolutionLabel, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
-import type { StreamSetupResult, TabReplacementHandlerFactory } from "./setup.ts";
 import { applyNativeQualityRefresh, cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, isCaptureIdentity,
   makePendingCaptureIdentity, registerStream, updateLastAccess } from "./registry.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
@@ -27,6 +27,7 @@ import type { CaptureCodec } from "./codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
+import type { SegmenterContinuity } from "./fmp4Segmenter.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";
 import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
@@ -703,19 +704,132 @@ function formatNativeQuality(bandwidth: number, codec: Nullable<string>, resolut
   return ", " + parts.join(" ");
 }
 
+/* The collaborators the tab replacement reaches the establishment boundary through, injected as a default parameter in the same shape createPageWithCapture and
+ * the health monitor use for theirs. Substituting them is what lets a test drive the real handler - the attempt phase, the pre-swap discard, the swap's own
+ * ordering - without a Chrome to establish against.
+ */
+export interface TabReplacementDeps {
+
+  readonly createPageWithCapture: typeof createPageWithCapture;
+  readonly unregisterManagedPage: typeof unregisterManagedPage;
+}
+
+const defaultTabReplacementDeps: TabReplacementDeps = { createPageWithCapture, unregisterManagedPage };
+
 /**
- * Creates a tab replacement handler for recovery from unresponsive browser tabs. When the monitor detects 3+ consecutive evaluate timeouts, it calls this handler to:
- * 1. Stop the current segmenter and FFmpeg process
- * 2. Close the unresponsive page
- * 3. Create a fresh page with new capture
- * 4. Create a new segmenter piped to the new capture
- * 5. Update the registry with the new resources
- * 6. Return the new page and context for the monitor to continue
+ * Options for spliceReplacementCapture. Every member the swap touches is passed in, pre-narrowed by the caller, so the function needs no registry lookup, no
+ * mode test, and no cast of its own.
+ */
+interface SpliceReplacementCaptureOptions {
+
+  // The channel key the new segmenter's termination handlers close over.
+  readonly channelName: string;
+
+  // The freshly established page and capture pipeline that is about to become the stream.
+  readonly captureResult: CreatePageWithCaptureResult;
+
+  // The injected establishment collaborators, so the page release here goes through the same substitutable boundary the establishment above did.
+  readonly deps: TabReplacementDeps;
+
+  // The registry entry being re-pointed at the new pipeline.
+  readonly entry: StreamRegistryEntry;
+
+  // The codec label read off the pre-swap capture identity. A replacement changes the page, never the codec decision, so this carries across unchanged.
+  readonly oldCaptureCodec: Nullable<string>;
+
+  // The hardware-acceleration fact read off the pre-swap capture identity, carried across for the same reason.
+  readonly oldHardwareAccelerated: boolean;
+
+  // The page the stream has been running on, or null for a pending entry that never produced one.
+  readonly oldPage: Nullable<Page>;
+
+  // The numeric stream id the new segmenter stores under.
+  readonly numericStreamId: number;
+
+  // The stream's string id, for the page-close diagnostic.
+  readonly streamId: string;
+}
+
+/**
+ * Swaps a freshly established capture pipeline in for the one a stream is running on. This is deliberately a plain, non-async function: everything below runs in
+ * a single synchronous frame, so no tick, client request, monitor pass, or termination can interleave between the old pipeline's disposal and the new one's
+ * installation. Two segmenters therefore never write one HLS state, the registry never holds two pipelines, and the monitor's post-replacement state reset -
+ * which reads the registry's segmenter immediately after this returns - is reading the new pipeline by construction rather than by timing.
  *
- * The handler preserves existing HLS segments and marks a discontinuity so clients know the stream parameters may have changed.
+ * Keeping it a separate function rather than a block inside the handler is what protects that: an await added here is a syntax error rather than a review catch.
  *
- * Note: This handler is only invoked for capture-mode streams. Native-mode streams bypass video element monitoring entirely (the monitor early-returns for native
- * streams), so evaluate timeouts that trigger tab replacement cannot occur.
+ * The continuity read lives here, at the swap, and not at the top of the replacement. The old segmenter keeps producing throughout the minute or more the
+ * replacement page spends navigating and tuning, so its segment index, track timestamps, and session statistics all advance across that window - a read taken
+ * before the tune would seed the new segmenter with a stale sequence and rewind the playlist.
+ * @param options - The entry, the fresh pipeline, the outgoing page, and the encoder facts carried forward.
+ */
+function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): void {
+
+  const { captureResult, channelName, deps, entry, numericStreamId, oldCaptureCodec, oldHardwareAccelerated, oldPage, streamId } = options;
+
+  // Read the outgoing segmenter's continuity at the last possible instant, then tear its pipeline down. The CaptureSession kills the FFmpeg child first (which
+  // silences that pipeline's stream listeners for good), then destroys the capture stream - which MUST happen before the old page closes, so chrome.tabCapture
+  // releases and a later acquisition does not fail with "Cannot capture a tab with an active stream" - then stops the segmenter. The session is null on the
+  // capture-pending identity a native fallback arrives with, which is why the read is guarded.
+  const oldSession = (entry.identity.mode === "capture") ? entry.identity.captureSession : null;
+  const continuity = oldSession?.segmenter?.getContinuitySnapshot();
+
+  if(oldSession) {
+
+    LOG.debug("recovery:tab", "Disposing the outgoing capture pipeline at the swap.");
+    oldSession.dispose();
+  }
+
+  // Release the outgoing page. It has been serving the stream up to this instant, so the close is what ends it.
+  if(oldPage) {
+
+    deps.unregisterManagedPage(oldPage);
+
+    if(!oldPage.isClosed()) {
+
+      LOG.debug("recovery:tab", "Closing the outgoing page for stream %s.", streamId);
+
+      oldPage.close().catch((error: unknown) => {
+
+        LOG.debug("recovery:tab", "Page close error during tab replacement: %s.", formatError(error));
+      });
+    }
+  }
+
+  // Build the new segmenter on the continuity just read, and mark its first segment with a discontinuity tag so clients flush decoder state. The tag is
+  // suppressed automatically when the new init segment turns out byte-identical to the old one.
+  const newSegmenter = createFMP4Segmenter({
+
+    ...buildSegmenterTerminationHandlers(numericStreamId, channelName, { logSuffix: "after tab replacement", reasonSuffix: "after recovery" }),
+    ...(continuity ? { continuity } : {}),
+    pendingDiscontinuity: true,
+    streamId: numericStreamId
+  });
+
+  // Wire the new segmenter into the new capture session (attachSegmenter pipes the session's capture output into it), then re-point the entry at the new
+  // pipeline and page. The identity is a pure literal because this is a within-mode replacement of the whole value, not a refresh of part of one.
+  captureResult.captureSession.attachSegmenter(newSegmenter);
+
+  entry.identity = { captureCodec: oldCaptureCodec, captureSession: captureResult.captureSession, hardwareAccelerated: oldHardwareAccelerated, mode: "capture" };
+  entry.page = captureResult.page;
+}
+
+/**
+ * Creates a tab replacement handler for recovery from unresponsive browser tabs. The replacement builds before it tears down:
+ *
+ * 1. Create a fresh page and acquire its capture, and tune it, while the existing pipeline keeps producing segments for the client
+ * 2. If anything fails before the swap, discard the fresh page and capture and leave the existing pipeline untouched - a logged recovery miss, not a lost recording
+ * 3. Otherwise swap in one synchronous frame: read the old segmenter's continuity, dispose the old pipeline, close the old page, splice the new one in
+ * 4. Return the new page and context for the monitor to continue on
+ *
+ * Because nothing is disposed until the swap, the monitor's single retry re-reads continuity from the still-live old segmenter on its second attempt, and a
+ * stream whose replacement keeps failing keeps serving its recording while the circuit breaker counts.
+ *
+ * The handler preserves existing HLS segments and marks a discontinuity so clients know the stream parameters may have changed. The cost of the overlap is a
+ * second capture and encoder running for the length of the tune, which the CPU and GPU carry.
+ *
+ * Note: This handler is only invoked for capture-mode streams, plus the native fallback that has already declared a pending capture identity. Native-mode
+ * streams bypass video element monitoring entirely, so evaluate timeouts that trigger tab replacement cannot occur on one.
  *
  * @param numericStreamId - The stream's numeric ID for registry lookups.
  * @param streamId - The stream's string ID for logging.
@@ -724,16 +838,19 @@ function formatNativeQuality(bandwidth: number, codec: Nullable<string>, resolut
  * @param profile - The site profile for video handling.
  * @param metadataComment - Optional comment to embed in FFmpeg output metadata.
  * @param onCircuitBreak - Callback for circuit breaker trips during replacement.
+ * @param deps - The injected establishment collaborators; defaults to defaultTabReplacementDeps. Threaded so a test drives the real handler - its phase tracking,
+ *               its discard path, and the swap itself - against a substituted establishment rather than a live Chrome.
  * @returns A handler function that performs tab replacement, or null if the stream no longer exists.
  */
-function createTabReplacementHandler(
+export function createTabReplacementHandler(
   numericStreamId: number,
   streamId: string,
   channelName: string,
   url: string,
   profile: ResolvedSiteProfile,
   metadataComment: string | undefined,
-  onCircuitBreak: () => void
+  onCircuitBreak: () => void,
+  deps: TabReplacementDeps = defaultTabReplacementDeps
 ): () => Promise<Nullable<TabReplacementResult>> {
 
   return async (): Promise<Nullable<TabReplacementResult>> => {
@@ -750,60 +867,40 @@ function createTabReplacementHandler(
       return null;
     }
 
-    // Get the current init segment, segment index, and per-track timestamps from the old segmenter before stopping it. The init segment enables discontinuity
-    // suppression when codec parameters are unchanged, the segment index allows the new segmenter to continue numbering, and the track timestamps ensure monotonic
-    // baseMediaDecodeTime across capture restarts.
-    // The encoder facts the replacement carries forward. A replacement changes the page, not the codec decision, so the identity being replaced is the only
-    // honest source for them: the fresh capture result carries no codec or acceleration of its own.
+    /* The encoder facts the replacement carries forward, read now off the identity that is still serving the stream. A replacement changes the page, not the
+     * codec decision, so this is the only honest source for them: the fresh capture result carries no codec or acceleration of its own.
+     */
     const oldCaptureCodec = isCaptureIdentity(stream) ? stream.identity.captureCodec : null;
     const oldHardwareAccelerated = isCaptureIdentity(stream) && stream.identity.hardwareAccelerated;
 
-    const oldSegmenter = isCaptureIdentity(stream) ? stream.identity.captureSession?.segmenter : undefined;
-    const currentInitSegment = oldSegmenter?.getInitSegment();
-    const currentInitVersion = oldSegmenter?.getInitVersion() ?? 0;
-    const currentSegmentIndex = oldSegmenter?.getSegmentIndex() ?? 0;
-    const currentSessionStats = oldSegmenter?.getSessionStats();
-    const currentTrackTimestamps = oldSegmenter?.getTrackTimestamps();
+    /* Where this attempt stands, from the perspective of the fresh pipeline's own FFmpeg error callback. One tri-state rather than a pair of flags, so "failed
+     * and committed at once" is not something the code can express. It is held on a small record because the callback and the frame awaiting establishment both
+     * have to see the same value across an await, which a captured local does not give the reader or the compiler.
+     *
+     * The phase is local to a single attempt, moves at most once, and is never reset: the monitor's retry runs this function again and gets a fresh one. While
+     * the attempt is pending, an FFmpeg fault belongs to a pipeline that is not the stream yet, so it must not reach the circuit breaker - the stream it would
+     * terminate is the one still running happily on the old page. Once the swap has committed, the new pipeline IS the stream and a fault is treated exactly as
+     * it always has been.
+     */
+    const attempt: { phase: "committed" | "failed" | "pending" } = { phase: "pending" };
 
-    // Dispose the OLD capture pipeline. The CaptureSession kills the FFmpeg child first (setting its shuttingDown flag before the capture stream's EOF can reach
-    // FFmpeg's stdin), then destroys the capture stream (which MUST happen before the old page is closed below, so chrome.tabCapture releases the capture and a
-    // later capture acquisition does not fail with "Cannot capture a tab with an active stream"), then stops the segmenter. The new pipeline is constructed fresh
-    // further down.
-    if(isCaptureIdentity(stream) && stream.identity.captureSession) {
-
-      LOG.debug("recovery:tab", "Disposing old capture pipeline for tab replacement.");
-      stream.identity.captureSession.dispose();
-    }
-
-    // Close the current page. The page may be null for pending entries whose async setup has not yet completed.
-    const oldPage = stream.page;
-
-    if(oldPage) {
-
-      unregisterManagedPage(oldPage);
-
-      if(!oldPage.isClosed()) {
-
-        LOG.debug("recovery:tab", "Closing unresponsive page for tab replacement.");
-
-        oldPage.close().catch((error: unknown) => {
-
-          LOG.debug("recovery:tab", "Page close error during tab replacement: %s.", formatError(error));
-        });
-      }
-    }
-
-    LOG.debug("timing:tab", "Old tab cleanup complete. (+%sms)", tabElapsed());
-
-    // Create a new page with capture.
+    // Create the replacement page and acquire its capture, with the existing pipeline still producing throughout.
     let captureResult;
 
     try {
 
-      captureResult = await createPageWithCapture({
+      captureResult = await deps.createPageWithCapture({
 
         comment: metadataComment,
         onFFmpegError: (error) => {
+
+          if(attempt.phase !== "committed") {
+
+            LOG.warn("The replacement capture's FFmpeg failed before it took over: %s. The existing capture continues.", formatError(error));
+            attempt.phase = "failed";
+
+            return;
+          }
 
           LOG.error("FFmpeg error during tab replacement recovery: %s.", formatError(error));
           onCircuitBreak();
@@ -815,21 +912,25 @@ function createTabReplacementHandler(
       });
     } catch(error) {
 
-      LOG.warn("Failed to create new page during tab replacement: %s.", formatError(error));
+      LOG.warn("Could not establish a replacement capture for this stream: %s. The existing capture continues.", formatError(error));
 
       return null;
     }
 
     LOG.debug("timing:tab", "New page with capture created. (+%sms)", tabElapsed());
 
-    // Re-check the stream before adopting the fresh resources. The awaited createPageWithCapture above yields the event loop, so the stream can terminate mid-await;
-    // the entry writes below would then attach the new page and capture session to an entry that termination already disposed, orphaning both. Tear the fresh resources
-    // down in the same order the old-pipeline teardown above uses - dispose the capture session first so chrome.tabCapture releases cleanly, then unregister the
-    // managed page, then close it - and abandon the replacement.
-    if(!getStream(numericStreamId)) {
+    /* Re-check before committing. The awaited establishment above yields the event loop for the length of a tune, so two things can have happened meanwhile: the
+     * stream can have terminated - in which case termination found exactly one pipeline in the registry, the old one, and disposed it - or the fresh pipeline's
+     * own FFmpeg can have failed, which the swap-aware callback recorded. Either way the fresh page and capture are discarded in the teardown order every other
+     * site uses (dispose the session first so chrome.tabCapture releases cleanly, then unregister the managed page, then close it) and the stream is left exactly
+     * as it was. A discarded session's FFmpeg is killed by that dispose, which is what keeps the discard silent.
+     */
+    const entry = getStream(numericStreamId);
+
+    if(!entry || (attempt.phase === "failed")) {
 
       captureResult.captureSession.dispose();
-      unregisterManagedPage(captureResult.page);
+      deps.unregisterManagedPage(captureResult.page);
 
       if(!captureResult.page.isClosed()) {
 
@@ -839,33 +940,15 @@ function createTabReplacementHandler(
         });
       }
 
-      LOG.debug("recovery:tab", "Stream %s terminated during tab replacement - discarded the fresh page and capture session.", streamId);
+      LOG.debug("recovery:tab", "Abandoned the tab replacement for stream %s - discarded the fresh page and capture session.", streamId);
 
       return null;
     }
 
-    // Create a new segmenter for the new capture stream. Continue from the current segment index for playlist continuity, pass the per-track timestamp counters
-    // for monotonic baseMediaDecodeTime, and mark the first segment with a discontinuity tag so clients know the stream parameters may have changed.
-    const newSegmenter = createFMP4Segmenter({
-
-      initialTrackTimestamps: currentTrackTimestamps,
-
-      ...buildSegmenterTerminationHandlers(numericStreamId, channelName, { logSuffix: "after tab replacement", reasonSuffix: "after recovery" }),
-      pendingDiscontinuity: true,
-      previousInitSegment: currentInitSegment,
-      priorSessionStats: currentSessionStats,
-      startingInitVersion: currentInitVersion,
-      startingSegmentIndex: currentSegmentIndex,
-      streamId: numericStreamId
-    });
-
-    // Wire the new segmenter into the new capture session (attachSegmenter pipes the session's capture output into it), then install the session and page on the
-    // registry entry.
-    captureResult.captureSession.attachSegmenter(newSegmenter);
-
-    // A replacement changes the page, never the codec decision, so the encoder facts carry across from the identity being replaced.
-    stream.identity = { captureCodec: oldCaptureCodec, captureSession: captureResult.captureSession, hardwareAccelerated: oldHardwareAccelerated, mode: "capture" };
-    stream.page = captureResult.page;
+    // The swap, and the commit that follows it in the same synchronous frame. Nothing separates the two, so the error callback can never observe a stream whose
+    // registry entry has moved on while the attempt still reads as pending.
+    spliceReplacementCapture({ captureResult, channelName, deps, entry, numericStreamId, oldCaptureCodec, oldHardwareAccelerated, oldPage: entry.page, streamId });
+    attempt.phase = "committed";
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
 
@@ -1342,11 +1425,13 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
   // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly - no preroll playlist to be consistent with.
   const baseSegmentIndex = (prerollSegmentCount > 0) ? (currentStream?.hls.resumeSegmentIndex ?? 0) : (resumeData?.segmentIndex ?? 0);
 
-  // Create the fMP4 segmenter. The starting segment index accounts for both the resume offset and the preroll segment range. When preroll is active, the
-  // segmenter includes preroll entries in its sliding window via the compositor. The pending discontinuity at the preroll-to-real boundary is always needed -
-  // previousInitSegment is only passed without preroll, because the preroll init segment differs from the real init and the discontinuity must not be
-  // suppressed by an init-match comparison against the prior session.
-  const segmenter = createFMP4Segmenter({
+  /* What this segmenter continues from, which on a fresh stream is nothing at all. A resume carries the prior session's timestamps and init version, and its
+   * init segment only when no preroll window precedes it - the preroll init differs from the real one, so a byte match there would suppress a discontinuity the
+   * boundary genuinely needs. Session statistics are deliberately absent: a resume from disk has none, and inventing an empty set would tell the segmenter a
+   * live prior session is continuing and count a tab replacement that never happened. The starting index accounts for both the resume offset and the preroll
+   * segment range whenever either contributes one.
+   */
+  const continuity: SegmenterContinuity = {
 
     ...(resumeData ? {
 
@@ -1355,6 +1440,15 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
       startingInitVersion: resumeData.initVersion
     } : {}),
 
+    ...((resumeData || (prerollSegmentCount > 0)) ? { startingSegmentIndex: baseSegmentIndex + prerollSegmentCount } : {})
+  };
+
+  // Create the fMP4 segmenter. When preroll is active, it includes preroll entries in its sliding window via the compositor, and the pending discontinuity at the
+  // preroll-to-real boundary is always needed.
+  const segmenter = createFMP4Segmenter({
+
+    continuity,
+
     ...((prerollSegmentCount > 0) ? {
 
       prerollBaseUrl: currentStream?.hls.prerollBaseUrl ?? null,
@@ -1362,11 +1456,7 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
       prerollSegmentCount
     } : {}),
 
-    ...((resumeData || (prerollSegmentCount > 0)) ? {
-
-      pendingDiscontinuity: true,
-      startingSegmentIndex: baseSegmentIndex + prerollSegmentCount
-    } : {}),
+    ...((resumeData || (prerollSegmentCount > 0)) ? { pendingDiscontinuity: true } : {}),
 
     ...buildSegmenterTerminationHandlers(numericStreamId, channelName),
     streamId: numericStreamId
