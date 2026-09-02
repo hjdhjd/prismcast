@@ -39,11 +39,14 @@ import type { Clock } from "../utils/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 import type { StreamRegistryEntry } from "../streaming/registry.ts";
+import type { StreamingMode } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "../config/presets.ts";
 import { setImmediate as immediate } from "node:timers/promises";
 import { initializeDataDir } from "../config/paths.ts";
 import { makeFakeClock } from "../utils/clock.helpers.ts";
+import { makeNativeIdentity } from "../streaming/registry.helpers.ts";
+import { makePendingCaptureIdentity } from "../streaming/registry.ts";
 import os from "node:os";
 import path from "node:path";
 import { subscribeToStatus } from "../streaming/statusEmitter.ts";
@@ -1321,8 +1324,11 @@ describe("healActivatedCaptureTab", () => {
     return { binding, page, shots };
   };
 
-  // A registry entry as the match reads one: a streaming mode and a page. Nothing else on an entry is looked at, so nothing else is built.
-  const streamEntry = (page: Nullable<Page>, streamingMode: string): StreamRegistryEntry => ({ page, streamingMode }) as unknown as StreamRegistryEntry;
+  // A registry entry as the match reads one: an identity and a page. Nothing else on an entry is looked at, so nothing else is built.
+  const streamEntry = (page: Nullable<Page>, mode: StreamingMode): StreamRegistryEntry => {
+
+    return { identity: (mode === "native") ? makeNativeIdentity() : makePendingCaptureIdentity(), page } as unknown as StreamRegistryEntry;
+  };
 
   // The collaborators a report is delivered through, in the shape the match reads them: a registry walk and a page-to-tab lookup.
   interface ReportDeps {

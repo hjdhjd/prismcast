@@ -10,6 +10,7 @@ import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, 
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
+import { getAllStreams, isCaptureIdentity } from "./streaming/registry.ts";
 import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.ts";
@@ -27,7 +28,6 @@ import { cleanupIdleStreams } from "./streaming/hls.ts";
 import compression from "compression";
 import express from "express";
 import { generatePreroll } from "./streaming/preroll.ts";
-import { getAllStreams } from "./streaming/registry.ts";
 import { initializeUserChannels } from "./config/userChannels.ts";
 import { initializeUserProfiles } from "./config/userProfiles.ts";
 import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
@@ -135,7 +135,7 @@ function setupGracefulShutdown(): void {
 
     for(const stream of streams) {
 
-      const segmenter = stream.captureSession?.segmenter;
+      const segmenter = isCaptureIdentity(stream) ? stream.identity.captureSession?.segmenter : undefined;
 
       if(stream.info.storeKey && segmenter) {
 

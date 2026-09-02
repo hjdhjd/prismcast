@@ -2,15 +2,17 @@
  *
  * registry.ts: Stream tracking for PrismCast.
  */
-import type { MediaContainer, Nullable, ResolvedSiteProfile, StreamingMode } from "../types/index.ts";
+import type { MediaContainer, Nullable, ResolvedSiteProfile } from "../types/index.ts";
 import type { CaptureCodec } from "./codec.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import { EventEmitter } from "node:events";
+import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle } from "./recovery.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
+import type { RefreshedFeedMetadata } from "../native/index.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
  * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The
@@ -172,18 +174,78 @@ export interface StreamInfo {
 }
 
 /**
+ * The identity of a capture-mode stream: the screen-capture pipeline and the encoder facts that describe what it is producing.
+ */
+export interface CaptureStreamIdentity {
+
+  // Video codec label for this stream (e.g., "H264", "HEVC"), determined by the GPU's capabilities and the user's allowlist. Null until setup completes.
+  readonly captureCodec: Nullable<string>;
+
+  /* The capture-pipeline composite: the raw puppeteer-stream capture, the optional Matroska-to-fMP4 FFmpeg child, and the fMP4 segmenter, owned as one
+   * self-disposing unit with the correct kill-then-destroy-then-stop teardown order. The attached segmenter (read via captureSession.segmenter) is itself null
+   * until createCaptureSegmenter wires it.
+   *
+   * Null IS the pending state - an entry registered before its async setup produced a pipeline. Membership in the registry under a capture identity is what
+   * hasActiveCaptureStreams answers on, so a pending entry counts as capture-active and the window stays visible across the whole tune.
+   */
+  readonly captureSession: Nullable<CaptureSession>;
+
+  // Whether this stream is using hardware-accelerated video encoding on the local GPU. True when Chrome's MediaRecorder is using hardware encoding.
+  readonly hardwareAccelerated: boolean;
+
+  // The member that marks this identity as capture mode.
+  readonly mode: "capture";
+}
+
+/**
+ * The identity of a native-mode stream: the HLS proxy relaying the service's own segments, and the manifest facts that describe the feed it is bound to.
+ */
+export interface NativeStreamIdentity {
+
+  // Video codec label extracted from the service's HLS manifest. Null when the CODECS attribute is absent or unrecognized.
+  readonly captureCodec: Nullable<string>;
+
+  // The member that marks this identity as native mode.
+  readonly mode: "native";
+
+  // Declared bandwidth from the service's HLS manifest in bits per second. Zero when the BANDWIDTH attribute is absent.
+  readonly nativeBandwidth: number;
+
+  // Container format of the upstream segments the proxy is relaying. Null on a feed the DRM path abandoned.
+  readonly nativeContainer: Nullable<MediaContainer>;
+
+  // The native HLS proxy for streams that bypass screen capture. Never null: a native identity that had lost its proxy would leave health checking a permanent
+  // no-op, so the type makes that state unrepresentable rather than guarding against it at every read.
+  readonly nativeProxy: NativeProxy;
+
+  // Video resolution from the service's HLS manifest (e.g., "1920x1080"). Null when the attribute is absent.
+  readonly nativeResolution: Nullable<string>;
+
+  /* Re-establishes this stream's channel on a page and returns the resulting manifest interception: the streaming layer builds this at native upgrade by closing
+   * over the stream's own profile and url, so a token-refresh page reload acquires its manifest through the same tune machinery - navigation, overlay handling,
+   * channel selection, adjudication, and verification - that established the stream. Never null: every write that produces a native identity supplies it.
+   */
+  readonly reestablishManifest: (page: Page) => Promise<Nullable<ManifestInterceptionResult>>;
+}
+
+/* A stream is either capturing the browser's compositor or relaying the service's own HLS, and the two carry entirely different state. Modelling that as a
+ * discriminated union rather than as flat fields with an exclusivity convention makes the illegal states unrepresentable: a native identity without its proxy,
+ * a capture identity carrying manifest quality, a half-completed mode flip.
+ *
+ * Mutation is by whole-identity replacement - `entry.identity = { ... }` - and every member being readonly is what makes that rule compiler-enforced rather than
+ * asserted. A mode-CHANGING write is always a pure object literal, never a spread of the outgoing identity: a cross-variant spread evades excess-property
+ * checking and could smuggle the old variant's members into the new one. A refresh that stays WITHIN a variant may spread its own current identity with the
+ * changed members, since same-variant-in-same-variant-out leaves nothing to smuggle.
+ *
+ * The union settles the state, not the reading of it. A consumer narrows freshly on `entry.identity.mode` (or through the published predicates) before touching
+ * variant members, and an asynchronous callback narrows AT FIRE TIME, because the identity it was created under may have been replaced by the time it runs.
+ */
+export type StreamIdentity = CaptureStreamIdentity | NativeStreamIdentity;
+
+/**
  * Registry entry for an active stream. This is the single source of truth for all stream data, including browser state, HLS segments, and the segmenter reference.
  */
 export interface StreamRegistryEntry {
-
-  // Video codec label for this stream (e.g., "H264", "HEVC"). For capture mode, determined by GPU capabilities. For native mode, extracted from the service's
-  // HLS manifest. Null before stream setup completes.
-  captureCodec: Nullable<string>;
-
-  // The capture-pipeline composite for capture-mode streams: the raw puppeteer-stream capture, the optional Matroska-to-fMP4 FFmpeg child, and the fMP4 segmenter,
-  // owned as one self-disposing unit with the correct kill-then-destroy-then-stop teardown order. Null for native-mode streams and for pending entries before setup
-  // completes; the attached segmenter (read via captureSession.segmenter) is itself null until createCaptureSegmenter wires it. Mutually exclusive with nativeProxy.
-  captureSession: Nullable<CaptureSession>;
 
   // Channel name if streaming a named channel, or null for arbitrary URLs.
   channelName: Nullable<string>;
@@ -191,32 +253,18 @@ export interface StreamRegistryEntry {
   // IP address of the client that initiated this stream. Used to identify the Channels DVR server for show info lookup.
   clientAddress: Nullable<string>;
 
-  // Whether this stream is using hardware-accelerated video encoding on the local GPU. True when Chrome's MediaRecorder is using hardware encoding in capture mode.
-  // False for native HLS (pass-through, no local encoding) and software-only capture.
-  hardwareAccelerated: boolean;
-
   // HLS segment storage including init segment, media segments, and playlist.
   hls: HLSState;
 
   // Numeric identifier assigned by getNextStreamId(); unique for the lifetime of this process, not persisted across restarts.
   id: number;
 
+  // What this stream is and what pipeline is producing it. Replaced whole at every mode transition; never mutated member by member.
+  identity: StreamIdentity;
+
   // Count of active MPEG-TS client connections consuming this stream. Incremented when a client connects, decremented on disconnect. Used by idle timeout logic to
   // keep the stream alive while MPEG-TS clients are connected.
   mpegTsClientCount: number;
-
-  // Declared bandwidth from the service's HLS manifest in bits per second. Zero for capture-mode streams and when the BANDWIDTH attribute is absent.
-  nativeBandwidth: number;
-
-  // Container format of the upstream segments the native proxy is relaying. Meaningful only while streamingMode is "native": the mode flip at the capture
-  // fallback is what invalidates it, exactly as it invalidates nativeBandwidth and nativeResolution, so no code path resets this field on its own.
-  nativeContainer: Nullable<MediaContainer>;
-
-  // The native HLS proxy for streams that bypass screen capture. Null for capture-mode streams.
-  nativeProxy: Nullable<NativeProxy>;
-
-  // Video resolution from the service's HLS manifest (e.g., "1920x1080"). Null for capture-mode streams and when absent from the manifest.
-  nativeResolution: Nullable<string>;
 
   // Stream-specific info for idle detection.
   info: StreamInfo;
@@ -237,13 +285,6 @@ export interface StreamRegistryEntry {
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
 
-  // Re-establishes this stream's channel on a page and returns the resulting manifest interception: the streaming layer builds this at native upgrade by
-  // closing over the stream's own profile and url, so a token-refresh page reload acquires its manifest through the same tune machinery - navigation,
-  // overlay handling, channel selection, adjudication, and verification - that established the stream. Null until the native upgrade installs it; after a
-  // capture fallback the mode flip is what retires it, exactly as with the other native-only fields - every consumer reads it behind the streaming-mode
-  // check, so no reset is performed on that transition.
-  reestablishManifest: Nullable<(page: Page) => Promise<Nullable<ManifestInterceptionResult>>>;
-
   // Set when the stream entry is created; the basis for uptime and duration calculations reported by status and logging.
   startTime: Date;
 
@@ -253,9 +294,6 @@ export interface StreamRegistryEntry {
 
   // String identifier for logging (e.g., "cnn-5jecl6").
   streamIdStr: string;
-
-  // Streaming mode: "capture" for screen capture via puppeteer-stream, "native" for direct HLS consumption.
-  streamingMode: StreamingMode;
 
   // The source URL being captured or proxied; either a predefined channel's configured URL or an ad-hoc URL supplied by the caller.
   url: string;
@@ -337,7 +375,63 @@ export function getStreamCount(): number {
  */
 export function hasActiveCaptureStreams(): boolean {
 
-  return getAllStreams().some((entry) => entry.streamingMode === "capture");
+  return getAllStreams().some(isCaptureIdentity);
+}
+
+// Identity.
+
+/**
+ * Builds the identity a stream is born with: capture mode, with no pipeline and no encoder facts yet. The literal exists here alone so the pending birth and the
+ * native fallback's pre-flip declare the same shape rather than hand-copying it.
+ * @returns A capture identity in its pending state.
+ */
+export function makePendingCaptureIdentity(): CaptureStreamIdentity {
+
+  return { captureCodec: null, captureSession: null, hardwareAccelerated: false, mode: "capture" };
+}
+
+/**
+ * Narrows a stream entry to capture mode. Published alongside the segment-health readers so consumers outside the streaming layer ask the registry what a stream
+ * is rather than reaching into its identity themselves.
+ * @param entry - The stream registry entry to test.
+ * @returns True when the entry carries a capture identity, narrowing it for the caller.
+ */
+export function isCaptureIdentity(entry: StreamRegistryEntry): entry is StreamRegistryEntry & { identity: CaptureStreamIdentity } {
+
+  return entry.identity.mode === "capture";
+}
+
+/**
+ * Reports whether a stream is encoding on the local GPU. Hardware acceleration is a capture-mode fact, so native streams answer false: they pass the service's own
+ * segments through and encode nothing locally. The status projections read it here rather than each narrowing the identity themselves.
+ * @param entry - The stream registry entry to query.
+ * @returns True when the stream is capturing with hardware-accelerated encoding.
+ */
+export function isHardwareAccelerated(entry: StreamRegistryEntry): boolean {
+
+  return (entry.identity.mode === "capture") && entry.identity.hardwareAccelerated;
+}
+
+/**
+ * Records the quality a token refresh has bound this stream to. The registry owns the mechanics because two layers relay the same refresh - the native upgrade in
+ * hls.ts and the monitor's L2 recovery - and a hand-copied guard-then-spread in each would be two chances to get it wrong.
+ *
+ * The narrow happens here, freshly, because both callers invoke this from an asynchronous callback that can fire long after any earlier check: a refresh that
+ * completes while a capture fallback is mid-flight finds a capture identity and is skipped. Skipping is right in every case - quality metadata for a stream
+ * midway through a fallback is moot, and a fallback that fails restores the proxy, whose next refresh writes the quality again.
+ * @param entry - The stream registry entry to update.
+ * @param refreshed - The quality facts of the freshly bound feed.
+ */
+export function applyNativeQualityRefresh(entry: StreamRegistryEntry, refreshed: RefreshedFeedMetadata): void {
+
+  const identity = entry.identity;
+
+  if(identity.mode !== "native") {
+
+    return;
+  }
+
+  entry.identity = { ...identity, captureCodec: refreshed.codec, nativeBandwidth: refreshed.bandwidth, nativeResolution: refreshed.resolution };
 }
 
 /**
@@ -473,6 +567,25 @@ export function getTotalSegmentMemory(): number {
 // Segment Health.
 
 /**
+ * Returns the fMP4 segmenter producing a stream's segments, or null when there is none: a native stream relays the service's own segments, and a capture stream
+ * has no segmenter until createCaptureSegmenter wires one. This is the single place the capture-identity narrow and the pipeline walk are written, so the several
+ * consumers that read segment indices, init segments, and session statistics all ask the same question the same way.
+ *
+ * An absent entry is accepted because callers routinely look the stream up and read its segmenter in one expression; a stream that is gone has no segmenter.
+ * @param entry - The stream registry entry to query, or undefined when the lookup found nothing.
+ * @returns The attached segmenter, or null.
+ */
+export function getStreamSegmenter(entry: StreamRegistryEntry | undefined): Nullable<FMP4SegmenterResult> {
+
+  if(entry?.identity.mode !== "capture") {
+
+    return null;
+  }
+
+  return entry.identity.captureSession?.segmenter ?? null;
+}
+
+/**
  * Returns whether the last segment contained video traf boxes. Used by the monitor to distinguish dead capture pipelines (audio-only, no video trafs) from legitimate
  * small segments produced by static content (video trafs present but low-bitrate). Returns null if the segmenter does not exist or the video trackId is unknown.
  * @param entry - The stream registry entry to query.
@@ -480,7 +593,7 @@ export function getTotalSegmentMemory(): number {
  */
 export function getLastSegmentHasVideo(entry: StreamRegistryEntry): Nullable<boolean> {
 
-  return entry.captureSession?.segmenter?.getLastSegmentHasVideo() ?? null;
+  return getStreamSegmenter(entry)?.getLastSegmentHasVideo() ?? null;
 }
 
 /**
@@ -491,5 +604,5 @@ export function getLastSegmentHasVideo(entry: StreamRegistryEntry): Nullable<boo
  */
 export function getLastSegmentSize(entry: StreamRegistryEntry): Nullable<number> {
 
-  return entry.captureSession?.segmenter?.getLastSegmentSize() ?? null;
+  return getStreamSegmenter(entry)?.getLastSegmentSize() ?? null;
 }

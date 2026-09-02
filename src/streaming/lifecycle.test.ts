@@ -7,17 +7,18 @@
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "./lifecycle.ts";
-import { getNextStreamId, getStream, registerStream } from "./registry.ts";
+import { getNextStreamId, getStream, makePendingCaptureIdentity, registerStream } from "./registry.ts";
+import { makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { NativeProxy } from "../native/proxy.ts";
 import type { Nullable } from "../types/index.ts";
 import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createCaptureSession } from "./captureSession.ts";
-import { makeRegistryEntry } from "./registry.helpers.ts";
 import { registerAbortController } from "../utils/index.ts";
 import { setGracefulShutdown } from "../browser/index.ts";
 
@@ -220,7 +221,7 @@ describe("terminateStream", () => {
     // The terminationInitiated guard ensures double-termination is silently absorbed. Locks the contract that callers can issue redundant terminate calls without
     // worrying about stack overflows or double-stop calls into the segmenter.
     const { calls, segmenter } = makeSegmenter();
-    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ segmenter }) });
+    const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: makeCaptureSession({ segmenter }) } });
 
     registerStream(entry);
 
@@ -263,7 +264,8 @@ describe("terminateStream", () => {
 
     // terminateStream disposes the capture session, which destroys the raw capture stream (its first teardown step for a no-FFmpeg session).
     let destroyed = false;
-    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: false } }) });
+    const session = makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: false } });
+    const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: session } });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
@@ -275,7 +277,8 @@ describe("terminateStream", () => {
 
     // Negative test: avoid double-destroy. The session's destroyed guard prevents re-firing puppeteer-stream's close handler.
     let destroyed = false;
-    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: true } }) });
+    const session = makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: true } });
+    const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: session } });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
@@ -289,7 +292,8 @@ describe("terminateStream", () => {
     // confirms terminateStream routes the teardown through it so both run).
     const order: string[] = [];
     const { calls, segmenter } = makeSegmenter();
-    const entry = makeRegistryEntry({ captureSession: makeCaptureSession({ ffmpeg: { kill: () => { order.push("ffmpeg.kill"); } }, segmenter }) });
+    const session = makeCaptureSession({ ffmpeg: { kill: () => { order.push("ffmpeg.kill"); } }, segmenter });
+    const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: session } });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");
@@ -423,9 +427,9 @@ describe("terminateStream", () => {
 
       getStats: () => ({ fetchErrors: 0, segmentsFetched: 0, tokenRefreshes: 0 }),
       stop: () => { stopped = true; }
-    } as unknown as StreamRegistryEntry["nativeProxy"];
+    } as unknown as NativeProxy;
 
-    const entry = makeRegistryEntry({ nativeProxy });
+    const entry = makeRegistryEntry({ identity: makeNativeIdentity({ nativeProxy }) });
 
     registerStream(entry);
     terminateStream(entry.id, entry.channelName ?? "", "test");

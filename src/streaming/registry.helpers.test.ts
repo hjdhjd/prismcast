@@ -2,12 +2,13 @@
  *
  * registry.helpers.test.ts: Tests for the makeRegistryEntry factory in registry.helpers.ts. The factory is consumed across streaming/ and hdhr/ test files;
  * a bug in defaults or override-merging here would silently affect every dependent suite. Tests pin: default-shape correctness, id auto-allocation, streamIdStr
- * derivation, override merge semantics, hls always being a fresh HLSState (not a shared mutable reference), and the "capture" streamingMode default.
+ * derivation, override merge semantics, hls always being a fresh HLSState (not a shared mutable reference), and the pending-capture identity default.
  */
-import { STREAM_REGISTRY_ENTRY_KEYS, makeRegistryEntry } from "./registry.helpers.ts";
+import { STREAM_REGISTRY_ENTRY_KEYS, makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { assertSameShape } from "../testing.helpers.ts";
+import { makePendingCaptureIdentity } from "./registry.ts";
 
 describe("makeRegistryEntry", () => {
 
@@ -81,27 +82,21 @@ describe("makeRegistryEntry", () => {
 
     const entry = makeRegistryEntry();
 
-    assert.equal(entry.captureCodec, null);
-    assert.equal(entry.captureSession, null);
+    assert.deepEqual(entry.identity, { captureCodec: null, captureSession: null, hardwareAccelerated: false, mode: "capture" });
     assert.equal(entry.channelName, null);
     assert.equal(entry.clientAddress, null);
-    assert.equal(entry.hardwareAccelerated, false);
     assert.equal(entry.monitor, null);
     assert.equal(entry.mpegTsClientCount, 0);
-    assert.equal(entry.nativeBandwidth, 0);
-    assert.equal(entry.nativeContainer, null);
-    assert.equal(entry.nativeProxy, null);
-    assert.equal(entry.nativeResolution, null);
     assert.equal(entry.page, null);
     assert.equal(entry.preTuned, false);
     assert.equal(entry.profile, null);
   });
 
-  test("defaults to 'capture' streamingMode and a stable test URL", () => {
+  test("defaults to the pending capture identity and a stable test URL", () => {
 
     const entry = makeRegistryEntry();
 
-    assert.equal(entry.streamingMode, "capture");
+    assert.equal(entry.identity.mode, "capture");
     assert.equal(entry.url, "https://example.test/stream");
   });
 
@@ -128,15 +123,15 @@ describe("makeRegistryEntry", () => {
     const entry = makeRegistryEntry({
 
       channelName: "ABC",
-      info: { lastPlaylistRequest: 12345, storeKey: "custom-key" },
-      streamingMode: "native"
+      identity: makeNativeIdentity(),
+      info: { lastPlaylistRequest: 12345, storeKey: "custom-key" }
     });
 
     assert.equal(entry.channelName, "ABC");
     assert.deepEqual(entry.info, { lastPlaylistRequest: 12345, storeKey: "custom-key" });
-    assert.equal(entry.streamingMode, "native");
+    assert.equal(entry.identity.mode, "native");
     // Non-overridden fields retain defaults.
-    assert.equal(entry.captureCodec, null);
+    assert.equal(entry.identity.captureCodec, null);
     assert.equal(entry.url, "https://example.test/stream");
   });
 
@@ -145,8 +140,8 @@ describe("makeRegistryEntry", () => {
     const a = makeRegistryEntry();
     const b = makeRegistryEntry();
 
-    a.captureCodec = "h264";
+    a.identity = { ...makePendingCaptureIdentity(), captureCodec: "h264" };
 
-    assert.equal(b.captureCodec, null, "mutating one entry does not affect another");
+    assert.equal(b.identity.captureCodec, null, "mutating one entry does not affect another");
   });
 });

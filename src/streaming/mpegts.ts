@@ -139,12 +139,14 @@ export async function handleMpegTsStream(req: Request, res: Response): Promise<v
  */
 export function resolveMpegTsInitSource(stream: StreamRegistryEntry): Nullable<Buffer> {
 
-  if(stream.streamingMode !== "native") {
+  const identity = stream.identity;
+
+  if(identity.mode !== "native") {
 
     return stream.hls.initSegment;
   }
 
-  if(stream.nativeContainer !== "fmp4") {
+  if(identity.nativeContainer !== "fmp4") {
 
     return null;
   }
@@ -213,7 +215,7 @@ async function serveMpegTsStream(streamId: number, channelName: string, req: Req
   // through to the remux path below instead, because its fragments are not MPEG-TS and piping them raw would put fMP4 bytes on a video/mpeg socket. The branch
   // reads the container rather than the resolved initialization, since a null initialization cannot tell a pass-through source apart from an fMP4 source whose
   // initialization is missing - those two need opposite handling.
-  if((stream.streamingMode === "native") && (stream.nativeContainer !== "fmp4")) {
+  if((stream.identity.mode === "native") && (stream.identity.nativeContainer !== "fmp4")) {
 
     connectMpegTsClient({
 

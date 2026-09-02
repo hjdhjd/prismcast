@@ -8,8 +8,9 @@ import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/in
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
 import type { StreamSetupResult, TabReplacementHandlerFactory } from "./setup.ts";
+import { applyNativeQualityRefresh, cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, isCaptureIdentity,
+  makePendingCaptureIdentity, registerStream, updateLastAccess } from "./registry.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
-import { cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, registerStream, updateLastAccess } from "./registry.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
 import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
 import { emitCurrentSystemStatus, isLoginModeActive, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
@@ -752,7 +753,12 @@ function createTabReplacementHandler(
     // Get the current init segment, segment index, and per-track timestamps from the old segmenter before stopping it. The init segment enables discontinuity
     // suppression when codec parameters are unchanged, the segment index allows the new segmenter to continue numbering, and the track timestamps ensure monotonic
     // baseMediaDecodeTime across capture restarts.
-    const oldSegmenter = stream.captureSession?.segmenter;
+    // The encoder facts the replacement carries forward. A replacement changes the page, not the codec decision, so the identity being replaced is the only
+    // honest source for them: the fresh capture result carries no codec or acceleration of its own.
+    const oldCaptureCodec = isCaptureIdentity(stream) ? stream.identity.captureCodec : null;
+    const oldHardwareAccelerated = isCaptureIdentity(stream) && stream.identity.hardwareAccelerated;
+
+    const oldSegmenter = isCaptureIdentity(stream) ? stream.identity.captureSession?.segmenter : undefined;
     const currentInitSegment = oldSegmenter?.getInitSegment();
     const currentInitVersion = oldSegmenter?.getInitVersion() ?? 0;
     const currentSegmentIndex = oldSegmenter?.getSegmentIndex() ?? 0;
@@ -763,10 +769,10 @@ function createTabReplacementHandler(
     // FFmpeg's stdin), then destroys the capture stream (which MUST happen before the old page is closed below, so chrome.tabCapture releases the capture and a
     // later capture acquisition does not fail with "Cannot capture a tab with an active stream"), then stops the segmenter. The new pipeline is constructed fresh
     // further down.
-    if(stream.captureSession) {
+    if(isCaptureIdentity(stream) && stream.identity.captureSession) {
 
       LOG.debug("recovery:tab", "Disposing old capture pipeline for tab replacement.");
-      stream.captureSession.dispose();
+      stream.identity.captureSession.dispose();
     }
 
     // Close the current page. The page may be null for pending entries whose async setup has not yet completed.
@@ -856,7 +862,9 @@ function createTabReplacementHandler(
     // Wire the new segmenter into the new capture session (attachSegmenter pipes the session's capture output into it), then install the session and page on the
     // registry entry.
     captureResult.captureSession.attachSegmenter(newSegmenter);
-    stream.captureSession = captureResult.captureSession;
+
+    // A replacement changes the page, never the codec decision, so the encoder facts carry across from the identity being replaced.
+    stream.identity = { captureCodec: oldCaptureCodec, captureSession: captureResult.captureSession, hardwareAccelerated: oldHardwareAccelerated, mode: "capture" };
     stream.page = captureResult.page;
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
@@ -1084,13 +1092,11 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
 
   registerStream({
 
-    captureCodec: null,
-    captureSession: null,
     channelName: channel?.name ?? null,
     clientAddress: options.clientAddress ?? null,
-    hardwareAccelerated: false,
     hls,
     id: numericStreamId,
+    identity: makePendingCaptureIdentity(),
     info: {
 
       lastPlaylistRequest: Date.now(),
@@ -1098,18 +1104,12 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     },
     monitor: null,
     mpegTsClientCount: 0,
-    nativeBandwidth: 0,
-    nativeContainer: null,
-    nativeProxy: null,
-    nativeResolution: null,
     page: null,
     preTuned: options.preTuned ?? false,
     probeIdentity: null,
     profile: null,
-    reestablishManifest: null,
     startTime: options.streamStartTime ?? new Date(),
     streamIdStr,
-    streamingMode: "capture",
     url
   });
 
@@ -1230,9 +1230,7 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
         return;
       }
 
-      refreshed.captureCodec = metadata.codec;
-      refreshed.nativeBandwidth = metadata.bandwidth;
-      refreshed.nativeResolution = metadata.resolution;
+      applyNativeQualityRefresh(refreshed, metadata);
     },
     page: setup.page,
     prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
@@ -1275,7 +1273,6 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   // registration, so nulling the fields silences only sendPlaylistResponse's per-poll regeneration, not the one-shot overwrite the callback would still perform when
   // it fires. Disarming here completes the invalidation. One residual is inherent to preroll-for-hasAudio: if the native tune already exceeded PREROLL_DELAY_MS the
   // timer has already fired, so the nulled fields freeze the already-written preroll playlist until the proxy's first real content arrives - bounded, not a stall.
-  currentStream.captureSession = null;
   currentStream.hls.hasAudio = nativeResult.hasAudio;
 
   if(nativeResult.hasAudio) {
@@ -1286,14 +1283,17 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
     currentStream.hls.prerollSegmentCount = 0;
   }
 
-  currentStream.captureCodec = nativeResult.codec;
-  currentStream.hardwareAccelerated = false;
-  currentStream.nativeBandwidth = nativeResult.bandwidth;
-  currentStream.nativeContainer = nativeResult.container;
-  currentStream.nativeProxy = nativeResult.proxy;
-  currentStream.nativeResolution = nativeResult.resolution;
-  currentStream.reestablishManifest = reestablishManifest;
-  currentStream.streamingMode = "native";
+  // The mode flip is one whole-identity replacement written as a pure literal, so the capture pipeline this stream no longer has cannot survive the transition.
+  currentStream.identity = {
+
+    captureCodec: nativeResult.codec,
+    mode: "native",
+    nativeBandwidth: nativeResult.bandwidth,
+    nativeContainer: nativeResult.container,
+    nativeProxy: nativeResult.proxy,
+    nativeResolution: nativeResult.resolution,
+    reestablishManifest
+  };
 
   // The capture that was reading the compositor has ended, so this stream has no further claim on the window. Fire-and-forget: a native stream does not depend on
   // the window at all, and the executor is serialized, so nothing here waits on a presentation change.
@@ -1500,7 +1500,9 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
     return null;
   }
 
-  stream.captureSession = setup.captureSession;
+  // Setup produced the capture pipeline the entry was registered without. The identity is still the pending capture shape at this point - the native upgrade runs
+  // later in this same function - so the write installs the pipeline and leaves the encoder facts to the completion write further down.
+  stream.identity = { ...makePendingCaptureIdentity(), captureSession: setup.captureSession };
   stream.monitor = setup.monitor;
   stream.page = setup.page;
   stream.probeIdentity = setup.probeIdentity;
@@ -1570,16 +1572,16 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         markChannelSuccess(channelName, successAuthDomain, markAuth);
       }
 
-      // Update the registry entry with codec and hardware acceleration state, then emit the stream added event for the dashboard. Native streams set their codec
-      // and quality fields earlier (when the native proxy is created), so only capture mode needs updating here.
+      // Record the codec and hardware acceleration this stream settled on, then emit the stream added event for the dashboard. The registry write is capture-only:
+      // a native upgrade already wrote its manifest-derived codec into the native identity, and hardware acceleration is a capture fact the status projection
+      // answers false for on a native stream. The two DTO values below are computed for both modes because the wire shape stays flat.
       const streamCodec = (streamingMode === "native") ? nativeCodec : effectiveCodec.toUpperCase();
       const hwAccelerated = (streamingMode !== "native") && captureHwAccel;
       const currentEntry = getStream(numericStreamId);
 
-      if(currentEntry) {
+      if(currentEntry && isCaptureIdentity(currentEntry)) {
 
-        currentEntry.captureCodec = streamCodec;
-        currentEntry.hardwareAccelerated = hwAccelerated;
+        currentEntry.identity = { ...currentEntry.identity, captureCodec: streamCodec, hardwareAccelerated: hwAccelerated };
       }
 
       emitStreamAdded(createInitialStreamStatus({

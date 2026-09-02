@@ -6,17 +6,19 @@
  * arithmetic in getStreamMemoryUsage, the capture-activity predicate the browser window's visibility policy reads, and the shape of a freshly-minted HLSState.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { cancelPrerollTimer, createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream, getStreamCount,
-  getStreamMemoryUsage, getTotalSegmentMemory, hasActiveCaptureStreams, registerStream, unregisterStream, updateLastAccess } from "./registry.ts";
+import { applyNativeQualityRefresh, cancelPrerollTimer, createHLSState, getAllStreams, getLastSegmentHasVideo, getLastSegmentSize, getNextStreamId, getStream,
+  getStreamCount, getStreamMemoryUsage, getTotalSegmentMemory, hasActiveCaptureStreams, makePendingCaptureIdentity, registerStream, unregisterStream,
+  updateLastAccess } from "./registry.ts";
+import { makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { createCaptureSession } from "./captureSession.ts";
-import { makeRegistryEntry } from "./registry.helpers.ts";
 
 /* entryWithSegmenter builds a registry entry whose capture session exposes the given (partial) segmenter, so the getLastSegment* getters can be exercised through
- * the production read path (entry.captureSession?.segmenter?.getX()). A no-op pipe is supplied because attachSegmenter pipes the segmenter to the session's capture
+ * the production read path (the registry's own segmenter reader). A no-op pipe is supplied because attachSegmenter pipes the segmenter to the session's capture
  * output; the test doubles only implement the one getter under assertion.
  */
 function entryWithSegmenter(segmenter: Record<string, unknown>): StreamRegistryEntry {
@@ -25,7 +27,7 @@ function entryWithSegmenter(segmenter: Record<string, unknown>): StreamRegistryE
 
   session.attachSegmenter({ pipe: (): void => { /* inert */ }, ...segmenter } as unknown as FMP4SegmenterResult);
 
-  return makeRegistryEntry({ captureSession: session });
+  return makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: session } });
 }
 
 /* clearRegistry removes any entries left behind by previous tests. The registry is module-scoped, so beforeEach in each describe must reset it to keep tests
@@ -240,7 +242,7 @@ describe("hasActiveCaptureStreams", () => {
 
   test("returns true for a single capture entry", () => {
 
-    registerStream(makeRegistryEntry({ streamingMode: "capture" }));
+    registerStream(makeRegistryEntry());
 
     assert.equal(hasActiveCaptureStreams(), true, "one capture stream is enough");
   });
@@ -248,9 +250,9 @@ describe("hasActiveCaptureStreams", () => {
   test("returns false when every entry is native", () => {
 
     // Native streams are relayed in Node and never read the compositor, so a registry full of them leaves the window with no reason to be on screen.
-    registerStream(makeRegistryEntry({ streamingMode: "native" }));
-    registerStream(makeRegistryEntry({ streamingMode: "native" }));
-    registerStream(makeRegistryEntry({ streamingMode: "native" }));
+    registerStream(makeRegistryEntry({ identity: makeNativeIdentity() }));
+    registerStream(makeRegistryEntry({ identity: makeNativeIdentity() }));
+    registerStream(makeRegistryEntry({ identity: makeNativeIdentity() }));
 
     assert.equal(hasActiveCaptureStreams(), false, "native-only streams do not count as capture");
   });
@@ -258,9 +260,9 @@ describe("hasActiveCaptureStreams", () => {
   test("finds a capture entry that is not the first in a mixed registry", () => {
 
     // The case a first-entry-only implementation gets wrong: the capture stream sits behind several native ones, so the predicate has to look at all of them.
-    registerStream(makeRegistryEntry({ streamingMode: "native" }));
-    registerStream(makeRegistryEntry({ streamingMode: "native" }));
-    registerStream(makeRegistryEntry({ streamingMode: "capture" }));
+    registerStream(makeRegistryEntry({ identity: makeNativeIdentity() }));
+    registerStream(makeRegistryEntry({ identity: makeNativeIdentity() }));
+    registerStream(makeRegistryEntry());
 
     assert.equal(hasActiveCaptureStreams(), true, "a capture entry behind native ones still counts");
   });
@@ -270,21 +272,21 @@ describe("hasActiveCaptureStreams", () => {
     /* The predicate is evaluated fresh on every call rather than cached, which is what lets the native upgrade and the failed capture fallback move the window
      * without anything having to invalidate a stored answer.
      */
-    const entry = makeRegistryEntry({ streamingMode: "capture" });
+    const entry = makeRegistryEntry();
 
     registerStream(entry);
     assert.equal(hasActiveCaptureStreams(), true, "the entry starts in capture mode");
 
-    entry.streamingMode = "native";
+    entry.identity = makeNativeIdentity();
     assert.equal(hasActiveCaptureStreams(), false, "flipping to native drops the last capture stream");
 
-    entry.streamingMode = "capture";
+    entry.identity = makePendingCaptureIdentity();
     assert.equal(hasActiveCaptureStreams(), true, "flipping back raises it again");
   });
 
   test("drops back to false once the last capture entry unregisters", () => {
 
-    const entry = makeRegistryEntry({ streamingMode: "capture" });
+    const entry = makeRegistryEntry();
 
     registerStream(entry);
     unregisterStream(entry.id);
@@ -557,12 +559,46 @@ describe("getTotalSegmentMemory", () => {
   });
 });
 
+describe("applyNativeQualityRefresh", () => {
+
+  test("a native entry's three quality members update in one within-variant replacement", () => {
+
+    const entry = makeRegistryEntry({ identity: makeNativeIdentity({ nativeContainer: "fmp4" }) });
+    const before = entry.identity;
+
+    applyNativeQualityRefresh(entry, { bandwidth: 6000000, codec: "HEVC", resolution: "1920x1080" });
+
+    assert.notEqual(entry.identity, before, "the identity is replaced rather than mutated in place");
+    assert.equal(entry.identity.mode, "native", "and stays native");
+    assert.equal(entry.identity.captureCodec, "HEVC");
+    assert.equal((entry.identity as { nativeBandwidth: number }).nativeBandwidth, 6000000);
+    assert.equal((entry.identity as { nativeResolution: Nullable<string> }).nativeResolution, "1920x1080");
+    assert.equal((entry.identity as { nativeContainer: unknown }).nativeContainer, "fmp4", "members the refresh does not name are carried across untouched");
+  });
+
+  test("a capture entry is left alone by a refresh that lands mid-fallback", () => {
+
+    /* The guard is not decoration. A capture fallback declares the pending capture identity before it starts and leaves the relay running behind it, so a token
+     * refresh completing inside that window arrives at an entry that is no longer native. Writing manifest quality onto a capture identity would be describing a
+     * feed the stream is in the middle of abandoning; skipping is right in every case, and a fallback that fails restores the proxy whose next refresh writes it
+     * again.
+     */
+    const entry = makeRegistryEntry();
+    const before = entry.identity;
+
+    applyNativeQualityRefresh(entry, { bandwidth: 6000000, codec: "HEVC", resolution: "1920x1080" });
+
+    assert.equal(entry.identity, before, "the capture identity is the same object it was");
+    assert.equal(entry.identity.captureCodec, null, "and carries none of the refresh");
+  });
+});
+
 describe("getLastSegmentHasVideo", () => {
 
   test("returns null when no capture session exists on the entry", () => {
 
-    // Boundary: pending stream entries (and native-mode entries) have captureSession === null. The getter must not crash on that path.
-    const entry = makeRegistryEntry({ captureSession: null });
+    // Boundary: a pending stream entry carries a capture identity whose session is still null. The getter must not crash on that path.
+    const entry = makeRegistryEntry();
 
     assert.equal(getLastSegmentHasVideo(entry), null);
   });
@@ -587,7 +623,7 @@ describe("getLastSegmentSize", () => {
 
   test("returns null when no capture session exists on the entry", () => {
 
-    const entry = makeRegistryEntry({ captureSession: null });
+    const entry = makeRegistryEntry();
 
     assert.equal(getLastSegmentSize(entry), null);
   });

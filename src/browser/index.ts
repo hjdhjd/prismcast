@@ -7,7 +7,7 @@ import type { BrowserLifecycle, BrowserPurpose, CaptureImpairment } from "./brow
 import type { Clock, ProcessInfo } from "../utils/index.ts";
 import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, setChromeUserAgent, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
-import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../streaming/registry.ts";
+import { getAllStreams, getStreamCount, hasActiveCaptureStreams, isCaptureIdentity } from "../streaming/registry.ts";
 import { getCachedTabId, onTabActivation } from "./tabSelection.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
@@ -1434,9 +1434,10 @@ export function healActivatedCaptureTab(tabId: number, deps: { readonly getAllSt
 
   for(const entry of deps.getAllStreams()) {
 
-    // A stream's page is nullable in the registry, because an entry is registered before its setup has produced one, so the narrowing comes ahead of the lookup
-    // that needs a page to ask about.
-    if((entry.streamingMode !== "capture") || (entry.page === null)) {
+    // The mode is read through the registry's own published predicate rather than off the entry, keeping this layer's knowledge of a stream's shape to what the
+    // registry chooses to publish. A stream's page is nullable, because an entry is registered before its setup has produced one, so the narrowing comes ahead
+    // of the lookup that needs a page to ask about.
+    if(!isCaptureIdentity(entry) || (entry.page === null)) {
 
       continue;
     }

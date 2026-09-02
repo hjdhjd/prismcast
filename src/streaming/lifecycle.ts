@@ -119,9 +119,15 @@ function disposeStreamResources(entry: StreamRegistryEntry): void {
   cancelPrerollTimer(entry.hls);
 
   // Dispose the active pipeline. The CaptureSession kills its FFmpeg child, then destroys its capture stream, then stops its segmenter; the native proxy stops
-  // its polling loop and token-refresh timer. Only one is present for a given stream.
-  entry.nativeProxy?.stop();
-  entry.captureSession?.dispose();
+  // its polling loop and token-refresh timer. The identity's shape is what makes only one of them present: a stream holds either a capture pipeline or a proxy,
+  // never both, so the branch here is the type's own structure rather than a convention this function has to trust.
+  if(entry.identity.mode === "native") {
+
+    entry.identity.nativeProxy.stop();
+  } else {
+
+    entry.identity.captureSession?.dispose();
+  }
 
   // Release the page from managed tracking ahead of the close, the unregister-then-close order every other teardown site follows. This is bookkeeping against an
   // in-process set with no Puppeteer call behind it, so it runs whenever there is a page at all - including the cases below where the close itself is skipped,
@@ -169,11 +175,12 @@ export function terminateStream(streamId: number, channelName: string, reason: s
   // Prologue: snapshot every statistic the termination summary needs while the resources are still live. Each capture-mode resource is a node exposing a read
   // alongside its dispose - the segmenter (via the capture session), the native proxy, and the health monitor - read here, disposed below. The counters remain valid
   // after disposal, but reading up front keeps the disposal purely side-effecting. Capture and native modes are mutually exclusive, so at most one set is present.
-  const segmenter = streamInfo?.captureSession?.segmenter;
+  const identity = streamInfo?.identity;
+  const segmenter = (identity?.mode === "capture") ? identity.captureSession?.segmenter : undefined;
   const keyframeStats: Nullable<KeyframeStats> = segmenter?.getKeyframeStats() ?? null;
   const segmentCount = segmenter?.getSegmentIndex() ?? 0;
   const sessionStats: Nullable<SessionStats> = segmenter?.getSessionStats() ?? null;
-  const nativeProxyStats = streamInfo?.nativeProxy?.getStats();
+  const nativeProxyStats = (identity?.mode === "native") ? identity.nativeProxy.getStats() : undefined;
   const recoveryMetrics: Nullable<RecoveryMetrics> = streamInfo?.monitor?.getMetrics() ?? null;
 
   // Dispose the stream's owned resources (abort, monitor, preroll timer, pipeline, page) in teardown order.

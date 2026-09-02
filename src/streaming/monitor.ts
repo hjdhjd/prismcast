@@ -6,18 +6,19 @@ import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, ResolutionPea
 import { EvaluateTimeoutError, LOG, capitalize, formatError, formatResolution, getAbortSignal, isPageDeathError, isSessionClosedError,
   runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
+import type { NativeStreamIdentity, StreamRegistryEntry } from "./registry.ts";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth,
   describeResolutionOutcome, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, isResolutionDegraded,
   recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
   updateResolutionPeak } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
+import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage, getStreamSegmenter, isHardwareAccelerated,
+  makePendingCaptureIdentity } from "./registry.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
 import { getCaptureImpairment, syncWindowVisibility } from "../browser/index.ts";
-import { getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
-import type { StreamRegistryEntry } from "./registry.ts";
 import { clearNativeInitState } from "./hlsSegments.ts";
 import { clearProbeCache } from "../native/probe.ts";
 import { emitStreamHealthChanged } from "./statusEmitter.ts";
@@ -437,15 +438,18 @@ export function monitorPlaybackHealth(
    */
   function checkNativeStreamHealth(entry: StreamRegistryEntry): void {
 
-    const proxy = entry.nativeProxy;
+    // The narrow happens here rather than being inherited from the tick's dispatch: a narrowing does not cross a function call, and the entry's identity can be
+    // replaced by a fallback that ran between the dispatch and this frame. A stream that is no longer native has nothing here to check.
+    const identity = entry.identity;
 
-    if(!proxy) {
+    if(identity.mode !== "native") {
 
       emitStatusUpdate();
 
       return;
     }
 
+    const proxy = identity.nativeProxy;
     const now = Date.now();
     const currentSegmentIndex = proxy.getSegmentIndex();
     const lastSegmentTime = proxy.getLastSegmentTime();
@@ -542,7 +546,7 @@ export function monitorPlaybackHealth(
       return;
     }
 
-    emitNativeStatus(entry, decision.health);
+    emitNativeStatus(entry, identity, decision.health);
   }
 
   /**
@@ -550,9 +554,10 @@ export function monitorPlaybackHealth(
    * fields that are not applicable to native streams.
    *
    * @param entry - The stream registry entry.
+   * @param identity - The stream's native identity, narrowed by the caller so the manifest quality members are read without a second mode test.
    * @param health - The health status to report.
    */
-  function emitNativeStatus(entry: StreamRegistryEntry, health: StreamHealthStatus): void {
+  function emitNativeStatus(entry: StreamRegistryEntry, identity: NativeStreamIdentity, health: StreamHealthStatus): void {
 
     if(intervalCleared) {
 
@@ -572,7 +577,7 @@ export function monitorPlaybackHealth(
     const status: StreamStatus = {
 
       bufferingDuration: null,
-      captureCodec: entry.captureCodec,
+      captureCodec: identity.captureCodec,
       captureResolution: null,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
@@ -580,7 +585,7 @@ export function monitorPlaybackHealth(
       currentTime: 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
       escalationLevel: escalation,
-      hardwareAccelerated: entry.hardwareAccelerated,
+      hardwareAccelerated: isHardwareAccelerated(entry),
       health,
       id: streamInfo.numericStreamId,
       lastIssueTime: nativeHealthState.issueTime,
@@ -588,8 +593,8 @@ export function monitorPlaybackHealth(
       lastRecoveryTime: null,
       logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
       memoryBytes,
-      nativeBandwidth: entry.nativeBandwidth,
-      nativeResolution: entry.nativeResolution,
+      nativeBandwidth: identity.nativeBandwidth,
+      nativeResolution: identity.nativeResolution,
       networkState: 0,
       pageReloadsInWindow: 0,
       readyState: 0,
@@ -598,7 +603,7 @@ export function monitorPlaybackHealth(
       showName: getShowName(streamInfo.numericStreamId),
       sourceResolution: null,
       startTime: streamInfo.startTime.toISOString(),
-      streamingMode: entry.streamingMode,
+      streamingMode: identity.mode,
       url
     };
 
@@ -613,12 +618,16 @@ export function monitorPlaybackHealth(
    */
   async function executeNativeL2Recovery(entry: StreamRegistryEntry): Promise<void> {
 
-    const proxy = entry.nativeProxy;
+    // The narrow is taken fresh here, not inherited from the caller: this runs as a fire-and-forget continuation, and a stream that has since fallen back to
+    // capture has no manifest left to refresh.
+    const identity = entry.identity;
 
-    if(!proxy || proxy.isStopped()) {
+    if((identity.mode !== "native") || identity.nativeProxy.isStopped()) {
 
       return;
     }
+
+    const proxy = identity.nativeProxy;
 
     /* The refresh probes under the identity the tune established, which the entry holds. It is null only for a pending entry whose setup has not filled it in,
      * and a stream with a running native proxy is past that point - so this answers a window that recovery does not reach rather than papering over one.
@@ -633,18 +642,9 @@ export function monitorPlaybackHealth(
       return;
     }
 
-    /* The refresh's page-reload strategy re-establishes the channel through the capability the stream's setup built. A pending entry that never completed
-     * setup has none, and a recovery frame cannot assemble one - the profile closure belongs to the setup path - so the honest response is the same
-     * decline the missing probe identity takes: skip L2 and let the stall escalate on the existing ladder.
-     */
-    const reestablishManifest = entry.reestablishManifest;
-
-    if(!reestablishManifest) {
-
-      LOG.debug("native:monitor", "Skipping L2 recovery for %s: the stream has no re-establishment capability.", entry.info.storeKey);
-
-      return;
-    }
+    // The refresh's page-reload strategy re-establishes the channel through the capability the stream's setup built. Every write that produces a native identity
+    // supplies it, which the type states, so this frame reads it rather than testing for it.
+    const reestablishManifest = identity.reestablishManifest;
 
     recoveryState.inProgress = true;
 
@@ -659,9 +659,7 @@ export function monitorPlaybackHealth(
 
           // The registry write belongs to this layer, not to the native one: recovery already holds the entry, so a refresh that binds a different rung of the
           // service's ladder is recorded here as the stream's current quality.
-          entry.captureCodec = metadata.codec;
-          entry.nativeBandwidth = metadata.bandwidth;
-          entry.nativeResolution = metadata.resolution;
+          applyNativeQualityRefresh(entry, metadata);
         },
         page: currentPage,
         probeIdentity,
@@ -693,6 +691,15 @@ export function monitorPlaybackHealth(
    */
   async function executeNativeL3Fallback(entry: StreamRegistryEntry): Promise<void> {
 
+    // The whole identity this fallback is leaving, held in one local. The narrow is taken fresh here because a narrowing does not cross a call, and the failed
+    // arm restores this same object rather than reconstructing it member by member.
+    const previousIdentity = entry.identity;
+
+    if(previousIdentity.mode !== "native") {
+
+      return;
+    }
+
     if(!canReplaceTab()) {
 
       LOG.warn("Capture fallback not available for %s: %s.", entry.info.storeKey, tabReplacementUnavailableReason());
@@ -704,17 +711,13 @@ export function monitorPlaybackHealth(
     LOG.debug("native:monitor", "Starting L3 fallback (capture mode) for %s.", entry.info.storeKey);
 
     // Stop the native proxy before tab replacement closes the page. The proxy may still be polling and would encounter errors when the page navigates away.
-    if(entry.nativeProxy) {
-
-      entry.nativeProxy.stop();
-      entry.nativeProxy = null;
-    }
+    previousIdentity.nativeProxy.stop();
 
     /* Declare capture mode before the replacement rather than after it. The window-visibility policy reads the registry, and createPageWithCapture syncs the window
      * at the top of establishment - so an entry still marked native there would let the policy minimize the window under a capture that is being acquired. Every
      * outcome below either keeps this or reverts it, so the entry never rests on a mode it is not in.
      */
-    entry.streamingMode = "capture";
+    entry.identity = makePendingCaptureIdentity();
 
     // Use the existing tab replacement infrastructure. It sets recoveryState.inProgress = true internally and clears it in finalizeTabReplacement. It creates a new
     // page with capture, navigates, sets up playback, creates a segmenter, and updates the registry entry (the page and the new capture session, with the segmenter
@@ -763,10 +766,10 @@ export function monitorPlaybackHealth(
     } else {
 
       /* Tab replacement failed but the stream continues un-terminated, so the entry has to go back to describing what it actually is: native mode, with the proxy
-       * already stopped and the breaker one failure short of tripping. Reverting keeps the registry, the monitor's mode branching, and the window-visibility policy
-       * reading the same truth, and the sync that follows lets the window settle now that no capture is being attempted.
+       * already stopped and the breaker one failure short of tripping. Restoring the held identity whole keeps the registry, the monitor's mode branching, and the
+       * window-visibility policy reading the same truth, and the sync that follows lets the window settle now that no capture is being attempted.
        */
-      entry.streamingMode = "native";
+      entry.identity = previousIdentity;
 
       void deps.syncWindowVisibility();
 
@@ -778,7 +781,7 @@ export function monitorPlaybackHealth(
   // a pending discontinuity flag so the next segment boundary includes an #EXT-X-DISCONTINUITY tag. This tells HLS clients to flush their decoder state.
   const markStreamDiscontinuity = (): void => {
 
-    getStream(streamInfo.numericStreamId)?.captureSession?.segmenter?.markDiscontinuity();
+    getStreamSegmenter(getStream(streamInfo.numericStreamId))?.markDiscontinuity();
   };
 
   /**
@@ -822,8 +825,12 @@ export function monitorPlaybackHealth(
     // Get current client counts and type breakdown for this stream.
     const clientSummary = getClientSummary(streamInfo.numericStreamId);
 
-    // The two capture-only sizes are null for a native entry, including one whose native proxy is gone: the entry's mode is the contract, not the builder.
-    const captureStream = (entry?.streamingMode ?? "capture") !== "native";
+    // An entry that is gone projects as the capture defaults, which is the same shape the flat wire carries for a stream whose setup has not filled it in yet.
+    const identity = entry?.identity;
+    const nativeIdentity = (identity?.mode === "native") ? identity : null;
+
+    // The two capture-only sizes are null for a native entry: the entry's mode is the contract, not the builder.
+    const captureStream = identity?.mode !== "native";
     const sourceResolution = (captureStream && lastVideoState && (lastVideoState.videoWidth > 0) && (lastVideoState.videoHeight > 0)) ?
       formatResolution(lastVideoState.videoWidth, lastVideoState.videoHeight) : null;
     const captureResolution = captureStream ? formatResolution(presetViewport.width, presetViewport.height) : null;
@@ -831,7 +838,7 @@ export function monitorPlaybackHealth(
     const status: StreamStatus = {
 
       bufferingDuration: bufferingStartTime ? Math.round((now - bufferingStartTime) / 1000) : null,
-      captureCodec: entry?.captureCodec ?? null,
+      captureCodec: identity?.captureCodec ?? null,
       captureResolution,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
@@ -839,7 +846,7 @@ export function monitorPlaybackHealth(
       currentTime: lastVideoState?.time ?? 0,
       duration: Math.round((now - streamInfo.startTime.getTime()) / 1000),
       escalationLevel: recoveryState.escalationLevel,
-      hardwareAccelerated: entry?.hardwareAccelerated ?? false,
+      hardwareAccelerated: entry ? isHardwareAccelerated(entry) : false,
       health: computeHealthStatus(),
       id: streamInfo.numericStreamId,
       lastIssueTime,
@@ -847,8 +854,8 @@ export function monitorPlaybackHealth(
       lastRecoveryTime: recoveryState.lastRecoveryTime > 0 ? recoveryState.lastRecoveryTime : null,
       logoUrl: channelKey ? (getChannelLogo(channelKey) ?? "") : "",
       memoryBytes,
-      nativeBandwidth: entry?.nativeBandwidth ?? 0,
-      nativeResolution: entry?.nativeResolution ?? null,
+      nativeBandwidth: nativeIdentity?.nativeBandwidth ?? 0,
+      nativeResolution: nativeIdentity?.nativeResolution ?? null,
       networkState: lastVideoState?.networkState ?? 0,
       pageReloadsInWindow: pageReloadTimestamps.length,
       readyState: lastVideoState?.readyState ?? 0,
@@ -857,7 +864,7 @@ export function monitorPlaybackHealth(
       showName: getShowName(streamInfo.numericStreamId),
       sourceResolution,
       startTime: streamInfo.startTime.toISOString(),
-      streamingMode: entry?.streamingMode ?? "capture",
+      streamingMode: identity?.mode ?? "capture",
       url
     };
 
@@ -886,7 +893,7 @@ export function monitorPlaybackHealth(
     segmentState.productionStalled = false;
     segmentState.consecutiveTinySegments = 0;
     segmentState.wasInTinyState = false;
-    segmentState.lastCheckedIndex = getStream(streamInfo.numericStreamId)?.captureSession?.segmenter?.getSegmentIndex() ?? 0;
+    segmentState.lastCheckedIndex = getStreamSegmenter(getStream(streamInfo.numericStreamId))?.getSegmentIndex() ?? 0;
     segmentState.lastSegmentAdvanceTime = Date.now();
   }
 
@@ -1462,7 +1469,7 @@ export function monitorPlaybackHealth(
 
       // Check if segments are flowing by comparing current index to pre-recovery index.
       const entry = getStream(streamInfo.numericStreamId);
-      const currentIndex = entry?.captureSession?.segmenter?.getSegmentIndex() ?? null;
+      const currentIndex = getStreamSegmenter(entry)?.getSegmentIndex() ?? null;
 
       if((currentIndex !== null) && (currentIndex > segmentState.preRecoveryIndex)) {
 
@@ -1481,7 +1488,7 @@ export function monitorPlaybackHealth(
 
     // Continuous segment size monitoring. Runs on every healthy interval to detect spontaneous capture pipeline death.
     const sizeCheckEntry = getStream(streamInfo.numericStreamId);
-    const currentSegmentIndex = sizeCheckEntry?.captureSession?.segmenter?.getSegmentIndex() ?? 0;
+    const currentSegmentIndex = getStreamSegmenter(sizeCheckEntry)?.getSegmentIndex() ?? 0;
 
     if((currentSegmentIndex > segmentState.lastCheckedIndex) && sizeCheckEntry) {
 
@@ -1922,7 +1929,7 @@ export function monitorPlaybackHealth(
 
       const entry = getStream(streamInfo.numericStreamId);
 
-      segmentState.preRecoveryIndex = entry?.captureSession?.segmenter?.getSegmentIndex() ?? null;
+      segmentState.preRecoveryIndex = getStreamSegmenter(entry)?.getSegmentIndex() ?? null;
       segmentState.waitStartTime = null;
       segmentState.productionStalled = false;
     }
@@ -2108,7 +2115,7 @@ export function monitorPlaybackHealth(
      */
     reaffirmTickCounter++;
 
-    if(((reaffirmTickCounter % SURFACE_REAFFIRM_TICK_INTERVAL) === 0) && (getStream(streamInfo.numericStreamId)?.streamingMode !== "native")) {
+    if(((reaffirmTickCounter % SURFACE_REAFFIRM_TICK_INTERVAL) === 0) && (getStream(streamInfo.numericStreamId)?.identity.mode !== "native")) {
 
       void runWithStreamContext(streamContext, async (): Promise<void> => {
 
@@ -2134,7 +2141,7 @@ export function monitorPlaybackHealth(
     // startup because the streaming mode is set after the monitor starts (native streaming is attempted after setupStream returns).
     const nativeEntry = getStream(streamInfo.numericStreamId);
 
-    if(nativeEntry?.streamingMode === "native") {
+    if(nativeEntry?.identity.mode === "native") {
 
       // Re-establish stream context for this interval tick before running the native health check. AsyncLocalStorage context is lost when entering setInterval
       // callbacks, so without this wrapper the native path's non-debug warnings would emit without the stream-ID prefix. This mirrors the capture-mode branch below.
