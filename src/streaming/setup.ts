@@ -3,8 +3,8 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserSupersededError, BrowserUnavailableError, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser, getStream, invalidateBrowser,
-  registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserSupersededError, BrowserUnavailableError, emulateCaptureSurface, getBrowserInstance, getCurrentBrowser, getStream, installCaptureFocusHook,
+  invalidateBrowser, registerManagedPage, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, createCaptureLock } from "./captureLock.ts";
 import type { Clock, FFmpegProcess } from "../utils/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
@@ -37,6 +37,7 @@ import { isChannelSelectionProfile } from "../types/index.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
 import { pipeline } from "node:stream/promises";
+import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { startOverlayHandling } from "../browser/consent.ts";
 
 /* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
@@ -528,7 +529,9 @@ function disposePage(page: Page): void {
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
  * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window.
  * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering pin
- * has to observe it landing there. The remaining browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page
+ * has to observe it landing there. So are the two surface re-affirmation steps - the focus hook installed before acquisition and the re-issue that closes the
+ * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
+ * pipeline it drives. The remaining browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page
  * set, so they need no substitution. This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface CreatePageWithCaptureDeps {
@@ -536,12 +539,14 @@ export interface CreatePageWithCaptureDeps {
   readonly emulateCaptureSurface: typeof emulateCaptureSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly getStream: typeof getStream;
+  readonly installCaptureFocusHook: typeof installCaptureFocusHook;
+  readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { emulateCaptureSurface, getCurrentBrowser, getStream, startOverlayHandling,
-  syncWindowVisibility };
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { emulateCaptureSurface, getCurrentBrowser, getStream, installCaptureFocusHook,
+  reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
 
 /**
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
@@ -600,6 +605,10 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // Inject the shared video selector helper into the browser context. This must happen before navigation so the helper is available when evaluate calls run during
   // initializePlayback (startVideoPlayback, applyVideoStyles, verifyFullscreen, lockVolumeProperties) and subsequent health monitoring (getVideoState).
   await injectVideoSelector(page);
+
+  // Install the tab-activation heal alongside it, before capture is acquired, so the page carries the listener from its first document onward: a user who selects
+  // this tab at any point in its life gets the capture's composition moved back to the emulated surface about a second later.
+  await deps.installCaptureFocusHook(page);
 
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
   // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.
@@ -918,8 +927,15 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     throw error;
   }
 
+  /* Both establishment branches join here, which is why the re-affirmation sits at this point: capture acquisition selects this tab by design (the capture
+   * extension targets the active tab), and a tune of a fullscreen-activating profile selects it again while it drives the Fullscreen API. Re-issuing the page's
+   * own declared metrics is what leaves the capture composing the emulated surface rather than the window's fitted view of it, whatever the establishment did with
+   * the foreground.
+   */
+  await deps.reaffirmCaptureSurface(page);
+
   // Re-settle the window now that the page is established, handing the sync the page it should use for the CDP session. Navigation activates the window on macOS,
-  // so a pass here confirms the presentation the policy asks for rather than whatever the tune left behind.
+  // so a pass here confirms the presentation the policy asks for rather than whatever the tune left behind, and restores the blank tab to the foreground.
   await deps.syncWindowVisibility(page);
 
   LOG.debug("timing:startup", "Page with capture ready. Total: %sms.", captureElapsed());

@@ -9,7 +9,7 @@ import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../strea
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, getStream, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
-import { minimizeWindow, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import type { BrowserLifecycle } from "./browserSupervisor.ts";
 import { CONFIG } from "../config/index.ts";
 import type { GpuCapabilities } from "./display.ts";
@@ -242,8 +242,18 @@ export { endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, st
 // when a launch was abandoned mid-flight by a readiness-loss.
 export { BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
 
-/* The one window-visibility executor for the process lifetime. Its collaborators all live in this module: the registry predicate that says whether capture is
- * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, and a page resolver built on the supervisor.
+/* The blank tab the presentation policy keeps in front of the capture tabs whenever captures run outside login mode. It is held by reference rather than found by
+ * URL, because the pages that would match an about:blank search include ones this application must never front: the capability probe parks its own temporary page
+ * there for the life of the browser, and a user is free to open blank tabs of their own.
+ *
+ * Nothing else caches it, so its whole lifecycle is the re-validation the executor's dependency performs on every pass: a browser relaunch or crash leaves the
+ * reference pointing at a page belonging to a browser that is gone, a user closing the tab leaves it closed, and either reading opens another one. Shutdown never
+ * reaches it, because the executor abandons the pass before the foreground step.
+ */
+let blankUtilityPage: Nullable<Page> = null;
+
+/* The one window-presentation executor for the process lifetime. Its collaborators all live in this module: the registry predicate that says whether capture is
+ * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, the blank tab above, and a page resolver built on the supervisor.
  *
  * The resolver prefers the page its caller handed over, borrows any page the browser already has open when there is none, and creates a temporary page only when
  * the browser has nothing open at all. That order matters on macOS, where creating a page activates the window - the very thing a minimize pass is trying to undo.
@@ -256,6 +266,27 @@ export { BrowserSupersededError, BrowserUnavailableError } from "./browserSuperv
  */
 const windowVisibilitySync = createWindowVisibilitySync({
 
+  ensureForegroundBlank: async (): Promise<void> => {
+
+    const browser = supervisor.current();
+
+    if(!browser?.connected) {
+
+      return;
+    }
+
+    /* The reference is re-validated on every pass rather than trusted: a browser relaunch leaves the tab it created behind with the process that owned it, and
+     * the user is free to close it at any time. Both read as a page this browser cannot front, and both are answered by opening another one.
+     */
+    if(!blankUtilityPage || blankUtilityPage.isClosed() || (blankUtilityPage.browser() !== browser)) {
+
+      // Deliberately created in the foreground and deliberately left unmanaged: fronting it is the entire point, and stale page cleanup judges only the pages
+      // stream setup and discovery create. It carries no URL anything matches on either - the reference is what identifies it.
+      blankUtilityPage = await browser.newPage();
+    }
+
+    await blankUtilityPage.bringToFront();
+  },
   hasActiveCaptureStreams,
   isLoginModeActive,
   isShuttingDown: isGracefulShutdown,
@@ -1029,6 +1060,52 @@ export async function emulateCaptureSurface(page: Page): Promise<{ height: numbe
   LOG.debug("browser:lifecycle", "Emulated the capture surface at %dx%d with a pixel density of %s.", viewport.width, viewport.height, deviceScaleFactor);
 
   return { height: viewport.height, width: viewport.width };
+}
+
+/**
+ * Builds the callback the page's focus binding invokes. The re-issue function is a parameter rather than a direct call so the callback's behavior can be driven on
+ * its own: what it does with the page it was built for, and what it does with a rejection, is the whole of its contract.
+ *
+ * A rejection is swallowed into a debug line because a focus event races page teardown by nature - the tab a user just selected can be the one a terminating
+ * stream is closing - and the periodic re-affirmation corrects anything a lost re-issue leaves behind.
+ * @param page - The capture page this callback re-affirms.
+ * @param reaffirm - The re-issue to invoke.
+ * @returns The callback, which never rejects.
+ */
+export function makeFocusReaffirmCallback(page: Page, reaffirm: (page: Page) => Promise<void>): () => Promise<void> {
+
+  return async (): Promise<void> => {
+
+    try {
+
+      await reaffirm(page);
+    } catch(error) {
+
+      LOG.debug("browser:lifecycle", "Could not re-affirm the capture surface after a tab activation: %s.", formatError(error));
+    }
+  };
+}
+
+/**
+ * Installs the tab-activation heal on a capture page: a window focus listener in the page that re-affirms the capture surface through an exposed binding. Chrome
+ * composes the capture of a selected tab from the window's fitted presentation, so the instant a user selects a capture tab that capture starts recording a
+ * clipped view of itself; the re-issue this fires moves the composition back to the emulated surface about a second later.
+ *
+ * The listener is registered through evaluateOnNewDocument so it survives the page's navigations, exactly as the shared video-selector helper does, and the
+ * binding survives them on Puppeteer's own terms.
+ * @param page - The capture page to install the hook on.
+ */
+export async function installCaptureFocusHook(page: Page): Promise<void> {
+
+  await page.exposeFunction("__prismcastReaffirmSurface", makeFocusReaffirmCallback(page, reaffirmCaptureSurface));
+
+  await page.evaluateOnNewDocument((): void => {
+
+    window.addEventListener("focus", (): void => {
+
+      void window.__prismcastReaffirmSurface?.();
+    });
+  });
 }
 
 /**

@@ -38,6 +38,9 @@ let stubBrowser: Browser;
 let overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 let pageEvents: string[] = [];
 
+// The options each newPage call received, in call order, so the guarded session's tests can pin how the guide page is created rather than only what is done to it.
+let newPageOptions: unknown[] = [];
+
 // The lineup writes the discovery-outcome recorder issues, captured by the injected persistProviderLineup below so the port tests can assert what a completed walk
 // hands the store without touching a real file.
 const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
@@ -921,10 +924,20 @@ describe("withProviderGuidePage", () => {
 
   beforeEach(() => {
 
+    newPageOptions = [];
     overlayHandlingCalls = [];
     pageEvents = [];
     windowSyncCalls = 0;
-    stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
+
+    stubBrowser = {
+
+      newPage: async (options?: unknown): Promise<Page> => {
+
+        newPageOptions.push(options);
+
+        return makeStubPage();
+      }
+    } as unknown as Browser;
 
     clearLoginState();
     mock.timers.enable({ apis: ["setTimeout"] });
@@ -982,6 +995,19 @@ describe("withProviderGuidePage", () => {
     assert.ok(pageEvents.indexOf("mute") < pageEvents.indexOf("goto"), "the mute override installs before navigation");
     assert.ok(pageEvents.indexOf("poll:discovery") < pageEvents.indexOf("goto"), "the discovery poll launches before navigation");
     assert.equal(signalAbortedInAfterWalk, true, "the overlay poll is aborted before afterWalk classifies the page");
+  });
+
+  test("opens the guide page in the background", async () => {
+
+    /* A guide walk never needs its tab selected, and the tab it would otherwise take the foreground from is either the blank tab that keeps running captures
+     * composing their emulated surface or a login page the user is working in. The recorded creation options are the pin: dropping the option opens the page in
+     * front and this row reads the bare undefined a plain creation leaves behind.
+     */
+    const provider = guideProvider(false, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    await withProviderGuidePage(provider, {}, deps);
+
+    assert.deepEqual(newPageOptions, [{ background: true }], "the guide page is created behind whatever the window is already showing");
   });
 
   test("launches the discovery poll for a handlesOwnNavigation provider without a caller-driven navigation", async () => {

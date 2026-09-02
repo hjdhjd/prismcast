@@ -75,6 +75,8 @@ const deps: CreatePageWithCaptureDeps = {
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
   getStream: async (): Promise<PuppeteerStream> => new Readable({ read: (): void => { /* Nothing is ever read from the stub capture. */ } }) as PuppeteerStream,
+  installCaptureFocusHook: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
+  reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };

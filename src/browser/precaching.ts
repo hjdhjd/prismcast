@@ -419,7 +419,10 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
 
   const { afterWalk, signal } = options;
   const browser = await deps.getCurrentBrowser();
-  const page = await browser.newPage();
+
+  // The guide page opens behind whatever the window is already showing. A walk never needs its tab selected, while the tab it would otherwise take the foreground
+  // from is either the blank tab that keeps running captures composing their emulated surface or a login page the user is working in.
+  const page = await browser.newPage({ background: true });
 
   // Close the page the moment the caller aborts, so any in-progress Puppeteer operation throws and propagates the cancellation through discoverChannels without each
   // provider having to poll the signal. The helper owns this mechanism because it owns page creation - no caller ever holds the page reference, so close-on-abort
@@ -512,8 +515,8 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       // Page may already be closed if the browser disconnected during discovery or the abort handler already closed it.
     }
 
-    // Settle the browser window against the policy. Opening the temporary discovery page may have restored the window on macOS. The call is unconditional
-    // because the policy already accounts for a login session or a running capture holding the window on screen.
+    // Settle the browser window against the policy now that the discovery page is gone. A walk runs for long enough to span a state change - the last capture
+    // ending while it worked - and the call is unconditional because the policy already accounts for a login session or a running capture.
     await deps.syncWindowVisibility();
   }
 }

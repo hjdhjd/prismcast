@@ -1,10 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * setup.staticCapture.test.ts: Unit tests pinning two contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
- * profiles and only for those, and that it brings the browser window on screen and emulates the capture surface before it acquires capture. createPageWithCapture
+ * profiles and only for those, and that it brings the browser window on screen, emulates the capture surface, and installs the activation heal before it acquires
+ * capture, re-affirming that surface once acquisition has selected the tab. createPageWithCapture
  * composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome launch), a PassThrough
- * capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, and a recording surface emulation, while the real pipeline runs
- * everything else. The stub page is shaped so the static
+ * capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, a recording surface emulation, and recording surface re-affirmation
+ * steps, while the real pipeline runs everything else. The stub page is shaped so the static
  * branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here), and createCaptureSession merely wraps the injected PassThrough. Native
  * capture mode skips the FFmpeg path and skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as
  * the only pipeline the call exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage) run real: they mutate an in-process page set, so
@@ -39,6 +40,10 @@ let syncPages: (Page | undefined)[] = [];
 // capture rather than on some other page.
 let surfacePages: Page[] = [];
 
+// The page each activation-hook install and each surface re-affirmation received, in call order, so the pin can check both landed on the establishment's own page.
+let focusHookPages: Page[] = [];
+let reaffirmPages: Page[] = [];
+
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
  * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
  * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder);
@@ -61,10 +66,10 @@ function makeStubPage(): Page {
 
 /* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome), getStream
  * yields a real PassThrough so the real createCaptureSession has a stream to own (no puppeteer-stream), startOverlayHandling records each poll's phase and abort
- * signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, and emulateCaptureSurface records the density step and
- * answers with a fixed surface so the capture constraints it feeds stay total. createPageWithCapture defaults every one of these to the real functions;
- * substituting them here is what keeps the call off a live browser, and recording getStream alongside the sync and the surface is what makes their order
- * observable.
+ * signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the density step and
+ * answers with a fixed surface so the capture constraints it feeds stay total, and installCaptureFocusHook and reaffirmCaptureSurface record the two
+ * surface-re-affirmation steps in place of page injection and raw CDP. createPageWithCapture defaults every one of these to the real functions; substituting them
+ * here is what keeps the call off a live browser, and recording getStream alongside the rest is what makes their order observable.
  */
 const deps: CreatePageWithCaptureDeps = {
 
@@ -85,6 +90,16 @@ const deps: CreatePageWithCaptureDeps = {
 
     return Object.assign(new PassThrough(), { stop: (): Promise<void> => Promise.resolve() });
   },
+  installCaptureFocusHook: async (page: Page): Promise<void> => {
+
+    depsCalls.push("installCaptureFocusHook");
+    focusHookPages.push(page);
+  },
+  reaffirmCaptureSurface: async (page: Page): Promise<void> => {
+
+    depsCalls.push("reaffirmCaptureSurface");
+    reaffirmPages.push(page);
+  },
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); },
   syncWindowVisibility: async (page?: Page): Promise<void> => {
 
@@ -102,8 +117,10 @@ before(() => {
 beforeEach(() => {
 
   depsCalls = [];
+  focusHookPages = [];
   overlayCalls = [];
   pageGotos = [];
+  reaffirmPages = [];
   surfacePages = [];
   syncPages = [];
 });
@@ -158,6 +175,11 @@ describe("createPageWithCapture - window visibility ordering", () => {
      * carry the preset's dimensions and the display's density before capture acquires it, or the track is acquired against a surface nobody declared. The recorded
      * call order is the pin: moving either step below capture acquisition reorders these entries and fails here. The closing entry is the pass that ends the
      * establishment, which carries the page it just built so the executor can use that tab's CDP session rather than hunting for an open page.
+     *
+     * The two re-affirmation steps bracket capture acquisition for a reason of their own. Acquisition selects the capture's tab - the capture extension targets
+     * whichever tab is active - so the composition it starts from is the window's fitted view of the page; the re-issue that follows moves it to the emulated
+     * surface. The activation heal is installed before all of that, so the page carries its focus listener from its first document onward. The static branch this
+     * test drives reaches both, which is what makes the pin honest here.
      */
     const profile = makeProfile({ staticCapture: true });
 
@@ -167,10 +189,14 @@ describe("createPageWithCapture - window visibility ordering", () => {
     // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
     result.captureSession.dispose();
 
-    assert.deepEqual(depsCalls, [ "syncWindowVisibility", "emulateCaptureSurface", "getStream", "syncWindowVisibility" ],
-      "the window sync leads the establishment and closes it, with the surface emulated and capture acquired in between");
+    assert.deepEqual(depsCalls,
+      [ "syncWindowVisibility", "emulateCaptureSurface", "installCaptureFocusHook", "getStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
+      "the window sync leads the establishment and closes it, with the surface emulated, the activation heal installed, capture acquired, and the surface " +
+      "re-affirmed in between");
     assert.equal(syncPages[0], undefined, "the leading pass has no page yet - it runs before the capture page exists");
     assert.equal(syncPages[1], result.page, "the closing pass receives the page the establishment built");
     assert.equal(surfacePages[0], result.page, "the surface is emulated on the very page the establishment captured and handed back");
+    assert.equal(focusHookPages[0], result.page, "the activation heal is installed on that same page");
+    assert.equal(reaffirmPages[0], result.page, "the closing re-affirmation is issued against that same page");
   });
 });

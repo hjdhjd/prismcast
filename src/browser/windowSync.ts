@@ -1,17 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * windowSync.ts: The shared browser window's visibility policy and its serialized executor.
+ * windowSync.ts: The shared browser window's presentation policy and its serialized executor.
  *
  * Chrome's tab capture consumes the compositor's output for the shared browser window, so that output has to be composed for a window the desktop is actually
  * presenting. A minimized window composes differently, and capture reads the difference as corrupted frames: stale bands, offset video, cropped lower thirds. The
  * window therefore stays visible for as long as any capture stream is alive, and returns to minimized once none are - which is also what login mode needs, for the
  * unrelated reason that a human has to interact with the window.
  *
- * The policy is one pure function over two inputs, and every caller reaches it through one serialized executor. That shape is deliberate: window presentation is a
- * single shared resource driven from at least eight places (startup, establishment, teardown, recovery, precaching, login, restart, native upgrade), and gating each
- * of those call sites individually is what let a stale decision land after a fresh one. Here a decision cannot be older than the command that carries it, because
- * both inputs are read inside the serialized loop immediately before each CDP command. The asymmetric latencies of the two primitives - the minimize path waits for
- * the window manager to settle, the un-minimize path does not - stop mattering for the same reason.
+ * Which tab that window is showing matters for the same reason. Chrome composes the capture of a SELECTED tab from the window's fitted presentation rather than from
+ * the emulated surface, so a capture tab left in front records a clipped view of itself; a blank tab in front leaves every capture composing the surface it was
+ * emulated at. That makes presentation two decisions rather than one - how the window is shown, and what it is showing - taken from the same pair of inputs.
+ *
+ * Each decision is a pure function over those two inputs, and every caller reaches them through one serialized executor. That shape is deliberate: window
+ * presentation is a single shared resource driven from at least eight places (startup, establishment, teardown, recovery, precaching, login, restart, native
+ * upgrade), and gating each of those call sites individually is what let a stale decision land after a fresh one. Here a decision cannot be older than the command
+ * that carries it, because both inputs are read once inside the serialized loop, immediately before the commands that act on them. The asymmetric latencies of the
+ * two window primitives - the minimize path waits for the window manager to settle, the un-minimize path does not - stop mattering for the same reason.
  *
  * There is no timer and no polling. Triggers are events: a stream registers, a stream unregisters, a mode flips, login starts or ends. Convergence comes from the
  * drain loop, which keeps passing until no request is outstanding.
@@ -34,6 +38,11 @@ export type WindowVisibility = "minimized" | "normal";
  * The collaborators the executor composes on. Every member is injected so the executor can be driven with fakes at its own boundary, with no browser in the process.
  */
 export interface WindowSyncDeps {
+
+  /* Brings the owned blank utility tab to the front of the window, creating or re-creating it when the reference it keeps is gone. Ownership of that tab lives
+   * with whoever supplies these dependencies; the executor only asks for it to be in front.
+   */
+  readonly ensureForegroundBlank: () => Promise<void>;
 
   // Reports whether any stream is currently in capture mode. Read fresh on every pass.
   readonly hasActiveCaptureStreams: () => boolean;
@@ -72,6 +81,21 @@ export interface WindowSyncDeps {
 export function decideWindowVisibility(options: { captureActive: boolean; loginActive: boolean }): WindowVisibility {
 
   return (options.captureActive || options.loginActive) ? "normal" : "minimized";
+}
+
+/**
+ * Decides whether the window should be showing its blank utility tab. Chrome composes the capture of a selected tab from the window's fitted presentation rather
+ * than from the emulated surface, so a capture tab that is left selected records a clipped view of itself...keeping a blank tab in front is what leaves every
+ * capture composing the surface it was emulated at. Login wins over that, because a user authenticating needs to see and click the page they are working in, and
+ * an idle window needs nothing: with no capture running there is no composition to protect.
+ * @param options - The two live inputs the decision reads.
+ * @param options.captureActive - Whether any capture stream is active.
+ * @param options.loginActive - Whether a user is authenticating in the window.
+ * @returns True when the blank tab belongs in front.
+ */
+export function decideForegroundBlank(options: { captureActive: boolean; loginActive: boolean }): boolean {
+
+  return options.captureActive && !options.loginActive;
 }
 
 /**
@@ -135,9 +159,13 @@ export function createWindowVisibilitySync(deps: WindowSyncDeps): (page?: Page) 
           continue;
         }
 
-        // Both inputs are read here, immediately before the command that acts on them. Serialization does the rest: with one pass in flight at a time, no staler
-        // decision can be waiting behind this one to land after it.
-        const visibility = decideWindowVisibility({ captureActive: deps.hasActiveCaptureStreams(), loginActive: deps.isLoginModeActive() });
+        /* Both inputs are read here, immediately before the commands that act on them, and both presentation decisions are taken from those same two locals.
+         * Serialization does the rest: with one pass in flight at a time, no staler decision can be waiting behind this one to land after it, and the foreground
+         * step below cannot act on a different reading of the world than the visibility step it follows.
+         */
+        const captureActive = deps.hasActiveCaptureStreams();
+        const loginActive = deps.isLoginModeActive();
+        const visibility = decideWindowVisibility({ captureActive, loginActive });
 
         if(visibility === "normal") {
 
@@ -145,6 +173,13 @@ export function createWindowVisibilitySync(deps: WindowSyncDeps): (page?: Page) 
         } else {
 
           await deps.minimize(resolution.page);
+        }
+
+        // The blank tab is fronted after the window is presented, not before: fronting a tab in a minimized window settles nothing, and the window command is the
+        // one every pass owes its caller.
+        if(decideForegroundBlank({ captureActive, loginActive })) {
+
+          await deps.ensureForegroundBlank();
         }
 
         /* A page that died under the command took the command with it - the CDP layer swallows anything issued into a detaching target, and a terminating stream

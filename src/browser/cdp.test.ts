@@ -1,14 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
- * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), and unminimizeWindow (the inverse
- * one-shot that restores it). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's
- * dimensions never enter the picture because these primitives drive presentation state alone. Which state the window should be in is decided in windowSync.ts and
- * pinned there; these tests cover only the command each primitive issues.
+ * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), unminimizeWindow (the inverse
+ * one-shot that restores it), and reaffirmCaptureSurface (the raw re-issue of a capture page's declared device metrics). The tests use plain stub objects shaped
+ * per the Page and CDPSession contracts - no real browser is launched, and the window's dimensions never enter the picture because the two window primitives drive
+ * presentation state alone. Which state the window should be in is decided in windowSync.ts and pinned there; these tests cover only the command each primitive
+ * issues.
  */
 import type { CDPSession, Page } from "puppeteer-core";
 import { describe, test } from "node:test";
-import { minimizeWindow, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 
 /* CdpStub captures every send() call so tests can assert on the command sequence. The send() implementation routes by method name to either the test-supplied
@@ -311,5 +313,139 @@ describe("unminimizeWindow", () => {
 
     await assert.doesNotReject(() => unminimizeWindow(makePageStub({ cdpStub })),
       "unminimizeWindow should swallow CDP errors");
+  });
+});
+
+/* A page double for the re-affirmation, which reads the page's own viewport record rather than any window state. It reports whatever viewport a row hands it,
+ * records the session it created so the row can read back what was sent and whether the session was released, and can be told to reject either the send or the
+ * detach.
+ */
+interface ReaffirmPageStub {
+
+  detachCalls: number;
+  page: Page;
+  sends: { method: string; params: unknown }[];
+}
+
+/**
+ * Builds the re-affirmation page double.
+ * @param options - The viewport the page reports and the failures to simulate.
+ * @param options.detachError - The error the session's detach rejects with, when the row wants a failing release.
+ * @param options.sendError - The error the session's send rejects with, when the row wants a failing command.
+ * @param options.viewport - The viewport record page.viewport() answers with. Null models a page carrying no emulation at all.
+ * @returns The double plus the recordings a row asserts against.
+ */
+function makeReaffirmPageStub(options: { detachError?: Error; sendError?: Error;
+  viewport?: Nullable<{ deviceScaleFactor?: number; height: number; width: number }>; } = {}): ReaffirmPageStub {
+
+  /* Deliberately not a preset size. No quality preset is 1400x788, so a row's expected values can only be produced by an implementation that reads the page's own
+   * viewport record - one that reached for the configured preset instead would send a preset's dimensions and fail here.
+   */
+  const viewport = (options.viewport === undefined) ? { deviceScaleFactor: 2, height: 788, width: 1400 } : options.viewport;
+
+  const stub: ReaffirmPageStub = {
+
+    detachCalls: 0,
+    page: null as unknown as Page,
+    sends: []
+  };
+
+  stub.page = {
+
+    createCDPSession: async (): Promise<CDPSession> => ({
+
+      detach: async (): Promise<void> => {
+
+        stub.detachCalls++;
+
+        if(options.detachError) {
+
+          throw options.detachError;
+        }
+      },
+      send: async (method: string, params?: unknown): Promise<unknown> => {
+
+        stub.sends.push({ method, params });
+
+        if(options.sendError) {
+
+          throw options.sendError;
+        }
+
+        return undefined;
+      }
+    } as unknown as CDPSession),
+    isClosed: (): boolean => false,
+    viewport: (): Nullable<{ deviceScaleFactor?: number; height: number; width: number }> => viewport
+  } as unknown as Page;
+
+  return stub;
+}
+
+describe("reaffirmCaptureSurface", () => {
+
+  test("re-issues the page's own declared metrics once and releases the session", async () => {
+
+    /* The command carries exactly what the page's viewport record holds, plus the non-mobile flag Chrome's own emulation manager sends. Reading the record rather
+     * than the configured preset is the whole point: the two agree in production and would diverge silently the moment a preset changed mid-stream.
+     */
+    const stub = makeReaffirmPageStub();
+
+    await reaffirmCaptureSurface(stub.page);
+
+    assert.equal(stub.sends.length, 1, "exactly one command was sent");
+    assert.equal(stub.sends[0]?.method, "Emulation.setDeviceMetricsOverride", "the override command is what re-selects the composition target");
+    assert.deepEqual(stub.sends[0].params, { deviceScaleFactor: 2, height: 788, mobile: false, width: 1400 },
+      "the page's own declared dimensions and density are what get re-issued");
+    assert.equal(stub.detachCalls, 1, "the session is released once the command has been sent");
+  });
+
+  test("sends nothing for a page whose declared density is not positive", async () => {
+
+    // The launch default declares a density of zero, which is Chrome's marker for native scaling. Such a page is not a capture page, and the guard is what makes
+    // this function safe to fire at any page from any trigger.
+    const stub = makeReaffirmPageStub({ viewport: { deviceScaleFactor: 0, height: 1080, width: 1920 } });
+
+    await reaffirmCaptureSurface(stub.page);
+
+    assert.deepEqual(stub.sends, [], "no command is issued against a page carrying no explicit density");
+    assert.equal(stub.detachCalls, 0, "no session was created to release");
+  });
+
+  test("sends nothing for a page carrying no viewport at all", async () => {
+
+    // The login page clears its emulation outright, leaving a null record. The object itself has to be narrowed, not only the density it would carry.
+    const stub = makeReaffirmPageStub({ viewport: null });
+
+    await reaffirmCaptureSurface(stub.page);
+
+    assert.deepEqual(stub.sends, [], "no command is issued against an un-emulated page");
+    assert.equal(stub.detachCalls, 0, "no session was created to release");
+  });
+
+  test("propagates a failing command to the caller and still releases the session", async () => {
+
+    // Establishment's own re-affirmation runs on a resource stack that unwinds on any throw, so the failure has to reach it rather than being swallowed here.
+    const sendError = new Error("synthetic override rejection");
+    const stub = makeReaffirmPageStub({ sendError });
+
+    await assert.rejects(() => reaffirmCaptureSurface(stub.page), (error: unknown) => error === sendError,
+      "the send's own rejection reaches the caller");
+
+    assert.equal(stub.detachCalls, 1, "the session is released even when the command failed");
+  });
+
+  test("keeps the command's own rejection when the release fails too", async () => {
+
+    /* A page dying mid-command takes its session with it, so the release can fail for the same reason the command did. The reason the caller receives has to stay
+     * the command's: a release failure raised out of the cleanup would replace a diagnosable error with one nobody can act on.
+     */
+    const sendError = new Error("synthetic override rejection");
+    const stub = makeReaffirmPageStub({ detachError: new Error("synthetic detach rejection"), sendError });
+
+    await assert.rejects(() => reaffirmCaptureSurface(stub.page), (error: unknown) => error === sendError,
+      "the caller sees the command's reason, not the release's");
+
+    assert.equal(stub.detachCalls, 1, "the release was still attempted");
   });
 });

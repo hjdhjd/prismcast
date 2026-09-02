@@ -13,6 +13,7 @@
  *   - getUndersizedDisplayBounds (the pure decision the display advisory composes)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
+ *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
  *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
@@ -22,8 +23,8 @@
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance,
-  getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, registerManagedPage, seedProfilePreferences,
-  setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+  getChromeVersion, getExecutablePath, getUndersizedDisplayBounds, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback, registerManagedPage,
+  seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
@@ -653,6 +654,37 @@ describe("emulateCaptureSurface", () => {
 
       CONFIG.streaming.qualityPreset = originalPreset;
     }
+  });
+});
+
+describe("makeFocusReaffirmCallback", () => {
+
+  test("re-issues against the page it was built for, once per invocation", async () => {
+
+    /* The callback is what the page's focus binding calls, so the page it carries is the only thing that says which capture is being healed. A callback that
+     * ignored its page would re-issue against whatever page the caller happened to have, which on a multi-stream browser is somebody else's capture.
+     */
+    const page = {} as unknown as Page;
+    const reaffirmed: Page[] = [];
+
+    const callback = makeFocusReaffirmCallback(page, async (target: Page): Promise<void> => { reaffirmed.push(target); });
+
+    await callback();
+    await callback();
+
+    // Identity, not shape: page doubles are bare objects, so a structural comparison would accept any other page just as readily as this one.
+    assert.equal(reaffirmed.length, 2, "one re-issue per invocation");
+    assert.equal(reaffirmed[0], page, "the first invocation re-issued against the callback's own page");
+    assert.equal(reaffirmed[1], page, "so did the second");
+  });
+
+  test("swallows a failing re-issue", async () => {
+
+    // A focus event races page teardown by nature - the tab a user selects can be the one a terminating stream is closing - and the page-side caller has nowhere
+    // to put a rejection. The periodic re-affirmation is what covers anything lost here.
+    const callback = makeFocusReaffirmCallback({} as unknown as Page, async (): Promise<void> => { throw new Error("synthetic re-issue rejection"); });
+
+    await assert.doesNotReject(() => callback(), "the callback resolves rather than rejecting into the page's focus handler");
   });
 });
 

@@ -24,6 +24,7 @@ import { getClientSummary } from "./clients.ts";
 import { getPresetViewport } from "../config/presets.ts";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
+import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { refreshNativeManifest } from "../native/index.ts";
 import { syncWindowVisibility } from "../browser/index.ts";
 
@@ -188,6 +189,14 @@ export function monitorPlaybackHealth(
   // The current page reference. This can change after tab replacement recovery, when the old tab is closed and a new one is created. We use a mutable variable so we
   // can update the reference after replacement.
   let currentPage = page;
+
+  /* How many ticks pass between capture-surface re-affirmations, and the count of ticks since this stream's monitor started. Thirty ticks is about a minute at the
+   * default cadence, which is the resolution the catch-all is aiming for: fast enough that no disturbance survives long in a recording, slow enough that the
+   * command costs nothing measurable next to the health reads the same tick performs.
+   */
+  const SURFACE_REAFFIRM_TICK_INTERVAL = 30;
+
+  let reaffirmTickCounter = 0;
 
   // The video's currentTime from the previous check. Used to detect whether the video is progressing. Null on first check since we have no previous value.
   let lastTime: Nullable<number> = null;
@@ -2014,6 +2023,29 @@ export function monitorPlaybackHealth(
       stopMonitoring();
 
       return;
+    }
+
+    /* The catch-all for capture composition, on the one path every live capture stream's tick passes through - static captures included, which is why it precedes
+     * the static-capture return below. Chrome composes the capture of a selected tab from the window's fitted presentation, and re-issuing the page's own declared
+     * metrics moves the composition back to the emulated surface; firing it on a cadence means any disturbance, from any cause known or unknown, is corrected
+     * within about a minute rather than lasting for the recording. The registry is read again here rather than reusing the native check below, which sits on the
+     * far side of that return. The command rides currentPage, the reference tab replacement updates, and the stream context is re-established because an interval
+     * callback does not inherit it - so a rejection logs under this stream's own prefix.
+     */
+    reaffirmTickCounter++;
+
+    if(((reaffirmTickCounter % SURFACE_REAFFIRM_TICK_INTERVAL) === 0) && (getStream(streamInfo.numericStreamId)?.streamingMode !== "native")) {
+
+      void runWithStreamContext(streamContext, async (): Promise<void> => {
+
+        try {
+
+          await reaffirmCaptureSurface(currentPage);
+        } catch(error) {
+
+          LOG.debug("browser:lifecycle", "Could not re-affirm the capture surface: %s.", formatError(error));
+        }
+      });
     }
 
     // For static capture profiles (e.g., staticPage), there is no video element to monitor. Skip all video health checks and just emit a status update.
