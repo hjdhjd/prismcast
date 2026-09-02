@@ -240,11 +240,21 @@ export async function checkForUpdates(currentVersion: string, force = false): Pr
 }
 
 /**
+ * The update state for a running version: the newest release the update check has recorded, and whether that release is ahead of what is running. latestVersion
+ * is null until a check completes successfully, so consumers read the availability flag alongside the version rather than inferring one from the other.
+ */
+export interface VersionInfo {
+
+  latestVersion: Nullable<string>;
+  updateAvailable: boolean;
+}
+
+/**
  * Gets the cached latest version information.
  * @param currentVersion - The currently running version.
  * @returns Object with latest version and whether an update is available.
  */
-export function getVersionInfo(currentVersion: string): { latestVersion: Nullable<string>; updateAvailable: boolean } {
+export function getVersionInfo(currentVersion: string): VersionInfo {
 
   const current = normalizeVersion(currentVersion);
   const latest = cachedLatestVersion;

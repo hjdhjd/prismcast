@@ -1,18 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the landing page route handler. The module exports a single setup function (setupRootEndpoint) that registers three Express
- * routes plus internal HTML generators for the page header, version display, and changelog modal. We attach the setup to a real Express app on an OS-assigned
- * port and exercise the routes via HTTP, then assert the rendered HTML body and the JSON envelopes returned by the version endpoints have the expected shape.
+ * index.test.ts: Unit tests for the landing page route handler. The module exports setupRootEndpoint, which registers three Express routes plus internal HTML
+ * generators for the page header, version display, and changelog modal, and renderVersionHtml, the pure renderer behind the version display. We attach the setup
+ * to a real Express app on an OS-assigned port and exercise the routes via HTTP, then assert the rendered HTML body and the JSON envelopes returned by the version
+ * endpoints have the expected shape. The renderer is exercised directly, since only a pure call can supply the crafted version strings the network path never
+ * produces.
  */
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { renderVersionHtml, setupRootEndpoint } from "./index.ts";
 import { ACTIONS } from "../clientActions.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../../testing.helpers.ts";
 import express from "express";
 import { initializeDataDir } from "../../config/paths.ts";
-import { setupRootEndpoint } from "./index.ts";
 import { tmpdir } from "node:os";
 
 // makeServer spins up an Express app on an OS-assigned port and registers the root endpoints.
@@ -343,5 +345,63 @@ describe("setupRootEndpoint", () => {
     assert.deepEqual(Array.from(offenders).sort(), [],
       "every modifier/action attribute must use a supported event type (click/change/keydown/submit); offenders: " +
       JSON.stringify(Array.from(offenders).sort()));
+  });
+});
+
+describe("renderVersionHtml", () => {
+
+  // A version string carrying markup is the whole point of the renderer being pure: the latest version arrives from the npm registry, and a registry response
+  // that carried this payload would inject it straight into the page header if the renderer trusted the string. The network path never has to produce it for
+  // the escaping to be worth asserting.
+  const HOSTILE_VERSION = "1.2.3<img src=x onerror=1>";
+
+  test("escapes the current version on the no-update branch", () => {
+
+    const html = renderVersionHtml(HOSTILE_VERSION, { latestVersion: null, updateAvailable: false });
+
+    assert.match(html, /&lt;img src=x onerror=1&gt;/, "the markup in the current version must be entity-encoded");
+    assert.doesNotMatch(html, /<img/, "no raw tag may reach the rendered markup");
+  });
+
+  test("escapes both the current version and the latest version on the update branch", () => {
+
+    const html = renderVersionHtml(HOSTILE_VERSION, { latestVersion: HOSTILE_VERSION, updateAvailable: true });
+
+    // Both interpolation sites sit inside the same anchor, so a single unescaped one is enough to break out of the text node. We count the encoded form to
+    // confirm both were escaped rather than just the first.
+    assert.equal((html.match(/&lt;img src=x onerror=1&gt;/g) ?? []).length, 2, "both version strings must be entity-encoded");
+    assert.doesNotMatch(html, /<img/, "no raw tag may reach the rendered markup");
+  });
+
+  test("renders the update anchor with both versions when an update is available", () => {
+
+    // Ordinary semantic versions contain no reserved characters, so escaping is the identity function on them and the markup is exactly what the page header
+    // renders. This is the parity half of the escaping rows: escaping must not alter the shape of the normal case.
+    const html = renderVersionHtml("1.0.0", { latestVersion: "1.1.0", updateAvailable: true });
+
+    assert.match(html, /<span class="version-container">/, "the update branch renders the plain container");
+    assert.match(html, /class="version version-update"/, "the update branch carries the version-update class");
+    assert.match(html, /v1\.0\.0 &rarr; v1\.1\.0/, "both versions render with the arrow separator");
+    assert.match(html, /class="version-check"/, "the refresh button renders on the update branch");
+  });
+
+  test("renders the current-version anchor and no arrow when no update is available", () => {
+
+    const html = renderVersionHtml("1.0.0", { latestVersion: null, updateAvailable: false });
+
+    assert.match(html, /<span class="version-container" id="version-display">/, "the no-update branch renders the identified container");
+    assert.match(html, />v1\.0\.0<\/a>/, "the running version renders as the anchor text");
+    assert.doesNotMatch(html, /&rarr;/, "no arrow separator without an update");
+    assert.doesNotMatch(html, /version-update/, "no update class without an update");
+  });
+
+  test("renders the no-update branch when updateAvailable is true but no latest version was recorded", () => {
+
+    // Boundary: the branch reads the flag and the version together, so a truthy flag with a null version falls through to the current-version form rather than
+    // rendering an anchor that ends in "v null".
+    const html = renderVersionHtml("1.0.0", { latestVersion: null, updateAvailable: true });
+
+    assert.match(html, /id="version-display"/, "a missing latest version falls through to the no-update branch");
+    assert.doesNotMatch(html, /&rarr;/, "no arrow separator without a latest version");
   });
 });

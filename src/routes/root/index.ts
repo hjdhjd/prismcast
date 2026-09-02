@@ -3,12 +3,13 @@
  * index.ts: Landing page route for PrismCast.
  */
 import type { Express, Request, Response } from "express";
-import { checkForUpdates, getChangelogItems, getPackageVersion, getVersionInfo } from "../../utils/index.ts";
+import { checkForUpdates, escapeHtml, getChangelogItems, getPackageVersion, getVersionInfo } from "../../utils/index.ts";
 import { generateApiReferenceContent, generateChannelsTabContent, generateConfigContent, generateHelpContent, generateLogsContent,
   generateOverviewContent } from "./content.ts";
 import { generateBaseStyles, generatePageWrapper, generateTabButton, generateTabPanel, generateTabScript, generateTabStyles } from "../ui.ts";
 import { generateChannelsSubtabScript, generateConfigSubtabScript, generateSharedUtilitiesScript, generateStatusScript } from "./scripts/index.ts";
 import { ACTIONS } from "../clientActions.ts";
+import type { VersionInfo } from "../../utils/index.ts";
 import { generateLandingPageStyles } from "./styles.ts";
 import { resolveBaseUrl } from "../playlist.ts";
 import { sendSuccess } from "../config/http/envelope.ts";
@@ -43,13 +44,14 @@ function generateHeaderStatusHtml(): string {
 }
 
 /**
- * Generates the version display HTML with update indicator if available.
+ * Renders the version display markup for a supplied version pair. Both version strings reach the page through escapeHtml, since the latest version arrives from
+ * the npm registry over the network and is untrusted at every consumer. The renderer is pure - it reads nothing from the environment - so a test can hand it a
+ * crafted latest-version string that the network path would never have to produce and assert the escaping directly.
+ * @param currentVersion - The running version.
+ * @param versionInfo - The recorded update state to render against.
  * @returns HTML content for the version display.
  */
-function generateVersionHtml(): string {
-
-  const currentVersion = getPackageVersion();
-  const versionInfo = getVersionInfo(currentVersion);
+export function renderVersionHtml(currentVersion: string, versionInfo: VersionInfo): string {
 
   // Refresh icon for manual update check (using Unicode refresh symbol).
   const refreshIcon = "<button type=\"button\" class=\"version-check\" data-click-action=\"" + ACTIONS.checkForUpdates + "\"" +
@@ -61,7 +63,7 @@ function generateVersionHtml(): string {
     // event.preventDefault() before the handler runs, so the href="#" anchor target does not get navigated to.
     return "<span class=\"version-container\">" +
       "<a href=\"#\" class=\"version version-update\" data-click-action=\"" + ACTIONS.openChangelogModal + "\" data-click-prevent-default>" +
-      "v" + currentVersion + " &rarr; v" + versionInfo.latestVersion +
+      "v" + escapeHtml(currentVersion) + " &rarr; v" + escapeHtml(versionInfo.latestVersion) +
       "</a>" +
       refreshIcon +
       "</span>";
@@ -69,9 +71,20 @@ function generateVersionHtml(): string {
 
   // No update - show current version (clickable to view changelog) with refresh icon.
   return "<span class=\"version-container\" id=\"version-display\">" +
-    "<a href=\"#\" class=\"version\" data-click-action=\"" + ACTIONS.openChangelogModal + "\" data-click-prevent-default>v" + currentVersion + "</a>" +
+    "<a href=\"#\" class=\"version\" data-click-action=\"" + ACTIONS.openChangelogModal + "\" data-click-prevent-default>v" + escapeHtml(currentVersion) + "</a>" +
     refreshIcon +
     "</span>";
+}
+
+/**
+ * Generates the version display HTML with update indicator if available.
+ * @returns HTML content for the version display.
+ */
+function generateVersionHtml(): string {
+
+  const currentVersion = getPackageVersion();
+
+  return renderVersionHtml(currentVersion, getVersionInfo(currentVersion));
 }
 
 /**
