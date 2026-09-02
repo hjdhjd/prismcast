@@ -110,13 +110,15 @@ function makeStubPage(): Page {
 const stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
 
 /* The PrecachingDeps the REAL withProviderGuidePage runs against in the delegating deps below: getCurrentBrowser hands back a stub browser whose newPage returns a
- * recording page, startOverlayHandling records each poll's phase and abort signal in place of a live poll, emulateLayoutSurface answers with a fixed surface in
- * place of a device-metrics override, and the managed-page bookkeeping, shutdown probe, window sync, and provider lookups are the remaining members the helper's
- * dependency closure requires. Only the browser accessor, the layout declaration, and the overlay poll are exercised; the rest are inert because the discovery
- * success path never revalidates a domain or drives a real window.
+ * recording page, createDiscoveryPage delegates straight to that newPage so the real creator's window handling stays out of a route test, startOverlayHandling
+ * records each poll's phase and abort signal in place of a live poll, emulateLayoutSurface answers with a fixed surface in place of a device-metrics override,
+ * and the managed-page bookkeeping, shutdown probe, window sync, and provider lookups are the remaining members the helper's dependency closure requires. Only
+ * the browser accessor, the page creation, the layout declaration, and the overlay poll are exercised; the rest are inert because the discovery success path
+ * never revalidates a domain or drives a real window.
  */
 const stubPrecachingDeps: PrecachingDeps = {
 
+  createDiscoveryPage: async (browser: Browser): Promise<Page> => browser.newPage(),
   emulateLayoutSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => stubBrowser,
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),

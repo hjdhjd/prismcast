@@ -95,19 +95,57 @@ export async function withCDPSession<T>(
   }
 }
 
+/* The shape Chrome answers Browser.getWindowBounds with. Every field is optional because the response carries whatever the window manager has for the window,
+ * and the two derivations below each decide for themselves how much of it they require.
+ */
+interface WindowBoundsReport {
+
+  height?: number;
+  left?: number;
+  top?: number;
+  width?: number;
+  windowState?: string;
+}
+
+/* The frame a window occupies together with the state it is presented in - the whole answer a window created beside an existing one needs, in one record.
+ * A window flush against the top-left of the screen reports a left or a top of 0, so a consumer reads these as numbers rather than as truthy values.
+ */
+export interface WindowPlacement {
+
+  readonly height: number;
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly windowState: string;
+}
+
+/**
+ * Reads the bounds Chrome reports for a window, through a session that is already open. Private to this module and the one place the frame is read: the state
+ * derivation below, the restore confirmation, and the page-level placement read all take their answer from this single call, so no other site composes the
+ * request. A response carrying no bounds reads as null rather than throwing, because an absent report is an answer every derivation already branches on. The
+ * frame comes back for a minimized window too - Chrome reports the frame it is resting at, which is exactly what a window created beside it needs.
+ * @param session - An open CDP session attached to the page's target.
+ * @param windowId - The browser window ID that session resolved.
+ * @returns The bounds Chrome reports, with every field as optional as Chrome leaves it, or null when the response carries none.
+ */
+async function readWindowBoundsWith(session: CDPSession, windowId: number): Promise<Nullable<WindowBoundsReport>> {
+
+  const response = await session.send("Browser.getWindowBounds", { windowId }) as { bounds?: WindowBoundsReport } | undefined;
+
+  return response?.bounds ?? null;
+}
+
 /**
  * Reads the window state Chrome reports for a window, through a session that is already open. Private to this module: the restore confirmation below and the
- * page-level readWindowState both ask Chrome through this one call, so no other site composes the request. A response carrying no bounds, or bounds carrying no
- * state, reads as null rather than throwing, because an absent report is an answer its callers already branch on.
+ * page-level readWindowState both ask Chrome through the shared read above, so no other site composes the request. A response carrying no bounds, or bounds
+ * carrying no state, reads as null rather than throwing, because an absent report is an answer its callers already branch on.
  * @param session - An open CDP session attached to the page's target.
  * @param windowId - The browser window ID that session resolved.
  * @returns The window state Chrome reports, or null when the response carries none.
  */
 async function readWindowStateWith(session: CDPSession, windowId: number): Promise<Nullable<string>> {
 
-  const response = await session.send("Browser.getWindowBounds", { windowId }) as { bounds?: { windowState?: string } } | undefined;
-
-  return response?.bounds?.windowState ?? null;
+  return (await readWindowBoundsWith(session, windowId))?.windowState ?? null;
 }
 
 /**
@@ -120,6 +158,44 @@ async function readWindowStateWith(session: CDPSession, windowId: number): Promi
 export async function readWindowState(page: Page): Promise<Nullable<string>> {
 
   return (await withCDPSession(page, readWindowStateWith)) ?? null;
+}
+
+/**
+ * Reads the full placement - frame and state - of the window a page belongs to, for a caller that means to put a second window in the same spot. Resolves null
+ * whenever the placement cannot be read completely: a closed page, a target that yields no window ID, a CDP failure withCDPSession absorbs, or a response
+ * missing any one of the four numbers or the state. That strictness lives here rather than in the shared read, because a partial frame is useless to the one
+ * consumer this exists for while a partial response is still a perfectly good state report.
+ *
+ * Mirroring the shared window's own placement is what keeps a second window from disturbing the profile: Chrome persists the window placement it will relaunch
+ * at from the last window whose bounds changed, within seconds and regardless of which window the user is working in, and any exit that does not flush that
+ * preference - a crash, a forced kill, and the relaunch that follows a crash - carries those bounds into the next launch. A window opened anywhere else writes
+ * its own frame there and the shared window comes back at it (measured 2026-08-31).
+ * @param page - The Puppeteer page whose window is read.
+ * @returns The window's placement, or null when it cannot be read completely.
+ */
+export async function readWindowPlacement(page: Page): Promise<Nullable<WindowPlacement>> {
+
+  return (await withCDPSession(page, async (session, windowId): Promise<Nullable<WindowPlacement>> => {
+
+    const bounds = await readWindowBoundsWith(session, windowId);
+
+    if(!bounds) {
+
+      return null;
+    }
+
+    const { height, left, top, width, windowState } = bounds;
+
+    // Each field's presence is a type test rather than a truthiness test: a window flush against the top or the left edge of the screen reports that
+    // coordinate as 0, which a truthiness test would discard as a missing placement.
+    if((typeof height !== "number") || (typeof left !== "number") || (typeof top !== "number") || (typeof width !== "number") ||
+      (typeof windowState !== "string")) {
+
+      return null;
+    }
+
+    return { height, left, top, width, windowState };
+  })) ?? null;
 }
 
 /**

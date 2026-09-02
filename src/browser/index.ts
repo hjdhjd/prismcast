@@ -12,13 +12,14 @@ import { getCachedTabId, onTabActivation } from "./tabSelection.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
-import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow } from "./cdp.ts";
+import { minimizeWindow, readWindowPlacement, reaffirmCaptureSurface, unminimizeWindow } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
 import type { LaunchGovernorPolicy } from "./launchGovernor.ts";
 import type { Nullable } from "../types/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
+import type { WindowPlacement } from "./cdp.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
 import { createBrowserSupervisor } from "./browserSupervisor.ts";
 import { createWindowVisibilitySync } from "./windowSync.ts";
@@ -257,6 +258,36 @@ const potentiallyStalePages = new Map<string, number>();
  */
 const inFlightSetupPageIds = new Set<string>();
 
+/* The pages that live in a window of their own rather than the shared one. A CDP window command acts on the window of the page whose session carries it, so
+ * which page a command travels on decides which window moves...and a page in its own window would move that one. Membership here is what keeps such a page
+ * out of every site that reaches for a convenient page to command the shared window through.
+ *
+ * Keyed on the page and never cleared. The fact is intrinsic to how the page was created rather than a phase of its life, an entry dies with the page that
+ * holds it, and the picker below already declines a closed page - so unregistration, teardown order, and clearPageTracking have nothing to maintain here.
+ */
+const ownWindowPages = new WeakSet<Page>();
+
+/**
+ * Reports whether a page may carry a CDP command aimed at the shared window: it exists, it is still open, and it does not live in a window of its own. The
+ * parameter accepts the absent case so every caller narrows through this one test rather than guarding beside it.
+ * @param page - The candidate page, which may be absent.
+ * @returns True when the page can carry a shared-window command.
+ */
+export function isCarrierPage(page: Nullable<Page>): page is Page {
+
+  return !!page && !page.isClosed() && !ownWindowPages.has(page);
+}
+
+/**
+ * Picks the page a shared-window command should travel on from the pages a browser has open, taking the first that qualifies.
+ * @param pages - The candidate pages, in the order the browser reports them.
+ * @returns The page to carry the command, or null when none of them qualifies.
+ */
+export function pickCarrierPage(pages: readonly Page[]): Nullable<Page> {
+
+  return pages.find(isCarrierPage) ?? null;
+}
+
 // Login mode management. State and functions live in login.ts; re-exported here so existing consumers don't need import path changes. clearLoginState,
 // isLoginModeActive, and setBrowserAccessors are imported above; the first two for internal use, setBrowserAccessors for one-time initialization below.
 export { clearLoginState, isLoginModeActive };
@@ -276,7 +307,9 @@ export type { BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
  *
  * The resolver prefers the page its caller handed over, borrows any page the browser already has open when there is none, and creates a temporary page only when
  * the browser has nothing open at all. A temporary page is the only resolution that carries a dispose, so the executor releases what the resolver created and
- * leaves a borrowed page alone.
+ * leaves a borrowed page alone. Both the preference and the borrow go through the shared carrier rule, because a command travels on a page's own session and
+ * so acts on that page's window: a page living in a window of its own would move that window instead of the shared one, whether it arrived as the caller's
+ * preference or as the first page the browser happened to report.
  *
  * The instance stays private to this module and every caller reaches it through the exported function just below. That split is what makes the symbol safe to
  * reference at module-evaluation time: a function declaration is hoisted, so the setBrowserAccessors call further down - and any sibling module whose own body
@@ -299,12 +332,12 @@ const windowVisibilitySync = createWindowVisibilitySync({
       return null;
     }
 
-    if(preferred && !preferred.isClosed()) {
+    if(isCarrierPage(preferred)) {
 
       return { dispose: null, page: preferred };
     }
 
-    const borrowed = (await browser.pages()).find((candidate) => !candidate.isClosed());
+    const borrowed = pickCarrierPage(await browser.pages());
 
     if(borrowed) {
 
@@ -1089,6 +1122,51 @@ export async function emulateLayoutSurface(page: Page): Promise<{ height: number
   return declareSurface(page, NATIVE_DENSITY);
 }
 
+/**
+ * Derives the creation bounds for a window that should open exactly where an existing window rests. The four numbers always travel, so the new window lands on
+ * the same frame. The state travels only when it is "maximized", because that is the one state Chrome saves alongside the frame and a maximized window mirrored
+ * as a normal one would drop it. Every other state is left off deliberately: a fullscreen window's frame is its whole screen and a normal window at that frame
+ * is the right stand-in for it, and a minimized window reports the frame it will return to, which is a placement worth inheriting without the minimization.
+ * @param placement - The placement of the window to mirror.
+ * @returns The bounds to create the new window with.
+ */
+export function mirrorPlacement(placement: WindowPlacement): { height: number; left: number; top: number; width: number; windowState?: "maximized" } {
+
+  const { height, left, top, width } = placement;
+
+  return (placement.windowState === "maximized") ? { height, left, top, width, windowState: "maximized" } : { height, left, top, width };
+}
+
+/**
+ * Opens a page for a channel guide discovery walk in a browser window of its own, and marks it as belonging to that window.
+ *
+ * A document renders only while it is the active tab of a window that is not minimized, and the shared window rests minimized whenever nothing is capturing,
+ * with its selected tab belonging to the user. A guide walk needs its page to render - an observer-driven channel rail fills its tiles from rendering updates,
+ * and a virtualized grid re-renders as the walk scrolls it - yet it is never captured, so it has no claim on the shared window's presentation and no business
+ * moving the user's selection. Its own window resolves both: the page is the active tab there from the moment it exists.
+ *
+ * The window is created in the background, so Chrome shows it inactive and moves no focus (measured 2026-08-31), and at the shared window's own placement, so
+ * the window placement Chrome persists for the profile never changes - readWindowPlacement carries the reasoning. The caller declares the layout surface on
+ * the page and owns its registration, and closing the page closes the window with it.
+ * @param browser - The browser to open the window in.
+ * @returns The page, as the active tab of its own window.
+ */
+export async function createDiscoveryPage(browser: Browser): Promise<Page> {
+
+  const carrier = pickCarrierPage(await browser.pages());
+  const placement = carrier ? await readWindowPlacement(carrier) : null;
+
+  // The mark is set with nothing awaited between the creation and it, so no page read can observe this page as a candidate to carry a shared-window command.
+  const page = await browser.newPage({ background: true, type: "window", windowBounds: placement ? mirrorPlacement(placement) : undefined });
+
+  ownWindowPages.add(page);
+
+  LOG.debug("browser:lifecycle", "Opened the discovery page in a window of its own, %s.",
+    placement ? "mirroring the shared window's placement" : "with no shared window to read a placement from");
+
+  return page;
+}
+
 /* The follow-up re-issue schedule a tab activation runs, expressed as offsets in milliseconds from the activation's own invocation rather than as gaps between
  * shots. Chrome switches an activated tab's capture to the window's fitted presentation only after the focus event has fired, so the immediate re-issue that
  * event triggers lands too early to stick (measured 2026-08-30: a selected capture tab's recording stayed fitted for upwards of forty seconds, until the
@@ -1330,9 +1408,9 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
 
   try {
 
-    // Try to use an existing page first to avoid window activation issues on macOS.
-    const existingPages = await browser.pages();
-    let targetPage: Nullable<Page> = existingPages.find((p) => !p.isClosed()) ?? null;
+    // Try to use an existing page first to avoid window activation issues on macOS. The pick goes through the shared carrier rule, because the restore below
+    // acts on the window of whichever page carries it and a page living in its own window would restore that one instead of the shared one.
+    let targetPage: Nullable<Page> = pickCarrierPage(await browser.pages());
 
     if(!targetPage) {
 

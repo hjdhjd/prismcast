@@ -2,13 +2,15 @@
  *
  * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
  * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), unminimizeWindow (which commands the
- * restore and then confirms it against Chrome's own report), readWindowState (that report, read for a page), and reaffirmCaptureSurface (the raw re-issue of a
- * capture page's declared device metrics). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the
- * window's dimensions never enter the picture because the two window primitives drive presentation state alone. Which state the window should be in is decided in
- * windowSync.ts and pinned there; these tests cover only the commands each primitive issues and the confirmation the restore waits on.
+ * restore and then confirms it against Chrome's own report), readWindowState (that report, read for a page), readWindowPlacement (the window's frame and state
+ * together, for a caller opening a second window in the same spot), and reaffirmCaptureSurface (the raw re-issue of a capture page's declared device metrics).
+ * The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's dimensions enter the picture
+ * only through the placement read, because the two window primitives drive presentation state alone. Which state the window should be in is decided in
+ * windowSync.ts and pinned there; these tests cover only the commands each primitive issues, the confirmation the restore waits on, and what each read makes of
+ * the report it gets.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { WINDOW_RESTORE_CEILING_MS, WINDOW_STATE_POLL_MS, minimizeWindow, readWindowState, reaffirmCaptureSurface, unminimizeWindow,
+import { WINDOW_RESTORE_CEILING_MS, WINDOW_STATE_POLL_MS, minimizeWindow, readWindowPlacement, readWindowState, reaffirmCaptureSurface, unminimizeWindow,
   withCDPSession } from "./cdp.ts";
 import { describe, test } from "node:test";
 import { makeAdvancingClock, makeFakeClock } from "../utils/clock.helpers.ts";
@@ -493,6 +495,77 @@ describe("readWindowState", () => {
       "a response carrying no bounds reports no state");
     assert.equal(await readWindowState(makePageStub({ createCDPSessionError: new Error("synthetic attach failure") })), null,
       "a session that cannot be attached reports no state");
+  });
+});
+
+describe("readWindowPlacement", () => {
+
+  /* A bounds router answering with exactly the fields a row hands it, so a row can leave one out and read what the derivation does about it. Every number is
+   * distinct, which is what tells a field read from the right place apart from one read from another.
+   * @param bounds - The bounds the response carries, or undefined for a response carrying none.
+   * @returns A send override shaped like the other routers in this file.
+   */
+  function windowBoundsRouter(bounds?: Record<string, unknown>): (method: string) => Promise<unknown> {
+
+    return async (method: string): Promise<unknown> => {
+
+      if(method === "Browser.getWindowForTarget") {
+
+        return { windowId: 7 };
+      }
+
+      if(method === "Browser.getWindowBounds") {
+
+        return bounds ? { bounds } : {};
+      }
+
+      return undefined;
+    };
+  }
+
+  test("returns the frame and the state Chrome reports for the window", async () => {
+
+    /* The whole answer a window created beside this one needs, read field by field on four distinct numbers: a derivation that transposed a pair, or read the
+     * width where the height belongs, passes a deepEqual against a uniform frame and fails here.
+     */
+    const cdpStub = makeCdpStub({ overrideSend: windowBoundsRouter({ height: 400, left: 10, top: 20, width: 300, windowState: "normal" }) });
+
+    const placement = await readWindowPlacement(makePageStub({ cdpStub }));
+
+    assert.ok(placement, "a complete report reads as a placement");
+    assert.equal(placement.height, 400, "the height is the reported height");
+    assert.equal(placement.left, 10, "the left is the reported left");
+    assert.equal(placement.top, 20, "the top is the reported top");
+    assert.equal(placement.width, 300, "the width is the reported width");
+    assert.equal(placement.windowState, "normal", "the state travels with the frame");
+  });
+
+  test("reads a window flush against the screen's top-left corner as a placement", async () => {
+
+    // The boundary the derivation's type test exists for: a left or a top of 0 is a real coordinate, and a presence check written as a truthiness test would
+    // throw this placement away and leave the new window to Chrome's cascade.
+    const cdpStub = makeCdpStub({ overrideSend: windowBoundsRouter({ height: 400, left: 0, top: 0, width: 300, windowState: "normal" }) });
+
+    const placement = await readWindowPlacement(makePageStub({ cdpStub }));
+
+    assert.ok(placement, "a window at the corner still reads as a placement");
+    assert.equal(placement.left, 0, "a left of zero survives the derivation");
+    assert.equal(placement.top, 0, "a top of zero survives the derivation");
+  });
+
+  test("normalizes an incomplete or unavailable report to null", async () => {
+
+    // A partial frame is useless to the one consumer this exists for, so anything short of all four numbers and the state reads as no placement at all - as do
+    // the three ways the report is simply not obtainable.
+    assert.equal(await readWindowPlacement(makePageStub({ cdpStub: makeCdpStub({ overrideSend: windowBoundsRouter() }) })), null,
+      "a response carrying no bounds reports no placement");
+    assert.equal(await readWindowPlacement(makePageStub({ cdpStub: makeCdpStub({ overrideSend: windowBoundsRouter({ height: 400, left: 10, top: 20,
+      windowState: "normal" }) }) })), null, "bounds missing one of the four numbers report no placement");
+    assert.equal(await readWindowPlacement(makePageStub({ cdpStub: makeCdpStub({ overrideSend: windowBoundsRouter({ height: 400, left: 10, top: 20,
+      width: 300 }) }) })), null, "bounds carrying no state report no placement");
+    assert.equal(await readWindowPlacement(makePageStub({ isClosedReturn: true })), null, "a closed page reports no placement");
+    assert.equal(await readWindowPlacement(makePageStub({ createCDPSessionError: new Error("synthetic attach failure") })), null,
+      "a session that cannot be attached reports no placement");
   });
 });
 

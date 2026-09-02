@@ -5,7 +5,8 @@
 import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
-import { emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility, unregisterManagedPage } from "./index.ts";
+import { createDiscoveryPage, emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility,
+  unregisterManagedPage } from "./index.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
@@ -18,8 +19,8 @@ import { persistProviderLineup } from "../config/providerLineups.ts";
 import { startOverlayHandling } from "./consent.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
- * sequentially - discovery opens a browser page and navigates to a heavy SPA, so running all services concurrently would stress CPU and GPU on resource-constrained
- * systems. The HTTP server starts immediately; precaching begins in the background after a brief delay.
+ * sequentially - discovery opens a browser page in a window of its own and navigates to a heavy SPA, so running all services concurrently would stress CPU and
+ * GPU on resource-constrained systems. The HTTP server starts immediately; precaching begins in the background after a brief delay.
  *
  * Precaching is triggered from launchBrowser() in browser/index.ts. This covers both initial server startup and browser crash recovery (where all caches are cleared).
  * Each service has its own try/catch - one failure does not stop the rest. The browser reference is obtained per-service via getCurrentBrowser() so that a browser
@@ -35,10 +36,11 @@ import { startOverlayHandling } from "./consent.ts";
 // Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
 const PRECACHE_DELAY = 5000;
 
-/* Delay in milliseconds before the services that discovered nothing are re-attempted. Five minutes puts the second pass well past the contention a boot creates -
- * the browser launch, the first tunes, the DVR's own channel scan - which is the likeliest reason a provider's lazy content never appeared inside its walk. There
- * is exactly one such pass: a service still empty on a settled system has a standing problem that another walk will not solve, and a repeating attempt would keep
- * waking the browser for it indefinitely.
+/* Delay in milliseconds before the services a cycle could not settle are re-attempted. Five minutes puts the second pass well past the contention a boot creates -
+ * the browser launch, the first tunes, the DVR's own channel scan - which is the likeliest reason a provider's lazy content never appeared inside its walk. A
+ * service that walked and came back empty gets exactly one such pass: still empty on a settled system, it has a standing problem that another walk will not
+ * solve, and a repeating attempt would keep waking the browser for it indefinitely. A service deferred because a login session was on screen is the separate
+ * case: its walk never ran, so the pass re-arms itself for it until the session ends rather than spending its one attempt on a window the user is working in.
  */
 const PRECACHE_RETRY_DELAY = 300000;
 
@@ -95,8 +97,9 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
   startPrecaching(deps);
 }
 
-/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors and page bookkeeping, the shutdown gate,
- * the window-visibility sync, the provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup write the discovery-outcome policy performs.
+/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors, the discovery-page creator and the
+ * page bookkeeping around it, the shutdown gate, the window-visibility sync, the provider lookups, the discovery-phase overlay-poll launcher, and the
+ * durable-lineup write the discovery-outcome policy performs.
  * It is injected as a default parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader
  * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same
  * reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and
@@ -107,6 +110,7 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
  */
 export interface PrecachingDeps {
 
+  readonly createDiscoveryPage: typeof createDiscoveryPage;
   readonly emulateLayoutSurface: typeof emulateLayoutSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
   readonly getProviderBySlug: typeof getProviderBySlug;
@@ -121,6 +125,7 @@ export interface PrecachingDeps {
 
 export const defaultPrecachingDeps: PrecachingDeps = {
 
+  createDiscoveryPage,
   emulateLayoutSurface,
   getCurrentBrowser,
   getProviderBySlug,
@@ -404,10 +409,11 @@ async function retryAfterEmptyWalk(options: RetryAfterEmptyWalkOptions): Promise
 
 /**
  * Opens a guarded browser page for a provider's guide, runs its discovery walk under a consent-overlay poll, and cleans the page up. This is the single owner of the
- * discovery page session shared by the precache cycle and the /services/:slug/channels endpoint: it holds the page lifecycle (creation, managed-page registration,
- * close), the abort mechanics (close-on-abort plus the pre-navigation early-abort), the audio-mute override, and the discovery-phase overlay poll that dismisses
- * cookie banners and per-site modals during the walk. The overlay poll is aborted the instant the walk completes, so the page is quiet by construction before the
- * afterWalk hook inspects it - a poll still clicking could dismiss the very overlay a classification is about to report.
+ * discovery page session shared by the precache cycle and the /services/:slug/channels endpoint: it asks the browser layer's creator for the page and holds
+ * everything that happens to it afterwards - managed-page registration, the abort mechanics (close-on-abort plus the pre-navigation early-abort), the audio-mute
+ * override, the discovery-phase overlay poll that dismisses cookie banners and per-site modals during the walk, and the close. The overlay poll is aborted the
+ * instant the walk completes, so the page is quiet by construction before the afterWalk hook inspects it - a poll still clicking could dismiss the very overlay
+ * a classification is about to report.
  *
  * A walk that comes back empty gets one reload-and-retry, on the terms retryAfterEmptyWalk sets out. The hook still runs exactly once, against whichever result
  * stands.
@@ -422,9 +428,11 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
   const { afterWalk, signal } = options;
   const browser = await deps.getCurrentBrowser("page");
 
-  // The guide page opens behind whatever the window is showing. A walk never needs its tab selected, and taking the foreground would move the user off the tab
-  // they are on.
-  const page = await browser.newPage({ background: true });
+  /* The guide page is the active tab of a browser window of its own, opened in the background at the shared window's placement. A guide renders only while its
+   * document is visible, and a walk is never captured, so the page gets a window that presents it without disturbing the shared window's own state or the tab
+   * the user has selected there. The window closes with the page.
+   */
+  const page = await deps.createDiscoveryPage(browser);
 
   // Close the page the moment the caller aborts, so any in-progress Puppeteer operation throws and propagates the cancellation through discoverChannels without each
   // provider having to poll the signal. The helper owns this mechanism because it owns page creation - no caller ever holds the page reference, so close-on-abort
@@ -521,8 +529,9 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       // Page may already be closed if the browser disconnected during discovery or the abort handler already closed it.
     }
 
-    // Settle the browser window against the policy now that the discovery page is gone. A walk runs for long enough to span a state change - the last capture
-    // ending while it worked - and the call is unconditional because the policy already accounts for a login session or a running capture.
+    // Settle the shared browser window against the policy now that the walk is done. The walk's browser acquisition may have relaunched Chrome, which leaves
+    // that window as the launch left it, and a walk runs long enough to span a stream state change; the pass is unconditional because the policy already
+    // accounts for a login session or a running capture.
     await deps.syncWindowVisibility();
   }
 }
@@ -641,9 +650,10 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
 }
 
 /**
- * Schedules the one deferred re-attempt for the services a cycle finished with nothing to show for. Does nothing when every service came back with a lineup, and
- * nothing during a shutdown, where scheduling work against the browser is precisely what teardown is closing down.
- * @param slugs - The services that walked and found no channels.
+ * Schedules the deferred re-attempt for the services a pass could not settle. Does nothing when every service came back with a lineup, and nothing during a
+ * shutdown, where scheduling work against the browser is precisely what teardown is closing down. This is the one place a re-attempt is scheduled, so both
+ * reasons a service is still owed a walk - it ran and found nothing, or it never ran at all - arrive on the same schedule.
+ * @param slugs - The services a pass could not settle: walked and empty, or deferred because a login session was on screen.
  * @param deps - The injected dependencies, handed to the pass this schedules.
  */
 function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
@@ -660,11 +670,12 @@ function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
 }
 
 /**
- * Runs the single deferred re-attempt for the services a cycle left empty. Never rejects - it is driven by a timer with nobody to hand a rejection to, so every
+ * Runs the deferred re-attempt for the services a cycle could not settle. Never rejects - it is driven by a timer with nobody to hand a rejection to, so every
  * per-service failure is contained the same way the cycle contains its own.
  *
  * A service whose lineup arrived in the interval - from a later full cycle, or from an on-demand discovery a user triggered - is skipped rather than re-walked,
- * because the walk it would run is the expensive part and the answer is already in hand.
+ * because the walk it would run is the expensive part and the answer is already in hand. A login session that begins before the pass fires stops it where it
+ * stands and re-arms everything still owed, so the walks resume once the user is done rather than opening a window over the one they are signing in through.
  * @param deps - The injected browser and provider-registry dependencies.
  * @returns A promise that resolves once the pass completes or is skipped.
  */
@@ -696,9 +707,12 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
   let attempted = 0;
   let succeeded = 0;
 
+  // The services this pass leaves unwalked because a login session came up, named rather than counted: they are re-armed below on the same schedule.
+  let remaining: string[] = [];
+
   try {
 
-    for(const slug of pending.slugs) {
+    for(const [ index, slug ] of pending.slugs.entries()) {
 
       // Re-checked every iteration, exactly as the cycle's own loop does: a shutdown that begins mid-pass must stop opening discovery pages, or the next
       // getCurrentBrowser relaunches the Chrome that teardown just closed.
@@ -719,6 +733,17 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
         LOG.debug("precache", "Skipping the deferred re-attempt for %s: its lineup was discovered in the meantime.", provider.label);
 
         continue;
+      }
+
+      /* Stop where the login session found us, and take everything from here with us. A walk opens its window at the shared window's placement, which during a
+       * login session is the window the user is signing in through. The check reads live state, so the pass that re-arms below runs to the end once the
+       * session is over; the slugs already walked are behind us and the one skipped above is settled, so what remains is exactly what is still owed.
+       */
+      if(isLoginModeActive()) {
+
+        remaining = pending.slugs.slice(index);
+
+        break;
       }
 
       attempted++;
@@ -742,6 +767,17 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
 
       LOG.info("Deferred channel discovery re-attempt complete: %d of %d service%s now have a lineup.", succeeded, attempted, (attempted === 1) ? "" : "s");
     }
+
+    /* Re-arm what the login session interrupted. This function drops the pending state at entry, so arming here schedules exactly one fresh pass rather than
+     * stacking on a handle that is still standing.
+     */
+    if(remaining.length > 0) {
+
+      LOG.debug("precache", "Deferring %d service%s from the discovery re-attempt: a login session is on screen.", remaining.length,
+        (remaining.length === 1) ? "" : "s");
+
+      armDeferredRetry(remaining, deps);
+    }
   } finally {
 
     releasePrecacheGuard(deps);
@@ -750,8 +786,9 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
 
 /**
  * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
- * Services not in the active service filter are silently skipped when the filter is non-empty. Services that walk and find nothing are handed to a single deferred
- * re-attempt, minutes later, once whatever startup contention may have starved them has passed.
+ * Services not in the active service filter are silently skipped when the filter is non-empty. Services the cycle could not settle - they walked and found
+ * nothing, or a login session on screen kept them from walking at all - are handed to the deferred re-attempt, minutes later, once whatever startup contention
+ * or user session may have starved them has passed.
  */
 async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
@@ -774,6 +811,9 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
   // The services that walked but found nothing, named rather than counted: the deferred re-attempt below needs to know which ones to come back to.
   const emptySlugs: string[] = [];
+
+  // The services this cycle stood aside from because a login session was on screen. They travel to the same re-attempt, for the same reason: a walk is still owed.
+  const deferredSlugs: string[] = [];
 
   let skipped = 0;
   let succeeded = 0;
@@ -809,6 +849,19 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
         continue;
       }
 
+      /* Stand aside while a login session is on screen. A walk opens its window at the shared window's placement, which during a login session is the window
+       * the user is signing in through, and a second window over it would take their clicks. The service is collected for the deferred re-attempt below, which
+       * is the machinery that already exists for a service this cycle could not settle. The check sits after the filter skip so a filtered-out service is
+       * still counted as filtered rather than queued for a walk it would never get.
+       */
+      if(isLoginModeActive()) {
+
+        LOG.debug("precache", "Deferring the precache for %s: a login session is on screen.", provider.label);
+        deferredSlugs.push(slug);
+
+        continue;
+      }
+
       try {
 
         // eslint-disable-next-line no-await-in-loop
@@ -830,11 +883,13 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
     const elapsed = (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, "");
     const emptySuffix = (emptySlugs.length > 0) ? ", " + String(emptySlugs.length) + " returned no channels" : "";
+    const deferredSuffix = (deferredSlugs.length > 0) ? ", " + String(deferredSlugs.length) + " deferred for a login session" : "";
     const skippedSuffix = (skipped > 0) ? ", " + String(skipped) + " skipped (filtered)" : "";
 
-    LOG.info("Channel lineup precaching complete: %d service%s cached%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", emptySuffix, skippedSuffix, elapsed);
+    LOG.info("Channel lineup precaching complete: %d service%s cached%s%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", emptySuffix, deferredSuffix,
+      skippedSuffix, elapsed);
 
-    armDeferredRetry(emptySlugs, deps);
+    armDeferredRetry([ ...emptySlugs, ...deferredSlugs ], deps);
   } finally {
 
     releasePrecacheGuard(deps);

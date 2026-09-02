@@ -13,6 +13,9 @@
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
+ *   - pickCarrierPage / isCarrierPage (the one rule for a page whose session may carry a command aimed at the shared window)
+ *   - mirrorPlacement (the pure derivation from a window's placement to the bounds a window opened beside it is created with)
+ *   - createDiscoveryPage (the own-window guide page, driven through a recording browser double)
  *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue and an injected clock)
  *   - healActivatedCaptureTab (the heal's report-side trigger, driven against pages enrolled through installActivationHeal with injected collaborators)
  *   - getExecutablePath (the env-var-or-search executable resolver)
@@ -22,16 +25,17 @@
  * Importing this module pulls in puppeteer-stream which starts a WebSocketServer at evaluation time. The test runner uses --test-force-exit so that handle does
  * not prevent the file from exiting cleanly.
  */
+import type { Browser, Page } from "puppeteer-core";
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile,
-  getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab, installActivationHeal, isBrowserConnected,
-  isGracefulShutdown, makeFocusReaffirmCallback, registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+import { buildLaunchOptions, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory,
+  findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab,
+  installActivationHeal, isBrowserConnected, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement, pickCarrierPage,
+  registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
-import type { Page } from "puppeteer-core";
 import type { StreamRegistryEntry } from "../streaming/registry.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "../config/presets.ts";
@@ -628,6 +632,255 @@ describe("emulateLayoutSurface", () => {
 
       CONFIG.streaming.qualityPreset = originalPreset;
     }
+  });
+});
+
+/* The two doubles the discovery-window rows share. A page here answers only what the carrier rule and the placement read actually call - whether it is closed,
+ * and a CDP session serving the two commands readWindowPlacement issues - and it counts the bounds reads that session served, which is how a row tells the page
+ * a placement was read from apart from the pages it was not. What the reader makes of a given response is pinned in cdp.test.ts; the count here is only about
+ * which page was asked. A browser records the options of every creation and the pages it handed back.
+ */
+interface WindowPageStub {
+
+  page: Page;
+  windowReads: number;
+}
+
+/**
+ * Builds a page double for the carrier and creator rows. A page given no bounds stands in for one whose window cannot be read at all.
+ * @param options - Whether the page reports itself closed, and the bounds its CDP session answers with.
+ * @param options.bounds - The bounds the page's session answers Browser.getWindowBounds with. Omitted means the response carries none.
+ * @param options.closed - Whether the page reports itself closed.
+ * @returns The double plus the count of window reads its session served.
+ */
+function makeWindowPage(options: { bounds?: Record<string, number | string>; closed?: boolean } = {}): WindowPageStub {
+
+  const stub: WindowPageStub = { page: null as unknown as Page, windowReads: 0 };
+
+  stub.page = {
+
+    createCDPSession: async (): Promise<unknown> => ({
+
+      send: async (method: string): Promise<unknown> => {
+
+        if(method === "Browser.getWindowForTarget") {
+
+          return { windowId: 7 };
+        }
+
+        if(method === "Browser.getWindowBounds") {
+
+          stub.windowReads++;
+
+          return options.bounds ? { bounds: options.bounds } : {};
+        }
+
+        return undefined;
+      }
+    }),
+    isClosed: (): boolean => options.closed ?? false
+  } as unknown as Page;
+
+  return stub;
+}
+
+/**
+ * Builds a browser double whose page list is fixed and whose creations are recorded.
+ * @param pages - The pages browser.pages() answers with, in order.
+ * @returns The double, the doubles behind the pages it created, and the options each creation received.
+ */
+function makeWindowBrowser(pages: Page[]): { browser: Browser; created: WindowPageStub[]; newPageOptions: unknown[] } {
+
+  const created: WindowPageStub[] = [];
+  const newPageOptions: unknown[] = [];
+
+  const browser = {
+
+    newPage: async (options?: unknown): Promise<Page> => {
+
+      newPageOptions.push(options);
+
+      const stub = makeWindowPage();
+
+      created.push(stub);
+
+      return stub.page;
+    },
+    pages: async (): Promise<Page[]> => pages
+  } as unknown as Browser;
+
+  return { browser, created, newPageOptions };
+}
+
+/**
+ * Creates a page in a window of its own against a throwaway browser double, for the rows that need one to hand to the carrier rule.
+ * @returns The own-window page and the double behind it.
+ */
+async function makeOwnWindowPage(): Promise<WindowPageStub> {
+
+  const { browser, created } = makeWindowBrowser([]);
+
+  await createDiscoveryPage(browser);
+
+  // The creator has run, so the double recorded exactly one page.
+  return created[0]!;
+}
+
+describe("pickCarrierPage", () => {
+
+  test("takes the first open page", () => {
+
+    // The common case, and the reason the order matters: the browser reports its pages oldest first, so the first qualifying one is the extension's options page
+    // or the blank tab the launch left behind, rather than a page some later feature happened to open.
+    const first = makeWindowPage().page;
+    const second = makeWindowPage().page;
+
+    assert.equal(pickCarrierPage([ first, second ]), first, "the first candidate wins");
+  });
+
+  test("skips a closed page and takes the next open one", () => {
+
+    // A command aimed at a closed page's session goes nowhere, so a closed page is no candidate at all.
+    const closed = makeWindowPage({ closed: true }).page;
+    const open = makeWindowPage().page;
+
+    assert.equal(pickCarrierPage([ closed, open ]), open, "a closed page is passed over");
+  });
+
+  test("skips a page living in its own window and takes the next one", async () => {
+
+    /* The rule the discovery window rests on. A window command travels on a page's session and acts on that page's window, so borrowing the discovery page to
+     * minimize or restore "the window" would move the wrong one. The own-window page here comes from the creator rather than from a hand-set mark, so the row
+     * proves the mark the creator sets is the mark the rule reads.
+     */
+    const ownWindow = await makeOwnWindowPage();
+    const open = makeWindowPage().page;
+
+    assert.equal(pickCarrierPage([ ownWindow.page, open ]), open, "an own-window page is passed over");
+  });
+
+  test("reports no carrier when every page is closed or lives in its own window", async () => {
+
+    // The state the creator answers by opening its window without bounds, and the state the window sync answers with a temporary page of its own.
+    const ownWindow = await makeOwnWindowPage();
+
+    assert.equal(pickCarrierPage([ ownWindow.page, makeWindowPage({ closed: true }).page ]), null, "no candidate qualifies");
+    assert.equal(pickCarrierPage([]), null, "an empty list has no candidate either");
+  });
+});
+
+describe("mirrorPlacement", () => {
+
+  // Four distinct numbers, so a mirror that transposed a pair or dropped one into another's slot fails here rather than passing on a uniform frame.
+  const FRAME = { height: 400, left: 10, top: 20, width: 300 };
+
+  test("carries the frame and no state for a normal window", () => {
+
+    const bounds = mirrorPlacement({ ...FRAME, windowState: "normal" });
+
+    assert.equal(bounds.height, 400, "the height is mirrored");
+    assert.equal(bounds.left, 10, "the left is mirrored");
+    assert.equal(bounds.top, 20, "the top is mirrored");
+    assert.equal(bounds.width, 300, "the width is mirrored");
+    assert.ok(!("windowState" in bounds), "a normal window contributes no state key");
+  });
+
+  test("carries the maximized state alongside the frame", () => {
+
+    // The one state worth mirroring: Chrome saves the maximized flag with the placement, so a maximized shared window mirrored as a normal one would drop it.
+    const bounds = mirrorPlacement({ ...FRAME, windowState: "maximized" });
+
+    assert.equal(bounds.height, 400, "the height is mirrored");
+    assert.equal(bounds.left, 10, "the left is mirrored");
+    assert.equal(bounds.top, 20, "the top is mirrored");
+    assert.equal(bounds.width, 300, "the width is mirrored");
+    assert.equal(bounds.windowState, "maximized", "the maximized state travels with the frame");
+  });
+
+  test("carries no state for a fullscreen or a minimized window", () => {
+
+    /* A fullscreen window's frame is its whole screen and a normal window at that frame is the right stand-in for it; a minimized window reports the frame it
+     * will return to, which is a placement worth inheriting without the minimization - a window created minimized would render nothing at all.
+     */
+    for(const windowState of [ "fullscreen", "minimized" ]) {
+
+      const bounds = mirrorPlacement({ ...FRAME, windowState });
+
+      assert.equal(bounds.height, 400, windowState + ": the height is mirrored");
+      assert.equal(bounds.left, 10, windowState + ": the left is mirrored");
+      assert.equal(bounds.top, 20, windowState + ": the top is mirrored");
+      assert.equal(bounds.width, 300, windowState + ": the width is mirrored");
+      assert.ok(!("windowState" in bounds), windowState + ": no state key travels");
+    }
+  });
+});
+
+describe("createDiscoveryPage", () => {
+
+  test("opens a background window at the carrier's placement, read through the carrier's own session", async () => {
+
+    /* The creation contract in one row. The page list leads with a page the creator must pass over and a closed one, so a creator reading the placement from
+     * whatever page came first would read a window that is not the shared one - and because each page's session counts its own reads, where the read went is
+     * observable rather than inferred.
+     */
+    const ownWindow = await makeOwnWindowPage();
+    const closed = makeWindowPage({ closed: true });
+    const carrier = makeWindowPage({ bounds: { height: 400, left: 10, top: 20, width: 300, windowState: "normal" } });
+    const { browser, created, newPageOptions } = makeWindowBrowser([ ownWindow.page, closed.page, carrier.page ]);
+
+    const page = await createDiscoveryPage(browser);
+
+    assert.deepEqual(newPageOptions, [{ background: true, type: "window", windowBounds: { height: 400, left: 10, top: 20, width: 300 } }],
+      "the window is created in the background at the carrier's frame");
+    assert.equal(carrier.windowReads, 1, "the placement was read through the carrier's session");
+    assert.equal(ownWindow.windowReads, 0, "the own-window page's session was never asked");
+    assert.equal(closed.windowReads, 0, "the closed page's session was never asked");
+    assert.equal(page, created[0]?.page, "the created page is what comes back");
+  });
+
+  test("mirrors a maximized carrier as maximized", async () => {
+
+    const carrier = makeWindowPage({ bounds: { height: 400, left: 10, top: 20, width: 300, windowState: "maximized" } });
+    const { browser, newPageOptions } = makeWindowBrowser([carrier.page]);
+
+    await createDiscoveryPage(browser);
+
+    assert.deepEqual(newPageOptions, [{ background: true, type: "window", windowBounds: { height: 400, left: 10, top: 20, width: 300,
+      windowState: "maximized" } }], "the maximized state travels into the creation options");
+  });
+
+  test("creates the window without bounds when the browser has no page to read a placement from", async () => {
+
+    /* Unreachable in practice - the extension's options page exists from launch and is never swept - but the creator still has to name a behavior for it, and
+     * letting Chrome cascade the window from the profile's saved placement is the right one. The three fields are read one at a time so an options object
+     * carrying an undefined placement is told apart from one carrying no placement key at all.
+     */
+    const { browser, newPageOptions } = makeWindowBrowser([]);
+
+    await createDiscoveryPage(browser);
+
+    assert.equal(newPageOptions.length, 1, "exactly one creation");
+
+    const options = newPageOptions[0] as { background?: boolean; type?: string; windowBounds?: unknown };
+
+    assert.equal(options.background, true, "the window still opens in the background");
+    assert.equal(options.type, "window", "the page still gets a window of its own");
+    assert.equal(options.windowBounds, undefined, "no placement is passed when none could be read");
+  });
+
+  test("marks the page it creates as living in its own window", async () => {
+
+    // The mark is what every shared-window command site reads, so the creator setting it is what makes the rule hold at all. A plain page from the same browser
+    // double is the control: it qualifies as a carrier, which is what shows the mark rather than the double is doing the work.
+    const carrier = makeWindowPage({ bounds: { height: 400, left: 10, top: 20, width: 300, windowState: "normal" } });
+    const { browser } = makeWindowBrowser([carrier.page]);
+
+    const created = await createDiscoveryPage(browser);
+
+    assert.equal(isCarrierPage(created), false, "the discovery page never carries a shared-window command");
+    assert.equal(pickCarrierPage([created]), null, "and it is never picked as one");
+    assert.equal(isCarrierPage(await browser.newPage()), true, "a plain page from the same double still qualifies");
+    assert.equal(isCarrierPage(null), false, "an absent page is no carrier");
   });
 });
 

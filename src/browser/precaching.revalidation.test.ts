@@ -41,20 +41,32 @@ let pageEvents: string[] = [];
 // The options each newPage call received, in call order, so the guarded session's tests can pin how the guide page is created rather than only what is done to it.
 let newPageOptions: unknown[] = [];
 
+// The browser each discovery-page creation was handed, in call order. A row reads its length for how many walks opened a page at all, which is what the
+// login-mode rows assert on: a deferred service creates none.
+let discoveryPageCreations: Browser[] = [];
+
 // The lineup writes the discovery-outcome recorder issues, captured by the injected persistProviderLineup below so the port tests can assert what a completed walk
 // hands the store without touching a real file.
 const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
-/* The injected precaching dependencies: the browser accessors and page bookkeeping, the layout-surface declaration, the window-visibility sync, the
- * provider-registry lookups, and the discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so revalidation and discovery run
- * against stubs with no real Chrome. Each field reads the mutable module state above at call time, so a test shapes the registry and browser behavior by
- * reassigning those lets. startOverlayHandling stands in for the real poll, recording each call's options (phase and abort signal) into overlayHandlingCalls and
- * logging its launch into pageEvents so the guide-page tests can pin the discovery phase and its abort timing; emulateLayoutSurface logs itself into the same
- * record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. Typed as the production port so the doubles cannot
- * drift. The health and login modules stay real.
+/* The injected precaching dependencies: the browser accessors, the discovery-page creator, the page bookkeeping, the layout-surface declaration, the
+ * window-visibility sync, the provider-registry lookups, and the discovery-phase overlay-poll launcher, substituted at precaching's PrecachingDeps boundary so
+ * revalidation and discovery run against stubs with no real Chrome. Each field reads the mutable module state above at call time, so a test shapes the registry
+ * and browser behavior by reassigning those lets. createDiscoveryPage records the browser it was handed and then delegates to that browser's own newPage, so
+ * every per-row browser double keeps handing back the page double its row wrote, and what the creator itself puts in the creation options is pinned where the
+ * creator lives, in index.test.ts. startOverlayHandling stands in for the real poll, recording each call's options (phase and abort signal) into
+ * overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can pin the discovery phase and its abort timing; emulateLayoutSurface
+ * logs itself into the same record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. Typed as the
+ * production port so the doubles cannot drift. The health and login modules stay real.
  */
 const deps: PrecachingDeps = {
 
+  createDiscoveryPage: async (browser: Browser): Promise<Page> => {
+
+    discoveryPageCreations.push(browser);
+
+    return browser.newPage();
+  },
   emulateLayoutSurface: async (): Promise<{ height: number; width: number }> => {
 
     pageEvents.push("layout");
@@ -413,8 +425,10 @@ describe("startPrecaching - graceful-shutdown guard", () => {
  */
 describe("the deferred discovery re-attempt", () => {
 
-  // How many times precacheService was invoked for each slug, and the channels each provider's walks return. Reset per row.
+  // How many times precacheService was invoked for each slug, how many discovery walks each provider actually ran, and the channels those walks return. Reset
+  // per row.
   let attempts: Record<string, number> = {};
+  let walks: Record<string, number> = {};
   let walkResults: Record<string, DiscoveredChannel[]> = {};
 
   // Which providers report a cached lineup at the moment they are asked, standing in for a lineup that arrived between the cycle and the re-attempt.
@@ -431,8 +445,10 @@ describe("the deferred discovery re-attempt", () => {
     originalServices = CONFIG.channels.precacheServices;
     attempts = {};
     cachedSlugs = new Set();
+    discoveryPageCreations = [];
     nextHandle = 1;
     timers = new Map();
+    walks = {};
     walkResults = {};
     stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
 
@@ -510,7 +526,12 @@ describe("the deferred discovery re-attempt", () => {
 
     return {
 
-      discoverChannels: async (): Promise<DiscoveredChannel[]> => walkResults[slug] ?? [],
+      discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+        walks[slug] = (walks[slug] ?? 0) + 1;
+
+        return walkResults[slug] ?? [];
+      },
       getCachedChannels: (): Nullable<DiscoveredChannel[]> => (cachedSlugs.has(slug) ? ONE_CHANNEL : null),
       guideUrl: "https://www." + slug + ".test/guide",
       handlesOwnNavigation: true,
@@ -675,6 +696,127 @@ describe("the deferred discovery re-attempt", () => {
     await fire(5000);
 
     assert.deepEqual(attempts, { "deferred-full": 2 }, "the deferred full cycle ran after the guard was released");
+  });
+
+  /* A walk opens a browser window at the shared window's placement, which during a login session is the window the user is signing in through - and a second
+   * window over it would take their clicks. So the automatic walks stand aside while a session is on screen and come back for the services afterwards, on the
+   * same deferred schedule the rows above drive. The user-initiated browse endpoint is deliberately not gated: the user asked for that window.
+   *
+   * These rows drive the real login module through startLoginMode and clearLoginState, because the guard production reads is that module's own flag; the timer
+   * capture is installed first, so the session's fifteen-minute timeout is captured rather than left running against the process.
+   */
+  describe("standing aside for a login session", () => {
+
+    /**
+     * Starts a real login session against a stub browser, so the cycle and the re-attempt read the flag exactly as production does.
+     * @returns A promise that resolves once login mode is active.
+     */
+    async function startStubLogin(): Promise<void> {
+
+      setBrowserAccessors({
+
+        getBrowserInstance: (): Nullable<Browser> => ({ connected: true, newPage: async (): Promise<Page> => makeLoginPageStub() } as unknown as Browser),
+        syncWindowVisibility: async (): Promise<void> => { /* login.ts's own sync path is not under test here. */ }
+      });
+
+      await startLoginMode("https://www.deferred-login.test/login");
+    }
+
+    test("the cycle defers a service rather than walking it, and the re-attempt walks it once the session ends", async (t) => {
+
+      /* The guard's whole shape in one row. The cycle opens no discovery page and runs no walk while the session is up, says so on its completion line, and
+       * hands the service to the same re-attempt an empty walk would have gone to - and the re-attempt, firing after the session ends, does the walk. The
+       * completion line is also read for what it must NOT say: a deferred service never walked, so counting it as one that returned no channels would be a
+       * different claim about the same slug.
+       */
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "deferred-login": deferredProvider("deferred-login") };
+      CONFIG.channels.precacheServices = ["deferred-login"];
+
+      captureTimers(t);
+
+      await startStubLogin();
+
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      assert.deepEqual(discoveryPageCreations, [], "the cycle opened no discovery window while the session was on screen");
+      assert.deepEqual(walks, {}, "and ran no discovery walk");
+
+      const completionCall = info.mock.calls.find((call) => String(call.arguments[0]).includes("Channel lineup precaching complete"));
+
+      assert.ok(completionCall, "the cycle still reported its completion");
+
+      const completion = completionCall.arguments.map((argument) => String(argument)).join(" ");
+
+      assert.ok(completion.includes("1 deferred for a login session"), "the completion line names what the session deferred");
+      assert.ok(!completion.includes("returned no channels"), "a deferred service is not counted as one that walked and found nothing");
+
+      // The session ends and the re-attempt fires: the walk it was owed happens now.
+      walkResults = { "deferred-login": ONE_CHANNEL };
+
+      clearLoginState();
+
+      await fire(300000);
+
+      assert.equal(discoveryPageCreations.length, 1, "the re-attempt opened the discovery window it deferred");
+      assert.deepEqual(walks, { "deferred-login": 1 }, "and walked the service exactly once");
+    });
+
+    test("a re-attempt that meets a login session re-arms every service it still owes, not just the one it stopped on", async (t) => {
+
+      /* The re-arm has to carry the whole remainder. A pass that armed only the slug it collided with would drop every service behind it in the queue, and
+       * those services would never be walked at all - so the row queues two, collides on the first, and counts the walks after the session ends.
+       */
+      mockProviders = { "deferred-first": deferredProvider("deferred-first"), "deferred-second": deferredProvider("deferred-second") };
+      CONFIG.channels.precacheServices = [ "deferred-first", "deferred-second" ];
+
+      captureTimers(t);
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      // Counted as precacheService invocations, exactly as the rows above count them: an empty walk gets the session's own reload-and-retry, so the walk count
+      // for an empty service is two and says nothing about the schedule.
+      assert.deepEqual(attempts, { "deferred-first": 1, "deferred-second": 1 }, "the cycle attempted both services, and both came back empty");
+
+      // The session opens inside the re-attempt's delay, so the pass meets it on its first service.
+      await startStubLogin();
+
+      discoveryPageCreations = [];
+      walks = {};
+      walkResults = { "deferred-first": ONE_CHANNEL, "deferred-second": ONE_CHANNEL };
+
+      await fire(300000);
+
+      assert.deepEqual(discoveryPageCreations, [], "the pass opened no discovery window while the session was on screen");
+      assert.deepEqual(walks, {}, "and walked nothing");
+
+      clearLoginState();
+
+      await fire(300000);
+
+      assert.equal(discoveryPageCreations.length, 2, "the re-armed pass opened one window per service it still owed");
+      assert.deepEqual(walks, { "deferred-first": 1, "deferred-second": 1 }, "both services were walked, not only the one the pass stopped on");
+    });
+
+    test("the cycle walks the service normally when no login session is on screen", async (t) => {
+
+      // The guard's other side, so the row above cannot pass by the cycle being broken for every service rather than deferring for this one.
+      mockProviders = { "deferred-login": deferredProvider("deferred-login") };
+      walkResults = { "deferred-login": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["deferred-login"];
+
+      captureTimers(t);
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      assert.equal(discoveryPageCreations.length, 1, "the cycle opened the discovery window");
+      assert.deepEqual(walks, { "deferred-login": 1 }, "and walked the service");
+    });
   });
 });
 
@@ -929,6 +1071,7 @@ describe("withProviderGuidePage", () => {
 
   beforeEach(() => {
 
+    discoveryPageCreations = [];
     newPageOptions = [];
     overlayHandlingCalls = [];
     pageEvents = [];
@@ -1002,10 +1145,12 @@ describe("withProviderGuidePage", () => {
     assert.equal(signalAbortedInAfterWalk, true, "the overlay poll is aborted before afterWalk classifies the page");
   });
 
-  test("opens the guide page in the background, on the declared layout surface, before it navigates", async () => {
+  test("takes its page from the discovery-page creator, on the declared layout surface, before it navigates", async () => {
 
-    /* A guide walk never needs its tab selected, and taking the foreground would move the user off the tab they are on. The recorded creation options are the
-     * pin: dropping the option opens the page in front and this row reads the bare undefined a plain creation leaves behind.
+    /* Where the guide page comes from is the pin here. The session asks the browser layer's creator for it exactly once, handing over the browser it acquired,
+     * and passes no creation options of its own - the window, the background, and the placement are the creator's to decide, and they are pinned where the
+     * creator lives, in index.test.ts. A session that went back to creating the page itself would leave options here rather than the bare undefined its
+     * delegation records.
      *
      * The page-operation order carries the second half of the contract. Every guide strategy was written against the preset's dimensions, and a page carries no
      * emulation of its own, so the declaration has to land before the first navigation or the guide lays out once at the window's size and has to be re-laid-out.
@@ -1015,7 +1160,8 @@ describe("withProviderGuidePage", () => {
 
     await withProviderGuidePage(provider, {}, deps);
 
-    assert.deepEqual(newPageOptions, [{ background: true }], "the guide page is created behind whatever the window is already showing");
+    assert.deepEqual(discoveryPageCreations, [stubBrowser], "the creator was asked exactly once, for the browser the session acquired");
+    assert.deepEqual(newPageOptions, [undefined], "the session passes no creation options of its own");
     assert.deepEqual(pageEvents.slice(0, pageEvents.indexOf("goto") + 1), [ "mute", "layout", "poll:discovery", "goto" ],
       "the mute override, the layout declaration, and the overlay poll all precede the first navigation, in that order");
   });
