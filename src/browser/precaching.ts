@@ -7,6 +7,7 @@ import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { createDiscoveryPage, emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility,
   unregisterManagedPage } from "./index.ts";
+import { getPersistedLineup, persistProviderLineup } from "../config/providerLineups.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
@@ -15,7 +16,6 @@ import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
 import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
-import { persistProviderLineup } from "../config/providerLineups.ts";
 import { startOverlayHandling } from "./consent.ts";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
@@ -43,6 +43,20 @@ const PRECACHE_DELAY = 5000;
  * case: its walk never ran, so the pass re-arms itself for it until the session ends rather than spending its one attempt on a window the user is working in.
  */
 const PRECACHE_RETRY_DELAY = 300000;
+
+/* The fraction of the saved lineup a walk has to reach before the store is allowed to replace that lineup with it. A non-empty walk returning fewer channels
+ * than this fraction of what is already on file is treated as an incomplete read of the guide: a slice is replaced wholesale, so one screenful read off a
+ * virtualized guide - twelve rows where the guide carries a hundred and twenty-nine - would otherwise become the whole saved lineup. A quarter sits well below
+ * any plausible change a provider makes to its own channel list and well above what that truncation produces, so a count alone tells the two apart without a
+ * provider-declared completeness signal.
+ *
+ * Below the threshold the walk is never accepted automatically, and the reason is what a count can and cannot say: it cannot tell a truncated read from a
+ * provider that genuinely shrank, and a second walk agreeing with the first settles nothing either, because a one-screenful truncation reads the same twelve
+ * rows every time. So a provider that really did cut its lineup by more than this keeps its extra channel rows until a walk lands at or above the threshold, an
+ * on-demand discovery from the channel table refreshes it, or the saved file is corrected by hand. The warn line the guard emits carries both counts and names
+ * that outcome.
+ */
+const SUSPECT_WALK_RATIO = 0.25;
 
 // Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared through releasePrecacheGuard in a finally block.
 let precacheInProgress = false;
@@ -99,13 +113,14 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
 
 /* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors, the discovery-page creator and the
  * page bookkeeping around it, the shutdown gate, the window-visibility sync, the provider lookups, the discovery-phase overlay-poll launcher, and the
- * durable-lineup write the discovery-outcome policy performs.
+ * durable-lineup read and write the discovery-outcome policy performs.
  * It is injected as a default parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader
  * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same
  * reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and
- * abort timing without a live poll. persistProviderLineup belongs here for the same reason again: run for real it writes a file, so a test observes the write - and
- * injects a failing one - at this boundary. It is kept as an in-module const, NOT a separate *.context.ts adapter: browser/index.ts imports startPrecaching and
- * precaching.ts imports these accessors, so a separate adapter file would sit inside that value-import cycle, whereas the in-module const adds no new import edge.
+ * abort timing without a live poll. The lineup store's members belong here for the same reason again: run for real they touch a file, so a test observes the
+ * write - and injects a failing one - and states the saved lineup the plausibility guard reads against, both at this boundary. It is kept as an in-module const,
+ * NOT a separate *.context.ts adapter: browser/index.ts imports startPrecaching and precaching.ts imports these accessors, so a separate adapter file would sit
+ * inside that value-import cycle, whereas the in-module const adds no new import edge.
  * This is the collaborator-injection form of the Clock port (utils/clock.ts).
  */
 export interface PrecachingDeps {
@@ -113,6 +128,7 @@ export interface PrecachingDeps {
   readonly createDiscoveryPage: typeof createDiscoveryPage;
   readonly emulateLayoutSurface: typeof emulateLayoutSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
+  readonly getPersistedLineup: typeof getPersistedLineup;
   readonly getProviderBySlug: typeof getProviderBySlug;
   readonly getProvidersForDomain: typeof getProvidersForDomain;
   readonly isGracefulShutdown: typeof isGracefulShutdown;
@@ -128,6 +144,7 @@ export const defaultPrecachingDeps: PrecachingDeps = {
   createDiscoveryPage,
   emulateLayoutSurface,
   getCurrentBrowser,
+  getPersistedLineup,
   getProviderBySlug,
   getProvidersForDomain,
   isGracefulShutdown,
@@ -213,13 +230,14 @@ export function stopPrecaching(): void {
  *
  * An empty result classifies the still-open page: a confirmed authentication wall marks the provider's domain needs-sign-in; a consent overlay and the unknown
  * classification change no state (an unexplained empty walk is not evidence of anything). A non-empty result that the provider's validatePrecache accepts (or that
- * needs no validation) marks the domain verified and persists the lineup; a non-empty result the validator rejects proves the wall is gone but not that paid access
- * exists, so it clears a standing needs-sign-in entry back to unknown, changes nothing else, and persists nothing - a rejected walk is not a lineup the store can
- * safely replace a slice with.
+ * needs no validation) marks the domain verified and persists the lineup, unless it holds too small a fraction of the lineup already on file to be a complete read
+ * of the guide, in which case the mark still lands and the saved lineup stands; a non-empty result the validator rejects proves the wall is gone but not that paid
+ * access exists, so it clears a standing needs-sign-in entry back to unknown, changes nothing else, and persists nothing - a rejected walk is not a lineup the
+ * store can safely replace a slice with.
  * @param provider - The provider whose discovery completed.
  * @param channels - The discovered channels (possibly empty).
  * @param page - The still-open discovery page, inspected only when the result is empty.
- * @param deps - The injected dependencies; the lineup write runs through deps.persistProviderLineup.
+ * @param deps - The injected dependencies; the saved-lineup read and the lineup write both run through this port.
  * @param classification - A classification the caller already performed against the page state it wants recorded. When omitted, the still-open page is classified
  *   here, which is what every caller that has not already looked does.
  * @returns A promise that resolves once any classification and state recording completes.
@@ -271,13 +289,30 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
 
     markDomainAuth(domain);
 
+    /* A walk far smaller than the lineup already on file reads as an incomplete pass over the guide rather than as a statement that the provider cut its channel
+     * list, so the durable write is withheld and what is on file stands. The order here is the contract: the domain is marked above regardless, because channels
+     * came back and that proves access whatever the count says, and the live cache this walk already filled is untouched, so the session still tunes from what
+     * the walk did reach. Only the write to the store is given up.
+     */
+    const saved = deps.getPersistedLineup(provider.slug);
+
+    if((saved !== null) && (channels.length < (saved.length * SUSPECT_WALK_RATIO))) {
+
+      LOG.warn("%s returned %d channels where its saved lineup holds %d, so the walk is treated as incomplete and the saved lineup is kept.", provider.label,
+        channels.length, saved.length);
+
+      return;
+    }
+
     /* Persist what the walk found so the lineup outlives this browser session. The provider states its own durable shape through exportDurableLineup - which
      * fields survive a session is provider knowledge, not the recorder's - and a provider with nothing durable to add contributes the channel identities the walk
      * returned.
      *
-     * Only a walk the validator accepted is written, and the reason is the store's replace semantics: a slice is replaced wholesale, so a rejected walk - one the
-     * provider itself judges not to be a trustworthy statement of its lineup - could shrink a fuller slice written earlier, dropping channels out of the
-     * cold-listing fallback and taking their durable watch URLs with them. Verify-on-use covers staleness, not a lineup the provider has already rejected.
+     * Every condition a write has to pass exists because of the store's replace semantics: a slice is replaced wholesale, so anything short of a trustworthy full
+     * statement of the lineup could shrink a fuller slice written earlier, dropping channels out of the cold-listing fallback and taking their durable watch URLs
+     * with them. The provider's own validator is the first, and a walk it judges untrustworthy never reaches this block at all; the plausibility guard above is
+     * the second, and it withholds a walk too small to be a complete read of the guide. Verify-on-use covers staleness, not a lineup the provider has already
+     * rejected or a read that plainly did not finish.
      *
      * The write is fire-and-forget by design: it never throws, and making the discovery endpoint's response wait on a file write would charge the user for a
      * durability guarantee they did not ask for.

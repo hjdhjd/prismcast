@@ -73,6 +73,7 @@ const deps: PrecachingDeps = {
     return { height: 1080, width: 1920 };
   },
   getCurrentBrowser: async (): Promise<Browser> => stubBrowser,
+  getPersistedLineup: (): null => null,
   getProviderBySlug: (slug: string): ProviderModule | undefined => mockProviders[slug],
   getProvidersForDomain: (domain: string): ProviderModule[] => Object.entries(mockGuideUrls)
     .filter(([ , guideUrl ]) => extractDomain(guideUrl) === domain).flatMap(([slug]) => mockProviders[slug] ?? []),

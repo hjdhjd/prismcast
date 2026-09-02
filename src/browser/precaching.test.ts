@@ -27,11 +27,16 @@ import assert from "node:assert/strict";
 // The lineup writes the recorder issues, captured by the injected port below so each case can assert what was persisted without touching a real file.
 let persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
-/* The injected deps the recorder runs against. recordDiscoveryOutcome reaches exactly one member of PrecachingDeps - the lineup write - so the double-cast
+// What the store holds for the provider under test, answered by the injected port below. A row states the saved lineup the plausibility guard measures against by
+// assigning here, so no case needs a file or the real store.
+let savedLineup: Nullable<PersistedLineupChannel[]> = null;
+
+/* The injected deps the recorder runs against. recordDiscoveryOutcome reaches the lineup store's members of PrecachingDeps and nothing else, so the double-cast
  * documents that this stub covers the recorder's slice of the port rather than the whole surface, matching the makeProvider convention below.
  */
 const recorderDeps = {
 
+  getPersistedLineup: (): Nullable<PersistedLineupChannel[]> => savedLineup,
   persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
 
     persistedLineups.push({ channels, slug });
@@ -121,6 +126,7 @@ describe("recordDiscoveryOutcome", () => {
   beforeEach(() => {
 
     persistedLineups = [];
+    savedLineup = null;
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule. Each test uses
     // unique synthetic domains so state from one scenario cannot color another.
@@ -326,6 +332,129 @@ describe("recordDiscoveryOutcome", () => {
     await recordDiscoveryOutcome(provider, [], makePage("https://www.case-empty-lineup.test/guide"), recorderDeps);
 
     assert.deepEqual(persistedLineups, [], "an empty walk never reaches the lineup store");
+  });
+
+  /* The store replaces a provider's slice wholesale, so the recorder decides in front of it whether a walk is a complete enough read of the guide to stand in for
+   * the lineup already on file. The rows here drive that decision from both sides of the threshold: what a walk holds, what the store holds, and which of the two
+   * survives.
+   */
+  describe("the saved-lineup plausibility guard", () => {
+
+    /**
+     * Builds a walk result of the requested size. The guard reads only the count, so the rows below vary that and nothing else.
+     * @param count - How many channels the walk returned.
+     * @returns The synthetic walk result.
+     */
+    function walkOf(count: number): DiscoveredChannel[] {
+
+      return Array.from({ length: count }, (_unused, index) => ({ channelSelector: "Walk" + String(index), name: "Walk " + String(index) }));
+    }
+
+    /**
+     * Builds a saved lineup of the requested size, standing in for what the store already holds for the provider.
+     * @param count - How many channels are on file.
+     * @returns The synthetic saved lineup.
+     */
+    function savedOf(count: number): PersistedLineupChannel[] {
+
+      return Array.from({ length: count }, (_unused, index) => ({ channelSelector: "Saved" + String(index), name: "Saved " + String(index) }));
+    }
+
+    test("a walk holding a small fraction of the saved lineup is withheld and reported, and still marks the domain verified", async (t) => {
+
+      /* The failure this guard answers, in one row: a screenful read off a virtualized guide, twelve rows against the hundred and twenty-nine on file. Persisting
+       * it would replace the slice wholesale and cost the other hundred and seventeen channels. Only the write is withheld - the domain is marked verified either
+       * way, because twelve channels coming back proves access exactly as well as a hundred and twenty-nine would.
+       */
+      const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+      const provider = makeProvider({ guideUrl: "https://www.case-truncated.test/guide", slug: "case-truncated" });
+
+      savedLineup = savedOf(129);
+
+      await recordDiscoveryOutcome(provider, walkOf(12), makePage("https://www.case-truncated.test/guide"), recorderDeps);
+
+      assert.deepEqual(persistedLineups, [], "the truncated walk never reaches the lineup store");
+      assert.equal(warn.mock.calls.length, 1, "exactly one WARN");
+
+      const reported = warn.mock.calls[0];
+
+      assert.ok(reported, "the warn line was captured");
+      assert.deepEqual(reported.arguments.slice(1), [ "Stub Service", 12, 129 ], "the warn line carries the service and both counts");
+      assert.match(String(reported.arguments[0]), /treated as incomplete and the saved lineup is kept/, "and names what happens to the saved lineup");
+      assert.equal(getDomainAuthState("case-truncated.test")?.status, "verified", "channels came back, so access is still proven");
+    });
+
+    test("a walk above the threshold persists the rows it found", async () => {
+
+      // A quarter of the hundred and twenty-nine on file is 32.25, so a walk of thirty-three clears it. Paired with the row below, this is what makes the ratio
+      // itself observable rather than merely present.
+      const provider = makeProvider({ guideUrl: "https://www.case-above.test/guide", slug: "case-above" });
+
+      savedLineup = savedOf(129);
+
+      await recordDiscoveryOutcome(provider, walkOf(33), makePage("https://www.case-above.test/guide"), recorderDeps);
+
+      assert.equal(persistedLineups.length, 1, "a plausible walk is written");
+      assert.equal(persistedLineups[0]?.channels.length, 33, "and it is the walk's own rows that reach the store");
+    });
+
+    test("a walk one channel below the threshold is withheld", async (t) => {
+
+      // The other side of the same boundary: thirty-two is below 32.25. A comparison that pointed the wrong way, or that rounded, would write here and still
+      // satisfy the row above.
+      const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+      const provider = makeProvider({ guideUrl: "https://www.case-below.test/guide", slug: "case-below" });
+
+      savedLineup = savedOf(129);
+
+      await recordDiscoveryOutcome(provider, walkOf(32), makePage("https://www.case-below.test/guide"), recorderDeps);
+
+      assert.deepEqual(persistedLineups, [], "a walk below the threshold is withheld");
+      assert.equal(warn.mock.calls.length, 1, "and is reported once");
+    });
+
+    test("a provider with nothing on file persists whatever the walk found", async (t) => {
+
+      // The first walk a provider ever completes has nothing to be measured against, and a guard that refused it would leave the store empty forever. The row
+      // uses a single channel, which is as small as a non-empty walk gets.
+      const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+      const provider = makeProvider({ guideUrl: "https://www.case-nosaved.test/guide", slug: "case-nosaved" });
+
+      await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-nosaved.test/guide"), recorderDeps);
+
+      assert.equal(persistedLineups.length, 1, "with nothing on file, size is not a question the guard can ask");
+      assert.equal(warn.mock.calls.length, 0, "and nothing is reported");
+    });
+
+    test("a small saved lineup obeys the same rule", async () => {
+
+      // Five on file puts the threshold at 1.25, so a single-channel walk falls below it. The guard is a fraction rather than a floor, which is what keeps it
+      // meaningful for a provider carrying a handful of channels - at four on file the threshold is exactly one, which a single channel does not fall below.
+      const provider = makeProvider({ guideUrl: "https://www.case-small.test/guide", slug: "case-small" });
+
+      savedLineup = savedOf(5);
+
+      await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-small.test/guide"), recorderDeps);
+
+      assert.deepEqual(persistedLineups, [], "one channel against five on file is withheld");
+    });
+
+    test("a walk the validator rejects never reaches the guard", async (t) => {
+
+      /* The validator and the guard make separate claims - the validator's is about trustworthiness, the guard's is about completeness - and they are ordered. A
+       * walk the provider itself rejects is not also reported as an incomplete read: both outcomes withhold the write, only one of them warns.
+       */
+      const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+      const provider = makeProvider({ guideUrl: "https://www.case-rejected-guard.test/guide", slug: "case-rejected-guard",
+        validatePrecache: (): boolean => false });
+
+      savedLineup = savedOf(129);
+
+      await recordDiscoveryOutcome(provider, walkOf(12), makePage("https://www.case-rejected-guard.test/guide"), recorderDeps);
+
+      assert.deepEqual(persistedLineups, [], "a rejected walk still persists nothing");
+      assert.equal(warn.mock.calls.length, 0, "and the incomplete-walk line is not emitted for it");
+    });
   });
 });
 

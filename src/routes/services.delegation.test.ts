@@ -121,6 +121,7 @@ const stubPrecachingDeps: PrecachingDeps = {
   createDiscoveryPage: async (browser: Browser): Promise<Page> => browser.newPage(),
   emulateLayoutSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => stubBrowser,
+  getPersistedLineup: (): null => null,
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),
   getProvidersForDomain: (): ProviderModule[] => [],
   isGracefulShutdown: (): boolean => false,
