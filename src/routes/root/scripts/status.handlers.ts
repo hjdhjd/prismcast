@@ -21,9 +21,12 @@
  * Function.prototype.toString() concatenation in generateStatusScript(). The TypeScript function IS the source; there is no parallel hand-mirrored implementation
  * to drift away from it. The constraint this places on function bodies is that they may reference only their parameters, browser globals (document, JSON, Date,
  * Math, URL, Object, Number, requestAnimationFrame, setInterval, EventSource, window, CustomEvent, and escapeHtml - the shared client-escape SSOT installed on
- * window by shared.ts, treated here as a platform-like global), or sibling functions that are also emitted. No imports, no closures over module-scope TS variables,
- * no Node-only APIs. The constants are emitted via JSON.stringify so handler bodies can reference them by their TS-side identifier.
+ * window by shared.ts, treated here as a platform-like global), sibling functions that are also emitted, or a registered constant by its TS-side identifier, since
+ * the constants are emitted via JSON.stringify ahead of the function bodies. What a body may never reference is an import binding, any other module-scope variable,
+ * or a Node-only API: only the function bodies ship to the browser, so a binding they close over here simply does not exist there. A registered constant's VALUE, by
+ * contrast, may be assembled from an import - it crosses as JSON rather than as a binding, which is why the module imports the shared resolution labels.
  */
+import { RESOLUTION_LABELS } from "../../../utils/index.ts";
 
 /**
  * The shape of a single stream as carried over the SSE wire and stored in the client state. This is the script-side projection - only the fields the renderers
@@ -32,6 +35,7 @@
 export interface StreamSummary {
 
   readonly captureCodec?: string;
+  readonly captureResolution?: string;
   readonly channel?: string | null;
   readonly clientCount: number;
   readonly clients: readonly { readonly count: number; readonly type: string }[];
@@ -50,6 +54,7 @@ export interface StreamSummary {
   readonly recoveryAttempts: number;
   readonly serviceName?: string;
   readonly showName?: string;
+  readonly sourceResolution?: string;
   readonly startTime: string;
   readonly streamingMode?: "capture" | "native";
   readonly url: string;
@@ -181,18 +186,14 @@ const clientTypeLabels: Record<string, string> = {
   mpegts: "MPEG-TS"
 };
 
-// Native HLS variant resolution display labels. Hoisted so renderStreamsTable does not reallocate on every stream row.
-const nativeResolutionLabels: Record<string, string> = {
-
-  "1080": "1080p",
-  "2160": "4K",
-  "360": "360p",
-  "480": "480p",
-  "720": "720p"
-};
+/* Resolution display labels, taken from the shared map so a resolution renders under the same name everywhere it is shown. The camelCase alias is the script-side
+ * identifier: a HANDLER_CONSTANTS name is what the emitted script declares and what the handler bodies reference, and those names follow the client's own
+ * convention rather than the utility module's.
+ */
+const resolutionLabels: Record<string, string> = RESOLUTION_LABELS;
 
 // Row background tints keyed by health state. Module-scope constant so renderStreamsTable reads from a single shared map instead of allocating a fresh object
-// for every stream row. Consistent with clientTypeLabels and nativeResolutionLabels above - accessed inline at the call site, no wrapper helper.
+// for every stream row. Consistent with clientTypeLabels above - accessed inline at the call site, no wrapper helper.
 const rowTints: Record<string, string> = {
 
   buffering: "var(--stream-tint-buffering)",
@@ -212,7 +213,7 @@ export const HANDLER_CONSTANTS: readonly { readonly name: string; readonly value
   { name: "clientTypeLabels", value: clientTypeLabels },
   { name: "healthColorVars", value: healthColorVars },
   { name: "healthLabels", value: healthLabels },
-  { name: "nativeResolutionLabels", value: nativeResolutionLabels },
+  { name: "resolutionLabels", value: RESOLUTION_LABELS },
   { name: "rowTints", value: rowTints }
 ];
 
@@ -432,14 +433,25 @@ function renderHealthCellContent(s: StreamSummary): string {
   return clientIndicator + getHealthBadge(s.health, s.escalationLevel ?? 0);
 }
 
-// Detail panel codec line: "{Codec} ({Mode}){suffix}" where suffix carries native-HLS bandwidth and resolution if present. Hardware-accelerated codecs prefix
-// the lightning bolt; native HLS without a captureCodec fills "Native HLS" instead.
+/* Detail panel codec line: "{Codec} ({Mode}){suffix}". A native stream's suffix carries the variant's bandwidth and resolution; a capture stream's carries the
+ * page video's own resolution beside the size capture encodes at, so an operator can see a 720p source being captured at 1080p. Hardware-accelerated codecs prefix
+ * the lightning bolt; native HLS without a captureCodec fills "Native HLS" instead.
+ */
 function renderDetailCodec(s: StreamSummary): string {
 
   const codec = s.captureCodec ? escapeHtml(s.captureCodec) : "";
   const codecLabel = s.captureCodec ? (s.hardwareAccelerated ? "⚡ " + codec : codec) :
     (s.streamingMode === "native" ? "Native HLS" : "Unknown");
   const modeLabel = s.streamingMode === "native" ? "Native HLS" : "Capture";
+
+  // Both suffixes name a resolution the same way, and both fall back to the escaped raw string when the height carries no standard label.
+  const labelFor = (resolution: string): string => {
+
+    const height = resolution.split("x")[1];
+
+    return (height ? resolutionLabels[height] : undefined) ?? escapeHtml(resolution);
+  };
+
   let qualitySuffix = "";
 
   if(s.streamingMode === "native") {
@@ -453,15 +465,20 @@ function renderDetailCodec(s: StreamSummary): string {
 
     if(s.nativeResolution) {
 
-      const h = s.nativeResolution.split("x")[1];
-
-      qParts.push((h ? nativeResolutionLabels[h] : undefined) ?? escapeHtml(s.nativeResolution));
+      qParts.push(labelFor(s.nativeResolution));
     }
 
     if(qParts.length > 0) {
 
       qualitySuffix = " - " + qParts.join(" ");
     }
+  }
+
+  // A capture stream reports the source it is reading beside the surface it encodes to. The capture half is conditional because the pair is only worth showing
+  // once the source half is known, and the source half is what the monitor fills in on its first reading with real dimensions.
+  if((s.streamingMode !== "native") && s.sourceResolution) {
+
+    qualitySuffix = " - " + labelFor(s.sourceResolution) + " source" + (s.captureResolution ? (", " + labelFor(s.captureResolution) + " capture") : "");
   }
 
   return "<strong>Codec:</strong> " + codecLabel + " (" + modeLabel + ")" + qualitySuffix;

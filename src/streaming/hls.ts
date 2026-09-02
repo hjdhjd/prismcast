@@ -3,7 +3,7 @@
  * hls.ts: HLS streaming request handlers for PrismCast.
  */
 import type { HLSState, StreamRegistryEntry } from "./registry.ts";
-import { LOG, formatError, runWithStreamContext, startTimer } from "../utils/index.ts";
+import { LOG, formatError, formatResolutionLabel, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
 import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
@@ -668,9 +668,6 @@ function sendSegment(data: Buffer, segmentName: string, res: Response): void {
 
 // Stream Lifecycle.
 
-// Maps vertical resolution heights to standard display labels. Used by formatNativeQuality() to convert "1920x1080" -> "1080p".
-const RESOLUTION_LABELS: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
-
 /**
  * Formats the native HLS quality string for the "Streaming..." log line. Combines codec, bandwidth (as Mbps), and resolution (as standard label like "1080p")
  * into a compact suffix. Returns an empty string when no values are available, or a comma-prefixed string like ", H264 12.1Mbps 1080p" for inclusion in the log.
@@ -695,10 +692,7 @@ function formatNativeQuality(bandwidth: number, codec: Nullable<string>, resolut
 
   if(resolution) {
 
-    // Map the vertical resolution to a standard label. Parse the height from "WIDTHxHEIGHT" format.
-    const height = resolution.split("x")[1];
-
-    parts.push((height ? RESOLUTION_LABELS[height] : undefined) ?? resolution);
+    parts.push(formatResolutionLabel(resolution));
   }
 
   if(parts.length === 0) {

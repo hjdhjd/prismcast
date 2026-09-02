@@ -3,7 +3,7 @@
  * preroll.ts: Preroll generation and compositor for immediate HLS response during stream startup.
  */
 import type { Express, Request, Response } from "express";
-import { LOG, resolvePrerollFFmpegPath } from "../utils/index.ts";
+import { LOG, formatResolution, resolvePrerollFFmpegPath } from "../utils/index.ts";
 import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
@@ -204,7 +204,7 @@ export async function generatePreroll(): Promise<void> {
   // Size the preroll from the configured preset, which is the same surface capture renders and encodes at. Matching it prevents a resolution mismatch at the
   // preroll-to-live discontinuity boundary.
   const viewport = getPresetViewport(CONFIG);
-  const size = String(viewport.width) + "x" + String(viewport.height);
+  const size = formatResolution(viewport.width, viewport.height);
 
   // Generate the H.264 variant. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and
   // CRF 18 produce higher quality - acceptable for a short duration of simple content generated once at startup.

@@ -271,6 +271,47 @@ describe("monitorPlaybackHealth", () => {
     emitStreamRemoved(numericStreamId);
   });
 
+  test("reports the source's own size beside the surface capture encodes at", async (t) => {
+
+    /* The pair is the point: the surface comes from the configured preset and the source size from the tick's own reading, so an operator can see a 720p source
+     * being captured at 1080p. The fixture makes the two values differ - a 1920x1080 reading under the default 720p preset - so a swap or a cross-derivation
+     * cannot pass by rendering the same number twice.
+     */
+    t.mock.timers.enable({ apis: [ "setInterval", "setTimeout", "Date" ] });
+
+    const numericStreamId = 9011;
+
+    // The emitter drops updates for streams it has never seen, so the stream is registered before the monitor starts.
+    emitStreamAdded({ id: numericStreamId } as unknown as StreamStatus);
+
+    const payloads: StreamStatus[] = [];
+
+    const unsubscribe = subscribeToStatus((event, data) => {
+
+      if(event === "streamHealthChanged") {
+
+        payloads.push(data as StreamStatus);
+      }
+    });
+
+    const fake = makeFakePage();
+    const handle = startMonitor(fake.page, "resolution-report-1", numericStreamId);
+
+    await advance(t, MONITOR_INTERVAL);
+    fake.evaluations[0]?.resolve({ ...readableState(1), videoHeight: 1080, videoWidth: 1920 });
+    await flushMicrotasks();
+
+    const reported = payloads.at(-1);
+
+    assert.ok(reported, "the tick emitted a status update");
+    assert.equal(reported.sourceResolution, "1920x1080", "the source size is the reading the tick took");
+    assert.equal(reported.captureResolution, "1280x720", "the capture size is the configured surface");
+
+    handle.dispose();
+    unsubscribe();
+    emitStreamRemoved(numericStreamId);
+  });
+
   test("bounds a read issued during a timeout streak by the short confirmation probe", async (t) => {
 
     /* Both bounds are pinned here. The first read carries the full-length bound, which is what detects the hang. The read that follows carries the probe bound:

@@ -96,6 +96,39 @@ export function formatTimeAgo(timestamp: number): string {
 }
 
 /**
+ * Display labels for the standard vertical resolutions, keyed by the height in pixels. This is the single source of truth for the label a resolution is shown
+ * under: the native HLS quality suffix in the log, the stream detail's codec line in the web UI, and anything else that renders a resolution to a person all
+ * read it from here. A height with no entry has no standard label, and its caller falls back to the raw resolution string.
+ */
+export const RESOLUTION_LABELS: Record<string, string> = { "1080": "1080p", "2160": "4K", "360": "360p", "480": "480p", "720": "720p" };
+
+/**
+ * Formats a pixel size as the "WIDTHxHEIGHT" string the codebase carries resolutions in. This is the one producer of that form, and it matches the shape the
+ * native probe reads verbatim out of a manifest's RESOLUTION attribute, so a resolution that came off the wire and one this function built are the same string
+ * to every consumer downstream - the label lookup below included.
+ * @param width - The width in pixels.
+ * @param height - The height in pixels.
+ * @returns The size as "WIDTHxHEIGHT".
+ */
+export function formatResolution(width: number, height: number): string {
+
+  return String(width) + "x" + String(height);
+}
+
+/**
+ * Formats a "WIDTHxHEIGHT" resolution string as its standard display label, falling back to the resolution string itself when the height carries no standard
+ * label. The fallback is what keeps a non-standard rendition visible rather than dropped: a 1234x999 variant renders as "1234x999" instead of disappearing.
+ * @param resolution - The resolution as "WIDTHxHEIGHT".
+ * @returns The display label, or the resolution string when the height has no label.
+ */
+export function formatResolutionLabel(resolution: string): string {
+
+  const height = resolution.split("x")[1];
+
+  return (height ? RESOLUTION_LABELS[height] : undefined) ?? resolution;
+}
+
+/**
  * Extracts a concise domain from a URL by keeping only the last two portions of the hostname (e.g., "watch.foodnetwork.com" becomes "foodnetwork.com",
  * "www.hulu.com" becomes "hulu.com"). Used as a standard domain key for DOMAIN_CONFIG lookups and as a display fallback when no service name is configured.
  * @param url - The URL to extract the domain from.

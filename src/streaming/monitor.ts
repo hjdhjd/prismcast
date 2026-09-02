@@ -3,8 +3,8 @@
  * monitor.ts: Playback health monitoring for PrismCast.
  */
 import type { CircuitBreakerState, MonitorHandle, RecoveryMetrics, TabReplacementResult } from "./recovery.ts";
-import { EvaluateTimeoutError, LOG, capitalize, formatError, getAbortSignal, isPageDeathError, isSessionClosedError, runWithStreamContext,
-  startTimer } from "../utils/index.ts";
+import { EvaluateTimeoutError, LOG, capitalize, formatError, formatResolution, getAbortSignal, isPageDeathError, isSessionClosedError,
+  runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Frame, Page } from "puppeteer-core";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth, formatIssueType,
@@ -294,8 +294,9 @@ export function monitorPlaybackHealth(
   // data events fire. The 20-second threshold is 4x the maximum expected moof delivery interval (5 seconds) to avoid false positives during normal bursty delivery.
   const SEGMENT_STALENESS_TIMEOUT = 20000;
 
-  // The capture surface this stream is measured against, read once for the monitor's lifetime. The quality preset is restart-gated, so it cannot change while a
-  // stream is running, and re-deriving it on every two-second tick would be work that can only ever produce the same answer.
+  // The capture surface: the size capture encodes at, reported beside the source's own size in the status the monitor emits, and the size the resolution detector
+  // measures a reading against. Read once for the monitor's lifetime, because the quality preset is restart-gated and cannot change while a stream is running, so
+  // re-deriving it on every two-second tick would be work that can only ever produce the same answer.
   const presetViewport = getPresetViewport(CONFIG);
 
   // Resolution degradation detection. When the video element's intrinsic resolution is significantly below the capture surface, the service's ABR is delivering
@@ -531,6 +532,7 @@ export function monitorPlaybackHealth(
 
       bufferingDuration: null,
       captureCodec: entry.captureCodec,
+      captureResolution: null,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
       clients: clientSummary.clients,
@@ -553,6 +555,7 @@ export function monitorPlaybackHealth(
       recoveryAttempts: nativeHealthState.recoveryAttempts,
       serviceName: streamInfo.serviceName,
       showName: getShowName(streamInfo.numericStreamId),
+      sourceResolution: null,
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry.streamingMode,
       url
@@ -778,10 +781,17 @@ export function monitorPlaybackHealth(
     // Get current client counts and type breakdown for this stream.
     const clientSummary = getClientSummary(streamInfo.numericStreamId);
 
+    // The two capture-only sizes are null for a native entry, including one whose native proxy is gone: the entry's mode is the contract, not the builder.
+    const captureStream = (entry?.streamingMode ?? "capture") !== "native";
+    const sourceResolution = (captureStream && lastVideoState && (lastVideoState.videoWidth > 0) && (lastVideoState.videoHeight > 0)) ?
+      formatResolution(lastVideoState.videoWidth, lastVideoState.videoHeight) : null;
+    const captureResolution = captureStream ? formatResolution(presetViewport.width, presetViewport.height) : null;
+
     const status: StreamStatus = {
 
       bufferingDuration: bufferingStartTime ? Math.round((now - bufferingStartTime) / 1000) : null,
       captureCodec: entry?.captureCodec ?? null,
+      captureResolution,
       channel: streamInfo.channelName,
       clientCount: clientSummary.total,
       clients: clientSummary.clients,
@@ -804,6 +814,7 @@ export function monitorPlaybackHealth(
       recoveryAttempts: recoveryState.totalAttempts,
       serviceName: streamInfo.serviceName,
       showName: getShowName(streamInfo.numericStreamId),
+      sourceResolution,
       startTime: streamInfo.startTime.toISOString(),
       streamingMode: entry?.streamingMode ?? "capture",
       url

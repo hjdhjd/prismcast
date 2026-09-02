@@ -22,6 +22,7 @@ function makeStreamStatus(overrides: Partial<StreamStatus> = {}): StreamStatus {
 
     bufferingDuration: null,
     captureCodec: null,
+    captureResolution: null,
     channel: "test-channel",
     clientCount: 0,
     clients: [],
@@ -44,6 +45,7 @@ function makeStreamStatus(overrides: Partial<StreamStatus> = {}): StreamStatus {
     recoveryAttempts: 0,
     serviceName: "TestService",
     showName: "",
+    sourceResolution: null,
     startTime: new Date(0).toISOString(),
     streamingMode: "capture",
     url: "https://example.test",

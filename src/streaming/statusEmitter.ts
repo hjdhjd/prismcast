@@ -23,6 +23,9 @@ export interface StreamStatus {
 
   bufferingDuration: Nullable<number>;
   captureCodec: Nullable<string>;
+
+  // The frame size capture encodes at, as "WIDTHxHEIGHT". Null for a native stream, whose nativeResolution is both its source and its output.
+  captureResolution: Nullable<string>;
   channel: Nullable<string>;
   clientCount: number;
   clients: ClientTypeCount[];
@@ -45,6 +48,10 @@ export interface StreamStatus {
   readyState: number;
   recoveryAttempts: number;
   showName: string;
+
+  // The intrinsic size of the page's video element as the monitor last read it, as "WIDTHxHEIGHT". Null until the first reading with non-zero dimensions, and
+  // null for a native stream, which has no page video to measure.
+  sourceResolution: Nullable<string>;
   startTime: string;
   streamingMode: StreamingMode;
   url: string;
@@ -142,6 +149,7 @@ export function createInitialStreamStatus(options: {
 
     bufferingDuration: null,
     captureCodec: options.captureCodec ?? null,
+    captureResolution: null,
     channel: options.channelName,
     clientCount: 0,
     clients: [],
@@ -164,6 +172,7 @@ export function createInitialStreamStatus(options: {
     recoveryAttempts: 0,
     serviceName: options.serviceName,
     showName: "",
+    sourceResolution: null,
     startTime: options.startTime.toISOString(),
     streamingMode: options.streamingMode ?? "capture",
     url: options.url

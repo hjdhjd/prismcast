@@ -5,7 +5,8 @@
  * on-disk file shape without warning, so it earns the heaviest boundary coverage.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import { capitalize, extractDomain, extractPathname, formatDuration, formatTimeAgo, formatTimestamp, stringifySorted } from "./format.ts";
+import { capitalize, extractDomain, extractPathname, formatDuration, formatResolution, formatResolutionLabel, formatTimeAgo, formatTimestamp,
+  stringifySorted } from "./format.ts";
 import assert from "node:assert/strict";
 
 describe("formatTimestamp", () => {
@@ -196,6 +197,42 @@ describe("formatTimeAgo", () => {
     // Boundary: clock skew or a future timestamp produces a negative seconds value, which Math.floor rounds toward -Infinity. The first guard `seconds < 60`
     // catches negatives too, so the function gracefully reports "just now" rather than "-N minutes ago".
     assert.equal(formatTimeAgo(1_700_000_000_000 + 5_000), "just now");
+  });
+});
+
+describe("formatResolution", () => {
+
+  test("joins a width and a height into the wire form the codebase carries resolutions in", () => {
+
+    // The one producer of "WIDTHxHEIGHT", and the shape a manifest's RESOLUTION attribute already arrives in. A separator or an order change here would silently
+    // split every consumer into two dialects, since the label lookup and the native probe both read the same form.
+    assert.equal(formatResolution(1280, 720), "1280x720");
+  });
+});
+
+describe("formatResolutionLabel", () => {
+
+  test("maps a standard height to its display label", () => {
+
+    assert.equal(formatResolutionLabel("1920x1080"), "1080p");
+  });
+
+  test("maps the 2160 height to the 4K label rather than a 2160p one", () => {
+
+    // The one entry whose label is not the height plus a "p". Pinning it separately is what keeps a mechanical rewrite of the map from quietly renaming 4K.
+    assert.equal(formatResolutionLabel("3840x2160"), "4K");
+  });
+
+  test("falls back to the resolution string when the height carries no standard label", () => {
+
+    // The fallback is what keeps a non-standard rendition visible. Dropping it would render an empty label for every variant outside the five standard heights.
+    assert.equal(formatResolutionLabel("1234x999"), "1234x999");
+  });
+
+  test("falls back for a string carrying no height at all", () => {
+
+    // Boundary: a value with no separator has no second component to look up, so the raw string is all there is to show.
+    assert.equal(formatResolutionLabel("unknown"), "unknown");
   });
 });
 

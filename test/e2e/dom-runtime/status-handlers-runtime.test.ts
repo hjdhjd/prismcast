@@ -233,7 +233,7 @@ describe("status.handlers: HANDLER_CONSTANTS registry", () => {
      */
     const names = handlers.HANDLER_CONSTANTS.map((c) => c.name);
 
-    assert.deepEqual(names, [ "clientTypeLabels", "healthColorVars", "healthLabels", "nativeResolutionLabels", "rowTints" ]);
+    assert.deepEqual(names, [ "clientTypeLabels", "healthColorVars", "healthLabels", "resolutionLabels", "rowTints" ]);
   });
 
   test("healthColorVars carries CSS-variable tokens for every health discriminant the wire emits", () => {
@@ -688,7 +688,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
 
   test("native HLS with bandwidth + resolution appends the quality suffix", () => {
 
-    /* The suffix shape: ' - {Mbps}Mbps {resolution-label}'. The resolution label comes from nativeResolutionLabels keyed by the height (the second component of
+    /* The suffix shape: ' - {Mbps}Mbps {resolution-label}'. The resolution label comes from the shared label map keyed by the height (the second component of
      * a 'WIDTHxHEIGHT' string). We pin the full happy-path: 5Mbps + 1920x1080 -> ' - 5.0Mbps 1080p'.
      */
     const html = handlers.renderDetailCodec(makeStream({
@@ -703,8 +703,8 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
 
   test("native HLS with unrecognized resolution height falls back to the raw resolution string", () => {
 
-    /* The nativeResolutionLabels[h] ?? s.nativeResolution fallback ensures non-standard resolutions still render. A 1234x999 stream (height 999 is not in the
-     * label map) must surface the raw '1234x999' instead of dropping the resolution.
+    /* The label-or-raw-string fallback ensures non-standard resolutions still render. A 1234x999 stream (height 999 is not in the label map) must surface the raw
+     * '1234x999' instead of dropping the resolution.
      */
     const html = handlers.renderDetailCodec(makeStream({
 
@@ -714,6 +714,55 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
     }));
 
     assert.match(html, / - 5\.0Mbps 1234x999$/);
+  });
+
+  test("capture mode with both resolutions appends the source-and-capture suffix", () => {
+
+    /* The operator-facing point of the pair: a 720p source captured at 1080p is visible as such rather than reading as a 1080p stream. The suffix names the source
+     * first because that is the fact the operator cannot otherwise see; the capture half is the configured surface.
+     */
+    const html = handlers.renderDetailCodec(makeStream({
+
+      captureCodec: "hevc",
+      captureResolution: "1920x1080",
+      sourceResolution: "1280x720"
+    }));
+
+    assert.match(html, / - 720p source, 1080p capture$/);
+  });
+
+  test("capture mode with only a source resolution appends the source half alone", () => {
+
+    // End-anchored on purpose: with no capture size to name, the suffix has to end after "source" rather than trailing a comma into nothing.
+    const html = handlers.renderDetailCodec(makeStream({ captureCodec: "hevc", sourceResolution: "1280x720" }));
+
+    assert.match(html, / - 720p source$/);
+  });
+
+  test("capture mode entity-encodes an unlabeled source resolution", () => {
+
+    // The capture branch shares the native branch's fallback, so a resolution string with no standard label reaches the page escaped rather than raw.
+    const html = handlers.renderDetailCodec(makeStream({ captureCodec: "hevc", sourceResolution: "<script>evil</script>" }));
+
+    assert.match(html, /&lt;script&gt;evil&lt;\/script&gt; source/, "the unlabeled source falls back to the entity-encoded raw value");
+    assert.doesNotMatch(html, /<script>/, "no raw tag may survive in the codec line");
+  });
+
+  test("native mode reports its variant quality and never the source pair", () => {
+
+    /* A native stream's nativeResolution is both its source and its output, so the pair would be a duplicate reading of the same number. The negative assertion is
+     * what pins the mode gate: a stream carrying a sourceResolution still renders the native suffix alone.
+     */
+    const html = handlers.renderDetailCodec(makeStream({
+
+      nativeBandwidth: 5000000,
+      nativeResolution: "1920x1080",
+      sourceResolution: "1280x720",
+      streamingMode: "native"
+    }));
+
+    assert.match(html, / - 5\.0Mbps 1080p$/);
+    assert.doesNotMatch(html, /source/, "the capture suffix never appears on a native stream");
   });
 
   test("capture mode with no captureCodec renders 'Unknown'", () => {
