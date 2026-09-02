@@ -4,7 +4,7 @@
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
 import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, emulateCaptureSurface, emulateLayoutSurface,
-  getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installCaptureFocusHook, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe,
+  getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal, noteBrowserCaptureImpaired, registerManagedPage, setCaptureProbe,
   syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
@@ -525,7 +525,7 @@ function disposePage(page: Page): void {
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
  * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window.
  * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering pin
- * has to observe it landing there. So are the two surface re-affirmation steps - the focus hook installed before acquisition and the re-issue that closes the
+ * has to observe it landing there. So are the two surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
  * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
  * pipeline it drives. The remaining browser calls (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page
  * set, so they need no substitution. This is the collaborator-injection form of the Clock port (utils/clock.ts).
@@ -535,13 +535,13 @@ export interface CreatePageWithCaptureDeps {
   readonly acquireCaptureStream: typeof acquireCaptureStream;
   readonly emulateCaptureSurface: typeof emulateCaptureSurface;
   readonly getCurrentBrowser: typeof getCurrentBrowser;
-  readonly installCaptureFocusHook: typeof installCaptureFocusHook;
+  readonly installActivationHeal: typeof installActivationHeal;
   readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
   readonly startOverlayHandling: typeof startOverlayHandling;
   readonly syncWindowVisibility: typeof syncWindowVisibility;
 }
 
-const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, emulateCaptureSurface, getCurrentBrowser, installCaptureFocusHook,
+const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, emulateCaptureSurface, getCurrentBrowser, installActivationHeal,
   reaffirmCaptureSurface, startOverlayHandling, syncWindowVisibility };
 
 /**
@@ -605,9 +605,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // initializePlayback (startVideoPlayback, applyVideoStyles, verifyFullscreen, lockVolumeProperties) and subsequent health monitoring (getVideoState).
   await injectVideoSelector(page);
 
-  // Install the tab-activation heal alongside it, before capture is acquired, so the page carries the listener from its first document onward: a user who selects
-  // this tab at any point in its life gets the capture's composition moved back to the emulated surface about a second later.
-  await deps.installCaptureFocusHook(page);
+  // Install the tab-activation heal alongside it, before capture is acquired, so the page is enrolled and carries its listener from its first document onward:
+  // whichever way this tab becomes the selected one, the capture's composition moves back to the emulated surface about a second later.
+  await deps.installActivationHeal(page);
 
   // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
   // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.

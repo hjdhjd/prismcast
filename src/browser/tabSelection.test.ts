@@ -2,7 +2,7 @@
  *
  * tabSelection.test.ts: Unit tests for the tab-selection primitive in tabSelection.ts. The module's whole world is the capture extension's tabs and windows APIs
  * plus a page it writes a title into, so what is pinned here is that conversation as an ordered timeline: which reads it takes, in what order it takes them, what
- * it updates, and what it hands back.
+ * it updates, what it announces to its activation subscribers, and what it hands back.
  *
  * Everything is faked in this file rather than mocked at the loader, in the shape tabCapture.test.ts established: an extension page whose evaluate dispatches on
  * the source text of the callback it is handed, a page double that records the title token it is given and answers with the title it replaced, and a shared
@@ -10,7 +10,7 @@
  */
 import type { Browser, Page } from "puppeteer-core";
 import type { SelectedTab, TabSelectionDeps } from "./tabSelection.ts";
-import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE, withTabSelected } from "./tabSelection.ts";
+import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE, getCachedTabId, onTabActivation, withTabSelected } from "./tabSelection.ts";
 import { beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
@@ -709,5 +709,151 @@ describe("withTabSelected", () => {
 
       assert.equal(fixture.timeline.filter((entry) => entry.startsWith("update:")).length, 0, "nothing was updated");
     }
+  });
+
+  /* The four rows below subscribe to the activation report, which lives in a module-level set. Each one unsubscribes in a finally for that reason: a subscription
+   * left behind would keep recording into a dead row's array while the rows after it ran, and the failure it produced would name the wrong row.
+   */
+
+  test("reports every activation it performs, in the order it performs them, naming the tab each one selected", async () => {
+
+    /* A captured page hears nothing when its tab is activated through the extension, so this report is the only announcement of the fact there is. Both of the
+     * module's updates make one, and where each lands in the timeline is the assertion: the selection's report sits behind its update and ahead of the
+     * confirmation, because the update is what Chrome acted on; the give-back's sits behind its own update, after the body. The bridge from a reported id back to
+     * a page is asserted beside them, since an id no subscriber can resolve to a page is an announcement about nothing.
+     */
+    const fixture = makeFixture();
+    const reported: number[] = [];
+
+    const unsubscribe = onTabActivation((tabId: number): void => {
+
+      reported.push(tabId);
+      fixture.timeline.push("report:" + String(tabId));
+    });
+
+    try {
+
+      await withTabSelected(fixture.page, async (): Promise<void> => { fixture.timeline.push("body"); }, { clock, deps: makeDeps(fixture) });
+    } finally {
+
+      unsubscribe();
+    }
+
+    assert.deepEqual(fixture.timeline,
+
+      [ "page:title", "query:all", "page:restore", "get:42", "query:window:1", "update:42", "report:42", "get:42", "query:lastFocused", "body", "get:42",
+        "update:7", "report:7" ],
+      "each report lands immediately behind the update that earned it, and nowhere else in the protocol");
+    assert.deepEqual(reported, [ 42, 7 ], "the selection's activation, then the give-back's");
+    assert.equal(getCachedTabId(fixture.page), 42, "and the id the selection reported resolves back to the page it named");
+  });
+
+  test("reports nothing for a give-back that yielded, one with nothing to give back, or one whose update was refused", async () => {
+
+    /* A report is a statement that Chrome activated a tab, so every give-back path that issues no update has to be silent. Three of them: one that finds
+     * something else selected and leaves the newer choice standing, one whose page already held the selection so there is nothing to restore, and one whose
+     * update is refused because the tab it was for has closed. All three still perform the selection's own activation, so the honest reading of each is exactly
+     * one report - which is also what tells a silent give-back from a hold that stopped reporting altogether.
+     */
+    const reported: number[] = [];
+    const unsubscribe = onTabActivation((tabId: number): void => { reported.push(tabId); });
+
+    try {
+
+      // Yielded: something else took the selection while the body ran.
+      const yielded = makeFixture();
+
+      await withTabSelected(yielded.page, async (): Promise<void> => {
+
+        for(const tab of yielded.tabs) {
+
+          tab.active = (tab.id === 7);
+        }
+      }, { clock, deps: makeDeps(yielded) });
+
+      // Nothing to give back: the tab that held the selection before the hold is this page's own.
+      const own = makeFixture({ tabs: [{ active: true, id: 42, url: "https://example.test/live", windowId: 1 }] });
+
+      await withTabSelected(own.page, async (): Promise<void> => undefined, { clock, deps: makeDeps(own) });
+
+      // Refused: the tab that held the selection has closed, so the give-back's update activates nothing.
+      const refused = makeFixture();
+      const evaluate = refused.extension.evaluate.bind(refused.extension);
+
+      let held = false;
+
+      (refused.extension as unknown as { evaluate: (target: unknown, arg?: unknown) => Promise<unknown> }).evaluate =
+        async (target: unknown, arg?: unknown): Promise<unknown> => {
+
+          if(held && String(target).includes("chrome.tabs.update") && (arg === 7)) {
+
+            throw new Error("The tab is gone.");
+          }
+
+          return evaluate(target as never, arg as never);
+        };
+
+      await withTabSelected(refused.page, async (): Promise<void> => { held = true; }, { clock, deps: makeDeps(refused) });
+    } finally {
+
+      unsubscribe();
+    }
+
+    assert.deepEqual(reported, [ 42, 42, 42 ], "three holds, three selection reports, and not one give-back among them");
+  });
+
+  test("stops delivering once the subscription is ended, and stands by the reports already taken", async () => {
+
+    // The set outlives every hold, so a subscriber that has gone away has exactly one way to stop being called, and the reports it already took are its own.
+    const first = makeFixture();
+    const reported: number[] = [];
+    const unsubscribe = onTabActivation((tabId: number): void => { reported.push(tabId); });
+
+    try {
+
+      await withTabSelected(first.page, async (): Promise<void> => undefined, { clock, deps: makeDeps(first) });
+    } finally {
+
+      unsubscribe();
+    }
+
+    assert.deepEqual(reported, [ 42, 7 ], "the hold under the subscription was reported in full");
+
+    const second = makeFixture();
+
+    await withTabSelected(second.page, async (): Promise<void> => undefined, { clock, deps: makeDeps(second) });
+
+    assert.deepEqual(reported, [ 42, 7 ], "and the hold after it added nothing");
+    assert.equal(second.timeline.at(-1), "update:7", "though that hold ran its activations all the same");
+  });
+
+  test("keeps a failing subscriber away from the hold and from the subscriber beside it", async () => {
+
+    /* A subscriber is somebody else's code, and a hold is the one thing here a caller waits on: a throw reaching the selection step would fail a capture start,
+     * and one reaching the give-back would leave the user's tab where it was not. The second subscriber is what proves the swallow is per-listener rather than a
+     * bail-out that quietly drops the rest of the walk.
+     */
+    const fixture = makeFixture();
+    const reported: number[] = [];
+
+    const unsubscribeFailing = onTabActivation((): void => {
+
+      throw new Error("The subscriber could not handle the activation.");
+    });
+
+    const unsubscribe = onTabActivation((tabId: number): void => { reported.push(tabId); });
+
+    try {
+
+      assert.equal(await withTabSelected(fixture.page, async (): Promise<string> => "the body's answer", { clock, deps: makeDeps(fixture) }),
+        "the body's answer", "the hold completed and its body's result reached the caller");
+    } finally {
+
+      unsubscribeFailing();
+      unsubscribe();
+    }
+
+    assert.deepEqual(reported, [ 42, 7 ], "the subscriber behind the failing one received both reports");
+    assert.equal(fixture.timeline.at(-1), "update:7", "and the give-back still ran");
   });
 });

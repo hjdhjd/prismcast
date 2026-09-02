@@ -6,6 +6,11 @@
  * selected, and the tab id the extension receives is only logged. A site's Fullscreen API request is the other: Chrome grants fullscreen to the selected tab. Both
  * needs are momentary, and both end with the user entitled to the tab they had.
  *
+ * This module also announces the activations it performs. A page being captured is pinned visible for the whole of its capture, so a tab this module activates
+ * through the extension raises no event at all inside the page it activates - not focus, not visibilitychange, not pageshow, measured 2026-08-30 across a full
+ * deselect-reselect cycle. That leaves the actor as the only party able to report the fact, which is what onTabActivation subscribes to. A subscriber receives a
+ * tab id and nothing else, so this module still knows about tabs and windows alone, and what a capture surface owes an activation stays the capture layer's.
+ *
  * Puppeteer's own way of selecting a tab, page.bringToFront and the CDP Page.bringToFront command behind it, also activates the window at the operating-system
  * level and pulls Chrome over whatever application the user is working in. The capture extension's chrome.tabs.update selects a tab without touching the window's
  * focus, so this module speaks to the extension rather than to the page - which is also why it resolves the extension's own options page through the library's
@@ -114,6 +119,64 @@ let nextTitleToken = 0;
 // The tail of the selection chain. Each hold is queued onto it and replaces it with its own release signal, so the next hold begins when the selection was handed
 // back rather than when the caller before it finished reading its result.
 let selectionQueue: Promise<void> = Promise.resolve();
+
+// The subscribers the activation report walks. Module-level rather than per-hold, because the fact reported is about the browser's tabs rather than about any one
+// hold, and the capture layer subscribes once for the life of the process.
+const activationListeners = new Set<(tabId: number) => void>();
+
+// Activation reporting.
+
+/**
+ * Subscribes to the activation report: every tab this module activates through the extension, announced by id as soon as the update resolves.
+ *
+ * A captured page cannot hear its own activation, so the module performing the activation is the one place the fact exists to be announced at all. The report
+ * carries the id and stops there, which is what keeps this module's vocabulary to tabs and windows no matter what a subscriber goes on to do with one.
+ * @param listener - Called with the id of each tab this module activates.
+ * @returns The closure that ends the subscription. A subscriber that has gone away without calling it stays in the set for the life of the process.
+ */
+export function onTabActivation(listener: (tabId: number) => void): () => void {
+
+  activationListeners.add(listener);
+
+  return (): void => {
+
+    activationListeners.delete(listener);
+  };
+}
+
+/**
+ * Announces an activation to every subscriber.
+ *
+ * Each listener is called inside a swallow of its own, because a subscriber is somebody else's code and a hold's correctness cannot rest on it: a throw would
+ * otherwise fail the selection step a capture start is waiting on, or replace the give-back's own reading of what went wrong with a subscriber's.
+ * @param tabId - The tab that was activated.
+ */
+function reportActivation(tabId: number): void {
+
+  for(const listener of activationListeners) {
+
+    try {
+
+      listener(tabId);
+    } catch(error) {
+
+      LOG.debug("browser:lifecycle", "A tab-activation subscriber failed to handle the report: %s.", formatError(error));
+    }
+  }
+}
+
+/**
+ * The tab id a page was identified as, when it has one.
+ *
+ * The report names a tab and a subscriber holds pages, so this is the bridge between them. The answer is only ever an id a completed identification cached, which
+ * means a page this module has never selected reads undefined - the right answer for it, because no activation of ours can have named it.
+ * @param page - The page to look up.
+ * @returns The cached tab id, or undefined when this page has not been identified.
+ */
+export function getCachedTabId(page: Page): number | undefined {
+
+  return tabIds.get(page);
+}
 
 // Selection.
 
@@ -277,6 +340,10 @@ async function hold<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, conte
 
       await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), id);
 
+      // Reported ahead of the confirmation rather than behind it, because the update is what Chrome acted on: a selection that then fails its confirmation was
+      // still an activation, and a heal fired for it is a re-issue against a surface that already carries the right values.
+      reportActivation(id);
+
       const confirmed = await readTab(extension, id);
 
       if(confirmed.active !== true) {
@@ -314,6 +381,10 @@ async function hold<T>(page: Page, body: (tab: SelectedTab) => Promise<T>, conte
       try {
 
         await extension.evaluate((target: number) => chrome.tabs.update(target, { active: true }), previousId);
+
+        // The tab handed the selection back can be another stream's capture tab, which is the activation the report matters most for. It sits inside the try so
+        // an update that never happened is never announced.
+        reportActivation(previousId);
       } catch(error) {
 
         // The tab that was selected before may have closed while the hold ran, and there is nothing else to return the selection to.

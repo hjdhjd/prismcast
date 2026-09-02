@@ -41,7 +41,7 @@ let syncPages: (Page | undefined)[] = [];
 let surfacePages: Page[] = [];
 
 // The page each activation-hook install and each surface re-affirmation received, in call order, so the pin can check both landed on the establishment's own page.
-let focusHookPages: Page[] = [];
+let healPages: Page[] = [];
 let reaffirmPages: Page[] = [];
 
 // The options each page creation was asked for, so the pin can read that the capture page opens in the background rather than taking the user's tab selection.
@@ -70,7 +70,7 @@ function makeStubPage(): Page {
 /* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome),
  * acquireCaptureStream yields a real PassThrough so the real createCaptureSession has a stream to own (no extension protocol), startOverlayHandling records each
  * poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the
- * density step and answers with a fixed surface so the capture constraints it feeds stay total, and installCaptureFocusHook and reaffirmCaptureSurface record the
+ * density step and answers with a fixed surface so the capture constraints it feeds stay total, and installActivationHeal and reaffirmCaptureSurface record the
  * two surface-re-affirmation steps in place of page injection and raw CDP. createPageWithCapture defaults every one of these to the real functions; substituting
  * them here is what keeps the call off a live browser, and recording the acquisition alongside the rest is what makes their order observable.
  */
@@ -99,10 +99,10 @@ const deps: CreatePageWithCaptureDeps = {
       return makeStubPage();
     }
   } as unknown as Browser),
-  installCaptureFocusHook: async (page: Page): Promise<void> => {
+  installActivationHeal: async (page: Page): Promise<void> => {
 
-    depsCalls.push("installCaptureFocusHook");
-    focusHookPages.push(page);
+    depsCalls.push("installActivationHeal");
+    healPages.push(page);
   },
   reaffirmCaptureSurface: async (page: Page): Promise<void> => {
 
@@ -126,7 +126,7 @@ before(() => {
 beforeEach(() => {
 
   depsCalls = [];
-  focusHookPages = [];
+  healPages = [];
   newPageOptions = [];
   overlayCalls = [];
   pageGotos = [];
@@ -200,13 +200,13 @@ describe("createPageWithCapture - window visibility ordering", () => {
     result.captureSession.dispose();
 
     assert.deepEqual(depsCalls,
-      [ "syncWindowVisibility", "emulateCaptureSurface", "installCaptureFocusHook", "acquireCaptureStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
+      [ "syncWindowVisibility", "emulateCaptureSurface", "installActivationHeal", "acquireCaptureStream", "reaffirmCaptureSurface", "syncWindowVisibility" ],
       "the window sync leads the establishment and closes it, with the surface emulated, the activation heal installed, capture acquired, and the surface " +
       "re-affirmed in between");
     assert.equal(syncPages[0], undefined, "the leading pass has no page yet - it runs before the capture page exists");
     assert.equal(syncPages[1], result.page, "the closing pass receives the page the establishment built");
     assert.equal(surfacePages[0], result.page, "the surface is emulated on the very page the establishment captured and handed back");
-    assert.equal(focusHookPages[0], result.page, "the activation heal is installed on that same page");
+    assert.equal(healPages[0], result.page, "the activation heal is installed on that same page");
     assert.equal(reaffirmPages[0], result.page, "the closing re-affirmation is issued against that same page");
     assert.deepEqual(newPageOptions, [{ background: true }], "the capture page opens behind whatever the window is showing, its own capture start selecting it");
   });

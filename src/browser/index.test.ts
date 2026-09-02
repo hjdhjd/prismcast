@@ -13,7 +13,8 @@
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
- *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue)
+ *   - makeFocusReaffirmCallback (the pure factory behind the tab-activation heal, driven with an injected re-issue and an injected clock)
+ *   - healActivatedCaptureTab (the heal's report-side trigger, driven against pages enrolled through installActivationHeal with injected collaborators)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
  *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
@@ -23,16 +24,20 @@
  */
 import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildLaunchOptions, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile,
-  getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, isBrowserConnected, isGracefulShutdown, makeFocusReaffirmCallback,
-  registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
+  getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab, installActivationHeal, isBrowserConnected,
+  isGracefulShutdown, makeFocusReaffirmCallback, registerManagedPage, seedProfilePreferences, setGracefulShutdown, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CONFIG } from "../config/index.ts";
+import type { Clock } from "../utils/index.ts";
 import { LOG } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
+import type { StreamRegistryEntry } from "../streaming/registry.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "../config/presets.ts";
 import { setImmediate as immediate } from "node:timers/promises";
 import { initializeDataDir } from "../config/paths.ts";
+import { makeFakeClock } from "../utils/clock.helpers.ts";
 import os from "node:os";
 import path from "node:path";
 import { subscribeToStatus } from "../streaming/statusEmitter.ts";
@@ -628,32 +633,378 @@ describe("emulateLayoutSurface", () => {
 
 describe("makeFocusReaffirmCallback", () => {
 
-  test("re-issues against the page it was built for, once per invocation", async () => {
+  /* Every row below drives the factory with an injected re-issue and an injected clock, and reads one shared timeline: the re-issue pushes "shot" as it is
+   * called and the clock pushes "sleep:<ms>" as each wait is requested, so a row asserts the interleaving of shots and waits directly instead of inferring it
+   * from two arrays that were filled independently. A second array records the page each re-issue was handed, which is what tells one page's shots from
+   * another's - page doubles are bare objects, so identity is the only comparison that means anything about them.
+   *
+   * The durations and counts here are written as literals on purpose. Deriving them from the ladder constant the module holds would make every row follow any
+   * edit to it, a wrong one included; literals make a deliberate change to the rungs a conscious update here.
+   */
+  const recordShot = (timeline: string[], targets: Page[]): ((target: Page) => Promise<void>) => async (target: Page): Promise<void> => {
 
-    /* The callback is what the page's focus binding calls, so the page it carries is the only thing that says which capture is being healed. A callback that
-     * ignored its page would re-issue against whatever page the caller happened to have, which on a multi-stream browser is somebody else's capture.
+    timeline.push("shot");
+    targets.push(target);
+  };
+
+  const recordWaits = (timeline: string[]): Clock => makeFakeClock({ sleep: async (ms: number): Promise<void> => {
+
+    timeline.push("sleep:" + String(ms));
+
+    await Promise.resolve();
+  } }).clock;
+
+  test("runs the full interleaved ladder from one invocation, every shot against its own page", async () => {
+
+    /* The ladder's whole purpose is that its shots straddle the compositor's switch, and only the interleaving of waits and re-issues shows that: an immediate
+     * shot, then a wait for each rung's remaining distance from the activation with a shot behind it. The page identity rides along because a callback that
+     * ignored its page would re-issue against whatever page the caller happened to hold, which on a multi-stream browser is somebody else's capture.
      */
     const page = {} as unknown as Page;
-    const reaffirmed: Page[] = [];
+    const targets: Page[] = [];
+    const timeline: string[] = [];
 
-    const callback = makeFocusReaffirmCallback(page, async (target: Page): Promise<void> => { reaffirmed.push(target); });
+    await makeFocusReaffirmCallback(page, recordShot(timeline, targets), recordWaits(timeline))();
 
-    await callback();
-    await callback();
-
-    // Identity, not shape: page doubles are bare objects, so a structural comparison would accept any other page just as readily as this one.
-    assert.equal(reaffirmed.length, 2, "one re-issue per invocation");
-    assert.equal(reaffirmed[0], page, "the first invocation re-issued against the callback's own page");
-    assert.equal(reaffirmed[1], page, "so did the second");
+    assert.deepEqual(timeline, [ "shot", "sleep:250", "shot", "sleep:500", "shot", "sleep:750", "shot", "sleep:1500", "shot" ],
+      "an immediate shot and four rungs, each waiting only the distance left to its own offset from the activation");
+    assert.equal(targets.length, 5, "five shots, one per rung plus the immediate one");
+    assert.ok(targets.every((target) => target === page), "every shot re-issued against the callback's own page");
   });
 
-  test("swallows a failing re-issue", async () => {
+  test("a later invocation supersedes an in-flight ladder and runs a full schedule of its own", async () => {
+
+    /* A second activation landing inside an older ladder's window needs rungs timed from its own moment - the compositor switch it has to outlast is its own,
+     * not the earlier one's. The generation counter is what hands it that: the older ladder returns at its next check and the newer one owns the schedule.
+     */
+    const page = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+
+    let waits = 0;
+
+    const clock = makeFakeClock({ sleep: async (ms: number): Promise<void> => {
+
+      timeline.push("sleep:" + String(ms));
+
+      waits++;
+
+      // Park the first ladder on its first rung so the second activation lands squarely inside it, which is the case the counter exists for.
+      if(waits === 1) {
+
+        await released;
+      }
+
+      await Promise.resolve();
+    } }).clock;
+
+    const callback = makeFocusReaffirmCallback(page, recordShot(timeline, targets), clock);
+
+    const superseded = callback();
+
+    await immediate();
+
+    assert.equal(targets.length, 1, "the first activation fired its immediate shot and parked on its first rung");
+
+    await callback();
+
+    assert.equal(targets.length, 6, "the second activation fired its own immediate shot and its own four rungs");
+
+    release();
+
+    await superseded;
+
+    assert.equal(targets.length, 6, "the superseded ladder returned at its generation check rather than firing again");
+    assert.deepEqual(timeline, [ "shot", "sleep:250", "shot", "sleep:250", "shot", "sleep:500", "shot", "sleep:750", "shot", "sleep:1500", "shot" ],
+      "the second activation's rungs are spaced from its own moment, not from what the first activation had left to run");
+  });
+
+  test("near-simultaneous invocations fire both immediate shots but only the newer one's rung schedule", async () => {
+
+    /* One tab activation fires the window's focus event more than once. Both invocations take their immediate shot, which costs nothing and is the shot most
+     * likely to matter, and then the older schedule collapses into the newer one a few milliseconds behind it rather than the two running side by side.
+     */
+    const page = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    const callback = makeFocusReaffirmCallback(page, recordShot(timeline, targets), recordWaits(timeline));
+
+    await Promise.all([ callback(), callback() ]);
+
+    assert.equal(targets.length, 6, "two immediate shots and exactly one full rung schedule");
+
+    // The two ladders interleave microtask by microtask, so the waits are compared as a set: four from the schedule that survived, one from the one that
+    // returned at its first check.
+    assert.deepEqual(timeline.filter((entry) => entry.startsWith("sleep:")).toSorted(), [ "sleep:1500", "sleep:250", "sleep:250", "sleep:500", "sleep:750" ],
+      "the superseded ladder waited once before returning, and the surviving one waited its four rungs");
+  });
+
+  test("a rejecting shot is swallowed and the rest of the ladder still fires", async () => {
 
     // A focus event races page teardown by nature - the tab a user selects can be the one a terminating stream is closing - and the page-side caller has nowhere
-    // to put a rejection. The periodic re-affirmation is what covers anything lost here.
-    const callback = makeFocusReaffirmCallback({} as unknown as Page, async (): Promise<void> => { throw new Error("synthetic re-issue rejection"); });
+    // to put a rejection. A rung that fails also says nothing about the next one, which fires a moment later against a page that may well have settled by then.
+    const page = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    const record = recordShot(timeline, targets);
+
+    const callback = makeFocusReaffirmCallback(page, async (target: Page): Promise<void> => {
+
+      await record(target);
+
+      if(targets.length === 1) {
+
+        throw new Error("synthetic re-issue rejection");
+      }
+    }, recordWaits(timeline));
 
     await assert.doesNotReject(() => callback(), "the callback resolves rather than rejecting into the page's focus handler");
+    assert.equal(targets.length, 5, "the immediate shot's rejection did not stop the four rungs behind it");
+  });
+
+  test("an all-rejecting ladder never rejects outward, and a fresh activation still gets a fresh ladder", async () => {
+
+    /* Nothing here gives up early: a shot that fails is one the next rung retries a moment later, and the count below is exactly what a consecutive-failure
+     * guard would fall short of. Recovery is structural rather than earned - the next activation runs a full ladder whether or not this one accomplished
+     * anything - so a regression that tied a fresh schedule to a past success would surface here.
+     */
+    const page = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    const record = recordShot(timeline, targets);
+
+    const callback = makeFocusReaffirmCallback(page, async (target: Page): Promise<void> => {
+
+      await record(target);
+
+      throw new Error("synthetic re-issue rejection");
+    }, recordWaits(timeline));
+
+    await assert.doesNotReject(() => callback(), "the first activation resolves even though every one of its shots failed");
+    assert.equal(targets.length, 5, "every rung fired, none of them skipped over the failures ahead of it");
+
+    await assert.doesNotReject(() => callback(), "so does the activation after it");
+    assert.equal(targets.length, 10, "a fresh activation runs a fresh full ladder");
+  });
+
+  test("one page's activation leaves another page's in-flight ladder alone", async () => {
+
+    /* The counter lives inside each callback's own closure, so two capture pages cannot reach each other's schedules. Were it shared, a second stream's tab
+     * give-back would cut the first stream's heal short and leave that capture composing the window's view of the page.
+     */
+    const firstPage = {} as unknown as Page;
+    const secondPage = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+
+    let waits = 0;
+
+    const firstClock = makeFakeClock({ sleep: async (ms: number): Promise<void> => {
+
+      timeline.push("first:sleep:" + String(ms));
+
+      waits++;
+
+      // Park the first page's ladder on its first rung, so the second page's activation lands while that ladder is genuinely mid-schedule.
+      if(waits === 1) {
+
+        await released;
+      }
+
+      await Promise.resolve();
+    } }).clock;
+
+    const record = recordShot(timeline, targets);
+    const firstRun = makeFocusReaffirmCallback(firstPage, record, firstClock)();
+
+    await immediate();
+    await makeFocusReaffirmCallback(secondPage, record, recordWaits(timeline))();
+
+    release();
+
+    await firstRun;
+
+    assert.equal(targets.filter((target) => target === firstPage).length, 5, "the first page's ladder ran its full schedule across the second page's activation");
+    assert.equal(targets.filter((target) => target === secondPage).length, 5, "the second page's ladder ran a full schedule of its own");
+    assert.equal(targets.length, 10, "neither page received a shot meant for the other");
+  });
+
+  test("a shot that never settles parks its own ladder without blocking the next activation", async () => {
+
+    /* A CDP send against a page on its way out can hang rather than reject. The ladder holding it parks mid-schedule, which costs nothing: it holds no timer, it
+     * blocks no later activation, and if its shot ever does settle, the generation check ahead of the next rung sends it home.
+     */
+    const page = {} as unknown as Page;
+    const targets: Page[] = [];
+    const timeline: string[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: hung, resolve: settleHungShot } = Promise.withResolvers<void>();
+
+    const record = recordShot(timeline, targets);
+
+    const callback = makeFocusReaffirmCallback(page, async (target: Page): Promise<void> => {
+
+      await record(target);
+
+      // The very first shot never settles on its own; every shot after it behaves normally.
+      if(targets.length === 1) {
+
+        await hung;
+      }
+    }, recordWaits(timeline));
+
+    void callback();
+
+    await immediate();
+
+    assert.equal(targets.length, 1, "the first activation is parked inside its immediate shot");
+
+    await assert.doesNotReject(() => callback(), "a second activation runs to completion regardless");
+    assert.equal(targets.length, 6, "the parked ladder cost the second activation nothing");
+
+    settleHungShot();
+
+    await immediate();
+
+    assert.equal(targets.length, 6, "the parked ladder's late shot found a newer generation and stopped there");
+  });
+});
+
+describe("healActivatedCaptureTab", () => {
+
+  /* Every row here enrolls its pages through installActivationHeal itself rather than around it, because the enrollment and the exposed binding holding the same
+   * callback instance is the whole of the two-triggers-one-ladder guarantee - an enrollment built beside the install point would prove nothing about it. The page
+   * double records the binding it is handed, and the injected collaborators are what make the enrolled callback observable: the recording re-issue counts the
+   * shots a report produced, and the fake clock's immediate sleeps let a ladder run to its end inside the row.
+   */
+  const enroll = async (): Promise<{ binding: () => Promise<void>; page: Page; shots: Page[] }> => {
+
+    const bindings: (() => Promise<void>)[] = [];
+    const shots: Page[] = [];
+
+    const page = {
+
+      evaluateOnNewDocument: async (): Promise<void> => undefined,
+      exposeFunction: async (_name: string, handler: () => Promise<void>): Promise<void> => { bindings.push(handler); }
+    } as unknown as Page;
+
+    await installActivationHeal(page, { clock: makeFakeClock().clock, reaffirm: async (target: Page): Promise<void> => { shots.push(target); } });
+
+    const binding = bindings[0];
+
+    assert.ok(binding, "the install point handed the page a binding");
+    assert.equal(bindings.length, 1, "and exactly one");
+
+    return { binding, page, shots };
+  };
+
+  // A registry entry as the match reads one: a streaming mode and a page. Nothing else on an entry is looked at, so nothing else is built.
+  const streamEntry = (page: Nullable<Page>, streamingMode: string): StreamRegistryEntry => ({ page, streamingMode }) as unknown as StreamRegistryEntry;
+
+  // The collaborators a report is delivered through, in the shape the match reads them: a registry walk and a page-to-tab lookup.
+  interface ReportDeps {
+
+    readonly getAllStreams: () => StreamRegistryEntry[];
+    readonly getCachedTabId: (page: Page) => number | undefined;
+  }
+
+  /* The tab lookup refuses a null page rather than answering undefined for one, because an answer would let a match that skipped the registry's own nullability
+   * guard pass this file unremarked.
+   */
+  const makeDeps = (entries: StreamRegistryEntry[], tabIds: Map<Page, number>): ReportDeps => ({
+
+    getAllStreams: (): StreamRegistryEntry[] => entries,
+    getCachedTabId: (page: Page): number | undefined => {
+
+      assert.notEqual(page, null, "the match narrows an entry's nullable page before asking which tab it is");
+
+      return tabIds.get(page);
+    }
+  });
+
+  test("fires the enrolled page's own ladder, which the page's binding then supersedes rather than doubling", async () => {
+
+    /* The report is the trigger a captured page cannot raise for itself, so what it has to reach is the same callback the binding reaches. The proof is
+     * behavioral rather than structural: the report starts a ladder, the binding's invocation lands inside it, and what follows is the collapse signature of two
+     * invocations of one callback - both immediate shots and a single rung schedule - rather than the ten shots two independent ladders would have produced.
+     */
+    const { binding, page, shots } = await enroll();
+    const deps = makeDeps([streamEntry(page, "capture")], new Map([[ page, 42 ]]));
+
+    healActivatedCaptureTab(42, deps);
+
+    assert.equal(shots.length, 1, "the report's immediate shot is away before anything yields");
+
+    await binding();
+    await immediate();
+
+    assert.equal(shots.length, 6, "two immediate shots and one rung schedule: the binding superseded the report's ladder instead of running beside it");
+    assert.ok(shots.every((target) => target === page), "and every shot went to the page the report named");
+  });
+
+  test("fires nothing for a native stream, an unmatched id, a null page, or a page that was never enrolled", async () => {
+
+    /* The negative controls, all read through the recording re-issue rather than through the absence of a throw: a report that quietly did nothing and a report
+     * that fired the wrong page's ladder look identical to a row that only asserts it survived. The native entry is enrolled and its id matches, so the
+     * streaming-mode test is the only thing standing between it and a shot.
+     */
+    const native = await enroll();
+    const capture = await enroll();
+    const unenrolled = {} as unknown as Page;
+
+    const deps = makeDeps([
+
+      streamEntry(native.page, "native"),
+      streamEntry(null, "capture"),
+      streamEntry(unenrolled, "capture"),
+      streamEntry(capture.page, "capture")
+    ], new Map([ [ native.page, 1 ], [ unenrolled, 4 ], [ capture.page, 9 ] ]));
+
+    for(const tabId of [ 1, 4, 777 ]) {
+
+      healActivatedCaptureTab(tabId, deps);
+    }
+
+    await immediate();
+
+    assert.equal(native.shots.length, 0, "a native stream's page is never re-issued against, enrolled and matched by id though it is");
+    assert.equal(capture.shots.length, 0, "and the one enrolled capture page went unnamed by all three reports");
+  });
+
+  test("fires only the page the report named, leaving another enrolled page's heal alone", async () => {
+
+    /* Two capture streams share a browser and a report carries one tab id, so the match has to be an identity question rather than a "some capture page was
+     * activated" one. Each page carries its own recorder, which is what tells a shot meant for one from a shot that reached the other.
+     */
+    const first = await enroll();
+    const second = await enroll();
+    const deps = makeDeps([ streamEntry(first.page, "capture"), streamEntry(second.page, "capture") ], new Map([ [ first.page, 1 ], [ second.page, 2 ] ]));
+
+    healActivatedCaptureTab(1, deps);
+
+    await immediate();
+
+    assert.equal(first.shots.length, 5, "the named page ran its full ladder");
+    assert.equal(second.shots.length, 0, "and the other page's heal never ran");
+
+    healActivatedCaptureTab(2, deps);
+
+    await immediate();
+
+    assert.equal(second.shots.length, 5, "the second report ran the second page's ladder");
+    assert.equal(first.shots.length, 5, "without adding anything to the first page's");
+    assert.ok(first.shots.every((target) => target === first.page) && second.shots.every((target) => target === second.page),
+      "each ladder's shots went to its own page");
   });
 });
 

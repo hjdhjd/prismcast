@@ -4,9 +4,11 @@
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import type { BrowserLifecycle, BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
-import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, startTimer } from "../utils/index.ts";
+import type { Clock, ProcessInfo } from "../utils/index.ts";
+import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, setChromeUserAgent, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount, hasActiveCaptureStreams } from "../streaming/registry.ts";
+import { getCachedTabId, onTabActivation } from "./tabSelection.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
@@ -16,7 +18,6 @@ import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
 import type { LaunchGovernorPolicy } from "./launchGovernor.ts";
 import type { Nullable } from "../types/index.ts";
-import type { ProcessInfo } from "../utils/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import { clearChannelSelectionCaches } from "./channelSelection.ts";
 import { createBrowserSupervisor } from "./browserSupervisor.ts";
@@ -27,7 +28,6 @@ import fs from "node:fs";
 import { getPresetViewport } from "../config/presets.ts";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
-import { setChromeUserAgent } from "../utils/index.ts";
 import { startPrecaching } from "./precaching.ts";
 import { terminateStream } from "../streaming/lifecycle.ts";
 
@@ -1089,42 +1089,128 @@ export async function emulateLayoutSurface(page: Page): Promise<{ height: number
   return declareSurface(page, NATIVE_DENSITY);
 }
 
+/* The follow-up re-issue schedule a tab activation runs, expressed as offsets in milliseconds from the activation's own invocation rather than as gaps between
+ * shots. Chrome switches an activated tab's capture to the window's fitted presentation only after the focus event has fired, so the immediate re-issue that
+ * event triggers lands too early to stick (measured 2026-08-30: a selected capture tab's recording stayed fitted for upwards of forty seconds, until the
+ * monitor's periodic re-affirmation healed it completely with the tab still selected). These offsets bracket the switch so one shot lands just past it, the last
+ * rung allowing for platforms slower than the one measured. Every shot beyond the one that sticks is a no-op by reaffirmCaptureSurface's own contract, and the
+ * monitor's periodic re-affirmation remains the backstop bounding anything the whole ladder misses.
+ */
+const ACTIVATION_REAFFIRM_LADDER_MS: readonly number[] = [ 250, 750, 1500, 3000 ];
+
+/* The heal enrolled for each capture page, which is the trigger the selection primitive's activation report fires. Keying on the page rather than on a tab id is
+ * what makes the enrollment expire on its own: an entry lives exactly as long as the page it heals. The callback held here is the very instance that page's focus
+ * binding invokes, so the two triggers share one generation counter and an activation arriving through either route supersedes an in-flight ladder rather than
+ * running a second one beside it.
+ */
+const activationHeals = new WeakMap<Page, () => Promise<void>>();
+
 /**
- * Builds the callback the page's focus binding invokes. The re-issue function is a parameter rather than a direct call so the callback's behavior can be driven on
- * its own: what it does with the page it was built for, and what it does with a rejection, is the whole of its contract.
+ * Builds the callback the page's focus binding invokes: an immediate re-issue, then a ladder of follow-ups at ACTIVATION_REAFFIRM_LADDER_MS's offsets from this
+ * invocation. The ladder is what makes the heal land, because the compositor's switch outlasts the focus event announcing it - the immediate shot alone cannot
+ * reach the far side of the switch, so later shots have to.
+ *
+ * Invocations supersede rather than accumulate. A generation counter makes the newest invocation the owner of the rung schedule: the duplicate focus events a
+ * single activation fires collapse into one schedule a few milliseconds newer than the first, while an activation that genuinely arrives later - a second
+ * stream's tab give-back landing on this page, another click - gets a full bracket timed from its own moment instead of inheriting the tail of an in-flight one.
+ * The counter lives in this closure, so a callback supersedes only the ladders it started itself and two streams' pages cannot reach each other's schedules.
+ *
+ * Nothing cancels a superseded ladder, because nothing has to: it returns at its next generation check, a shot against a page mid-teardown rejects into the
+ * swallow below, and a shot that never settles leaves its ladder awaiting a promise nobody holds. The counter needs no reset for the same reason - a newer
+ * invocation is itself the invalidation - and the schedule holds no timers, only awaited sleeps.
  *
  * A rejection is swallowed into a debug line because a focus event races page teardown by nature - the tab a user just selected can be the one a terminating
  * stream is closing - and the periodic re-affirmation corrects anything a lost re-issue leaves behind.
  * @param page - The capture page this callback re-affirms.
- * @param reaffirm - The re-issue to invoke.
- * @returns The callback, which never rejects.
+ * @param reaffirm - The re-issue to invoke. A parameter rather than a direct call so the callback's behavior can be driven on its own: what it does with the page
+ *                   it was built for, what schedule it keeps, and what it does with a rejection, is the whole of its contract.
+ * @param clock - The time source the ladder's waits run on. Defaults to realClock.
+ * @returns The callback, which never rejects. Its promise settles once the ladder is spent, which the page-side listener does not wait on.
  */
-export function makeFocusReaffirmCallback(page: Page, reaffirm: (page: Page) => Promise<void>): () => Promise<void> {
+export function makeFocusReaffirmCallback(page: Page, reaffirm: (page: Page) => Promise<void>, clock: Clock = realClock): () => Promise<void> {
 
-  return async (): Promise<void> => {
+  // The generation this closure hands out. It only ever increments: an invocation claims the next one and owns the rung schedule until a later invocation claims
+  // a higher one.
+  let generation = 0;
+
+  // One rung's re-issue. The offset it was scheduled at rides the debug line, so a swallowed failure says which shot spoke; the immediate shot reports zero.
+  const fireShot = async (offsetMs: number): Promise<void> => {
 
     try {
 
       await reaffirm(page);
     } catch(error) {
 
-      LOG.debug("browser:lifecycle", "Could not re-affirm the capture surface after a tab activation: %s.", formatError(error));
+      LOG.debug("browser:lifecycle", "Could not re-affirm the capture surface after a tab activation (+%sms): %s.", offsetMs, formatError(error));
+    }
+  };
+
+  return async (): Promise<void> => {
+
+    const mine = ++generation;
+
+    await fireShot(0);
+
+    let previousOffsetMs = 0;
+
+    for(const offsetMs of ACTIVATION_REAFFIRM_LADDER_MS) {
+
+      // eslint-disable-next-line no-await-in-loop -- The pacing is the point: each rung waits out the distance left to its own offset before anything else runs.
+      await clock.sleep(offsetMs - previousOffsetMs);
+
+      // A newer activation owns the schedule, and it carries its own rungs timed from its own moment, so this ladder has nothing left to contribute.
+      if(generation !== mine) {
+
+        return;
+      }
+
+      // eslint-disable-next-line no-await-in-loop -- Sequential by design: a rung's re-issue settles before the wait toward the next rung begins.
+      await fireShot(offsetMs);
+
+      previousOffsetMs = offsetMs;
     }
   };
 }
 
 /**
- * Installs the tab-activation heal on a capture page: a window focus listener in the page that re-affirms the capture surface through an exposed binding. Chrome
- * composes the capture of a selected tab from the window's fitted presentation, so the instant a user selects a capture tab that capture starts recording a
- * clipped view of itself; the re-issue this fires moves the composition back to the emulated surface about a second later.
+ * The collaborators a page's heal is built from: the time source its ladder's waits run on, and the re-issue each of its shots performs. Injected as a default
+ * parameter in the shape CreatePageWithCaptureDeps, TabCaptureDeps, FullscreenDeps, and PrecachingDeps already use, so a test drives the enrolled callback through
+ * the install point itself rather than around it. The port holds no state, and production call sites pass nothing.
+ */
+export interface ActivationHealDeps {
+
+  readonly clock: Clock;
+  readonly reaffirm: (page: Page) => Promise<void>;
+}
+
+// The production collaborators.
+const defaultActivationHealDeps: ActivationHealDeps = { clock: realClock, reaffirm: reaffirmCaptureSurface };
+
+/**
+ * Installs the tab-activation heal on a capture page. Chrome composes the capture of a selected tab from the window's fitted presentation, so the instant a
+ * capture tab becomes the selected one that capture starts recording a clipped view of itself; the re-issue ladder this installs moves the composition back to
+ * the emulated surface about a second later.
+ *
+ * The heal has two triggers and one ladder between them. The exposed binding is fired by a focus listener inside the page, which covers the activation that
+ * arrives with a user's click focusing the browser window. The enrollment in activationHeals is fired by the selection primitive's activation report, which
+ * covers every activation PrismCast performs for itself - the give-back returning a user to a capture tab, the selection step, a re-assert - and a captured page
+ * hears none of those: capture pins it visible and the extension's update moves no operating-system focus, so no page event fires at all (measured 2026-08-30).
+ * Both triggers hold the same callback instance, which is what lets them share its generation counter instead of running two schedules against one page.
  *
  * The listener is registered through evaluateOnNewDocument so it survives the page's navigations, exactly as the shared video-selector helper does, and the
  * binding survives them on Puppeteer's own terms.
- * @param page - The capture page to install the hook on.
+ * @param page - The capture page to install the heal on.
+ * @param deps - The clock and the re-issue the ladder runs on. Defaults to the production pair.
  */
-export async function installCaptureFocusHook(page: Page): Promise<void> {
+export async function installActivationHeal(page: Page, deps: ActivationHealDeps = defaultActivationHealDeps): Promise<void> {
 
-  await page.exposeFunction("__prismcastReaffirmSurface", makeFocusReaffirmCallback(page, reaffirmCaptureSurface));
+  const callback = makeFocusReaffirmCallback(page, deps.reaffirm, deps.clock);
+
+  // Enrolled ahead of the binding, so the report-side trigger is live from the first moment either trigger could be. An exposeFunction that fails takes the page
+  // down with it, and the entry goes when the page does.
+  activationHeals.set(page, callback);
+
+  await page.exposeFunction("__prismcastReaffirmSurface", callback);
 
   await page.evaluateOnNewDocument((): void => {
 
@@ -1134,6 +1220,46 @@ export async function installCaptureFocusHook(page: Page): Promise<void> {
     });
   });
 }
+
+/**
+ * Heals the capture page showing in a tab the selection primitive has just activated.
+ *
+ * The report names a tab and what needs healing is a page, so the match walks the registry for a capture-mode stream whose page was identified as that tab. A
+ * report matching nothing is the ordinary case rather than a failure - a give-back returning the selection to the user's own tab, a native stream that composes
+ * no capture at all, a page registered before its setup reached the install point - and every one of them is a quiet no-op.
+ * @param tabId - The tab the selection primitive activated.
+ * @param deps - The registry read and the page-to-tab lookup the match runs through. Defaults to the production pair.
+ */
+export function healActivatedCaptureTab(tabId: number, deps: { readonly getAllStreams: typeof getAllStreams; readonly getCachedTabId: typeof getCachedTabId } =
+  { getAllStreams, getCachedTabId }): void {
+
+  for(const entry of deps.getAllStreams()) {
+
+    // A stream's page is nullable in the registry, because an entry is registered before its setup has produced one, so the narrowing comes ahead of the lookup
+    // that needs a page to ask about.
+    if((entry.streamingMode !== "capture") || (entry.page === null)) {
+
+      continue;
+    }
+
+    if(deps.getCachedTabId(entry.page) !== tabId) {
+
+      continue;
+    }
+
+    // A page whose install point has not run yet has nothing enrolled to fire, and the monitor's periodic re-affirmation is what covers it in the meantime.
+    void activationHeals.get(entry.page)?.();
+  }
+}
+
+/* The extension-side trigger, subscribed once for the life of the process. Every activation PrismCast performs goes through the selection primitive and is
+ * reported by it, which is the only way an activation of a captured page can be known at all; the page's own focus listener covers the one activation the
+ * primitive does not perform, a user's click that focuses the window. A browser relaunch changes neither module, so nothing here is re-subscribed.
+ */
+onTabActivation((tabId: number): void => {
+
+  healActivatedCaptureTab(tabId);
+});
 
 /**
  * Custom launch function that modifies Chrome arguments when running as a packaged executable. The packaged version cannot load extensions from node_modules

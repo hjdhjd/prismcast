@@ -63,7 +63,7 @@ function makeDeps(failure: Error): CreatePageWithCaptureDeps {
 
       throw failure;
     },
-    installCaptureFocusHook: async (): Promise<void> => { /* No page is ever created to hook. */ },
+    installActivationHeal: async (): Promise<void> => { /* No page is ever created to heal. */ },
     reaffirmCaptureSurface: async (): Promise<void> => { /* No surface is ever acquired to re-affirm. */ },
     startOverlayHandling: async (): Promise<void> => { /* No page is ever created to poll. */ },
     syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
