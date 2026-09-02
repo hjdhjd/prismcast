@@ -303,7 +303,6 @@ export const DOMAIN_CONFIG: Record<string, DomainConfig> = {
 
   "abc.com": { profile: "keyboardMultiVideo", service: "ABC.com" },
   "aetv.com": { profile: "fullscreenApi", service: "A&E" },
-  "bet.com": { profile: "fullscreenApi", service: "BET.com" },
   "c-span.org": { dismissSelector: ".videoAdUiSkipButtonExperimentalText", profile: "brightcove", service: "C-SPAN.org" },
   "cbs.com": { dismissSelector: "#mvpd__getstarted", profile: "keyboardIframe", service: "CBS.com" },
   "cnbc.com": { profile: "fullscreenApi", service: "CNBC.com" },

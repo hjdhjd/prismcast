@@ -188,7 +188,6 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
       cox: { channelSelector: "BET", url: "https://watchtv.cox.com/listings" },
       directv: { channelSelector: "BET", url: "https://stream.directv.com" },
       hulu: { channelSelector: "BET", url: "https://www.hulu.com/live" },
-      site: { url: "https://www.bet.com/live-tv" },
       sling: { channelSelector: "BET", url: "https://watch.sling.com/dashboard/grid_guide/grid_guide_a_z" },
       spectrum: { channelSelector: "BET", url: "https://watch.spectrum.net/guide" },
       xfinity: { channelSelector: "BET", url: "https://www.xfinity.com/stream/listings" },
