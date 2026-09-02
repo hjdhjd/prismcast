@@ -12,11 +12,11 @@
  */
 import type { Browser, Page } from "puppeteer-core";
 import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
+import { DiscoveryWalkTimeoutError, precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
 import { LOG, extractDomain } from "../utils/index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearLoginState, setBrowserAccessors, startLoginMode } from "./login.ts";
 import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts";
-import { precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
@@ -43,6 +43,10 @@ let newPageOptions: unknown[] = [];
 // The browser each discovery-page creation was handed, in call order. A row reads its length for how many walks opened a page at all, which is what the
 // login-mode rows assert on: a deferred service creates none.
 let discoveryPageCreations: Browser[] = [];
+
+// The options each managed-page registration received, in call order, so the guarded session's rows can read how the discovery page is registered rather than
+// only that it was.
+let registrations: { inFlight?: boolean }[] = [];
 
 // The lineup writes the discovery-outcome recorder issues, captured by the injected persistProviderLineup below so the port tests can assert what a completed walk
 // hands the store without touching a real file.
@@ -82,7 +86,10 @@ const deps: PrecachingDeps = {
 
     persistedLineups.push({ channels, slug });
   },
-  registerManagedPage: (): void => { /* Stub pages need no bookkeeping. */ },
+  registerManagedPage: (_page: Page, options?: { inFlight?: boolean }): void => {
+
+    registrations.push(options ?? {});
+  },
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => {
 
     pageEvents.push("poll:" + options.phase);
@@ -140,6 +147,24 @@ function makeLoginPageStub(): Page {
     isClosed: (): boolean => false,
     on: (): void => { /* Close-handler registration is irrelevant here. */ }
   } as unknown as Page;
+}
+
+/* The ceiling the session holds a single discovery walk to, mirroring DISCOVERY_WALK_TIMEOUT in precaching.ts. The module keeps that constant to itself, so the
+ * rows here name the same value and go red against a budget that moves without them.
+ */
+const WALK_BUDGET = 60000;
+
+/**
+ * Lets every continuation the module queued run to completion, so a row reads settled state rather than a schedule still unwinding. setImmediate is untouched by
+ * every timer stand-in this file installs, so each hop is a real macrotask boundary taken after the microtask queue has drained.
+ */
+async function settle(): Promise<void> {
+
+  for(let hop = 0; hop < 10; hop++) {
+
+    // eslint-disable-next-line no-await-in-loop
+    await immediate();
+  }
 }
 
 describe("revalidateDomainAuth", () => {
@@ -434,9 +459,8 @@ describe("the deferred discovery re-attempt", () => {
   // Which providers report a cached lineup at the moment they are asked, standing in for a lineup that arrived between the cycle and the re-attempt.
   let cachedSlugs = new Set<string>();
 
-  // Every timer the module scheduled but has not had fired or cancelled, keyed by the handle it was given.
-  let timers = new Map<number, { callback: () => void; delayMs: number }>();
-  let nextHandle = 1;
+  // Every timer the module scheduled but has not had fired or cancelled, keyed by the handle the capture below gave it.
+  let timers = new Map<object, { callback: () => void; delayMs: number }>();
 
   let originalServices: string[];
 
@@ -446,7 +470,7 @@ describe("the deferred discovery re-attempt", () => {
     attempts = {};
     cachedSlugs = new Set();
     discoveryPageCreations = [];
-    nextHandle = 1;
+    registrations = [];
     timers = new Map();
     walks = {};
     walkResults = {};
@@ -472,7 +496,10 @@ describe("the deferred discovery re-attempt", () => {
 
     t.mock.method(globalThis, "setTimeout", (callback: () => void, delayMs?: number): unknown => {
 
-      const handle = nextHandle++;
+      /* Node answers setTimeout with a Timeout object, and the walk deadline unrefs the handle it is given, so the capture answers with an object carrying that
+       * method rather than a bare number. The object is its own identity, which is what the clearTimeout below looks the entry up by.
+       */
+      const handle = { unref: (): void => { /* A captured handle holds no reference to the event loop. */ } };
 
       timers.set(handle, { callback, delayMs: delayMs ?? 0 });
 
@@ -481,21 +508,8 @@ describe("the deferred discovery re-attempt", () => {
 
     t.mock.method(globalThis, "clearTimeout", (handle?: unknown): void => {
 
-      timers.delete(handle as number);
+      timers.delete(handle as object);
     });
-  }
-
-  /**
-   * Lets every continuation the module queued run to completion, so a row reads settled state rather than a schedule still unwinding. setImmediate is untouched by
-   * the capture above, so each hop is a real macrotask boundary after the microtask queue has drained.
-   */
-  async function drain(): Promise<void> {
-
-    for(let hop = 0; hop < 10; hop++) {
-
-      // eslint-disable-next-line no-await-in-loop
-      await immediate();
-    }
   }
 
   /**
@@ -516,7 +530,7 @@ describe("the deferred discovery re-attempt", () => {
       timer.callback();
     }
 
-    await drain();
+    await settle();
   }
 
   /* Builds a provider whose walks return whatever walkResults holds for its slug and whose cache clear counts the precacheService invocation that performed it.
@@ -692,10 +706,95 @@ describe("the deferred discovery re-attempt", () => {
 
     gate.resolve(ONE_CHANNEL);
 
-    await drain();
+    await settle();
     await fire(5000);
 
     assert.deepEqual(attempts, { "deferred-full": 2 }, "the deferred full cycle ran after the guard was released");
+  });
+
+  test("a walk stopped at its budget is queued for the re-attempt and counted on the completion line", async (t) => {
+
+    /* A ceiling that ended a walk still in progress says nothing about whether the guide would have answered on a quieter system, so the service goes to the
+     * same deferred pass an empty walk goes to. The row drives the lapse through the file's own timer capture: the deadline is scheduled at the budget like any
+     * other timer, so firing that delay is what stops the walk.
+     */
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const hang = Promise.withResolvers<DiscoveredChannel[]>();
+
+    mockProviders = { "deferred-wedged": { ...deferredProvider("deferred-wedged"), discoverChannels: async (): Promise<DiscoveredChannel[]> => hang.promise } };
+
+    CONFIG.channels.precacheServices = ["deferred-wedged"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-wedged": 1 }, "the cycle attempted the service and its walk is still running");
+
+    await fire(WALK_BUDGET);
+
+    const lapseCall = warn.mock.calls.find((call) => String(call.arguments[0]).includes("discovery walk exceeded"));
+
+    assert.ok(lapseCall, "the lapse is reported as its own line rather than as a general precache failure");
+    assert.deepEqual(lapseCall.arguments.slice(1), [ "deferred-wedged", WALK_BUDGET / 1000 ], "and names the service and the budget in seconds");
+
+    const completionCall = info.mock.calls.find((call) => String(call.arguments[0]).includes("Channel lineup precaching complete"));
+
+    assert.ok(completionCall, "the cycle still reported its completion");
+    assert.ok(completionCall.arguments.map((argument) => String(argument)).join(" ").includes("1 returned no channels or timed out"),
+      "the completion line counts the stopped walk among the services the cycle could not settle");
+
+    // The service was queued, so the pass minutes later walks it again - which is the whole reason a lapse is not treated as a general failure.
+    mockProviders = { "deferred-wedged": deferredProvider("deferred-wedged") };
+    walkResults = { "deferred-wedged": ONE_CHANNEL };
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-wedged": 2 }, "the stopped service was re-attempted");
+
+    hang.resolve([]);
+  });
+
+  test("a walk stopped at its budget in the deferred pass is reported and not re-armed", async (t) => {
+
+    /* This is the one pass a service gets. Re-arming on a lapse would put a wedged walk on an unbounded loop, waking the browser for it every few minutes for
+     * the life of the process, so the pass reports it and stops there.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const hang = Promise.withResolvers<DiscoveredChannel[]>();
+
+    mockProviders = { "deferred-wedged": deferredProvider("deferred-wedged") };
+    CONFIG.channels.precacheServices = ["deferred-wedged"];
+
+    captureTimers(t);
+    startPrecaching(deps);
+
+    await fire(5000);
+
+    assert.deepEqual(attempts, { "deferred-wedged": 1 }, "the cycle walked the service and found nothing, so the pass is armed");
+
+    // The pass meets a walk that never answers.
+    mockProviders = { "deferred-wedged": { ...deferredProvider("deferred-wedged"), discoverChannels: async (): Promise<DiscoveredChannel[]> => hang.promise } };
+
+    await fire(300000);
+    await fire(WALK_BUDGET);
+
+    const lapseCall = warn.mock.calls.find((call) => String(call.arguments[0]).includes("discovery walk exceeded"));
+
+    assert.ok(lapseCall, "the pass reports the lapse");
+    assert.ok(!String(lapseCall.arguments[0]).includes("re-attempted"), "and does not promise another attempt it will never make");
+
+    // Nothing was re-armed, so advancing another full delay walks nothing at all.
+    mockProviders = { "deferred-wedged": deferredProvider("deferred-wedged") };
+    walkResults = { "deferred-wedged": ONE_CHANNEL };
+
+    await fire(300000);
+
+    assert.deepEqual(attempts, { "deferred-wedged": 2 }, "the lapse ended the schedule rather than restarting it");
+
+    hang.resolve([]);
   });
 
   /* A walk opens a browser window at the shared window's placement, which during a login session is the window the user is signing in through - and a second
@@ -706,6 +805,20 @@ describe("the deferred discovery re-attempt", () => {
    * capture is installed first, so the session's fifteen-minute timeout is captured rather than left running against the process.
    */
   describe("standing aside for a login session", () => {
+
+    let originalEnabled: string[];
+
+    beforeEach(() => {
+
+      // The rows here read the login guard, which sits behind the service filter, so the filter starts empty and only the row that means to exercise it sets one.
+      originalEnabled = CONFIG.channels.enabledServices;
+      CONFIG.channels.enabledServices = [];
+    });
+
+    afterEach(() => {
+
+      CONFIG.channels.enabledServices = originalEnabled;
+    });
 
     /**
      * Starts a real login session against a stub browser, so the cycle and the re-attempt read the flag exactly as production does.
@@ -817,6 +930,157 @@ describe("the deferred discovery re-attempt", () => {
       assert.equal(discoveryPageCreations.length, 1, "the cycle opened the discovery window");
       assert.deepEqual(walks, { "deferred-login": 1 }, "and walked the service");
     });
+
+    test("a filtered-out service is counted as filtered rather than deferred, even with a login session on screen", async (t) => {
+
+      /* The filter skip and the login deferral are ordered, and the order is what this row reads. A service outside the active filter is not one the cycle owes
+       * a walk to at all, so it must be counted as filtered and left there - deferring it would put a service the user switched off onto a schedule that walks
+       * it minutes later. The row runs both branches in one cycle: the filtered service and, behind it, one the session really does defer.
+       */
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "login-filtered": deferredProvider("login-filtered"), "login-kept": deferredProvider("login-kept") };
+      CONFIG.channels.precacheServices = [ "login-filtered", "login-kept" ];
+      CONFIG.channels.enabledServices = ["login-kept"];
+
+      captureTimers(t);
+
+      await startStubLogin();
+
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      assert.deepEqual(discoveryPageCreations, [], "neither service opened a discovery window");
+
+      const completionCall = info.mock.calls.find((call) => String(call.arguments[0]).includes("Channel lineup precaching complete"));
+
+      assert.ok(completionCall, "the cycle reported its completion");
+
+      const completion = completionCall.arguments.map((argument) => String(argument)).join(" ");
+
+      assert.ok(completion.includes("1 skipped (filtered)"), "the filtered service is counted as filtered");
+      assert.ok(completion.includes("1 deferred for a login session"), "and only the service inside the filter is counted as deferred");
+
+      // The re-attempt is the proof the filtered service was never queued: once the session ends, the pass walks the kept service and nothing else.
+      walkResults = { "login-filtered": ONE_CHANNEL, "login-kept": ONE_CHANNEL };
+
+      clearLoginState();
+
+      await fire(300000);
+
+      assert.deepEqual(walks, { "login-kept": 1 }, "the re-attempt walked only the service the filter allows");
+    });
+
+    test("a re-attempt skips a service whose lineup arrived mid-pass and re-arms only what the session interrupted", async (t) => {
+
+      /* A lineup that arrived in the interval and a session that opens partway through both leave a service unwalked, and they are read in that order. A lineup
+       * that arrived - from a later cycle, or from a user hitting the discovery endpoint - makes the walk pointless, so that service is skipped with its debug
+       * line and is never re-armed; a session stops the pass where it stands and re-arms the remainder. Reading the lineup first only shows when the two meet:
+       * the queue here holds a cached service before the session opens and another after it, and the second is the one that would be re-armed by a pass that
+       * asked about the session first.
+       */
+      const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "pass-cached": deferredProvider("pass-cached"), "pass-collides": deferredProvider("pass-collides"),
+        "pass-late-cached": deferredProvider("pass-late-cached"), "pass-walks": deferredProvider("pass-walks") };
+
+      CONFIG.channels.precacheServices = [ "pass-cached", "pass-walks", "pass-late-cached", "pass-collides" ];
+
+      captureTimers(t);
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      assert.deepEqual(attempts, { "pass-cached": 1, "pass-collides": 1, "pass-late-cached": 1, "pass-walks": 1 },
+        "the cycle attempted all four and every one came back empty, so all four are owed a second pass");
+
+      /* The interval does its work: two lineups land, and the service between them opens a login session from inside its own walk, so the pass meets the session
+       * with one cached service already behind it and one still ahead.
+       */
+      cachedSlugs = new Set([ "pass-cached", "pass-late-cached" ]);
+      walks = {};
+
+      mockProviders = { ...mockProviders, "pass-walks": { ...deferredProvider("pass-walks"),
+
+        discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+          walks["pass-walks"] = (walks["pass-walks"] ?? 0) + 1;
+
+          await startStubLogin();
+
+          return ONE_CHANNEL;
+        } } };
+
+      await fire(300000);
+
+      const skipped = debug.mock.calls.filter((call) => String(call.arguments[1]).includes("its lineup was discovered in the meantime"))
+        .map((call) => String(call.arguments[2]));
+
+      assert.deepEqual(skipped, [ "pass-cached", "pass-late-cached" ],
+        "both services whose lineups arrived are skipped with their own line, including the one the session was already up for");
+
+      assert.deepEqual(walks, { "pass-walks": 1 }, "only the service that was neither cached nor behind the session was walked");
+
+      // What the session interrupted is re-armed and nothing else is, so clearing the lineups proves the skipped services were never queued: a pass that had
+      // asked about the session first would have carried the second cached service along and would walk it here.
+      cachedSlugs = new Set();
+      walkResults = { "pass-cached": ONE_CHANNEL, "pass-collides": ONE_CHANNEL, "pass-late-cached": ONE_CHANNEL, "pass-walks": ONE_CHANNEL };
+      walks = {};
+
+      clearLoginState();
+
+      await fire(300000);
+
+      assert.deepEqual(walks, { "pass-collides": 1 }, "the re-armed pass walked exactly the remainder the session stopped it on");
+    });
+
+    test("a completion line carrying both an unsettled walk and a login deferral names them in that order", async (t) => {
+
+      /* The line composes its clauses in a fixed order - what the cycle could not settle, then what it stood aside from, then what the filter removed - so a row
+       * that produces two of them at once is what holds that order in place. A line that reordered them would still be true and would read as a different
+       * sentence every time the mix changed.
+       */
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      let sessionStarted = false;
+
+      mockProviders = { "cycle-deferred": deferredProvider("cycle-deferred"), "cycle-unsettled": { ...deferredProvider("cycle-unsettled"),
+
+        discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+          walks["cycle-unsettled"] = (walks["cycle-unsettled"] ?? 0) + 1;
+
+          // The session opens from inside the first walk, so the service behind this one meets it on the next turn of the cycle's loop.
+          if(!sessionStarted) {
+
+            sessionStarted = true;
+
+            await startStubLogin();
+          }
+
+          return [];
+        } } };
+
+      CONFIG.channels.precacheServices = [ "cycle-unsettled", "cycle-deferred" ];
+
+      captureTimers(t);
+      startPrecaching(deps);
+
+      await fire(5000);
+
+      const completionCall = info.mock.calls.find((call) => String(call.arguments[0]).includes("Channel lineup precaching complete"));
+
+      assert.ok(completionCall, "the cycle reported its completion");
+
+      const completion = completionCall.arguments.map((argument) => String(argument)).join(" ");
+      const unsettledAt = completion.indexOf("returned no channels or timed out");
+      const deferredAt = completion.indexOf("deferred for a login session");
+
+      assert.notEqual(unsettledAt, -1, "the line names the walk that settled nothing");
+      assert.notEqual(deferredAt, -1, "and the service the session deferred");
+      assert.ok(unsettledAt < deferredAt, "the unsettled clause comes before the login-deferral clause");
+    });
   });
 });
 
@@ -864,9 +1128,10 @@ describe("runPrecacheCycle - deps threading through the internal precacheService
 
     t.mock.method(globalThis, "setTimeout", (callback: () => void): ReturnType<typeof setTimeout> => {
 
-      scheduledCallback = callback;
+      scheduledCallback ??= callback;
 
-      return 0 as unknown as ReturnType<typeof setTimeout>;
+      // The walk arms a deadline of its own through this same capture, and that handle is unrefd, so the stand-in carries the method Node's Timeout would.
+      return { unref: (): void => { /* A captured handle holds no reference to the event loop. */ } } as unknown as ReturnType<typeof setTimeout>;
     });
 
     const fakeDeps: PrecachingDeps = {
@@ -1075,6 +1340,7 @@ describe("withProviderGuidePage", () => {
     newPageOptions = [];
     overlayHandlingCalls = [];
     pageEvents = [];
+    registrations = [];
     windowSyncCalls = 0;
 
     stubBrowser = {
@@ -1241,6 +1507,62 @@ describe("withProviderGuidePage", () => {
     await assert.rejects(withProviderGuidePage(provider, {}, deps), /walk failed/);
 
     assert.ok(pageEvents.includes("close"), "the failed walk still closes the page");
+  });
+
+  test("registers the guide page as held in flight for the walk's duration", async () => {
+
+    /* The stale-page sweep closes a managed page nothing owns once its grace period elapses, and a discovery page is owned by the walk rather than by any stream
+     * the registry records - so without the mark the sweep would be the walk's ceiling instead of a safety net, and a walk longer than the grace period would
+     * lose its own page. The finally's unregister drops the mark, so nothing outlives the walk.
+     */
+    const provider = guideProvider(false, async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL);
+
+    await withProviderGuidePage(provider, {}, deps);
+
+    assert.deepEqual(registrations, [{ inFlight: true }], "the page is registered exactly once, marked as held in flight");
+  });
+
+  test("stops a walk that outlives its budget, closing its page before the rejection surfaces", async (t) => {
+
+    /* The deadline has to cancel the walk, not merely stop waiting on it: a walk left running would keep driving a page the session has moved on from. Closing
+     * the page is the cancellation, so the row reads the close the instant the deadline fires - synchronously, before the rejection has had a microtask to
+     * propagate - and only then reads the typed rejection.
+     *
+     * The deadline's own timer is captured and fired by hand rather than driven through the virtual clock, which is the technique the deps-threading row above
+     * sets out: a captured callback fires synchronously either way and cannot be disturbed by whatever timer state an unrelated row in this file left behind.
+     * Capturing the delay is also what proves the budget is the one the module declares rather than some other timer.
+     */
+    const armedDelays: number[] = [];
+    const lapses: (() => void)[] = [];
+
+    t.mock.method(globalThis, "setTimeout", (callback: () => void, delayMs?: number): unknown => {
+
+      armedDelays.push(delayMs ?? 0);
+      lapses.push(callback);
+
+      return { unref: (): void => { /* A captured handle holds no reference to the event loop. */ } };
+    });
+
+    const hang = Promise.withResolvers<DiscoveredChannel[]>();
+    const provider = guideProvider(true, async (): Promise<DiscoveredChannel[]> => hang.promise);
+    const pending = withProviderGuidePage(provider, {}, deps);
+
+    await settle();
+
+    assert.deepEqual(armedDelays, [WALK_BUDGET], "the walk armed exactly one timer, at the budget the module declares");
+    assert.ok(!pageEvents.includes("close"), "the page stays open while the walk is inside its budget");
+
+    const lapse = lapses[0];
+
+    assert.ok(lapse, "the deadline's timer was captured");
+
+    lapse();
+
+    assert.equal(pageEvents.filter((event) => event === "close").length, 1, "the lapse itself closed the page, before the rejection could unwind the session");
+
+    await assert.rejects(pending, DiscoveryWalkTimeoutError, "the lapse surfaces as its own type rather than as a generic failure");
+
+    hang.resolve([]);
   });
 });
 
@@ -1492,5 +1814,60 @@ describe("withProviderGuidePage - the empty-walk retry", () => {
     assert.equal(walks, 1, "no retry is attempted during teardown");
     assert.ok(!retryEvents.includes("reload"), "no reload is driven during teardown");
     assert.deepEqual(channels, [], "the first walk's result stands");
+  });
+
+  test("gives the retry a budget of its own rather than the remainder of the first walk's", async (t) => {
+
+    /* Each walk arms its own deadline, which is what keeps the retry bounded exactly like the first attempt: a retry sharing one budget with the walk before it
+     * would inherit whatever that walk had already spent, and on a slow guide it would be cut off before it began. The row reads the timers the session arms -
+     * one per walk, each at the full budget - and then fires the retry's own, which is the deadline that has to be the live one.
+     */
+    const armed: { callback: () => void; delayMs: number }[] = [];
+
+    t.mock.method(globalThis, "setTimeout", (callback: () => void, delayMs?: number): unknown => {
+
+      armed.push({ callback, delayMs: delayMs ?? 0 });
+
+      return { unref: (): void => { /* A captured handle holds no reference to the event loop. */ } };
+    });
+
+    const hang = Promise.withResolvers<DiscoveredChannel[]>();
+
+    stubBrowser = { newPage: async (): Promise<Page> => makeRetryPage() } as unknown as Browser;
+
+    // The first walk answers immediately and empty, which is what earns the retry; the second hangs, so the retry's own deadline is the one that decides.
+    const provider = {
+
+      ...retryProvider(),
+      discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+        walks++;
+
+        return (walks === 1) ? [] : hang.promise;
+      }
+    } as unknown as ProviderModule;
+
+    const pending = withProviderGuidePage(provider, { afterWalk }, deps);
+
+    await settle();
+
+    assert.equal(walks, 2, "the empty first walk earned its retry");
+
+    // The classification between the walks arms a timer of its own, so the walk deadlines are read by their budget rather than by position in the whole list.
+    const walkDeadlines = armed.filter((timer) => timer.delayMs === WALK_BUDGET);
+
+    assert.equal(walkDeadlines.length, 2, "each walk armed a deadline of its own, both at the full budget");
+
+    const retryLapse = walkDeadlines[1];
+
+    assert.ok(retryLapse, "the retry's own deadline was captured");
+
+    retryLapse.callback();
+
+    assert.ok(retryEvents.includes("close"), "the retry's lapse closes the page");
+
+    await assert.rejects(pending, DiscoveryWalkTimeoutError, "and the retry's lapse is what the session rejects with");
+
+    hang.resolve([]);
   });
 });

@@ -251,12 +251,14 @@ const managedPageIds = new Set<string>();
 // the configured grace period before being closed. This prevents race conditions where pages are briefly untracked during initialization or cleanup transitions.
 const potentiallyStalePages = new Map<string, number>();
 
-/* Set of IDs for pages that stream setup created and whose ownership the stream registry does not yet record. Setup writes the registry's page reference only once
- * it completes, which on a slow tune is long enough for the cleanup walk to see the page as unowned and close it out from under the setup driving it; membership
- * here exempts the page from staleness for exactly that window. An entry leaves the set when unregisterManagedPage releases the page as setup tears it down, when
- * the cleanup walk sees the registry record the ownership the mark stood in for, and when clearPageTracking wipes the collections at the end of a browser session.
+/* Set of IDs for pages an operation owns for its whole duration while nothing the cleanup walk reads records that ownership. Stream setup is one such owner: it
+ * writes the registry's page reference only once it completes, which on a slow tune is long enough for the walk to see the page as unowned and close it out from
+ * under the setup driving it. A channel discovery walk is another: its page is never a stream page, so no registry entry will ever speak for it, and the walk's
+ * own cleanup is what releases it. Membership here exempts the page from staleness for exactly the window its owner holds it. An entry leaves the set when
+ * unregisterManagedPage releases the page as its owner finishes, when the cleanup walk sees the registry record the ownership the mark stood in for, and when
+ * clearPageTracking wipes the collections at the end of a browser session.
  */
-const inFlightSetupPageIds = new Set<string>();
+const inFlightPageIds = new Set<string>();
 
 /* The pages that live in a window of their own rather than the shared one. A CDP window command acts on the window of the page whose session carries it, so
  * which page a command travels on decides which window moves...and a page in its own window would move that one. Membership here is what keeps such a page
@@ -571,10 +573,11 @@ export async function emitCurrentSystemStatus(): Promise<void> {
  * Each registered page receives a unique ID that persists for the page's lifetime. This ID is used for comparison and staleness tracking, avoiding potential
  * issues with Page object reference identity.
  * @param page - The Puppeteer Page to register.
- * @param options - Registration options. Set inFlightSetup when stream setup owns the page but has not yet recorded that ownership in the stream registry, so the
- *   stale page cleanup never closes a page whose stream is still being established.
+ * @param options - Registration options. Set inFlight when an operation owns the page for its duration but nothing the stale page cleanup reads records that
+ *   ownership - a stream setup that has not yet written its page into the registry, or a discovery walk whose page belongs to no stream at all - so the cleanup
+ *   never closes a page out from under the operation driving it.
  */
-export function registerManagedPage(page: Page, options: { inFlightSetup?: boolean } = {}): void {
+export function registerManagedPage(page: Page, options: { inFlight?: boolean } = {}): void {
 
   // Generate a unique ID for this page.
   const pageId = "page-" + String(++managedPageIdCounter);
@@ -585,10 +588,10 @@ export function registerManagedPage(page: Page, options: { inFlightSetup?: boole
   // Track the ID as managed.
   managedPageIds.add(pageId);
 
-  // Exempt the page from staleness for as long as its stream setup is in flight.
-  if(options.inFlightSetup) {
+  // Exempt the page from staleness for as long as the operation that owns it is in flight.
+  if(options.inFlight) {
 
-    inFlightSetupPageIds.add(pageId);
+    inFlightPageIds.add(pageId);
   }
 }
 
@@ -608,8 +611,8 @@ export function unregisterManagedPage(page: Page): void {
     // Also remove from potentially stale tracking since we're intentionally closing it.
     potentiallyStalePages.delete(pageId);
 
-    // Release any in-flight setup mark. The page is leaving our management, so the exemption it carried has nothing left to protect.
-    inFlightSetupPageIds.delete(pageId);
+    // Release any in-flight mark. The page is leaving our management, so the exemption it carried has nothing left to protect.
+    inFlightPageIds.delete(pageId);
 
     // Note: We don't delete from pageToId because WeakMap handles cleanup automatically when the Page is garbage collected.
   }
@@ -636,7 +639,7 @@ function clearPageTracking(): void {
 
   managedPageIds.clear();
   potentiallyStalePages.clear();
-  inFlightSetupPageIds.clear();
+  inFlightPageIds.clear();
 }
 
 /**
@@ -2098,8 +2101,8 @@ export async function closeBrowser(): Promise<void> {
  *
  * 4. Minimum page preservation: We always keep at least one page open to prevent Chrome from exiting.
  *
- * 5. In-flight setup exemption: Pages whose stream setup is still running (tracked in inFlightSetupPageIds) are never considered stale. The registry records a
- *    stream's page only once setup completes, so without this a slow tune would have its own page closed out from under it.
+ * 5. In-flight exemption: Pages an operation still holds (tracked in inFlightPageIds) are never considered stale. The registry records a stream's page only once
+ *    setup completes, and a discovery page reaches the registry at no point at all, so without this a slow tune or a running walk would lose its own page.
  *
  * The safeguards are expressed as rules in browser/pageStaleness.ts, which decides from a snapshot what to close, track, forget, and unmark. This function is the
  * I/O shell around that decision: it reads Chrome's page list, applies the decision to the tracking collections, and performs the closes.
@@ -2111,7 +2114,7 @@ export async function closeBrowser(): Promise<void> {
  *
  * The cleanup uses a multi-stage filtering process:
  * 1. Only consider pages we created (in managedPageIds)
- * 2. Exclude pages associated with active streams, and pages whose stream setup is still in flight
+ * 2. Exclude pages associated with active streams, and pages an operation still holds in flight
  * 3. Apply a grace period before closing (to handle race conditions)
  * 4. Preserve at least one page to keep the browser alive
  */
@@ -2171,7 +2174,7 @@ export async function cleanupStalePages(): Promise<void> {
     }
 
     // The staleness judgment - clocks, exemptions, the dead-entry sweep, and the preserve-one budget - belongs to the pure core; this function only carries it out.
-    const actions = evaluateStalePages({ activePageIds, gracePeriodMs: CONFIG.recovery.stalePageGracePeriod, inFlightSetupPageIds, now, pageIds,
+    const actions = evaluateStalePages({ activePageIds, gracePeriodMs: CONFIG.recovery.stalePageGracePeriod, inFlightPageIds, now, pageIds,
       staleFirstSeen: potentiallyStalePages });
 
     // Bring the tracking collections in line with the decision before any close runs, so a close that fails cannot leave the bookkeeping half-applied.
@@ -2187,7 +2190,7 @@ export async function cleanupStalePages(): Promise<void> {
 
     for(const pageId of actions.clearInFlightIds) {
 
-      inFlightSetupPageIds.delete(pageId);
+      inFlightPageIds.delete(pageId);
     }
 
     let closedCount = 0;

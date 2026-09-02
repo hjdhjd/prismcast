@@ -3,7 +3,7 @@
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
 import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
-import { LOG, extractDomain, formatError, startTimer } from "../utils/index.ts";
+import { LOG, extractDomain, formatError, startTimer, timeoutSignal } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
 import { createDiscoveryPage, emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility,
   unregisterManagedPage } from "./index.ts";
@@ -17,6 +17,7 @@ import { classifyBlockedPage } from "./blockedPage.ts";
 import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
 import { startOverlayHandling } from "./consent.ts";
+import { waitWithSignal } from "homebridge-plugin-utils";
 
 /* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
  * sequentially - discovery opens a browser page in a window of its own and navigates to a heavy SPA, so running all services concurrently would stress CPU and
@@ -38,9 +39,10 @@ const PRECACHE_DELAY = 5000;
 
 /* Delay in milliseconds before the services a cycle could not settle are re-attempted. Five minutes puts the second pass well past the contention a boot creates -
  * the browser launch, the first tunes, the DVR's own channel scan - which is the likeliest reason a provider's lazy content never appeared inside its walk. A
- * service that walked and came back empty gets exactly one such pass: still empty on a settled system, it has a standing problem that another walk will not
- * solve, and a repeating attempt would keep waking the browser for it indefinitely. A service deferred because a login session was on screen is the separate
- * case: its walk never ran, so the pass re-arms itself for it until the session ends rather than spending its one attempt on a window the user is working in.
+ * service whose walk did not settle - it came back empty, or it was stopped at its budget - gets exactly one such pass: unsettled again on a quiet system, it has
+ * a standing problem that another walk will not solve, and a repeating attempt would keep waking the browser for it indefinitely. A service deferred because a
+ * login session was on screen is the separate case: its walk never ran, so the pass re-arms itself for it until the session ends rather than spending its one
+ * attempt on a window the user is working in.
  */
 const PRECACHE_RETRY_DELAY = 300000;
 
@@ -57,6 +59,28 @@ const PRECACHE_RETRY_DELAY = 300000;
  * that outcome.
  */
 const SUSPECT_WALK_RATIO = 0.25;
+
+/* The ceiling on a single discovery walk, in milliseconds. Measured walks finish in a few seconds to about seventeen, and an empty walk's reload-and-retry gets a
+ * budget of its own, so a minute is far past anything a healthy walk needs: a walk still running at that point is wedged on a page that is not going to answer.
+ * The ceiling is a failure to report rather than a delay anyone pays, and it sits deliberately low because the alternative is worse - the stale-page sweep is a
+ * safety net for pages nothing owns, not this walk's timer, so a walk without a ceiling of its own has none at all. Failing fast hands the service to the
+ * deferred re-attempt, which tries again on a settled system.
+ */
+const DISCOVERY_WALK_TIMEOUT = 60000;
+
+/**
+ * A discovery walk stopped at its budget. The precache cycle and the deferred re-attempt each treat a wedged walk differently from every other discovery failure,
+ * so the lapse carries its own type rather than making either of them read a message.
+ */
+export class DiscoveryWalkTimeoutError extends Error {
+
+  constructor(label: string, timeoutMs: number) {
+
+    super("The channel discovery walk for " + label + " did not finish within " + String(timeoutMs / 1000) + " seconds.");
+
+    this.name = "DiscoveryWalkTimeoutError";
+  }
+}
 
 // Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared through releasePrecacheGuard in a finally block.
 let precacheInProgress = false;
@@ -336,6 +360,37 @@ export async function recordDiscoveryOutcome(provider: ProviderModule, channels:
 }
 
 /**
+ * Runs a provider's discovery walk under a deadline, and cancels the walk when that deadline lapses rather than merely giving up on waiting for it.
+ *
+ * The cancellation is the whole point. A lapse closes the page, which throws whatever Puppeteer operation the walk is sitting on and unwinds the walk itself -
+ * the same mechanism the guarded session uses for a caller's abort. A bound that only stopped the wait would leave the walk driving a page the session has moved
+ * on from. The lapse is held in a local and handed to the timeout as its abort reason, so the rejection carries that exact error object; every other rejection
+ * travels through untouched. Each call gets its own budget, which is what lets an empty walk's retry be bounded exactly like the first attempt.
+ * @param provider - The provider whose walk to run.
+ * @param page - The guide page the walk runs against, closed if the deadline lapses.
+ * @returns The discovered channels (possibly empty).
+ * @throws DiscoveryWalkTimeoutError when the walk outlives its budget, and whatever the walk itself rejected with otherwise.
+ */
+async function walkWithDeadline(provider: ProviderModule, page: Page): Promise<DiscoveredChannel[]> {
+
+  const lapse = new DiscoveryWalkTimeoutError(provider.label, DISCOVERY_WALK_TIMEOUT);
+  const deadline = timeoutSignal(DISCOVERY_WALK_TIMEOUT, lapse);
+
+  deadline.signal.addEventListener("abort", () => {
+
+    void page.close().catch(() => { /* Page may already be closed. */ });
+  }, { once: true });
+
+  try {
+
+    return await waitWithSignal(provider.discoverChannels(page), deadline.signal);
+  } finally {
+
+    deadline.cancel();
+  }
+}
+
+/**
  * Options for withProviderGuidePage().
  */
 interface WithProviderGuidePageOptions {
@@ -435,7 +490,7 @@ async function retryAfterEmptyWalk(options: RetryAfterEmptyWalkOptions): Promise
 
     void deps.startOverlayHandling(page, profile, { phase: "discovery", signal: retryController.signal });
 
-    return { channels: await provider.discoverChannels(page) };
+    return { channels: await walkWithDeadline(provider, page) };
   } finally {
 
     retryController.abort();
@@ -509,7 +564,11 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       };
     });
 
-    deps.registerManagedPage(page);
+    /* Hold the page against the stale-page sweep for as long as the walk runs. A discovery page is owned by this walk rather than by any stream the registry
+     * records, so without the mark the sweep starts a staleness clock on it at first sight and closes it partway through a long walk. The finally below
+     * unregisters the page, which drops the mark, so the sweep stays a safety net for a leaked page while the deadline above is what bounds the walk.
+     */
+    deps.registerManagedPage(page, { inFlight: true });
 
     // Declare the layout the walk runs against, before the first navigation so the guide loads once at the surface it will be read on. A page carries no
     // emulation of its own, and every guide strategy was written against the preset's dimensions.
@@ -529,7 +588,7 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       await page.goto(provider.guideUrl, { timeout: CONFIG.streaming.navigationTimeout, waitUntil: "networkidle2" });
     }
 
-    let channels = await provider.discoverChannels(page);
+    let channels = await walkWithDeadline(provider, page);
 
     // The walk is complete. Abort the overlay poll so the page is quiet by construction before anything classifies it.
     overlayController.abort();
@@ -686,9 +745,9 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
 
 /**
  * Schedules the deferred re-attempt for the services a pass could not settle. Does nothing when every service came back with a lineup, and nothing during a
- * shutdown, where scheduling work against the browser is precisely what teardown is closing down. This is the one place a re-attempt is scheduled, so both
- * reasons a service is still owed a walk - it ran and found nothing, or it never ran at all - arrive on the same schedule.
- * @param slugs - The services a pass could not settle: walked and empty, or deferred because a login session was on screen.
+ * shutdown, where scheduling work against the browser is precisely what teardown is closing down. This is the one place a re-attempt is scheduled, so every
+ * reason a service is still owed a walk - it ran and found nothing, it was stopped at its budget, or it never ran at all - arrives on the same schedule.
+ * @param slugs - The services a pass could not settle: walked without settling, or deferred because a login session was on screen.
  * @param deps - The injected dependencies, handed to the pass this schedules.
  */
 function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
@@ -794,7 +853,16 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
         }
       } catch(error) {
 
-        LOG.warn("The deferred channel discovery re-attempt failed for %s: %s.", provider.label, formatError(error));
+        /* This is the one pass a service gets, so a lapse here is reported and left there. Queuing it again would put a wedged walk on an unbounded loop, waking
+         * the browser for it every few minutes for the life of the process.
+         */
+        if(error instanceof DiscoveryWalkTimeoutError) {
+
+          LOG.warn("%s's discovery walk exceeded its %d second budget and was stopped.", provider.label, DISCOVERY_WALK_TIMEOUT / 1000);
+        } else {
+
+          LOG.warn("The deferred channel discovery re-attempt failed for %s: %s.", provider.label, formatError(error));
+        }
       }
     }
 
@@ -822,8 +890,8 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
 /**
  * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
  * Services not in the active service filter are silently skipped when the filter is non-empty. Services the cycle could not settle - they walked and found
- * nothing, or a login session on screen kept them from walking at all - are handed to the deferred re-attempt, minutes later, once whatever startup contention
- * or user session may have starved them has passed.
+ * nothing, their walk ran past its budget, or a login session on screen kept them from walking at all - are handed to the deferred re-attempt, minutes later,
+ * once whatever startup contention or user session may have starved them has passed.
  */
 async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
 
@@ -844,8 +912,11 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
   const hasFilter = enabledFilter.length > 0;
   const cycleElapsed = startTimer();
 
-  // The services that walked but found nothing, named rather than counted: the deferred re-attempt below needs to know which ones to come back to.
-  const emptySlugs: string[] = [];
+  /* The services that walked without settling - they came back with nothing, or the walk ran past its budget and was stopped - named rather than counted, because
+   * the deferred re-attempt below needs to know which ones to come back to. Both readings say the same thing about the service: the guide did not answer this
+   * time, and a second pass on a settled system is worth trying.
+   */
+  const unsettledSlugs: string[] = [];
 
   // The services this cycle stood aside from because a login session was on screen. They travel to the same re-attempt, for the same reason: a walk is still owed.
   const deferredSlugs: string[] = [];
@@ -902,29 +973,41 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
         // eslint-disable-next-line no-await-in-loop
         const channels = await precacheService(provider, deps);
 
-        // An empty walk cached nothing, so it is counted honestly as empty rather than folded into the success count.
+        // An empty walk cached nothing, so it is counted as unsettled rather than folded into the success count.
         if(channels.length > 0) {
 
           succeeded++;
         } else {
 
-          emptySlugs.push(slug);
+          unsettledSlugs.push(slug);
         }
       } catch(error) {
 
-        LOG.warn("Failed to precache %s: %s.", provider.label, formatError(error));
+        /* A walk stopped at its budget is its own outcome rather than a general failure: the ceiling ended a walk that was still going, which says nothing about
+         * whether the guide would answer on a settled system, so the service joins the deferred re-attempt exactly as an empty walk does. Every other failure
+         * keeps the general warn and is not queued - a provider that threw has a standing problem another walk will not solve.
+         */
+        if(error instanceof DiscoveryWalkTimeoutError) {
+
+          LOG.warn("%s's discovery walk exceeded its %d second budget and was stopped; the service will be re-attempted.", provider.label,
+            DISCOVERY_WALK_TIMEOUT / 1000);
+          unsettledSlugs.push(slug);
+        } else {
+
+          LOG.warn("Failed to precache %s: %s.", provider.label, formatError(error));
+        }
       }
     }
 
     const elapsed = (cycleElapsed() / 1000).toFixed(1).replace(/\.0$/, "");
-    const emptySuffix = (emptySlugs.length > 0) ? ", " + String(emptySlugs.length) + " returned no channels" : "";
+    const unsettledSuffix = (unsettledSlugs.length > 0) ? ", " + String(unsettledSlugs.length) + " returned no channels or timed out" : "";
     const deferredSuffix = (deferredSlugs.length > 0) ? ", " + String(deferredSlugs.length) + " deferred for a login session" : "";
     const skippedSuffix = (skipped > 0) ? ", " + String(skipped) + " skipped (filtered)" : "";
 
-    LOG.info("Channel lineup precaching complete: %d service%s cached%s%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", emptySuffix, deferredSuffix,
+    LOG.info("Channel lineup precaching complete: %d service%s cached%s%s%s in %ss.", succeeded, (succeeded === 1) ? "" : "s", unsettledSuffix, deferredSuffix,
       skippedSuffix, elapsed);
 
-    armDeferredRetry([ ...emptySlugs, ...deferredSlugs ], deps);
+    armDeferredRetry([ ...unsettledSlugs, ...deferredSlugs ], deps);
   } finally {
 
     releasePrecacheGuard(deps);

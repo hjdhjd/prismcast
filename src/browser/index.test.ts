@@ -221,16 +221,16 @@ describe("registerManagedPage / unregisterManagedPage", () => {
     }, "second unregister on already-unregistered page is a no-op");
   });
 
-  test("registering with the in-flight setup option round-trips through unregister", () => {
+  test("registering with the in-flight option round-trips through unregister", () => {
 
-    // Stream setup registers its page with the in-flight option so stale page cleanup leaves it alone until the registry records the ownership. The option adds
-    // membership in the in-flight collection; what we lock here is that the flagged registration and its unregister are non-throwing, since the collections are
-    // private and the behavioral assertions for the exemption live in pageStaleness.test.ts.
+    // An operation that owns a page for its duration - a stream setup, a discovery walk - registers it with the in-flight option so stale page cleanup leaves it
+    // alone for that window. The option adds membership in the in-flight collection; what we lock here is that the flagged registration and its unregister are
+    // non-throwing, since the collections are private and the behavioral assertions for the exemption live in pageStaleness.test.ts.
     const page = fakePage();
 
     assert.doesNotThrow(() => {
 
-      registerManagedPage(page, { inFlightSetup: true });
+      registerManagedPage(page, { inFlight: true });
     }, "flagged registration is non-throwing");
 
     assert.doesNotThrow(() => {
@@ -244,7 +244,7 @@ describe("registerManagedPage / unregisterManagedPage", () => {
     // Boundary: the flagged path must clean up on the first unregister exactly like the unflagged one, so the second call finds nothing and exits early.
     const page = fakePage();
 
-    registerManagedPage(page, { inFlightSetup: true });
+    registerManagedPage(page, { inFlight: true });
     unregisterManagedPage(page);
 
     assert.doesNotThrow(() => {

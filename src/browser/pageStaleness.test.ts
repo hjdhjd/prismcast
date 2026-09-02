@@ -17,7 +17,7 @@ const NOW = 1000000;
  */
 function snapshot(overrides: Partial<StalePageSnapshot> = {}): StalePageSnapshot {
 
-  return { activePageIds: new Set<string>(), gracePeriodMs: GRACE, inFlightSetupPageIds: new Set<string>(), now: NOW, pageIds: [],
+  return { activePageIds: new Set<string>(), gracePeriodMs: GRACE, inFlightPageIds: new Set<string>(), now: NOW, pageIds: [],
     staleFirstSeen: new Map<string, number>(), ...overrides };
 }
 
@@ -71,15 +71,15 @@ describe("pageStaleness: the unowned page lifecycle", () => {
   });
 });
 
-describe("pageStaleness: the in-flight setup exemption", () => {
+describe("pageStaleness: the in-flight exemption", () => {
 
-  test("a page whose setup is in flight is exempt however long its clock has run", () => {
+  test("a page an operation holds in flight is exempt however long its clock has run", () => {
 
-    // The same snapshot twice, differing only in the in-flight mark. This is the whole reason the exemption exists: a tune slow enough to outlast the grace
-    // period would otherwise have its own page closed out from under it.
+    // The same snapshot twice, differing only in the in-flight mark. This is the whole reason the exemption exists: a tune or a discovery walk slow enough to
+    // outlast the grace period would otherwise have its own page closed out from under it.
     const exempt = evaluateStalePages(snapshot({
 
-      inFlightSetupPageIds: new Set(["page-1"]),
+      inFlightPageIds: new Set(["page-1"]),
       pageIds: [ "page-1", undefined ],
       staleFirstSeen: new Map([[ "page-1", NOW - (10 * GRACE) ]])
     }));
@@ -98,7 +98,7 @@ describe("pageStaleness: the in-flight setup exemption", () => {
 
   test("an in-flight page never starts a clock in the first place", () => {
 
-    const actions = evaluateStalePages(snapshot({ inFlightSetupPageIds: new Set(["page-1"]), pageIds: [ "page-1", undefined ] }));
+    const actions = evaluateStalePages(snapshot({ inFlightPageIds: new Set(["page-1"]), pageIds: [ "page-1", undefined ] }));
 
     assert.deepEqual(actions.startTrackingIds, [], "the exemption stops the clock from ever starting, not just the close");
   });
@@ -108,7 +108,7 @@ describe("pageStaleness: in-flight mark convergence", () => {
 
   test("a mark clears once the registry records the page against its stream", () => {
 
-    const actions = evaluateStalePages(snapshot({ activePageIds: new Set(["page-1"]), inFlightSetupPageIds: new Set(["page-1"]), pageIds: ["page-1"] }));
+    const actions = evaluateStalePages(snapshot({ activePageIds: new Set(["page-1"]), inFlightPageIds: new Set(["page-1"]), pageIds: ["page-1"] }));
 
     assert.deepEqual(actions.clearInFlightIds, ["page-1"], "ownership has landed, so the mark has done its job");
     assert.deepEqual(actions.forgetTrackedIds, [], "an owned page carrying no clock leaves nothing to forget");
@@ -116,9 +116,9 @@ describe("pageStaleness: in-flight mark convergence", () => {
 
   test("a mark for a page missing from the page list is kept rather than pruned", () => {
 
-    // The id is absent from the page list and from the registry both, which is what a still-running setup looks like on a pass where the browser did not report
-    // its page. Pruning here would strip the exemption from that setup, so the mark is deliberately retained until its own teardown or the session end drops it.
-    const actions = evaluateStalePages(snapshot({ inFlightSetupPageIds: new Set(["page-1"]), pageIds: [ "page-2", undefined ] }));
+    // The id is absent from the page list and from the registry both, which is what a still-running operation looks like on a pass where the browser did not
+    // report its page. Pruning here would strip that operation's exemption, so the mark is retained until its own teardown or the session end drops it.
+    const actions = evaluateStalePages(snapshot({ inFlightPageIds: new Set(["page-1"]), pageIds: [ "page-2", undefined ] }));
 
     assert.deepEqual(actions.clearInFlightIds, [], "an absent in-flight page keeps its mark");
   });
@@ -167,7 +167,7 @@ describe("pageStaleness: the preserve-one budget", () => {
      */
     const actions = evaluateStalePages(snapshot({
 
-      inFlightSetupPageIds: new Set(["page-1"]),
+      inFlightPageIds: new Set(["page-1"]),
       pageIds: [ "page-1", "page-2", "page-3" ],
       staleFirstSeen: new Map([ [ "page-2", NOW - (2 * GRACE) ], [ "page-3", NOW - (2 * GRACE) ] ])
     }));
@@ -177,13 +177,13 @@ describe("pageStaleness: the preserve-one budget", () => {
 
   test("a page that is both active and in-flight is subtracted from the budget exactly once", () => {
 
-    /* The overlap case: a setup whose ownership has just landed is briefly in both sets. It must count once, through the active term. Counting it twice would
+    /* The overlap case: an operation whose ownership has just landed is briefly in both sets. It must count once, through the active term. Counting it twice would
      * leave a budget of one and spare a candidate that should close.
      */
     const actions = evaluateStalePages(snapshot({
 
       activePageIds: new Set(["page-1"]),
-      inFlightSetupPageIds: new Set(["page-1"]),
+      inFlightPageIds: new Set(["page-1"]),
       pageIds: [ "page-1", "page-2", "page-3", "page-4" ],
       staleFirstSeen: new Map([ [ "page-2", NOW - (2 * GRACE) ], [ "page-3", NOW - (2 * GRACE) ], [ "page-4", NOW - (2 * GRACE) ] ])
     }));

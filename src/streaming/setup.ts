@@ -604,9 +604,9 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   const browser = await deps.getCurrentBrowser("capture");
   const page = await deps.openSharedWindowTab(browser, { deps: SHARED_WINDOW_TOPOLOGY });
 
-  // Register in-flight: the registry does not record this page against the stream until setup finishes, so the mark is what keeps stale page cleanup from closing
-  // it mid-tune.
-  registerManagedPage(page, { inFlightSetup: true });
+  // Register the page as held in flight: the registry does not record it against the stream until setup finishes, so the mark is what keeps stale page cleanup
+  // from closing it mid-tune.
+  registerManagedPage(page, { inFlight: true });
   resources.adopt(page, disposePage);
 
   // Emulate the capture surface before anything else touches the page and well before capture acquires it: the dimensions the encoder is held to and the pixel

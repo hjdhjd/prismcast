@@ -5,7 +5,7 @@
 
 /* This module is the pure decision core for stale page cleanup. The Chrome adapter in browser/index.ts owns the page-tracking collections and all of the Chrome
  * I/O (listing the browser's pages, closing them); this module answers, from an explicit snapshot with `now` passed in by the caller, which pages start a
- * staleness clock, which pages close, which tracking entries are forgotten, and which in-flight setup marks have converged - the same shape as the relaunch
+ * staleness clock, which pages close, which tracking entries are forgotten, and which in-flight marks have converged - the same shape as the relaunch
  * governor (launchGovernor.ts), so it is deterministically unit-testable with literal timestamps and no timer mocking.
  *
  * Page identity crosses this boundary as managed ids rather than as Puppeteer objects, which is what keeps the module free of Chrome types...the caller resolves
@@ -16,8 +16,8 @@
  *   - A page PrismCast did not create carries no managed id and is never tracked, never closed. Pages opened by the user for debugging and pages a streaming site
  *     opened for itself (OAuth popups and the like) are left alone.
  *   - A page an active stream owns is not a staleness candidate, and a clock already running on one is dropped: ownership arrived, so the page is in use.
- *   - A page whose stream setup is still in flight is exempt on the same terms. Registry ownership is recorded only once setup completes, so without the
- *     exemption a slow tune would have its own page closed out from under it.
+ *   - A page an operation still holds in flight is exempt on the same terms. A stream's page reaches the registry only once its setup completes, and a discovery
+ *     page reaches the registry at no point at all, so without the exemption a slow tune or a running walk would have its own page closed out from under it.
  *   - An unowned managed page starts a clock on first sight and closes only once the grace period has elapsed on a later call. The delay absorbs the brief
  *     windows where a page is legitimately untracked during stream initialization or teardown.
  *   - A tracking entry whose page is gone from the browser is forgotten, so the caller's map does not accumulate ids for pages closed by other means.
@@ -36,8 +36,8 @@ export interface StalePageSnapshot {
   // How long a page must be continuously unowned before it may be closed, in milliseconds.
   readonly gracePeriodMs: number;
 
-  // Managed ids of pages that stream setup has created but whose stream ownership is not yet recorded in the registry.
-  readonly inFlightSetupPageIds: ReadonlySet<string>;
+  // Managed ids of pages an operation owns for its duration, while nothing recorded in the stream registry speaks for that ownership.
+  readonly inFlightPageIds: ReadonlySet<string>;
 
   // The caller's current timestamp in milliseconds, measured against the staleness clocks.
   readonly now: number;
@@ -55,7 +55,7 @@ export interface StalePageSnapshot {
  */
 export interface StalePageActions {
 
-  // Ids whose in-flight setup mark has done its job and may be dropped.
+  // Ids whose in-flight mark has done its job and may be dropped.
   readonly clearInFlightIds: readonly string[];
 
   // Ids of pages to close, in the order the browser reported them and already trimmed to the budget that preserves a surviving page.
@@ -100,11 +100,11 @@ export function evaluateStalePages(snapshot: StalePageSnapshot): StalePageAction
       continue;
     }
 
-    /* An owned page - by an active stream, or by a setup still establishing that ownership - is not a candidate, and any clock running on it is forgotten. Both
-     * memberships answer the same question from opposite ends of a stream's life, which is why they are one condition: the registry says ownership has landed,
-     * the in-flight mark says it is on its way.
+    /* An owned page - by an active stream, or by an operation still holding it in flight - is not a candidate, and any clock running on it is forgotten. Both
+     * memberships answer the same question from different ends, which is why they are one condition: the registry says a stream's ownership has landed, the
+     * in-flight mark says an operation has the page right now, whether or not the registry will ever record it.
      */
-    if(snapshot.activePageIds.has(pageId) || snapshot.inFlightSetupPageIds.has(pageId)) {
+    if(snapshot.activePageIds.has(pageId) || snapshot.inFlightPageIds.has(pageId)) {
 
       if(snapshot.staleFirstSeen.has(pageId)) {
 
@@ -144,11 +144,11 @@ export function evaluateStalePages(snapshot: StalePageSnapshot): StalePageAction
 
   /* An in-flight mark whose id now appears among the active pages has done its job: registry ownership has arrived and carries the exemption from here on.
    *
-   * A mark whose id is absent from the page list is deliberately kept rather than pruned. Every path by which a setup page really vanishes already drops the mark
-   * at its source - the setup stack's unregister, or the session-end clear - so an absence here means the page list simply did not report the page on this pass,
-   * and pruning on that would strip the exemption from a setup still running and re-expose the mid-setup close this exemption exists to prevent.
+   * A mark whose id is absent from the page list is deliberately kept rather than pruned. Every path by which such a page really vanishes already drops the mark
+   * at its source - the owning operation's unregister, or the session-end clear - so an absence here means the page list simply did not report the page on this
+   * pass, and pruning on that would strip the exemption from an operation still running and re-expose the mid-flight close this exemption exists to prevent.
    */
-  for(const inFlightId of snapshot.inFlightSetupPageIds) {
+  for(const inFlightId of snapshot.inFlightPageIds) {
 
     if(snapshot.activePageIds.has(inFlightId)) {
 
@@ -159,7 +159,7 @@ export function evaluateStalePages(snapshot: StalePageSnapshot): StalePageAction
   /* How many pages may close while leaving one behind to keep Chrome alive. The arithmetic counts only the browser's pages and the active ones because that is
    * all the floor needs: the walk above already excludes both active and in-flight ids from the candidates, so an in-flight page can never be closed no matter
    * what this budget says, and the pages left standing always number at least one. Subtracting in-flight pages here as well would buy no additional safety and
-   * would throttle legitimate cleanup by however many setups happen to be running.
+   * would throttle legitimate cleanup by however many operations happen to be holding one.
    */
   const maxToClose = Math.max(0, snapshot.pageIds.length - 1 - snapshot.activePageIds.size);
 
