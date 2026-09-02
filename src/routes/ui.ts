@@ -160,8 +160,8 @@ export function generateBaseStyles(): string {
     ".form-warning { color: var(--status-warning-text); font-size: 12px; margin-top: 5px; padding: 6px 10px; background: var(--status-warning-bg); ",
     "border-radius: var(--radius-sm); }",
     ".hint { color: var(--text-secondary); font-size: 12px; margin-top: 1px; margin-bottom: 15px; }",
-    ".predefined-hint { padding: 8px 12px; background: var(--bg-offset); border-radius: var(--radius-sm); border-left: 3px solid var(--accent); }",
-    ".predefined-hint a { color: var(--accent); }",
+    ".predefined-hint { padding: 8px 12px; background: var(--surface-elevated); border-radius: var(--radius-sm); border-left: 3px solid var(--interactive-primary); }",
+    ".predefined-hint a { color: var(--interactive-primary); }",
 
     // Env badge in form labels.
     ".env-badge { display: inline-block; background: var(--badge-env-bg); color: var(--badge-env-text); padding: 2px 8px; ",

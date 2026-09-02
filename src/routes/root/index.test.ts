@@ -318,6 +318,29 @@ describe("setupRootEndpoint", () => {
     assert.deepEqual(unregistered, [], "every registered handler name must come from the ACTIONS registry; off-registry names: " + JSON.stringify(unregistered));
   });
 
+  test("every custom property the document references is also defined in the document", async () => {
+
+    /* A var(--name) reference whose token is defined nowhere resolves to nothing, and the declaration it sits in is simply dropped by the browser - no console
+     * error, no visual marker, just a rule that quietly does not apply. The landing page inlines the theme block alongside every stylesheet it renders, so the
+     * fetched document holds both halves of the relationship and the check is a set difference over one string.
+     *
+     * Definitions are read over the WHOLE document rather than only its <style> blocks, so a token declared from a script (an inline style built client-side,
+     * for instance) still counts as defined and cannot produce a false failure. Leftovers are listed in the failure message, so a false positive names its own
+     * cause instead of leaving the reader to hunt for it.
+     */
+    const body = await (await fetch(urlFor("/"))).text();
+    const referenced = new Set(Array.from(body.matchAll(/var\(\s*(--[a-z0-9-]+)/g), (match) => match[1]));
+    const defined = new Set(Array.from(body.matchAll(/(--[a-z0-9-]+)\s*:/g), (match) => match[1]));
+
+    // Sanity: a document that produced neither set would make the difference below vacuously empty.
+    assert.ok(referenced.size > 50, "the page should reference many custom properties (sanity check); got " + String(referenced.size));
+    assert.ok(defined.size > 50, "the page should define many custom properties (sanity check); got " + String(defined.size));
+
+    const undefinedTokens = Array.from(referenced.difference(defined)).toSorted();
+
+    assert.deepEqual(undefinedTokens, [], "every referenced custom property must be defined in the document; undefined: " + JSON.stringify(undefinedTokens));
+  });
+
   test("every emitted data-<event>-(action|prevent-default|stop-propagation|close-dropdown) attribute uses a supported event type", async () => {
 
     /* The dispatcher listens for exactly four event types: click, change, keydown, submit. A typo (data-keydon-action, missing "w") or an unsupported event

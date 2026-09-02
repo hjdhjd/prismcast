@@ -353,8 +353,9 @@ export function generateLandingPageStyles(): string {
     ".btn-tag-filter svg { width: 12px; height: 12px; }",
     ".btn-tag-filter:hover { opacity: 1; }",
 
-    // Playlist hint icon. Appears next to the tag filter funnel when the filter is active, providing the corresponding playlist URL for Channels DVR.
-    ".btn-playlist-hint { padding: 0 3px; margin-left: 2px; vertical-align: middle; opacity: 0.6; color: var(--accent); }",
+    // Playlist hint icon. Appears next to the tag filter funnel when the filter is active, providing the corresponding playlist URL for Channels DVR. The
+    // compound selector outranks the base .btn-icon rule, which sets the resting icon color and comes later in this sheet, so the accent color is what renders.
+    ".btn-icon.btn-playlist-hint { margin-left: 2px; vertical-align: middle; opacity: 0.6; color: var(--interactive-primary); }",
     ".btn-playlist-hint svg { width: 12px; height: 12px; }",
     ".btn-playlist-hint:hover { opacity: 1; }",
     ".playlist-hint-content { padding: 10px 14px; max-width: 420px; }",
