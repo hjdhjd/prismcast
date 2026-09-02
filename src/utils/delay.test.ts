@@ -1,12 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * delay.test.ts: Unit tests for the wait policies in delay.ts (timeoutSignal, waitWithTimeout, boundedWait, delay). Every export uses real setTimeout. The
- * timing-only checks on timeoutSignal drive mock.timers, whose synchronous tick is enough because an abort is delivered synchronously from the timer callback;
- * the policies that await a promise use small real-time delays (1-30ms) instead, because a synchronous tick cannot drain the microtask chain an awaited wait
- * settles through.
+ * delay.test.ts: Unit tests for the wait policies in delay.ts (timeoutSignal, waitWithTimeout, boundedWait, delay, pollUntil). The four promise-shaped
+ * policies use real setTimeout: the timing-only checks on timeoutSignal drive mock.timers, whose synchronous tick is enough because an abort is delivered
+ * synchronously from the timer callback, while the policies that await a promise use small real-time delays (1-30ms) instead, because a synchronous tick
+ * cannot drain the microtask chain an awaited wait settles through. pollUntil takes a Clock, so its rows drive a fake one and read the schedule directly.
  */
-import { boundedWait, delay, timeoutSignal, waitWithTimeout } from "./delay.ts";
+import { boundedWait, delay, pollUntil, timeoutSignal, waitWithTimeout } from "./delay.ts";
 import { describe, mock, test } from "node:test";
+import { makeAdvancingClock, makeFakeClock } from "./clock.helpers.ts";
 import assert from "node:assert/strict";
 
 describe("timeoutSignal", () => {
@@ -378,5 +379,124 @@ describe("delay", () => {
     await promise;
 
     assert.equal(synchronouslySet, true, "synchronous code after delay(0) call ran before the resolution");
+  });
+});
+
+describe("pollUntil", () => {
+
+  test("reads once and sleeps never when the first read already satisfies", async () => {
+
+    /* The whole reason this shape beats a fixed delay: a signal that is already true costs one round trip. A sleep scheduled ahead of the first read would show
+     * up here as a recorded duration.
+     */
+    const { clock, sleeps } = makeFakeClock();
+
+    let reads = 0;
+
+    const outcome = await pollUntil({ cadenceMs: 25, ceilingMs: 1000, clock, read: async (): Promise<string> => {
+
+      reads++;
+
+      return "normal";
+    }, until: (state: string): boolean => state === "normal" });
+
+    assert.equal(outcome.lapsed, false, "a satisfied read is not a lapse");
+    assert.equal(outcome.reads, 1, "exactly one read");
+    assert.equal(outcome.value, "normal", "the outcome carries the satisfying value");
+    assert.equal(reads, 1, "the read ran exactly once");
+    assert.deepEqual(sleeps, [], "no sleep is scheduled before or after a first read that satisfies");
+  });
+
+  test("sleeps the cadence between reads until one satisfies", async () => {
+
+    // The cadence is what separates consecutive reads, so a poll that satisfies on its third read has slept exactly twice, each time for the cadence.
+    const { clock, sleeps } = makeFakeClock();
+    const answers = [ "minimized", "minimized", "normal" ];
+
+    let reads = 0;
+
+    const outcome = await pollUntil({ cadenceMs: 25, ceilingMs: 1000, clock, read: async (): Promise<string> => {
+
+      const answer = answers[reads] ?? "normal";
+
+      reads++;
+
+      return answer;
+    }, until: (state: string): boolean => state === "normal" });
+
+    assert.equal(outcome.lapsed, false, "the third read satisfied inside the ceiling");
+    assert.equal(outcome.reads, 3, "three reads");
+    assert.equal(outcome.value, "normal", "the outcome carries the satisfying value");
+    assert.deepEqual(sleeps, [ 25, 25 ], "one cadence sleep between each pair of reads, and none after the satisfying one");
+  });
+
+  test("lapses at the ceiling and reports the last value read", async () => {
+
+    /* The read count is derived from the same two numbers the poll is given rather than restated as a literal, so the row states the relationship - one read,
+     * then one read per cadence the ceiling affords - instead of a number that would have to be recomputed by hand whenever either constant moved.
+     */
+    const cadenceMs = 25;
+    const ceilingMs = 100;
+    const { clock, sleeps } = makeAdvancingClock();
+
+    let reads = 0;
+
+    const outcome = await pollUntil({ cadenceMs, ceilingMs, clock, read: async (): Promise<string> => {
+
+      reads++;
+
+      return "minimized-" + String(reads);
+    }, until: (state: string): boolean => state === "normal" });
+
+    assert.equal(outcome.lapsed, true, "no read satisfied before the ceiling elapsed");
+    assert.equal(outcome.reads, Math.floor(ceilingMs / cadenceMs) + 1, "the ceiling affords one read plus one per cadence");
+    assert.equal(reads, Math.floor(ceilingMs / cadenceMs) + 1, "the read ran exactly that many times");
+    assert.equal(outcome.value, "minimized-" + String(outcome.reads), "the outcome carries the last value read, not a satisfying one");
+    assert.equal(sleeps.length, outcome.reads - 1, "one cadence sleep between each pair of reads");
+  });
+
+  test("propagates a read's rejection and stops polling there", async () => {
+
+    // Negative test: what a failed read means belongs to the caller. Swallowing it would report a lapse where there was a fault, and would keep asking a source
+    // that has already failed.
+    const { clock, sleeps } = makeFakeClock();
+    const failure = new Error("the window state could not be read");
+
+    let reads = 0;
+
+    await assert.rejects(pollUntil({ cadenceMs: 25, ceilingMs: 1000, clock, read: async (): Promise<string> => {
+
+      reads++;
+
+      if(reads === 2) {
+
+        throw failure;
+      }
+
+      return "minimized";
+    }, until: (state: string): boolean => state === "normal" }), (error: unknown) => error === failure, "the caller's own error object propagates by reference");
+
+    assert.equal(reads, 2, "the poll stopped at the throwing read");
+    assert.deepEqual(sleeps, [25], "only the one cadence sleep that preceded the throwing read");
+  });
+
+  test("a zero ceiling still performs exactly one read", async () => {
+
+    // Boundary: the ceiling is checked after a read, never before one, so the cheapest possible poll is still a real question asked of the source.
+    const { clock, sleeps } = makeFakeClock();
+
+    let reads = 0;
+
+    const outcome = await pollUntil({ cadenceMs: 25, ceilingMs: 0, clock, read: async (): Promise<string> => {
+
+      reads++;
+
+      return "minimized";
+    }, until: (state: string): boolean => state === "normal" });
+
+    assert.equal(outcome.lapsed, true, "an unsatisfied read under a zero ceiling lapses");
+    assert.equal(outcome.reads, 1, "exactly one read");
+    assert.equal(reads, 1, "the read ran exactly once");
+    assert.deepEqual(sleeps, [], "no cadence sleep is scheduled when the ceiling has already elapsed");
   });
 });

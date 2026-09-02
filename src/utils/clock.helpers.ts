@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * clock.helpers.ts: Test affordance for the Clock port. The realClock default in clock.ts is the production-side adapter; makeFakeClock here is the test-side
- * counterpart - they form a pair, co-located so any test that consumes a Clock has the factory ready without inventing its own. By default the fake clock's
+ * clock.helpers.ts: Test affordances for the Clock port. The realClock default in clock.ts is the production-side adapter; makeFakeClock here is the test-side
+ * counterpart - they form a pair, co-located so any test that consumes a Clock has the factory ready without inventing its own. makeAdvancingClock is the same
+ * fake with its sleeps wired to its own now(), for the consumers that measure elapsed time as well as schedule waits. By default the fake clock's
  * sleep() resolves immediately and records the requested duration into a shared array (so tests can assert on the schedule); waitWithTimeout() forwards the
  * inner promise unchanged (so the operation's own resolve/throw drives the outcome); now() returns 0. Tests that need different behavior pass overrides for
  * the specific method they want to control - e.g., a waitWithTimeout that throws synchronously to simulate the bound lapsing.
@@ -55,6 +56,36 @@ export function makeFakeClock(overrides: Partial<Clock> = {}): FakeClockHandle {
     }),
     waitWithTimeout: overrides.waitWithTimeout ?? (async <T>(promise: Promise<T>): Promise<T> => promise)
   };
+
+  return { clock, sleeps };
+}
+
+/**
+ * Builds a fake Clock whose sleeps advance its own now(), plus the shared sleep-recording array. The default fake freezes now() at 0, which is the right answer
+ * for a consumer that only schedules waits; a consumer that also MEASURES elapsed time - a poll deciding whether its ceiling has passed, an operation timing
+ * itself - needs the two to move together, and a test that hand-rolls that pairing is how two files end up disagreeing about what a fake sleep does.
+ *
+ * now() and sleep() are this factory's whole point, so neither is overridable here. A test wanting different behavior for either wants makeFakeClock.
+ * @returns A handle exposing the advancing fake clock and the captured sleep durations.
+ */
+export function makeAdvancingClock(): FakeClockHandle {
+
+  const sleeps: number[] = [];
+
+  let elapsed = 0;
+
+  const { clock } = makeFakeClock({
+
+    now: (): number => elapsed,
+    sleep: async (ms: number): Promise<void> => {
+
+      sleeps.push(ms);
+      elapsed += ms;
+
+      // Yield to the microtask queue exactly as the default fake's sleep does, so a consumer's awaits behave as they do against a real delay.
+      await Promise.resolve();
+    }
+  });
 
   return { clock, sleeps };
 }

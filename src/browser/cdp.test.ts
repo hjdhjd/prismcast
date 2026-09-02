@@ -1,17 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * cdp.test.ts: Unit tests for the Chrome DevTools Protocol helpers in cdp.ts. The module exports withCDPSession (the lifecycle wrapper around a CDP session
- * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), unminimizeWindow (the inverse
- * one-shot that restores it), and reaffirmCaptureSurface (the raw re-issue of a capture page's declared device metrics). The tests use plain stub objects shaped
- * per the Page and CDPSession contracts - no real browser is launched, and the window's dimensions never enter the picture because the two window primitives drive
- * presentation state alone. Which state the window should be in is decided in windowSync.ts and pinned there; these tests cover only the command each primitive
- * issues.
+ * that surfaces the browser window ID), minimizeWindow (the one-shot that puts the shared window into its minimized state), unminimizeWindow (which commands the
+ * restore and then confirms it against Chrome's own report), readWindowState (that report, read for a page), and reaffirmCaptureSurface (the raw re-issue of a
+ * capture page's declared device metrics). The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the
+ * window's dimensions never enter the picture because the two window primitives drive presentation state alone. Which state the window should be in is decided in
+ * windowSync.ts and pinned there; these tests cover only the commands each primitive issues and the confirmation the restore waits on.
  */
 import type { CDPSession, Page } from "puppeteer-core";
+import { WINDOW_RESTORE_CEILING_MS, WINDOW_STATE_POLL_MS, minimizeWindow, readWindowState, reaffirmCaptureSurface, unminimizeWindow,
+  withCDPSession } from "./cdp.ts";
 import { describe, test } from "node:test";
-import { minimizeWindow, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import { makeAdvancingClock, makeFakeClock } from "../utils/clock.helpers.ts";
+import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 
 /* CdpStub captures every send() call so tests can assert on the command sequence. The send() implementation routes by method name to either the test-supplied
  * response factory or a sensible default - Browser.getWindowForTarget always returns windowId 7, and every other command resolves with nothing, which is what
@@ -45,6 +49,12 @@ function makeCdpStub(options: { getWindowForTargetResponse?: { windowId?: number
       return options.getWindowForTargetResponse ?? { windowId: 7 };
     }
 
+    // The default window is already presented, which is what a restore confirmation asks about. Rows that want a window mid-transition supply their own router.
+    if(method === "Browser.getWindowBounds") {
+
+      return { bounds: { windowState: "normal" } };
+    }
+
     return Promise.resolve(undefined);
   };
 
@@ -71,6 +81,58 @@ function makePageStub(options: { cdpStub?: CdpStub; createCDPSessionError?: Erro
     },
     isClosed: (): boolean => isClosed
   } as unknown as Page;
+}
+
+/* Runs a body with every emitted log entry captured, and hands back the warnings among them. Subscribing here rather than in a suite-wide hook keeps the
+ * subscription's lifetime exactly the body's, which matters because these rows run in the same process as every other unit test file.
+ * @param body - The work to run under capture.
+ * @returns The warn-level entries emitted while the body ran.
+ */
+async function captureWarnings(body: () => Promise<void>): Promise<LogEntry[]> {
+
+  const captured: LogEntry[] = [];
+  const unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+
+  try {
+
+    await body();
+  } finally {
+
+    unsubscribe();
+  }
+
+  return captured.filter((entry) => entry.level === "warn");
+}
+
+/* A CDP router that answers the window-state read from a scripted sequence and every other command the way the default stub does. Once the script runs out the
+ * last answer repeats, so a row that wants an endless state supplies a single-entry script.
+ * @param states - The window states to answer with, in order.
+ * @returns A send override plus the running count of state reads it has served.
+ */
+function windowStateRouter(states: readonly string[]): { reads: () => number; send: (method: string) => Promise<unknown> } {
+
+  let served = 0;
+
+  const send = async (method: string): Promise<unknown> => {
+
+    if(method === "Browser.getWindowForTarget") {
+
+      return { windowId: 7 };
+    }
+
+    if(method === "Browser.getWindowBounds") {
+
+      const state = states[Math.min(served, states.length - 1)];
+
+      served++;
+
+      return { bounds: { windowState: state } };
+    }
+
+    return undefined;
+  };
+
+  return { reads: (): number => served, send };
 }
 
 describe("withCDPSession", () => {
@@ -313,6 +375,124 @@ describe("unminimizeWindow", () => {
 
     await assert.doesNotReject(() => unminimizeWindow(makePageStub({ cdpStub })),
       "unminimizeWindow should swallow CDP errors");
+  });
+
+  test("returns after one read when the window already reports normal", async () => {
+
+    /* The confirmation is what makes the restore a state rather than a command, and this is the price it charges on the common path: one round trip, no sleep.
+     * A cadence sleep scheduled ahead of the first read would show up here as a recorded duration.
+     */
+    const cdpStub = makeCdpStub();
+    const { clock, sleeps } = makeFakeClock();
+
+    await unminimizeWindow(makePageStub({ cdpStub }), clock);
+
+    assert.equal(cdpStub.calls.filter((c) => c.method === "Browser.getWindowBounds").length, 1, "exactly one state read for a window already on screen");
+    assert.deepEqual(sleeps, [], "no cadence sleep is paid when the first read already confirms");
+  });
+
+  test("polls the window state until Chrome reports normal", async () => {
+
+    // macOS acknowledges setWindowBounds while the window manager is still working, so the state reads back minimized for a while. The restore is confirmed by
+    // asking again on the cadence, and the command is issued once regardless of how many reads the confirmation takes.
+    const router = windowStateRouter([ "minimized", "minimized", "normal" ]);
+    const cdpStub = makeCdpStub({ overrideSend: router.send });
+    const { clock, sleeps } = makeFakeClock();
+
+    await unminimizeWindow(makePageStub({ cdpStub }), clock);
+
+    const methods = cdpStub.calls.map((call) => call.method);
+
+    assert.equal(methods.filter((method) => method === "Browser.setWindowBounds").length, 1, "the restore is commanded exactly once");
+    assert.equal(router.reads(), 3, "the state is read until it reports normal");
+    assert.ok(methods.indexOf("Browser.setWindowBounds") < methods.indexOf("Browser.getWindowBounds"), "the command precedes its confirmation");
+    assert.deepEqual(sleeps, [ WINDOW_STATE_POLL_MS, WINDOW_STATE_POLL_MS ], "one cadence sleep between each pair of reads");
+  });
+
+  test("stops at the ceiling and warns, leaving the window in its reported state", async () => {
+
+    /* A window that never reports itself restored must not hold capture hostage. The ceiling ends the confirmation, the warning names the state Chrome is
+     * actually reporting, and the call returns so the caller proceeds. The read count is derived from the two exported constants rather than restated, so the
+     * row keeps stating the relationship if either moves.
+     */
+    const router = windowStateRouter(["minimized"]);
+    const cdpStub = makeCdpStub({ overrideSend: router.send });
+    const { clock } = makeAdvancingClock();
+
+    const warnings = await captureWarnings(async () => {
+
+      await unminimizeWindow(makePageStub({ cdpStub }), clock);
+    });
+
+    assert.equal(router.reads(), Math.floor(WINDOW_RESTORE_CEILING_MS / WINDOW_STATE_POLL_MS) + 1, "the ceiling affords one read plus one per cadence");
+    assert.equal(warnings.length, 1, "exactly one warning");
+    assert.match(warnings[0]?.message ?? "", /did not report a completed restore within 2000ms/, "the warning names the restore and its bound");
+    assert.match(warnings[0]?.message ?? "", /minimized/, "the warning carries the state Chrome is reporting");
+  });
+
+  test("a getWindowBounds rejection on a later read is absorbed like every other CDP error", async () => {
+
+    /* The confirmation reads through the same session the command went out on, so a read that rejects unwinds into withCDPSession's own swallow-with-warn. The
+     * read count proves the poll actually reached the rejecting read rather than stopping at the first.
+     */
+    let reads = 0;
+
+    const cdpStub = makeCdpStub({
+
+      overrideSend: async (method): Promise<unknown> => {
+
+        if(method === "Browser.getWindowForTarget") {
+
+          return { windowId: 7 };
+        }
+
+        if(method === "Browser.getWindowBounds") {
+
+          reads++;
+
+          if(reads === 2) {
+
+            throw new Error("synthetic window-bounds rejection");
+          }
+
+          return { bounds: { windowState: "minimized" } };
+        }
+
+        return undefined;
+      }
+    });
+
+    const { clock } = makeFakeClock();
+
+    const warnings = await captureWarnings(async () => {
+
+      await assert.doesNotReject(() => unminimizeWindow(makePageStub({ cdpStub }), clock), "a failed state read must not surface into the caller");
+    });
+
+    assert.equal(reads, 2, "the poll reached the rejecting read");
+    assert.equal(warnings.length, 1, "exactly one warning");
+    assert.match(warnings[0]?.message ?? "", /CDP operation failed/, "the rejection took the existing swallow-with-warn path");
+  });
+});
+
+describe("readWindowState", () => {
+
+  test("reports the state Chrome carries in the window's bounds", async () => {
+
+    const cdpStub = makeCdpStub({ overrideSend: windowStateRouter(["fullscreen"]).send });
+
+    assert.equal(await readWindowState(makePageStub({ cdpStub })), "fullscreen", "the reported state is returned verbatim");
+  });
+
+  test("normalizes an unavailable report to null rather than throwing", async () => {
+
+    // Three ways the state is simply not knowable - a closed page, a response carrying no bounds, and a session that rejects - all read as null, because a
+    // caller logging this as a diagnostic has nothing different to do about any of them.
+    assert.equal(await readWindowState(makePageStub({ isClosedReturn: true })), null, "a closed page reports no state");
+    assert.equal(await readWindowState(makePageStub({ cdpStub: makeCdpStub({ overrideSend: async (): Promise<unknown> => ({ windowId: 7 }) }) })), null,
+      "a response carrying no bounds reports no state");
+    assert.equal(await readWindowState(makePageStub({ createCDPSessionError: new Error("synthetic attach failure") })), null,
+      "a session that cannot be attached reports no state");
   });
 });
 

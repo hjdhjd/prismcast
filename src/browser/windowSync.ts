@@ -176,7 +176,8 @@ export function createWindowVisibilitySync(deps: WindowSyncDeps): (page?: Page) 
         }
 
         // The blank tab is fronted after the window is presented, not before: fronting a tab in a minimized window settles nothing, and the window command is the
-        // one every pass owes its caller.
+        // one every pass owes its caller. A restore is awaited to its confirmation (or to its ceiling), so a caller that goes on to acquire capture does so
+        // against a window Chrome has reported restored; a window already on screen costs a single state read.
         if(decideForegroundBlank({ captureActive, loginActive })) {
 
           await deps.ensureForegroundBlank();

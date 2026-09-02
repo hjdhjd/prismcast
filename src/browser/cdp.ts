@@ -3,14 +3,17 @@
  * cdp.ts: Chrome DevTools Protocol helpers for PrismCast.
  */
 import type { CDPSession, Page } from "puppeteer-core";
-import { LOG, delay, formatError } from "../utils/index.ts";
+import { LOG, delay, formatError, pollUntil, realClock } from "../utils/index.ts";
+import type { Clock } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
 
 /* The Chrome DevTools Protocol (CDP) provides low-level access to Chrome's internal state and capabilities. While Puppeteer abstracts most common operations, some
  * features require direct CDP access:
  *
- * - Window presentation: moving the shared browser window between its normal and minimized states. That state is the only window property this application drives,
- *   and it is not cosmetic: Chrome's tab capture consumes the compositor's output for the shared window, and a minimized window's output is not composed for
- *   capture to read. Which state the window should be in is decided in one place, by decideWindowVisibility in windowSync.ts; these primitives only carry it out.
+ * - Window presentation: moving the shared browser window between its normal and minimized states, and reading the state Chrome reports for it. That state is the
+ *   only window property this application drives, and it is not cosmetic: Chrome's tab capture consumes the compositor's output for the shared window, and a
+ *   minimized window's output is not composed for capture to read. Which state the window should be in is decided in one place, by decideWindowVisibility in
+ *   windowSync.ts; these primitives only carry it out and report back what Chrome says came of it.
  *
  * - Capture surface re-affirmation: re-issuing a capture page's own declared device metrics, which is what moves that capture's composition target back to the
  *   emulated surface.
@@ -24,6 +27,15 @@ import { LOG, delay, formatError } from "../utils/index.ts";
  *
  * The withCDPSession helper encapsulates the common pattern of creating a session, getting the window ID, performing an operation, and handling errors.
  */
+
+// The wait between one read of the window's state and the next while a restore is in flight. This is a cadence rather than a settle - nothing is being given time
+// to happen, Chrome is simply being asked again - and the measured macOS restore completes in roughly a quarter second, so a genuine restore costs about ten reads
+// and a window already on screen costs exactly one.
+export const WINDOW_STATE_POLL_MS = 25;
+
+// The bound on how long a restore may take to report itself complete. Eight times the measured restore, so a lapse is a genuine fault worth a warning rather than
+// a slow-but-healthy transition. Lapsing never blocks the caller: capture proceeds against whatever state Chrome reports.
+export const WINDOW_RESTORE_CEILING_MS = 2000;
 
 /**
  * Executes a CDP (Chrome DevTools Protocol) operation with proper session lifecycle management. This helper handles the common pattern of:
@@ -84,6 +96,33 @@ export async function withCDPSession<T>(
 }
 
 /**
+ * Reads the window state Chrome reports for a window, through a session that is already open. Private to this module: the restore confirmation below and the
+ * page-level readWindowState both ask Chrome through this one call, so no other site composes the request. A response carrying no bounds, or bounds carrying no
+ * state, reads as null rather than throwing, because an absent report is an answer its callers already branch on.
+ * @param session - An open CDP session attached to the page's target.
+ * @param windowId - The browser window ID that session resolved.
+ * @returns The window state Chrome reports, or null when the response carries none.
+ */
+async function readWindowStateWith(session: CDPSession, windowId: number): Promise<Nullable<string>> {
+
+  const response = await session.send("Browser.getWindowBounds", { windowId }) as { bounds?: { windowState?: string } } | undefined;
+
+  return response?.bounds?.windowState ?? null;
+}
+
+/**
+ * Reads the window state Chrome reports for the window a page belongs to. Resolves null whenever the state cannot be read at all - a closed page, a target that
+ * yields no window ID, or a CDP failure withCDPSession absorbs - so a caller logging this as a diagnostic never has to tell a missing session apart from a
+ * missing report.
+ * @param page - The Puppeteer page whose window is read.
+ * @returns The window state Chrome reports, or null when it cannot be read.
+ */
+export async function readWindowState(page: Page): Promise<Nullable<string>> {
+
+  return (await withCDPSession(page, readWindowStateWith)) ?? null;
+}
+
+/**
  * Minimizes the browser window, which keeps the desktop clear and the GPU idle while nothing is capturing. Only the window-visibility executor should call this:
  * the window has to stay on screen for as long as any capture stream is reading the compositor, and that decision belongs to decideWindowVisibility in
  * windowSync.ts.
@@ -117,9 +156,15 @@ export async function minimizeWindow(page: Page): Promise<void> {
  * Un-minimizes the browser window, restoring it to normal state. The window belongs on screen while a capture stream is reading the compositor's output for it, and
  * while a user is completing TV provider authentication in it. The capability probe calls this directly to make its environment representative of the one capture
  * runs in; every other caller goes through the window-visibility executor, which owns the policy.
+ *
+ * The contract is a confirmed state, not a fired command: this resolves once Chrome reports the window restored, or once the ceiling lapses with a warning and the
+ * window left in whatever state it does report. On macOS a restore runs asynchronously against the acknowledgement of the command that asked for it, and a capture
+ * requested against a window still mid-restore is the shape of the 2026-08-26 through 08-28 capture-start failures. A window already on screen confirms on its
+ * first read, so the confirmation costs one round trip on the common path.
  * @param page - The Puppeteer page object.
+ * @param clock - Clock driving the confirmation cadence and its elapsed measurement. Defaults to realClock; tests inject a fake.
  */
-export async function unminimizeWindow(page: Page): Promise<void> {
+export async function unminimizeWindow(page: Page, clock: Clock = realClock): Promise<void> {
 
   // Early exit if the page is already closed.
   if(page.isClosed()) {
@@ -135,6 +180,24 @@ export async function unminimizeWindow(page: Page): Promise<void> {
       bounds: { windowState: "normal" },
       windowId
     });
+
+    // Confirm the restore against Chrome's own report rather than against the acknowledgement above, which arrives while the window manager is still working.
+    const startedAt = clock.now();
+    const outcome = await pollUntil({ cadenceMs: WINDOW_STATE_POLL_MS, ceilingMs: WINDOW_RESTORE_CEILING_MS, clock,
+      read: (): Promise<Nullable<string>> => readWindowStateWith(session, windowId), until: (state: Nullable<string>): boolean => state === "normal" });
+
+    if(outcome.lapsed) {
+
+      /* A lapse is reported and then stepped past. The window's presentation is the caller's precondition, not its permission: blocking capture on a window that
+       * will not report itself restored would convert a presentation fault into a stream failure, which is strictly worse than capturing against a window whose
+       * state we have named in the log.
+       */
+      LOG.warn("The browser window did not report a completed restore within %dms; continuing with the window in its reported state.", WINDOW_RESTORE_CEILING_MS,
+        { windowState: outcome.value });
+    } else {
+
+      LOG.debug("browser:lifecycle", "The window reported its restore complete after %dms (%d reads).", clock.now() - startedAt, outcome.reads);
+    }
   });
 }
 

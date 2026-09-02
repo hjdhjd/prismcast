@@ -2,8 +2,14 @@
  *
  * delay.ts: The project's wait policies. homebridge-plugin-utils owns the wait mechanisms - waitWithSignal races a held promise against an interrupt signal,
  * and runWithAbort carries the return-null-on-abort policy - and this file names the policies built over them exactly once: timeoutSignal is the
- * reason-carrying interrupt source, waitWithTimeout is the throw-shaped bounded wait, boundedWait is the value-shaped one, and delay is the named sleep. Any
- * code path that needs "promise with a bound" consumes a policy here rather than re-rolling the timer, race, and cleanup sequence.
+ * reason-carrying interrupt source, waitWithTimeout is the throw-shaped bounded wait, boundedWait is the value-shaped one, delay is the named sleep, and
+ * pollUntil is the read-a-reported-state shape. Any code path that needs "promise with a bound" consumes a policy here rather than re-rolling the timer, race,
+ * and cleanup sequence.
+ *
+ * pollUntil sits beside the two bounded waits rather than among them because it binds a different thing. The bounded waits hold a promise somebody else
+ * produced and decide what a lapse means; pollUntil has no promise to hold - the state it is waiting on is one the caller can only ask for - so it asks on a
+ * cadence and reports what it last saw. That is why its ceiling is a bound to log rather than a delay the healthy path pays: a signal that is already true
+ * costs exactly one read.
  *
  * Choosing between the two bounded waits is a question about semantics, not mechanism. A wait whose interruption is exceptional - the operation was supposed
  * to finish and did not - throws through waitWithTimeout, so the failure travels as an error the caller can distinguish by identity or type. A wait whose
@@ -15,8 +21,10 @@
  * still healthy (see the rationale on timeoutSignal).
  */
 import { runWithAbort, waitWithSignal } from "homebridge-plugin-utils";
+import type { Clock } from "./clock.ts";
 import type { Nullable } from "../types/index.ts";
 import { setTimeout as nodeSleep } from "node:timers/promises";
+import { realClock } from "./clock.ts";
 
 /**
  * A timeout expressed as an abort signal, paired with the disposal its consumer owes. The signal aborts with the caller's own error object as its reason, which
@@ -119,4 +127,80 @@ export async function boundedWait<T>(promise: Promise<T>, timeoutMs: number): Pr
 export async function delay(ms: number): Promise<void> {
 
   await nodeSleep(ms);
+}
+
+/**
+ * The inputs to one poll: what to read, when to stop reading, how often to ask, and how long to keep asking.
+ */
+export interface PollUntilOptions<T> {
+
+  // The wait between one read and the next. A cadence, not a settle: nothing is being given time to happen, the state is simply being asked for again.
+  readonly cadenceMs: number;
+
+  // The longest the poll keeps asking before it gives up and reports what it last saw. A ceiling of 0 performs exactly one read.
+  readonly ceilingMs: number;
+
+  // The time port driving the cadence and the elapsed measurement. Defaults to realClock; tests pass a fake.
+  readonly clock?: Clock;
+
+  // Reads the signal once. A rejection propagates to the caller unchanged, because what a failed read means belongs to the caller, not to the poll.
+  readonly read: () => Promise<T>;
+
+  // Decides whether a value read is the one the caller was waiting for.
+  readonly until: (value: T) => boolean;
+}
+
+/**
+ * The result of one poll: whether the ceiling lapsed, how many reads it took, and the last value read.
+ */
+export interface PollOutcome<T> {
+
+  // True when the ceiling elapsed with no read satisfying the predicate. The value below is then the last state observed, not a satisfying one.
+  readonly lapsed: boolean;
+
+  // How many times read() was called. A satisfied-on-arrival signal reads once.
+  readonly reads: number;
+
+  // The value the last read produced, satisfying or not.
+  readonly value: T;
+}
+
+/**
+ * Reads a signal on a cadence until it satisfies a predicate or a ceiling lapses. This is the shape every "wait for a reported state" call in the project
+ * shares: a state that only its owner can report, asked for on a cadence, under a ceiling that exists to be logged rather than to be waited out.
+ *
+ * The first read runs immediately, with no sleep ahead of it, so a signal that is already true costs one round trip and nothing else - which is what makes this
+ * a strictly better answer than a fixed delay even on the paths where the state is usually settled. A read that rejects propagates unchanged: the poll has no
+ * opinion on what a failed read means, and swallowing it would hide a fault behind a lapse.
+ * @param options - The poll's read, predicate, cadence, ceiling, and clock.
+ * @returns The outcome: whether the ceiling lapsed, the number of reads, and the last value read.
+ */
+export async function pollUntil<T>(options: PollUntilOptions<T>): Promise<PollOutcome<T>> {
+
+  const { cadenceMs, ceilingMs, clock = realClock, read, until } = options;
+  const startedAt = clock.now();
+
+  let reads = 0;
+
+  for(;;) {
+
+    // eslint-disable-next-line no-await-in-loop -- A poll is sequential by definition: each read has to settle before the cadence sleep and the next read.
+    const value = await read();
+
+    reads++;
+
+    if(until(value)) {
+
+      return { lapsed: false, reads, value };
+    }
+
+    // The ceiling is checked only after a read has already happened, so the poll always reports a value and a zero ceiling still asks once.
+    if((clock.now() - startedAt) >= ceilingMs) {
+
+      return { lapsed: true, reads, value };
+    }
+
+    // eslint-disable-next-line no-await-in-loop -- The cadence is the point: the next read must not start until this wait completes.
+    await clock.sleep(cadenceMs);
+  }
 }

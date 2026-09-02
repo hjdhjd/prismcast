@@ -1,11 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * clock.helpers.test.ts: Unit tests for the makeFakeClock test factory. Locks the documented contract of the test-side counterpart to realClock so every
- * Clock-consuming test (retry.test.ts, timing.test.ts, and others) can rely on the factory's behavior without re-deriving it from the source.
+ * clock.helpers.test.ts: Unit tests for the makeFakeClock and makeAdvancingClock test factories. Locks the documented contract of the test-side counterparts
+ * to realClock so every Clock-consuming test (retry.test.ts, timing.test.ts, delay.test.ts, cdp.test.ts, and others) can rely on the factories' behavior
+ * without re-deriving it from the source.
  */
 import { describe, test } from "node:test";
+import { makeAdvancingClock, makeFakeClock } from "./clock.helpers.ts";
 import assert from "node:assert/strict";
-import { makeFakeClock } from "./clock.helpers.ts";
 
 describe("makeFakeClock", () => {
 
@@ -183,5 +184,56 @@ describe("makeFakeClock", () => {
 
     assert.deepEqual(a.sleeps, [11], "the first clock should record only its own sleep");
     assert.deepEqual(b.sleeps, [22], "the second clock should record only its own sleep");
+  });
+});
+
+describe("makeAdvancingClock", () => {
+
+  test("each sleep moves now() forward by exactly the duration it was asked for", async () => {
+
+    // The whole point of this variant: a consumer that measures elapsed time reads a clock that the sleeps it schedules actually move. The default fake freezes
+    // now() at zero, which would make any ceiling unreachable.
+    const { clock } = makeAdvancingClock();
+
+    assert.equal(clock.now(), 0, "an untouched advancing clock still reads zero");
+
+    await clock.sleep(25);
+
+    assert.equal(clock.now(), 25, "one sleep advances the clock by its own duration");
+
+    await clock.sleep(75);
+
+    assert.equal(clock.now(), 100, "durations accumulate");
+  });
+
+  test("records every sleep in call order, exactly as the default fake does", async () => {
+
+    // The recording contract is the same one consumers already assert against, so a test can move between the two factories without changing its assertions.
+    const { clock, sleeps } = makeAdvancingClock();
+
+    await clock.sleep(10);
+    await clock.sleep(20);
+
+    assert.deepEqual(sleeps, [ 10, 20 ], "every requested duration is recorded in call order");
+  });
+
+  test("keeps the default waitWithTimeout, which forwards the inner promise", async () => {
+
+    // Only now() and sleep() differ from the default fake; everything else is inherited, so a consumer bounding a promise behaves identically under either.
+    const { clock } = makeAdvancingClock();
+
+    assert.equal(await clock.waitWithTimeout(Promise.resolve("forwarded"), 1000), "forwarded", "the inner promise is handed back unchanged");
+  });
+
+  test("two independent advancing clocks keep separate time", async () => {
+
+    const a = makeAdvancingClock();
+    const b = makeAdvancingClock();
+
+    await a.clock.sleep(40);
+
+    assert.equal(a.clock.now(), 40, "the first clock advanced");
+    assert.equal(b.clock.now(), 0, "the second clock is untouched");
+    assert.deepEqual(b.sleeps, [], "and recorded nothing");
   });
 });
