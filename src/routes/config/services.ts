@@ -5,7 +5,7 @@
 import type { DomainConfig, SiteProfile } from "../../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { ICON_ADD, ICON_DELETE, ICON_EDIT, ICON_EXPORT, ICON_IMPORT } from "../icons.ts";
-import { LOG, escapeHtml, sanitizeString, stringifySorted } from "../../utils/index.ts";
+import { LOG, escapeHtml, sanitizeString, sanitizeStringFields, stringifySorted } from "../../utils/index.ts";
 import { deleteUserProfile, getUserDomains, getUserProfiles, mutateProfiles, validateDomain, validateProfile,
   validateProfileKey } from "../../config/userProfiles.ts";
 import { endLoginMode, getLoginPage, startLoginMode } from "../../browser/index.ts";
@@ -444,18 +444,16 @@ export function setupProfileRoutes(app: Express): void {
         return;
       }
 
-      // Sanitize string fields in the profile object, including nested channelSelection strings.
-      for(const [ field, value ] of Object.entries(profile)) {
+      /* Sanitize every string the submitted profile carries, one nesting level at a time: the profile's own members, then its channelSelection block, which
+       * carries its own free-text selectors. Sweeping a whole object beats naming its string fields, because the shape grows as new sites need new selectors,
+       * and a field left off a hand-written list reaches profiles.json with whatever padding or invisible characters were pasted into the form. The strategy
+       * member is a fixed literal rather than free text, and the sweep is harmless to it: a valid literal comes back unchanged, and a padded one comes back valid.
+       */
+      sanitizeStringFields(profile);
 
-        if(typeof value === "string") {
+      if(profile.channelSelection) {
 
-          (profile as Record<string, unknown>)[field] = sanitizeString(value);
-        }
-      }
-
-      if(profile.channelSelection?.matchSelector) {
-
-        profile.channelSelection.matchSelector = sanitizeString(profile.channelSelection.matchSelector);
+        sanitizeStringFields(profile.channelSelection);
       }
 
       // Sanitize string fields in domain mappings if provided.
@@ -463,13 +461,7 @@ export function setupProfileRoutes(app: Express): void {
 
         for(const [ domain, config ] of Object.entries(domainMappings)) {
 
-          for(const [ field, value ] of Object.entries(config)) {
-
-            if(typeof value === "string") {
-
-              (config as Record<string, unknown>)[field] = sanitizeString(value);
-            }
-          }
+          sanitizeStringFields(config);
 
           // Sanitize domain keys themselves. If the sanitized domain differs from the original, replace the entry.
           const cleanDomain = sanitizeString(domain);

@@ -1,11 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * sanitize.test.ts: Unit tests for the non-printable-character sanitizers in sanitize.ts. The two exports share a global regex (NON_PRINTABLE_PATTERN) whose
- * lastIndex must be reset before each .test() call - the tests deliberately call containsNonPrintable() multiple times in a row to lock that the reset works.
+ * sanitize.test.ts: Unit tests for the non-printable-character sanitizers in sanitize.ts - the single-string cleaner, the whole-record sweep built on it, and
+ * the non-printable predicate. The exports share a global regex (NON_PRINTABLE_PATTERN) whose lastIndex must be reset before each .test() call, so the tests
+ * deliberately call containsNonPrintable() several times in a row to assert that the reset works.
  * Special characters in test inputs are written as \uXXXX escapes rather than literal Unicode codepoints so the test source itself stays plain ASCII; embedding
  * U+2028 or U+FEFF literally would break editor tooling and lint linebreak-style detection.
  */
-import { containsNonPrintable, sanitizeString } from "./sanitize.ts";
+import { containsNonPrintable, sanitizeString, sanitizeStringFields } from "./sanitize.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -79,6 +80,64 @@ describe("sanitizeString", () => {
     // Boundary: the regex strips everything, then trim has nothing to do, leaving "".
     assert.equal(sanitizeString("\x00\x01\x02"), "");
     assert.equal(sanitizeString("\uFEFF\u200B"), "");
+  });
+});
+
+describe("sanitizeStringFields", () => {
+
+  test("cleans every string-valued member and leaves the object's other members alone", () => {
+
+    /* The whole point of a sweep over a named field list is that it cannot miss a field, so the record below carries one of every kind: strings that need
+     * cleaning, and a number, a boolean, null, undefined, an array, and a nested object that must come back untouched and by identity - a sweep that
+     * stringified a non-string would corrupt exactly the values a caller was relying on it to leave alone.
+     */
+    const nested = { inner: "  untouched  " };
+    const list = ["  untouched  "];
+    const record: Record<string, unknown> = {
+
+      count: 7,
+      enabled: true,
+      list,
+      missing: undefined,
+      nested,
+      nothing: null,
+      padded: "  spaced out  ",
+      polluted: "in\u200Bvisible"
+    };
+
+    sanitizeStringFields(record);
+
+    assert.equal(record["padded"], "spaced out", "a padded string is trimmed");
+    assert.equal(record["polluted"], "invisible", "a non-printable character is stripped");
+    assert.equal(record["count"], 7, "a number is left alone");
+    assert.equal(record["enabled"], true, "a boolean is left alone");
+    assert.equal(record["nothing"], null, "null is left alone");
+    assert.equal(record["missing"], undefined, "undefined is left alone");
+    assert.equal(record["nested"], nested, "a nested object is left alone by identity - the sweep does not descend");
+    assert.equal(nested.inner, "  untouched  ", "and its own strings are untouched, which is what one level deep means");
+    assert.equal(record["list"], list, "an array is left alone by identity");
+    assert.equal(list[0], "  untouched  ", "and its entries are untouched");
+  });
+
+  test("cleans the caller's own object in place and adds no members", () => {
+
+    // Callers pass an object that is already referenced elsewhere - a request body the route goes on to store - so the cleaning has to land on that object
+    // rather than on a copy the caller never sees.
+    const record: Record<string, unknown> = { field: " value " };
+
+    sanitizeStringFields(record);
+
+    assert.equal(record["field"], "value", "the caller's own object carries the cleaned value");
+    assert.deepEqual(Object.keys(record), ["field"], "no member was added or removed");
+  });
+
+  test("an empty record is a no-op (boundary)", () => {
+
+    const record: Record<string, unknown> = {};
+
+    sanitizeStringFields(record);
+
+    assert.deepEqual(record, {}, "nothing to clean, nothing changed");
   });
 });
 

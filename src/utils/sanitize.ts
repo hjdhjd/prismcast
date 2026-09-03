@@ -28,6 +28,30 @@ export function sanitizeString(value: string): string {
 }
 
 /**
+ * Sanitizes every string-valued own member of an object in place, leaving members of any other type alone. This is the rule a data-collection boundary applies
+ * to a whole object rather than to one field at a time: a caller that names its string fields one by one has to be edited every time the shape gains another,
+ * and the field it forgets is the one that reaches storage uncleaned. Nesting is not followed - a caller with a nested object calls this again for that object,
+ * so the depth is the caller's decision rather than a surprise.
+ * @param record - The object to sanitize in place.
+ */
+export function sanitizeStringFields(record: object): void {
+
+  /* The parameter says what the contract is - any object - and the indexable view the assignment needs is taken here, once. Typing the parameter as an indexed
+   * record instead would push the same assertion onto every caller, because an interface that declares its members without an index signature is not assignable
+   * to one, so each call site would carry a cast for a conversion this function is the only place to actually perform.
+   */
+  const fields = record as Record<string, unknown>;
+
+  for(const [ field, value ] of Object.entries(fields)) {
+
+    if(typeof value === "string") {
+
+      fields[field] = sanitizeString(value);
+    }
+  }
+}
+
+/**
  * Tests whether a string contains any non-printable characters. Used for startup warnings when loading persisted data - the warning alerts users to corruption
  * without modifying the loaded values.
  * @param value - The string to test.

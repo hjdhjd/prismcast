@@ -473,6 +473,64 @@ describe("setupProfileRoutes - validation handlers (invoked via Express stub)", 
     assert.match((result.body as { error: string }).error, /Validation errors/);
   });
 
+  test("POST /config/profiles - every string the profile carries is sanitized before validation, channelSelection included", async () => {
+
+    /* The save path cleans the submitted profile in place before anything reads it, so the object the test hands to the handler is the object we assert on
+     * afterwards. We steer the request into a validation rejection (an extends that names no builtin profile) so the row stops before the disk-writing
+     * continuation, which is outside this file's harness - the sanitizing has already run by then, because it runs before the key and profile validators.
+     *
+     * The selectors below are the ones a hand-written field list leaves out, and each carries both kinds of contamination the sanitizer exists for: surrounding
+     * padding, and an invisible character that trimming alone would not remove. matchSelector is included so the row covers the whole block rather than only
+     * the members a named list would have missed.
+     */
+    const { app, invoke } = makeExpressStub();
+
+    setupProfileRoutes(app as never);
+
+    const channelSelection = {
+
+      listSelector: "  .channels-tab\u200B  ",
+      matchSelector: "  img[src*=\"{channel}\"]\u200B  ",
+      playSelector: "  .play-button\uFEFF  ",
+      scrollSelector: "  h4\u200B  ",
+      scrollTarget: "  Live Channels\uFEFF  ",
+      strategy: "  tileClick  "
+    };
+    const profile = { channelSelection, extends: "  no-such-builtin\u200B  ", hideSelector: "  .ad-overlay\uFEFF  " };
+    const result = await invoke("post", "/config/profiles", { body: { key: "myprofile", profile } });
+
+    assert.equal(result.statusCode, 400, "the row stops at profile validation, after the sanitizing and before any disk write");
+
+    assert.equal(channelSelection.listSelector, ".channels-tab", "listSelector is sanitized");
+    assert.equal(channelSelection.matchSelector, "img[src*=\"{channel}\"]", "matchSelector is sanitized");
+    assert.equal(channelSelection.playSelector, ".play-button", "playSelector is sanitized");
+    assert.equal(channelSelection.scrollSelector, "h4", "scrollSelector is sanitized");
+    assert.equal(channelSelection.scrollTarget, "Live Channels", "scrollTarget is sanitized");
+    assert.equal(channelSelection.strategy, "tileClick", "the strategy literal comes back valid rather than padded");
+    assert.equal(profile.extends, "no-such-builtin", "the profile's own top-level strings are sanitized too");
+    assert.equal(profile.hideSelector, ".ad-overlay", "including the ones the wizard writes");
+  });
+
+  test("POST /config/profiles - a domain mapping's strings are sanitized through the same sweep", async () => {
+
+    /* Domain mappings go through the same helper as the profile, so this row is the third call site's assertion. The mapping is validated after the profile, so
+     * we give the profile a valid shape and let the domain reference a profile nobody knows in order to stop before the disk write.
+     */
+    const { app, invoke } = makeExpressStub();
+
+    setupProfileRoutes(app as never);
+
+    const mapping = { dismissSelector: "  .cookie-banner\u200B  ", profile: "  no-such-profile\uFEFF  ", service: "  Example TV\u200B  " };
+    const body = { domains: { "example.test": mapping }, key: "myprofile", profile: { extends: "fullscreenApi" } };
+    const result = await invoke("post", "/config/profiles", { body });
+
+    assert.equal(result.statusCode, 400, "the row stops at domain validation, after the sanitizing");
+
+    assert.equal(mapping.dismissSelector, ".cookie-banner", "dismissSelector is sanitized");
+    assert.equal(mapping.service, "Example TV", "service is sanitized");
+    assert.equal(mapping.profile, "no-such-profile", "and the profile reference is sanitized before it is looked up");
+  });
+
   test("GET /config/profiles - returns success: true with empty arrays in a fresh test process", async () => {
 
     const { app, invoke } = makeExpressStub();
