@@ -593,6 +593,73 @@ describe("startOverlayHandling", () => {
     assert.equal(gateSignals, 0, "a no-overlay poll never signals a gate");
     assert.equal(stub.evaluateArgs.length, 4, "exactly two no-op ticks (CMP + gate probe each) ran before the abort ended the poll");
   });
+
+  test("the tuneSetup phase keeps polling past any fixed budget and stops on the caller's abort", async (t) => {
+
+    t.mock.method(LOG, "info", () => { /* Silenced. */ });
+
+    /* The tuneSetup policy declares no clock window, so only the abort ends its poll. The router aborts on the 95th tick, which the fake clock places at 47000 ms -
+     * past every fixed budget the table has ever carried. A budget of any size would end the poll earlier and leave the tick count short of 95, which is what makes
+     * this row the detector for the window's removal rather than a restatement of the abort path.
+     */
+    const controller = new AbortController();
+    const clock = makeFakeClock();
+
+    let ticks = 0;
+
+    const { page, stub } = makePageStub((arg) => {
+
+      if(arg === DIDOMI_REJECT) {
+
+        ticks++;
+
+        if(ticks === 95) {
+
+          controller.abort();
+        }
+      }
+
+      return null;
+    });
+
+    await startOverlayHandling(page, makeProfile(), { clock, phase: "tuneSetup", signal: controller.signal });
+
+    assert.equal(stub.evaluateArgs.length, 95, "the poll ran 95 ticks - no fixed window cut it short - and the abort ended it");
+    assert.equal(clock.now(), 47000, "the poll was still ticking at 47000 ms of poll time, past any budget the phase could have carried");
+  });
+
+  /* Every phase that declares a clock window still resolves it exactly as the table states: a no-op poll on the fake clock runs one CMP probe per tick and ends at
+   * its deadline with no abort. Ticks are counted by CMP probes rather than by every page.evaluate, because the video wait runs a gate probe per tick as well and
+   * the CMP probe is the one call every phase makes exactly once. The expected count is windowMs / 500 + 1, since the first tick is immediate and each later tick
+   * follows a 500 ms sleep. The parity assertion is that dropping tuneSetup's window left every other phase's untouched.
+   */
+  for(const [ phase, windowMs, ticks ] of [ [ "discovery", 60000, 121 ], [ "postGateReload", 10000, 21 ], [ "staticCapture", 30000, 61 ],
+    [ "videoWait", 10000, 21 ] ] as const) {
+
+    test("the " + phase + " phase still runs its full " + String(windowMs) + " ms window and ends at the deadline", async (t) => {
+
+      t.mock.method(LOG, "info", () => { /* Silenced. */ });
+
+      const clock = makeFakeClock();
+      const { page, stub } = makePageStub(() => null);
+
+      // The two profile-derived phases read their window from videoTimeout, so the profile carries the same 10000 ms those rows expect; the fixed-window phases
+      // ignore it. The video wait is the only phase whose union arm requires the gate callback, which never fires here because nothing is ever present.
+      if(phase === "videoWait") {
+
+        await startOverlayHandling(page, makeProfile({ videoTimeout: 10000 }),
+          { clock, onEmbedGateAccepted: (): void => { /* No gate is ever located in a no-op poll. */ }, phase });
+      } else {
+
+        await startOverlayHandling(page, makeProfile({ videoTimeout: 10000 }), { clock, phase });
+      }
+
+      const cmpProbes = stub.evaluateArgs.filter((arg) => arg === DIDOMI_REJECT);
+
+      assert.equal(cmpProbes.length, ticks, "the phase ran exactly the tick count its window allows");
+      assert.equal(clock.now(), windowMs, "the poll ended at the phase's deadline");
+    });
+  }
 });
 
 describe("consentOverlayPresent", () => {

@@ -98,8 +98,9 @@ interface PhasePolicy {
   // that only the video-wait caller performs.
   readonly embedGate: boolean;
 
-  // The poll window: a fixed millisecond budget, or "videoTimeout" to derive the window from the profile at poll start (the video wait and its post-gate reload).
-  readonly window: number | "videoTimeout";
+  // The poll window: a fixed millisecond budget, "videoTimeout" to derive the window from the profile at poll start (the video wait and its post-gate reload), or
+  // "untilAborted" for a phase with no clock window of its own - the poll runs until its caller aborts the signal, which every caller of such a phase owns.
+  readonly window: number | "videoTimeout" | "untilAborted";
 }
 
 /**
@@ -121,10 +122,10 @@ const PHASE_POLICY = {
   // 30-second load window - long enough for banners to render - is what stops the poll. No embed-gate accept: a static capture never reloads.
   staticCapture: { cmpReject: true, dismissSelector: true, embedGate: false, window: 30000 },
 
-  // A tune's channel-selection walk and click-to-play, before the video wait. The caller aborts this poll at the phase boundary, so the 45-second window is only the
-  // backstop. It is a deliberately independent consent-layer value, NOT coupled to setup.ts's playback-initialization race - the two may legitimately diverge, the
-  // abort is the terminator and the window the backstop. No embed-gate accept: the walk phase has no reload to pair with one.
-  tuneSetup: { cmpReject: true, dismissSelector: true, embedGate: false, window: 45000 },
+  // A tune's channel-selection walk and click-to-play, before the video wait. This phase has no clock window: the walk's own waits scale with the video timeout and
+  // with each provider's retry loops, so no fixed budget bounds it and no single timeout equals it. The caller's abort ends the poll at the phase boundary, which
+  // is the terminator a fixed budget could only ever shadow. No embed-gate accept: the walk phase has no reload to pair with one.
+  tuneSetup: { cmpReject: true, dismissSelector: true, embedGate: false, window: "untilAborted" },
 
   // The tune's wait for the player to become ready. The only phase whose reload semantics compose with an embed-gate accept, so the only phase that runs the acting
   // gate probe. The window derives from the profile's videoTimeout at poll start so a late-rendering gate is still caught; the caller's abort stops it the instant
@@ -144,6 +145,34 @@ type EmbedGatePhase = { [P in OverlayPhase]: (typeof PHASE_POLICY)[P]["embedGate
 const embedGatePhaseIsVideoWaitOnly: EmbedGatePhase extends "videoWait" ? true : never = true;
 
 void embedGatePhaseIsVideoWaitOnly;
+
+/**
+ * Resolves a phase policy's window into the millisecond budget the poll's deadline is built from. Kept beside PHASE_POLICY because it is the policy's reader: every
+ * window kind the table may declare is decided here, so adding a kind is a table entry and a case rather than a conditional threaded through the poll.
+ * @param window - The phase policy's declared window.
+ * @param profile - The resolved site profile, which supplies the video-wait budget.
+ * @returns The budget in milliseconds, infinite for a phase whose caller's abort is its only terminator.
+ */
+function resolveWindow(window: PhasePolicy["window"], profile: ResolvedSiteProfile): number {
+
+  switch(window) {
+
+    case "untilAborted": {
+
+      return Number.POSITIVE_INFINITY;
+    }
+
+    case "videoTimeout": {
+
+      return profile.videoTimeout ?? CONFIG.streaming.videoTimeout;
+    }
+
+    default: {
+
+      return window;
+    }
+  }
+}
 
 /**
  * A known cookie-consent management platform (CMP) vendor. Detection and the reject affordance are both vendor-standardized selectors, so one entry covers every
@@ -680,11 +709,12 @@ export async function startOverlayHandling(page: Page, profile: ResolvedSiteProf
   const policy = PHASE_POLICY[phase];
   const state: OverlayPollState = { dismissSelector: "armed", handledVendors: new Set<string>() };
 
-  // Resolve the poll window from the phase's policy: a fixed millisecond budget, or the profile-derived video-wait window for the phases whose timing tracks the
-  // wait. One time origin end to end (clock.now() for both the deadline and the loop condition), because realClock.now() is performance.now()-based - a half-migration
-  // that mixed it with Date.now() would invert the loop condition and zero-tick every poll.
-  const windowMs = (policy.window === "videoTimeout") ? (profile.videoTimeout ?? CONFIG.streaming.videoTimeout) : policy.window;
-  const deadline = clock.now() + windowMs;
+  /* Resolve the poll window from the phase's policy: a fixed millisecond budget, the profile-derived video-wait window for the phases whose timing tracks the wait,
+   * or an infinite deadline for a phase whose only terminator is its caller's abort. One time origin end to end (clock.now() for both the deadline and the loop
+   * condition), because realClock.now() is performance.now()-based - a half-migration that mixed it with Date.now() would invert the loop condition and zero-tick
+   * every poll. An infinite deadline is safe because the loop still checks the signal on entry and after every sleep, so the abort ends it within one tick.
+   */
+  const deadline = clock.now() + resolveWindow(policy.window, profile);
 
   let firstCheck = true;
 
