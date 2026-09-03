@@ -320,6 +320,26 @@ describe("validateDomain", () => {
     assert.ok(errors.some((e) => e.includes("already mapped to builtin service")));
   });
 
+  test("rejects a builtin full-hostname key, which is as exact a collision as a builtin root", () => {
+
+    // "tv.youtube.com" is a DOMAIN_CONFIG key in its own right, sitting beside the "youtube.com" root. Mapping it shadows the YouTube TV entry, so the same
+    // refusal applies - the rule is about exact keys, not about how many labels a hostname has.
+    const errors = validateDomain("tv.youtube.com", {}, noKnownProfiles);
+
+    assert.ok(errors.some((e) => e.includes("already mapped to builtin service")), "an exact builtin full-hostname key is refused");
+  });
+
+  test("accepts a full hostname under a builtin root, which shadows nothing", () => {
+
+    /* "watch.hulu.com" is not a builtin key; "hulu.com" is. getDomainConfig resolves a user full-hostname entry ahead of any builtin, so this mapping governs
+     * that one host and the builtin Hulu entry keeps every other host under the root - nothing is shadowed and there is nothing to refuse. Refusing it would
+     * leave an operator no way to profile one subdomain of a supported service, since a builtin domain cannot be narrowed any other way.
+     */
+    const errors = validateDomain("watch.hulu.com", {}, noKnownProfiles);
+
+    assert.equal(errors.length, 0, "a subdomain of a builtin root is accepted: " + errors.join(" "));
+  });
+
   test("rejects a profile reference the caller's predicate does not recognize", () => {
 
     const errors = validateDomain("custom-site.example", { profile: "missing-profile" }, (name) => name === "other-profile");

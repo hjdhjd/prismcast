@@ -7,7 +7,6 @@ import type { DomainConfig, ProfilesValidationResult, SiteProfile, UserProfilesF
 import { LOG, containsNonPrintable } from "../utils/index.ts";
 import type { Migration } from "./persistence.ts";
 import { createFileStore } from "./persistence.ts";
-import { extractDomain } from "../utils/format.ts";
 import { getProfilesFilePath } from "./paths.ts";
 
 /* PrismCast allows users to define custom site profiles and domain mappings in profiles.json inside the data directory. User profiles extend builtin profiles and
@@ -564,14 +563,18 @@ export function validateDomain(domain: string, config: DomainConfig, isKnownProf
     errors.push("Domain '" + domain + "': invalid hostname format.");
   }
 
-  // Reject domains that collide with builtin domain mappings. User domains that shadow builtin domains cause the builtin service to disappear from the system,
-  // affecting all channels on that domain. Users should set the profile field on individual channels to use a custom profile on a builtin domain instead.
-  const conciseDomain = extractDomain("https://" + domain);
-  const collidesWithBuiltin = (DOMAIN_CONFIG[domain]) ?? (DOMAIN_CONFIG[conciseDomain]);
+  /* Reject a domain that is exactly a builtin domain key. Such a mapping shadows the builtin entirely, so the builtin service disappears from the system and
+   * every channel on that domain loses it; setting the profile field on the individual channels is the way to use a custom profile on a builtin domain.
+   *
+   * Only an exact match shadows anything. A full hostname under a builtin root - "watch.hulu.com" against the builtin "hulu.com" - is the precedence
+   * getDomainConfig resolves first by design: a user full-hostname entry wins over a builtin full hostname, which wins over either side's concise domain, so
+   * the subdomain mapping applies to the subdomain and the builtin keeps every other host under its root.
+   */
+  const collidesWithBuiltin = DOMAIN_CONFIG[domain];
 
   if(collidesWithBuiltin) {
 
-    const builtinService = collidesWithBuiltin.service ?? conciseDomain;
+    const builtinService = collidesWithBuiltin.service ?? domain;
 
     errors.push("Domain '" + domain + "' is already mapped to builtin service '" + builtinService +
       "'. Set the profile field on individual channels to use your custom profile instead.");
