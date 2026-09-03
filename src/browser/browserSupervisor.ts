@@ -6,6 +6,7 @@ import type { LaunchGovernorPolicy, LaunchGovernorState } from "./launchGovernor
 import { canAttemptLaunch, createLaunchGovernorState, noteLaunchFailure, noteLaunchSuccess, noteReadinessLost, noteSustainedHealth } from "./launchGovernor.ts";
 import type { Browser } from "puppeteer-core";
 import type { Nullable } from "../types/index.ts";
+import { assertNever } from "../utils/index.ts";
 
 /* The supervisor models the browser as a fallible external dependency whose single guarantee is: a published browser is capture-ready, or carries the record that
  * says it can no longer start one. It is deliberately pure of Chrome I/O - the actual launch (spawn Chrome, verify the capture extension, capture display/version)
@@ -414,14 +415,4 @@ export function createBrowserSupervisor(ports: BrowserSupervisorPorts): BrowserS
 
   return { acquire, captureImpairment, current, currentLaunchTime, inspect: () => state, noteCaptureImpaired: handleCaptureImpaired,
     noteReadinessLost: handleReadinessLost, noteSustainedHealth: noteSustainedHealthTick, noteTeardownBegun: handleTeardownBegun };
-}
-
-/**
- * Exhaustiveness guard for the lifecycle switch: referencing a `never` makes the compiler flag any unhandled variant if the union grows.
- * @param value - The unreachable value.
- * @returns Never returns.
- */
-function assertNever(value: never): never {
-
-  throw new Error("Unhandled browser lifecycle state: " + JSON.stringify(value));
 }

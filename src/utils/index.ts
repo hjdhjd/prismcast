@@ -18,6 +18,7 @@ export * from "./m3u.ts";
 export * from "./markup.ts";
 export * from "./morganStream.ts";
 export * from "./network.ts";
+export * from "./never.ts";
 export * from "./pid.ts";
 export * from "./platform.ts";
 export * from "./processInspector.ts";
