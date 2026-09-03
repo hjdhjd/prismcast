@@ -10,13 +10,34 @@
  *   - Migration-map gap (file at v1, current at v3, no v2 migration): runner throws.
  *   - ensureMigrated empty when current; ensureMigrated persists upgrade when stale.
  */
-import { describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "node:test";
 import { readFile, writeFile } from "node:fs/promises";
+import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Migration } from "./persistence.ts";
 import assert from "node:assert/strict";
 import { makeStore } from "./persistence.helpers.ts";
 import path from "node:path";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 import { withTempDir } from "../testing.helpers.ts";
+
+/* Every log entry emitted for the duration of a test. The row that asserts how often an upgrade is announced reads it the way an operator reads the Logs tab -
+ * by level and message - rather than by swapping the logger, which is the observation shape persistence.integrity.test.ts establishes for this suite. Reset per
+ * test so one test's framework output cannot leak into another's count.
+ */
+let captured: LogEntry[];
+
+let unsubscribe: () => void;
+
+beforeEach(() => {
+
+  captured = [];
+  unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+});
+
+afterEach(() => {
+
+  unsubscribe();
+});
 
 describe("FileStore.read - migrations", () => {
 
@@ -184,6 +205,44 @@ describe("FileStore.ensureMigrated", () => {
 
       assert.equal(written.schemaVersion, 2, "upgraded version persisted");
       assert.equal(written.upgraded, true, "migration body persisted");
+    });
+  });
+
+  test("an upgrade the boot step persists is announced once, not once per read", async () => {
+
+    /* ensureMigrated reads twice on a boot that has an upgrade to persist: once to decide, and once inside the queued write that performs it. The migration
+     * line describes the upgrade that landed on disk, so it belongs to the write's read alone, and an upgrade boot shows one line per upgraded store rather
+     * than a pair for every one of them.
+     */
+    await withTempDir(async (dir) => {
+
+      await writeFile(path.join(dir, "announce-once.json"), JSON.stringify({ schemaVersion: 1 }));
+
+      const migrations: Record<number, Migration<{ schemaVersion?: number; upgraded?: boolean }>> = {
+
+        2: {
+
+          apply: (data): void => { data.upgraded = true; },
+          description: "v2 upgrade"
+        }
+      };
+      const store = makeStore<{ schemaVersion?: number; upgraded?: boolean }>(dir, "announce-once.json", {
+
+        currentSchemaVersion: 2,
+        defaultValue: () => ({ schemaVersion: 2 }),
+        migrations
+      });
+
+      await store.ensureMigrated();
+
+      const migrated = captured.filter((line) => (line.level === "info") && /Migrated .* schema/.test(line.message));
+
+      assert.equal(migrated.length, 1, "one upgrade, one line, across both of the boot step's reads");
+      assert.match(migrated[0]?.message ?? "", /test-announce-once\.json/, "and it names the store whose file was upgraded");
+
+      const written = JSON.parse(await readFile(path.join(dir, "announce-once.json"), "utf-8")) as { schemaVersion?: number };
+
+      assert.equal(written.schemaVersion, 2, "the upgrade the line describes is the one that landed on disk");
     });
   });
 });

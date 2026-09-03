@@ -421,24 +421,24 @@ describe("health schema v1 to v2 migration matrix", () => {
   });
 });
 
-describe("loadHealthState - recoveredFromBackup banner", () => {
+describe("loadHealthState - the recovery an operator sees", () => {
 
-  /* When the framework recovers health.json from .bak, loadHealthState logs an operator-visible banner. Exercising this requires both files to exist plus
-   * main being corrupt. We seed via a clean write, corrupt main, and re-load.
+  /* When the framework recovers health.json from .bak, the store's own read is what reports it and loadHealthState adds nothing of its own. Exercising this
+   * requires both files to exist plus main being corrupt. We seed via a clean write, corrupt main, and re-load.
    */
-  let infoSpy: ReturnType<typeof mock.method>;
+  let warnSpy: ReturnType<typeof mock.method>;
 
   beforeEach(() => {
 
-    infoSpy = mock.method(LOG, "info", () => undefined);
+    warnSpy = mock.method(LOG, "warn", () => undefined);
   });
 
   afterEach(() => {
 
-    infoSpy.mock.restore();
+    warnSpy.mock.restore();
   });
 
-  test("emits the recovery banner when main is corrupt and .bak supplies a usable read", async () => {
+  test("the store's read reports the recovery once when main is corrupt and .bak supplies a usable read", async () => {
 
     await using ctx = await createIntegrationContext();
 
@@ -464,18 +464,14 @@ describe("loadHealthState - recoveredFromBackup banner", () => {
 
     await writeFile(pathInDataDir(ctx, "health.json"), "this-is-not-valid-json", "utf-8");
 
-    /* Reset the spy so we only capture banner lines from this load. */
-    infoSpy.mock.resetCalls();
+    /* Reset the spy so we only capture the lines this load produces. */
+    warnSpy.mock.resetCalls();
 
     await loadHealthState();
 
-    const recoveryLine = infoSpy.mock.calls.find((call) => {
+    const recoveryLines = warnSpy.mock.calls.filter((call) => (call.arguments[0] === "Recovered %s from backup; main file was corrupt: %s."));
 
-      const arg = call.arguments[0];
-
-      return (typeof arg === "string") && arg.includes("recovered from backup");
-    });
-
-    assert.ok(recoveryLine, "recovery banner fired when health.json was corrupt and .bak supplied the read");
+    assert.equal(recoveryLines.length, 1, "the read that recovered health.json reports it once");
+    assert.equal(recoveryLines[0]?.arguments[1], "health state", "and names the store whose file was recovered");
   });
 });

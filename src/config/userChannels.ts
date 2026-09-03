@@ -1521,11 +1521,6 @@ export async function initializeUserChannels(): Promise<void> {
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  if(result.recoveredFromBackup) {
-
-    LOG.info("Channels were recovered from backup after a corrupt main file.");
-  }
-
   // Load service selections so prepareChannelsForWrite captures them on subsequent writes.
   setServiceSelections(result.serviceSelections);
 

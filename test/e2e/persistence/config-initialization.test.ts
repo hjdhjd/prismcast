@@ -1,8 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * config-initialization.test.ts: Integration-tier coverage for the post-merge branches of initializeConfiguration() in src/config/index.ts. Two branches
- * exist beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts) and beyond the recoveredFromBackup banner (exercised
- * implicitly by backup-recovery.test.ts):
+ * exist beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts):
  *
  *   1. Persisted debug filter restoration. When config.json carries a logging.debugFilter and no environment- or CLI-driven debug filter is active,
  *      normalizeConfig() rewrites the in-memory copy to its canonical form via canonicalizeDebugPattern() and commitDebugFilter() applies that pattern to the

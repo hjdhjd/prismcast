@@ -159,6 +159,20 @@ export interface FileStoreReadResult<T> {
 }
 
 /**
+ * What a load() observed, including the message text the public read result leaves out. read() composes its warnings from that text: the parse failure a
+ * successful backup recovery swallowed, and the reason a main file could not be read for something other than being absent. None of it is data a caller acts
+ * on - it is text for the log - so this type stays inside the module and read() answers with the public shape.
+ */
+interface FileStoreLoadResult<T> extends FileStoreReadResult<T> {
+
+  // The failure of a main-file read that failed for some reason other than the file being absent. Present only on that path.
+  readErrorMessage?: string;
+
+  // The parse failure of a corrupt main file whose .bak supplied the data instead. Present only when recoveredFromBackup is true.
+  recoveredParseMessage?: string;
+}
+
+/**
  * Options for creating a file store instance. The required fields (defaultValue, label, parse, path) are the minimum surface required for any store. The
  * remaining fields opt in to schema versioning, migrations, and integrity validation - any store can adopt them as its data shape grows.
  * @template T - The in-memory data type that callers mutate.
@@ -290,13 +304,16 @@ export async function ensureAllMigrated(): Promise<void> {
  * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if both the main file and its `.bak` are unparseable, preventing save-over-corrupt cascades.
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
  * - **Auto-recovery:** when the main file fails to parse, `read()` transparently recovers the `.bak` rotation's contents in memory and surfaces
- *   `recoveredFromBackup` on the result so callers can banner the event. The read writes nothing: the durable restore belongs to the write queue, and it lands
- *   there through `ensureMigrated()` at boot or through the next `mutate()`, whose own write replaces the corrupt main with good data. Only when both files are
- *   unparseable does the result fall back to defaults with `parseError: true`.
+ *   `recoveredFromBackup` on the result so callers can surface the event. The recovery is announced by the read that performed it, once per read; the
+ *   internal `load()` is the same read without the announcement, for a caller that needs the facts alone. The read writes nothing: the durable restore belongs
+ *   to the write queue, and it lands there through `ensureMigrated()` at boot or through the next `mutate()`, whose own write replaces the corrupt main with
+ *   good data. Only when both files are unparseable does the result fall back to defaults with `parseError: true`.
  * - **Versioned snapshots:** `snapshot(label)` writes a copy of the current file into a `snapshots/` subdirectory, named `<file>.<label>`, safe to call more
  *   than once for the same label. After each successful create the directory is pruned to at most SNAPSHOT_RETENTION entries per file (by mtime).
  * - **Declarative migrations:** when `migrations` and `currentSchemaVersion` are provided, `read()` runs any pending migrations in memory and returns the
- *   upgraded data. `ensureMigrated()` persists the upgrade if any were applied. Migrations are version-keyed and safe to call more than once across boots.
+ *   upgraded data, announcing the upgrade from the read that ran it. `ensureMigrated()` persists the upgrade if any were applied, deciding through `load()` so
+ *   the boot step's peek does not announce an upgrade its own write is about to make. Migrations are version-keyed and safe to call more than once across
+ *   boots.
  * - **Pre-write validation:** when `validate` is provided, `mutate()` invokes it with the pre-mutation snapshot and post-mutation state, surfacing integrity
  *   issues via the log.
  * - **Post-write integrity check:** after every successful rename, the file is read back and byte-compared against what was written. On mismatch, the .bak is
@@ -341,12 +358,10 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     const fromVersion = currentVersion;
     const applied: string[] = [];
 
-    // Forward-compatible read: a file written by a newer PrismCast version reports a higher schemaVersion. We do not attempt to downgrade - just log and let
-    // the consumer code work with whatever it can. This keeps the file safe from a downgrade scenario where an old binary would otherwise mutate it.
+    // Forward-compatible read: a file written by a newer PrismCast version reports a higher schemaVersion. We do not attempt to downgrade - the consumer code
+    // works with whatever it can. This keeps the file safe from a downgrade scenario where an old binary would otherwise mutate it. The pass-through shows up
+    // on the result as a fromVersion above the store's own currentSchemaVersion, which is the fact read() announces to the operator.
     if(currentVersion > options.currentSchemaVersion) {
-
-      LOG.warn("%s schema version %d is newer than this build supports (%d). Reading without migration.",
-        options.label, currentVersion, options.currentSchemaVersion);
 
       return { applied: [], fromVersion, toVersion: fromVersion };
     }
@@ -492,17 +507,20 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Reads the file from disk, parses it, runs any pending migrations in memory, and returns the result. On a parse failure of the main file, recovers the .bak
-   * rotation's contents in memory before falling back to defaults. Nothing this method observes is persisted by the method itself - neither a migration it ran
-   * nor a backup it recovered - because it does not hold the write queue. ensureMigrated() persists either at boot, and the next mutate() persists both as a
-   * side effect of its own write.
+   * Reads the file from disk, parses it, runs any pending migrations in memory, and returns everything the read observed. Says nothing: a caller that acts on
+   * what the read found is the one that announces it, and a caller that only needs the facts - the boot step deciding whether the disk needs a write - gets
+   * them in silence. On a parse failure of the main file, recovers the .bak rotation's contents in memory before falling back to defaults. Nothing this
+   * function observes is persisted by the function itself - neither a migration it ran nor a backup it recovered - because it does not hold the write queue.
+   * ensureMigrated() persists either at boot, and the next mutate() persists both as a side effect of its own write.
    */
-  async function read(): Promise<FileStoreReadResult<T>> {
+  async function load(): Promise<FileStoreLoadResult<T>> {
 
     const filePath = options.path();
 
     let parsed: { data: T; recoveredFromBackup: boolean } | null = null;
     let parseError: { message: string } | null = null;
+    let readErrorMessage: string | undefined;
+    let recoveredParseMessage: string | undefined;
 
     try {
 
@@ -521,8 +539,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
         if(backup !== null) {
 
-          LOG.warn("Recovered %s from backup; main file was corrupt: %s.", options.label, message);
-
+          recoveredParseMessage = message;
           parsed = { data: backup.data, recoveredFromBackup: true };
         } else {
 
@@ -539,9 +556,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
         parsed = { data: options.defaultValue(), recoveredFromBackup: false };
       } else {
 
-        // Other read errors - log and use defaults.
-        LOG.warn("Failed to read %s file %s: %s. Using defaults.", options.label, filePath, (error instanceof Error) ? error.message : String(error));
-
+        // Other read errors - fall back to defaults and carry the reason out for the caller to report.
+        readErrorMessage = (error instanceof Error) ? error.message : String(error);
         parsed = { data: options.defaultValue(), recoveredFromBackup: false };
       }
     }
@@ -549,8 +565,6 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     if(parsed === null) {
 
       // Both main and .bak failed to parse.
-      LOG.warn("Invalid JSON in %s file %s and no usable backup available: %s. Using defaults.", options.label, filePath, parseError?.message ?? "");
-
       return {
 
         data: options.defaultValue(),
@@ -564,13 +578,65 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Run migrations in-memory. The data returned is always at currentSchemaVersion (or higher in the forward-compat case).
     const migrationResult = runMigrations(parsed.data);
 
-    if(migrationResult.applied.length > 0) {
+    return { data: parsed.data, migrationResult, parseError: false, readErrorMessage, recoveredFromBackup: parsed.recoveredFromBackup, recoveredParseMessage };
+  }
 
-      LOG.info("Migrated %s schema from v%d to v%d (%d migration(s) applied: %s).",
-        options.label, migrationResult.fromVersion, migrationResult.toVersion, migrationResult.applied.length, migrationResult.applied.join(", "));
+  /**
+   * Reads the file from disk through load() and announces what that read found: a backup recovery, a read failure, a file with no usable copy anywhere, a file
+   * from a newer build, and a schema upgrade. Every one of those lines describes a repair or a limit the caller is about to act on, so it belongs to the read
+   * that performed it and is emitted once per read. The result is the public shape, built from load()'s public fields alone so the message text load() carries
+   * for these lines stays inside the store.
+   */
+  async function read(): Promise<FileStoreReadResult<T>> {
+
+    const result = await load();
+
+    // The recovery the read performed in memory, reported with the parse failure that prompted it. The corrupt-main message is the detail that tells an
+    // operator which file went bad and why, and it comes back from load() for this line alone.
+    if(result.recoveredParseMessage !== undefined) {
+
+      LOG.warn("Recovered %s from backup; main file was corrupt: %s.", options.label, result.recoveredParseMessage);
     }
 
-    return { data: parsed.data, migrationResult, parseError: false, recoveredFromBackup: parsed.recoveredFromBackup };
+    if(result.readErrorMessage !== undefined) {
+
+      LOG.warn("Failed to read %s file %s: %s. Using defaults.", options.label, options.path(), result.readErrorMessage);
+    }
+
+    /* A file with no usable copy anywhere is the one outcome that answers with defaults rather than the file's own data, so it leaves here with the parse
+     * message the caller reports. Every line below describes something the read found IN the data, which this path does not have.
+     */
+    if(result.parseError) {
+
+      LOG.warn("Invalid JSON in %s file %s and no usable backup available: %s. Using defaults.", options.label, options.path(), result.parseErrorMessage ?? "");
+
+      return {
+
+        data: result.data,
+        migrationResult: result.migrationResult,
+        parseError: true,
+        parseErrorMessage: result.parseErrorMessage,
+        recoveredFromBackup: false
+      };
+    }
+
+    /* A file written by a newer build passes through unmigrated, which the migration result reports as a fromVersion above the store's own schema version. The
+     * pass-through is deliberate - runMigrations explains why it refuses to downgrade - and this line is what tells an operator that the file's extra fields
+     * are being carried without being understood.
+     */
+    if((options.currentSchemaVersion !== undefined) && (result.migrationResult.fromVersion > options.currentSchemaVersion)) {
+
+      LOG.warn("%s schema version %d is newer than this build supports (%d). Reading without migration.",
+        options.label, result.migrationResult.fromVersion, options.currentSchemaVersion);
+    }
+
+    if(result.migrationResult.applied.length > 0) {
+
+      LOG.info("Migrated %s schema from v%d to v%d (%d migration(s) applied: %s).", options.label, result.migrationResult.fromVersion,
+        result.migrationResult.toVersion, result.migrationResult.applied.length, result.migrationResult.applied.join(", "));
+    }
+
+    return { data: result.data, migrationResult: result.migrationResult, parseError: false, recoveredFromBackup: result.recoveredFromBackup };
   }
 
   /**
@@ -818,9 +884,10 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
    */
   async function ensureMigrated(): Promise<MigrationResult> {
 
-    // Peek to determine whether the file on disk needs a write. read() runs migrations in memory and recovers a corrupt main from .bak in memory, and persists
-    // neither, because it does not hold the queue.
-    const peek = await read();
+    // Peek to determine whether the file on disk needs a write. load() runs the migrations and recovers a corrupt main from .bak in memory, persists neither
+    // because it does not hold the queue, and announces neither: the peek is a decision, not the event. The repair itself happens again under the queue in the
+    // mutate below, whose own read announces it - once, and only on a boot that had something to repair.
+    const peek = await load();
 
     if((peek.migrationResult.applied.length === 0) && !peek.recoveredFromBackup) {
 
@@ -829,7 +896,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     /* Persist via a no-op mutate. mutate's internal read repeats both recoveries - the migration and the backup - so the state that lands on disk is the state
      * we just observed, and the write runs under the queue where every write to a main file belongs. A doubly-corrupt file (main and .bak both unparseable)
-     * reaches neither branch: read() reports parseError with no migrations and no recovery, so no mutate is attempted and the corruption guard never fires.
+     * reaches neither branch: the peek reports parseError with no migrations and no recovery, so no mutate is attempted and the corruption guard never fires.
      * The cost is one extra read, on the boots where the file needed a repair.
      */
     await mutate(() => { /* no-op: the write exists to persist the schema upgrade or the recovered backup. */ });

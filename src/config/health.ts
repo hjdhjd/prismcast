@@ -304,11 +304,6 @@ export async function loadHealthState(): Promise<void> {
   // The maps hold what health.json describes from here on, so the write chokepoint may persist them.
   healthStateLoaded = true;
 
-  if(result.recoveredFromBackup) {
-
-    LOG.info("Health state was recovered from backup after a corrupt main file.");
-  }
-
   const channelCount = channelHealth.size;
   const domainCount = domainAuth.size;
 

@@ -371,11 +371,6 @@ export async function initializeUserProfiles(): Promise<void> {
   userProfilesParseError = result.parseError;
   userProfilesParseErrorMessage = result.parseErrorMessage;
 
-  if(result.recoveredFromBackup) {
-
-    LOG.info("User profiles were recovered from backup after a corrupt main file.");
-  }
-
   // Check for non-printable characters in loaded profile and domain string values. These warnings are informational - loaded data is not modified.
   for(const [ profileKey, profile ] of Object.entries(loadedUserProfiles)) {
 

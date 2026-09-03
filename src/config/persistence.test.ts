@@ -11,12 +11,34 @@
  * framework's contract.
  */
 import { FileStoreParseError, createFileStore } from "./persistence.ts";
-import { describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "node:test";
 import { makeMemoryStorageBackend, makeMemoryStore, makeStore } from "./persistence.helpers.ts";
 import { readFile, writeFile } from "node:fs/promises";
+import type { LogEntry } from "../utils/logEmitter.ts";
+import type { Migration } from "./persistence.ts";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 import { withTempDir } from "../testing.helpers.ts";
+
+/* Every log entry emitted for the duration of a test. The rows that assert how often the framework announces a repair read it the way an operator reads the
+ * Logs tab - by level and message - rather than by swapping the logger, which is the observation shape persistence.integrity.test.ts establishes for this
+ * suite. Reset per test so one test's framework output cannot leak into another's count.
+ */
+let captured: LogEntry[];
+
+let unsubscribe: () => void;
+
+beforeEach(() => {
+
+  captured = [];
+  unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+});
+
+afterEach(() => {
+
+  unsubscribe();
+});
 
 describe("FileStoreParseError", () => {
 
@@ -128,6 +150,54 @@ describe("FileStore.read - core paths", () => {
 
       assert.deepEqual(result.data.items, ["recovered"]);
       assert.equal(result.recoveredFromBackup, true);
+    });
+  });
+
+  test("a bare read announces the recovery it performed, once, with the parse failure that prompted it", async () => {
+
+    /* A caller reading on its own is the only reporter of what that read found: no boot step has repaired the file ahead of it, and no write follows to
+     * announce anything. The warning therefore belongs to this read, carries the corrupt-main parse message an operator needs to identify the damage, and
+     * appears exactly once for the one recovery that happened.
+     */
+    await withTempDir(async (dir) => {
+
+      await writeFile(path.join(dir, "announce-once.json"), "{not valid json");
+      await writeFile(path.join(dir, "announce-once.json.bak"), JSON.stringify({ items: ["recovered"] }));
+
+      const store = makeStore<{ items: string[] }>(dir, "announce-once.json", {
+
+        defaultValue: () => ({ items: [] })
+      });
+
+      await store.read();
+
+      const recoveries = captured.filter((line) => (line.level === "warn") && /Recovered .* from backup/.test(line.message));
+
+      assert.equal(recoveries.length, 1, "one recovery, one warning");
+      assert.match(recoveries[0]?.message ?? "", /test-announce-once\.json/, "the warning names the store whose file was recovered");
+      assert.match(recoveries[0]?.message ?? "", /main file was corrupt/, "and carries the parse failure that prompted it");
+    });
+  });
+
+  test("a recovered read answers with the public result shape and no field the store keeps for its own log lines", async () => {
+
+    /* The store knows more about a recovery than the result exposes: the parse message the warning prints is read from disk and never handed to a caller,
+     * because it is text for the log rather than data to act on. This row is the boundary check - what a caller can see on a recovered read is exactly the
+     * members the result type declares for that path.
+     */
+    await withTempDir(async (dir) => {
+
+      await writeFile(path.join(dir, "public-shape.json"), "{not valid json");
+      await writeFile(path.join(dir, "public-shape.json.bak"), JSON.stringify({ items: ["recovered"] }));
+
+      const store = makeStore<{ items: string[] }>(dir, "public-shape.json", {
+
+        defaultValue: () => ({ items: [] })
+      });
+      const result = await store.read();
+
+      assert.deepEqual(Object.keys(result).toSorted(), [ "data", "migrationResult", "parseError", "recoveredFromBackup" ],
+        "a recovered read carries the members of the read result and nothing else");
     });
   });
 
@@ -443,6 +513,35 @@ describe("FileStore.read - recovery in memory, the durable restore under the que
     assert.equal(mainParsed.value, 11, "the main file now holds the mutated good data");
   });
 
+  test("a mutate that meets a corrupt main announces the repair it is about to persist, once", async () => {
+
+    /* A mutate at run time is the other place a repair happens, and no boot step ran ahead of it to have announced anything. Its own read is what finds the
+     * damage and what reports it, so the warning appears once for the write that fixes the file - the same one-line-per-repair rule the boot step follows.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/mutate-announces.json";
+
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", "{\"value\":3}\n");
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    await store.mutate((data) => { data.value += 1; });
+
+    const recoveries = captured.filter((line) => (line.level === "warn") && /Recovered .* from backup/.test(line.message));
+
+    assert.equal(recoveries.length, 1, "the mutate's own read announces the recovery once");
+
+    const mainParsed = JSON.parse(backend.files.get(filePath) ?? "") as { value: number };
+
+    assert.equal(mainParsed.value, 4, "and the write persisted the recovered data with the mutation applied");
+  });
+
   test("a bare read parked inside its recovery cannot revert a mutate that completed while it waited", async () => {
 
     /* The race the in-memory recovery closes. A bare read reaches its backup read and parks there; a mutate runs start to finish meanwhile; then the read is
@@ -561,6 +660,37 @@ describe("FileStore.ensureMigrated - the durable restore at boot", () => {
     assert.deepEqual(writes, [], "a repeat boot step over a repaired file is a pure read");
   });
 
+  test("a boot that repairs a corrupt main announces the recovery once, not once per read", async () => {
+
+    /* The boot step reads the file twice when it has something to repair: once to decide whether the disk needs a write, and once inside the queued write that
+     * performs it. Only the second is the event an operator cares about - a repair that landed on disk - so the decision is taken through the store's silent
+     * path and the Logs tab shows one line for the one repair rather than a duplicate for the read that only looked.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/recovery-announced-once.json";
+
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", "{\"value\":42}\n");
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    await store.ensureMigrated();
+
+    const recoveries = captured.filter((line) => (line.level === "warn") && /Recovered .* from backup/.test(line.message));
+
+    assert.equal(recoveries.length, 1, "one repair, one warning, across both of the boot step's reads");
+    assert.match(recoveries[0]?.message ?? "", /test-mem-recovery-announced-once\.json/, "and it names the store whose file was repaired");
+
+    const mainParsed = JSON.parse(backend.files.get(filePath) ?? "") as { value: number };
+
+    assert.equal(mainParsed.value, 42, "the write the warning describes is the one that repaired the file");
+  });
+
   test("a main file and a backup that are both unparseable leave the boot step a pure read rather than a failure", async () => {
 
     /* The boundary between the repairs the boot step persists. A file with no usable backup has nothing to recover, so read() reports parseError with no
@@ -597,5 +727,67 @@ describe("FileStore.ensureMigrated - the durable restore at boot", () => {
     assert.deepEqual(writes, [], "and no write was attempted");
     assert.equal(backend.files.get(filePath), corruptMain, "the main file is left for an operator to deal with");
     assert.equal(backend.files.get(filePath + ".bak"), corruptBak, "and so is the backup");
+
+    /* The boot step says nothing about a file it could not repair, because it repaired nothing. The failure still reaches the operator: every store reads its
+     * own file after the boot step, and that read reports it once, from the caller that is about to work with defaults.
+     */
+    const unusable = (): number => captured.filter((line) => (line.level === "warn") && line.message.includes("no usable backup available")).length;
+
+    assert.equal(unusable(), 0, "the boot step announced nothing about a file it could not repair");
+
+    await store.read();
+
+    assert.equal(unusable(), 1, "and the read that follows reports the unusable file once");
+  });
+
+  test("a file from a newer build leaves the boot step a pure read, and the read that follows reports it once", async () => {
+
+    /* A file whose schemaVersion sits above what this build understands is passed through rather than migrated, so the boot step has nothing to persist and
+     * nothing to announce. The limitation still reaches the operator through the store's own read, on the same rule every other line follows: whoever acts on
+     * what the read found is the one that reports it. The store declares a migration map because the runner returns before the version comparison without one.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/newer-build.json";
+    const newerFile = "{\"schemaVersion\":99,\"value\":5}\n";
+
+    backend.files.set(filePath, newerFile);
+    backend.mtimes.set(filePath, 1);
+
+    const writes: string[] = [];
+    const realWriteFile = backend.writeFile;
+
+    backend.writeFile = async (p: string, content: string): Promise<void> => {
+
+      writes.push(p);
+
+      return realWriteFile(p, content);
+    };
+
+    const migrations: Record<number, Migration<{ schemaVersion?: number; value?: number }>> = {
+
+      2: {
+
+        apply: (data): void => { data.value = 0; },
+        description: "v2 upgrade"
+      }
+    };
+    const store = makeMemoryStore<{ schemaVersion?: number; value?: number }>(backend, filePath, {
+
+      currentSchemaVersion: 2,
+      defaultValue: () => ({ schemaVersion: 2, value: 0 }),
+      migrations
+    });
+
+    await store.ensureMigrated();
+
+    const newer = (): number => captured.filter((line) => (line.level === "warn") && line.message.includes("newer than this build supports")).length;
+
+    assert.deepEqual(writes, [], "there is nothing to persist for a file this build cannot migrate");
+    assert.equal(newer(), 0, "and the boot step announces nothing");
+    assert.equal(backend.files.get(filePath), newerFile, "the newer file is left exactly as it was found");
+
+    await store.read();
+
+    assert.equal(newer(), 1, "the read that follows reports the newer file once");
   });
 });

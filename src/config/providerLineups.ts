@@ -138,11 +138,6 @@ export async function loadProviderLineups(): Promise<void> {
     lineups.set(slug, channels);
   }
 
-  if(result.recoveredFromBackup) {
-
-    LOG.info("Provider channel lineups were recovered from backup after a corrupt main file.");
-  }
-
   if(lineups.size > 0) {
 
     LOG.info("Loaded persisted channel lineups for %d provider%s.", lineups.size, (lineups.size === 1) ? "" : "s");

@@ -111,11 +111,6 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
   configParseErrorMessage = result.parseErrorMessage;
   stashedCliOverrides = cliOverrides;
 
-  if(result.recoveredFromBackup) {
-
-    LOG.info("Configuration was recovered from backup after a corrupt main file.");
-  }
-
   // Capture whether a higher-priority debug source (PRISMCAST_DEBUG / --debug) already owns the active filter before we apply the persisted config filter, so a
   // later reload can re-apply a changed persisted filter live without overriding env/CLI. Measured here, ahead of normalizeConfig/commitDebugFilter, it reflects
   // env/CLI alone rather than the persisted filter applying to itself.
