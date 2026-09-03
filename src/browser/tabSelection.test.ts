@@ -18,6 +18,8 @@ import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Nullable } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { setImmediate as immediate } from "node:timers/promises";
+import { installStrayOpenTabReaper } from "./tabSelection.ts";
 import { makeFakeClock } from "../utils/clock.helpers.ts";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
@@ -233,6 +235,9 @@ interface OpenWorld {
   carrier: Nullable<Page>;
   carrierResolves: number;
 
+  // Every page the world was asked to close, in order, so a row can count a page's closes rather than only see that one happened.
+  closes: Page[];
+
   // The pages the placement confirmation was handed, in order.
   confirmedPages: Page[];
 
@@ -241,6 +246,18 @@ interface OpenWorld {
   createdPages: Page[];
 
   fixture: Fixture;
+
+  // The listeners the browser recorded, by the event name each was registered under, which is what a row emits a target through.
+  listeners: Map<string, ((target: Target) => void)[]>;
+
+  // Called by pages() once it has built its list, which is where a row places a tab that lands after the scan has looked.
+  onPagesScan: Nullable<() => void>;
+
+  // Called by waitForTarget as it is entered, before it parks or resolves, which is where a row places an event inside a pass's own waiting window.
+  onTargetWait: Nullable<() => void>;
+
+  // Whether each open throws rather than landing a tab, taken in order. An exhausted list lands its tab the ordinary way.
+  openRejects: boolean[];
 
   // The URL each open was asked for, so a row can read the nonce the tab wears.
   openUrls: string[];
@@ -275,12 +292,13 @@ function makeOpenedPage(world: OpenWorld, id: number, url: string): Page {
 
   let closed = false;
 
-  return {
+  const page: Page = {
 
     browser: (): Browser => world.browser,
 
     close: async (): Promise<void> => {
 
+      world.closes.push(page);
       closed = true;
 
       fixture.timeline.push("close:" + String(id));
@@ -324,6 +342,97 @@ function makeOpenedPage(world: OpenWorld, id: number, url: string): Page {
     isClosed: (): boolean => closed,
     url: (): string => url
   } as unknown as Page;
+
+  return page;
+}
+
+/**
+ * Builds a page double that records every close it is asked for, which is what the rows about the reaper read, and answers nothing else.
+ * @param world - The world the page belongs to.
+ * @param url - The URL the page reports.
+ * @param rejectClose - Whether the close rejects rather than settling, the way one aimed at a target the browser has already dropped does.
+ * @returns The page double.
+ */
+function makeRecordingPage(world: OpenWorld, url: string, rejectClose = false): Page {
+
+  let closed = false;
+
+  const page: Page = {
+
+    close: async (): Promise<void> => {
+
+      world.closes.push(page);
+
+      if(rejectClose) {
+
+        throw new Error("Protocol error (Target.closeTarget): No target with given id found.");
+      }
+
+      closed = true;
+    },
+    isClosed: (): boolean => closed,
+    url: (): string => url
+  } as unknown as Page;
+
+  return page;
+}
+
+/**
+ * Lands a tab in the world the way the carrier's own open does, for the rows that place one after the pass that asked for it has moved on.
+ * @param world - The world to land the tab in.
+ * @param url - The URL the tab wears.
+ * @returns The tab that landed.
+ */
+function landOpenedTab(world: OpenWorld, url: string): OpenedTab {
+
+  const landed: OpenedTab = { closed: false, id: 900 + world.opened.length, page: null as unknown as Page, url };
+
+  landed.page = makeOpenedPage(world, landed.id, url);
+  world.opened.push(landed);
+
+  return landed;
+}
+
+/**
+ * Delivers a target event to the listeners the world's browser recorded, the way puppeteer delivers one.
+ * @param world - The world whose browser holds the listeners.
+ * @param event - The event name to deliver under.
+ * @param target - What the target reports: the page behind it, its type, and its URL. A target with no type given is a page.
+ */
+function emitTarget(world: OpenWorld, event: string, target: { page?: Nullable<Page>; type?: string; url: string }): void {
+
+  const emitted = {
+
+    page: async (): Promise<Nullable<Page>> => target.page ?? null,
+    type: (): string => target.type ?? "page",
+    url: (): string => target.url
+  } as unknown as Target;
+
+  for(const listener of world.listeners.get(event) ?? []) {
+
+    listener(emitted);
+  }
+}
+
+/**
+ * Counts the closes a page was asked for, which is what tells a tab nobody closed from one the turn closed and from one two parties raced to close.
+ * @param world - The world the page belongs to.
+ * @param page - The page to count.
+ * @returns How many times that page was asked to close.
+ */
+function closesOf(world: OpenWorld, page: Page): number {
+
+  return world.closes.filter((closed) => closed === page).length;
+}
+
+/**
+ * Lets the reaper's own chain run to completion: it resolves the target's page and only then closes it, which is two macrotask boundaries past the delivery.
+ * Node reports an unhandled rejection only once the macrotask that produced one has ended, so the same two hops are what a row reads that by.
+ */
+async function settleReaper(): Promise<void> {
+
+  await immediate();
+  await immediate();
 }
 
 /**
@@ -340,10 +449,15 @@ function makeOpenWorld(): OpenWorld {
     browser: null as unknown as Browser,
     carrier: null,
     carrierResolves: 0,
+    closes: [],
     confirmedPages: [],
     createdOptions: [],
     createdPages: [],
     fixture,
+    listeners: new Map(),
+    onPagesScan: null,
+    onTargetWait: null,
+    openRejects: [],
     openUrls: [],
     opened: [],
     opens: true,
@@ -375,6 +489,12 @@ function makeOpenWorld(): OpenWorld {
       fixture.timeline.push("open");
       world.openUrls.push(url);
 
+      // Chrome can run an open after the evaluate that asked for it has already failed, so a throw here says nothing about whether a tab is on its way.
+      if(world.openRejects.shift() ?? false) {
+
+        throw new Error("Attempted to use detached Frame.");
+      }
+
       if(!world.opens) {
 
         return false;
@@ -405,18 +525,32 @@ function makeOpenWorld(): OpenWorld {
 
     newPage: async (options?: unknown): Promise<Page> => {
 
-      const created = { isClosed: (): boolean => false, url: (): string => "about:blank" } as unknown as Page;
+      const created = makeRecordingPage(world, "about:blank");
 
       world.createdOptions.push(options);
       world.createdPages.push(created);
 
       return created;
     },
-    pages: async (): Promise<Page[]> => [ ...(world.carrier ? [world.carrier] : []), ...world.opened.filter((tab) => !tab.closed).map((tab) => tab.page) ],
+
+    on: (event: string, listener: (target: Target) => void): void => {
+
+      world.listeners.set(event, [ ...(world.listeners.get(event) ?? []), listener ]);
+    },
+
+    pages: async (): Promise<Page[]> => {
+
+      const listed = [ ...(world.carrier ? [world.carrier] : []), ...world.opened.filter((tab) => !tab.closed).map((tab) => tab.page) ];
+
+      world.onPagesScan?.();
+
+      return listed;
+    },
 
     waitForTarget: async (predicate: (target: Target) => boolean, options?: { signal?: AbortSignal }): Promise<Target> => {
 
       fixture.timeline.push("waitForTarget");
+      world.onTargetWait?.();
 
       // The only way this wait ends without a target is the caller's own ceiling, which is what makes a row that hangs it a test of the signal being threaded.
       if(world.targetHangs) {
@@ -1328,5 +1462,284 @@ describe("openSharedWindowTab", () => {
     assert.equal(world.opened[0]?.closed, true, "the tab the lapsed turn opened was closed rather than left in the window");
     assert.equal(queuedFixture.timeline.at(-1), "update:7", "and the hold behind it ran its own turn to completion");
     assert.equal(warnings.length, 0, "a lapse degrades at debug like every other path with nothing left to try");
+  });
+});
+
+/* A marked URL no pass can ever have asked for. The module's counter is read pre-incremented, so its first serial is one and zero is never spent, which is what
+ * makes a target wearing this one residue by construction rather than by the order the rows happen to run in.
+ */
+const UNCLAIMED_NONCE_URL = "about:blank#prismcast-open-0";
+
+/* The reaper's rows. The turn's own scan is one net and this listener is another, so what is asserted here is the boundary between them: which tabs the
+ * listener takes, which it leaves for the turn, and which it must never touch at all.
+ */
+describe("installStrayOpenTabReaper", () => {
+
+  test("closes a tab that lands after the turn lapsed and fell back, and leaves the page the fallback created alone", async () => {
+
+    /* The residue this listener exists for. The evaluate that asked Chrome for the tab keeps running after the turn's own wait has ended, so the tab can arrive
+     * after the turn scanned for one and handed its caller a page created the plain way. Nothing registered it, which is why nothing else would ever close it.
+     */
+    const world = makeOpenWorld();
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.targetHangs = true;
+
+    const page = await openSharedWindowTab(world.browser, { ceilingMs: 150, deps: makeOpenDeps(world) });
+
+    assert.equal(page, world.createdPages[0], "the caller received the page the fallback created");
+
+    // The tab the carrier's open finally landed, which the turn's own scan looked for and never saw.
+    const stray = makeRecordingPage(world, world.openUrls[0] ?? "");
+
+    emitTarget(world, "targetcreated", { page: stray, url: stray.url() });
+    await settleReaper();
+
+    assert.equal(closesOf(world, stray), 1, "the tab that landed after the turn had given up was closed by the listener");
+    assert.equal(closesOf(world, world.createdPages[0]!), 0, "and the page the turn handed its caller was left alone");
+  });
+
+  test("leaves the tab a pass is still waiting for alone, and it is the abandon scan that closes it once the pass gives up", async () => {
+
+    /* The tab a pass is waiting for is that pass's to claim, so the listener has to be able to tell it from residue. The waiting nonce is the whole of that
+     * telling: while it is in the set the listener passes the tab by, and the moment the pass gives up the same tab becomes the abandon scan's.
+     */
+    const world = makeOpenWorld();
+
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const parked = Promise.withResolvers<void>();
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.targetHangs = true;
+    world.onTargetWait = (): void => { parked.resolve(); };
+
+    const opening = openSharedWindowTab(world.browser, { ceilingMs: 150, deps: makeOpenDeps(world) });
+
+    await parked.promise;
+
+    const tab = world.opened[0]!;
+
+    emitTarget(world, "targetcreated", { page: tab.page, url: tab.url });
+    await settleReaper();
+
+    assert.equal(closesOf(world, tab.page), 0, "the tab the parked pass is waiting for was left where that pass could claim it");
+
+    await opening;
+
+    assert.equal(closesOf(world, tab.page), 1, "and the abandon scan closed it exactly once the pass had lapsed");
+  });
+
+  test("closes a tab that landed after the abandon scan had already looked", async () => {
+
+    /* The gap the ordering closes. The nonce leaves the waiting set before the scan runs, so a tab already in the window is what the scan finds and one that
+     * arrives while it is looking is the listener's - and between the two there is nowhere for a tab to hide.
+     */
+    const world = makeOpenWorld();
+    const landed: Page[] = [];
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.targetHangs = true;
+
+    // The scan has built its list by the time this runs, so a tab delivered here is one that list cannot contain.
+    world.onPagesScan = (): void => {
+
+      if(landed.length > 0) {
+
+        return;
+      }
+
+      const late = makeRecordingPage(world, world.openUrls[0] ?? "");
+
+      landed.push(late);
+      emitTarget(world, "targetcreated", { page: late, url: late.url() });
+    };
+
+    await openSharedWindowTab(world.browser, { ceilingMs: 150, deps: makeOpenDeps(world) });
+    await settleReaper();
+
+    assert.equal(landed.length, 1, "the scan ran once and the tab landed behind it");
+    assert.equal(closesOf(world, landed[0]!), 1, "which leaves the listener as the only party that could have closed it, and it did");
+  });
+
+  test("never closes the page a pass claimed, whatever its URL still says while its caller holds it", async () => {
+
+    /* A claimed page keeps the marked URL until its caller navigates it, so the URL alone reads exactly like residue. The claim is what tells them apart, and
+     * it has to hold through the give-back the turn still owes and for as long as the caller holds the page afterwards.
+     */
+    const world = makeOpenWorld();
+    const deps = makeOpenDeps(world);
+    const confirmed = deps.confirmPlacement;
+
+    installStrayOpenTabReaper(world.browser);
+
+    // The confirmation runs after the claim and before the give-back, which is the narrowest window the exemption has to cover.
+    const watched: SharedWindowTabDeps = {
+
+      ...deps,
+
+      confirmPlacement: async (page: Page): Promise<boolean> => {
+
+        emitTarget(world, "targetchanged", { page, url: world.openUrls[0] ?? "" });
+
+        return confirmed(page);
+      }
+    };
+
+    const page = await openSharedWindowTab(world.browser, { deps: watched });
+
+    emitTarget(world, "targetchanged", { page, url: world.openUrls[0] ?? "" });
+    await settleReaper();
+
+    assert.equal(page, world.opened[0]?.page, "the pass claimed its tab and handed it over");
+    assert.equal(closesOf(world, page), 0, "and neither the event inside the turn nor the one after it closed the page its caller is holding");
+  });
+
+  test("ignores targets that are not pages and pages that carry no marker, and registers one listener per event", async () => {
+
+    /* The judgment is a synchronous read of the target's own type and URL, which is what keeps the events that have nothing to do with an open - nearly all of
+     * them - down to a type check and a prefix test. Each half is asserted against a target the other half would let through.
+     */
+    const world = makeOpenWorld();
+
+    installStrayOpenTabReaper(world.browser);
+
+    const marked = makeRecordingPage(world, UNCLAIMED_NONCE_URL);
+    const unmarked = makeRecordingPage(world, "https://example.test/");
+
+    emitTarget(world, "targetcreated", { page: marked, type: "browser", url: UNCLAIMED_NONCE_URL });
+    emitTarget(world, "targetcreated", { page: unmarked, url: unmarked.url() });
+    await settleReaper();
+
+    assert.equal(closesOf(world, marked), 0, "a target that is not a page is not a tab, whatever its URL says");
+    assert.equal(closesOf(world, unmarked), 0, "and a page that carries no open marker is somebody else's");
+    assert.equal(world.listeners.get("targetcreated")?.length, 1, "one install registers one creation listener");
+    assert.equal(world.listeners.get("targetchanged")?.length, 1, "and one change listener");
+  });
+
+  test("absorbs a close that rejects rather than letting it escape as an unhandled rejection", async (t) => {
+
+    /* A stray tab the browser has already dropped rejects the close, and there is nothing anyone would do about that - so the whole chain ends at debug.
+     * Without the catch this row surfaces as an unhandled rejection rather than as a clean pass.
+     */
+    const world = makeOpenWorld();
+    const escaped: unknown[] = [];
+    const onRejection = (reason: unknown): void => { escaped.push(reason); };
+
+    installStrayOpenTabReaper(world.browser);
+    process.on("unhandledRejection", onRejection);
+    t.after(() => process.off("unhandledRejection", onRejection));
+
+    const stray = makeRecordingPage(world, UNCLAIMED_NONCE_URL, true);
+
+    emitTarget(world, "targetcreated", { page: stray, url: stray.url() });
+    await settleReaper();
+
+    assert.equal(closesOf(world, stray), 1, "the close was attempted");
+    assert.deepEqual(escaped, [], "and its rejection never escaped the listener");
+  });
+
+  test("keeps the tab the second pass is waiting for when its target event arrives mid-wait", async () => {
+
+    /* Each pass waits under a marker of its own, so the retry's tab is protected exactly as the first pass's was. A listener that only ever knew about the pass
+     * that opened first would close the very tab the turn is about to hand its caller.
+     */
+    const world = makeOpenWorld();
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.placements = [ false, true ];
+
+    let waits = 0;
+
+    world.onTargetWait = (): void => {
+
+      waits++;
+
+      if(waits !== 2) {
+
+        return;
+      }
+
+      const tab = world.opened[1]!;
+
+      emitTarget(world, "targetcreated", { page: tab.page, url: tab.url });
+    };
+
+    const page = await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    await settleReaper();
+
+    assert.equal(page, world.opened[1]?.page, "the second pass's tab is what comes back");
+    assert.equal(closesOf(world, world.opened[1]!.page), 0, "the tab that pass was waiting for was left alone");
+    assert.equal(world.opened[0]?.closed, true, "and the one that landed in the wrong window was closed by the turn itself");
+  });
+
+  test("closes a tab created at about:blank once the change that gives it the marker arrives", async () => {
+
+    /* A window.open target is created at about:blank and takes its opener's URL on the change that follows, so a listener reading only the creation would never
+     * see the marker at all and the tab it names would sit there for the life of the browser.
+     */
+    const world = makeOpenWorld();
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.targetHangs = true;
+
+    await openSharedWindowTab(world.browser, { ceilingMs: 150, deps: makeOpenDeps(world) });
+
+    const stray = makeRecordingPage(world, world.openUrls[0] ?? "");
+
+    emitTarget(world, "targetcreated", { page: stray, url: "about:blank" });
+    await settleReaper();
+
+    assert.equal(closesOf(world, stray), 0, "the creation carries no marker to judge the tab by");
+
+    emitTarget(world, "targetchanged", { page: stray, url: stray.url() });
+    await settleReaper();
+
+    assert.equal(closesOf(world, stray), 1, "and the change that gives it one is what the listener closes on");
+  });
+
+  test("reaps the tab a failed pass left behind and never lets the pass that follows claim it", async () => {
+
+    /* Chrome can run an open after the evaluate that asked for it has already failed, so one pass can leave a tab on its way while the next opens another. Two
+     * markers are what keep them apart: the abandoned one is the listener's, and the target wait matches only the marker of the pass doing the waiting.
+     */
+    const world = makeOpenWorld();
+
+    installStrayOpenTabReaper(world.browser);
+
+    world.openRejects = [ true, false ];
+
+    let waits = 0;
+
+    // The first pass's evaluate threw without landing a tab, so the only target wait in this turn is the second pass's.
+    world.onTargetWait = (): void => {
+
+      waits++;
+
+      if(waits !== 1) {
+
+        return;
+      }
+
+      const stale = landOpenedTab(world, world.openUrls[0] ?? "");
+
+      emitTarget(world, "targetcreated", { page: stale.page, url: stale.url });
+    };
+
+    const page = await openSharedWindowTab(world.browser, { deps: makeOpenDeps(world) });
+
+    await settleReaper();
+
+    const stale = world.opened.find((tab) => tab.url === world.openUrls[0]);
+
+    assert.equal(world.openUrls.length, 2, "each pass asked Chrome for a URL of its own");
+    assert.notEqual(world.openUrls[0], world.openUrls[1], "and the two markers are different");
+    assert.equal(page, world.opened.find((tab) => tab.url === world.openUrls[1])?.page, "the tab the second pass opened is what comes back");
+    assert.equal(closesOf(world, stale!.page), 1, "and the tab the failed pass left behind was closed by the listener rather than claimed by the pass after it");
   });
 });

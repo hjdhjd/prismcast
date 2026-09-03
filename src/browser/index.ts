@@ -8,7 +8,7 @@ import type { Clock, ProcessInfo } from "../utils/index.ts";
 import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, realClock, setChromeUserAgent, startTimer } from "../utils/index.ts";
 import { clearLoginState, isLoginModeActive, setBrowserAccessors } from "./login.ts";
 import { getAllStreams, getStreamCount, hasActiveCaptureStreams, isCaptureIdentity } from "../streaming/registry.ts";
-import { getCachedTabId, onTabActivation } from "./tabSelection.ts";
+import { getCachedTabId, installStrayOpenTabReaper, onTabActivation } from "./tabSelection.ts";
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
@@ -1894,6 +1894,12 @@ async function launchReadyBrowser(): Promise<Browser> {
     // Start background precaching of selected service channel lineups. Fire-and-forget - the setTimeout inside startPrecaching() defers the work until after this
     // launch settles and the supervisor has published the ready browser, so its getCurrentBrowser() resolves immediately rather than re-entering this launch.
     startPrecaching();
+
+    /* The reaper belongs to the browser instance the supervisor is about to publish: puppeteer drops a closed browser's listeners along with the instance, and
+     * a relaunch comes back through this same path and installs its own. It goes in ahead of the disconnect handler so that handler stays the last step before
+     * publication, for the reason its own comment gives.
+     */
+    installStrayOpenTabReaper(browser);
 
     // Arm the disconnect handler only now, as the very last step before the supervisor publishes this browser as ready. It is deliberately NOT armed earlier: during
     // the gate/init window above, a Chrome crash surfaces as a thrown init step (CDP and waitForFunction reject on a dead browser), which the supervisor counts as a

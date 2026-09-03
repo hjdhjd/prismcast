@@ -21,12 +21,19 @@
  * before the next hold begins, so two holders can never alternate the selection under each other. Every hold carries a ceiling, because the work a hold wraps is
  * not this module's: an extension evaluate has no timeout of its own, and one wedged body would otherwise block every later capture start and fullscreen request
  * for the life of the process, a condition no browser relaunch could clear.
+ *
+ * A ceiling that lapses leaves more behind than the tab the turn can see. The evaluate that asked Chrome for the tab keeps running inside the browser after
+ * the local wait has ended, so a carrier that was merely slow can land its tab after the turn has already scanned for one and created its page the plain way.
+ * A tab that arrives then is registered nowhere: the staleness sweep never judges it, and it holds a renderer for as long as the browser lives. A timer would
+ * have to guess how long to keep watching for one, so the browser's own target events do the watching instead - every open marks the URL of the tab it asks
+ * for, and a marked tab no pass is waiting for belongs to nobody, which is the whole of what installStrayOpenTabReaper closes.
  */
 import type { Browser, Page, Target } from "puppeteer-core";
 import { LOG, evaluateWithAbort, formatError, realClock, timeoutSignal, waitWithTimeout } from "../utils/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
+import { TargetType } from "puppeteer-core";
 import { getExtensionPage } from "puppeteer-stream";
 
 /* The extension's options page can reach the chrome.* APIs, and this Node program cannot. Declaring the two namespaces at module scope rather than in the
@@ -65,6 +72,13 @@ const OPEN_TURN_CEILING_MS = 8000;
 // How many times a turn resolves a carrier and opens against it. The second pass is the retry a wrong-window tab and a carrier that closed under the evaluate
 // both earn: each is evidence about the carrier rather than about the open, so resolving again is the only thing worth doing differently.
 const OPEN_ATTEMPTS = 2;
+
+// The marker every opened tab wears ahead of its pass's own serial. It is written once here because everything that reasons about a marked tab has to agree on
+// it: the open that asks Chrome for the URL, the scan that looks the tab up among the browser's pages, and the reaper that judges a target by its URL alone.
+const OPEN_NONCE_PREFIX = "prismcast-open-";
+
+// The whole of the URL prefix a marked tab carries. The reaper tests a target's URL against it and reads the pass's nonce out of what follows.
+const OPEN_NONCE_URL_PREFIX = "about:blank#" + OPEN_NONCE_PREFIX;
 
 // Types.
 
@@ -162,6 +176,18 @@ let nextTitleToken = 0;
 // The counter behind each open's nonce. It only moves forward for the same reason the title token's does: two opens must never be able to wait for one another's
 // tab, and the nonce is the whole of what tells them apart.
 let nextOpenNonce = 0;
+
+/* The nonces of the passes still waiting for the tab they asked for. A pass enters its own just before it asks Chrome to open and leaves the moment it claims
+ * a target or gives the pass up, so a marked tab whose nonce is in here is somebody's and one whose nonce is not belongs to nobody - which is the whole of the
+ * test the reaper applies.
+ */
+const waitingOpens = new Set<string>();
+
+/* The pages passes have claimed. A claimed page keeps its marked URL until its caller navigates it, so the URL alone would read as residue for as long as it
+ * sits there, which is why the reaper consults this before it closes anything. A tab that landed in the wrong window is claimed too and closed by the turn
+ * itself, so nothing here ever needs taking out again.
+ */
+const claimedOpens = new WeakSet<Page>();
 
 // The tail of the selection chain. Each hold is queued onto it and replaces it with its own release signal, so the next hold begins when the selection was handed
 // back rather than when the caller before it finished reading its result.
@@ -556,10 +582,12 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
   const { ceilingMs = OPEN_TURN_CEILING_MS, deps } = context;
   const { confirmPlacement, getExtensionPage: lookup = getExtensionPage, resolveCarrier } = deps;
 
-  // The fragment the opened tab wears, and the whole of what tells it from any other tab. Chrome reports a fragment on the target verbatim, so the target that
-  // turns up wearing this one is this turn's and nobody else's.
-  const nonce = "prismcast-open-" + String(++nextOpenNonce);
-  const nonceUrl = "about:blank#" + nonce;
+  /* The fragment the opened tab wears, and the whole of what tells it from any other tab. Chrome reports a fragment on the target verbatim, so the target that
+   * turns up wearing this one is this pass's and nobody else's. Each pass takes a fresh pair, which is what stops a later pass from claiming the tab an earlier
+   * one gave up on, and the scan and the abandon that follow always read whichever pass was the last to run.
+   */
+  let nonce = "";
+  let nonceUrl = "";
 
   /* The turn's one ceiling. It is expressed as a signal because that is the form the target wait takes, and it reaches every other await through the bound below.
    * It CANCELS rather than detaching, which is the opposite of what a hold's ceiling does and deliberately so: a hold's body belongs to its caller and is left to
@@ -574,13 +602,19 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
   // The tab this turn opened, for as long as there is one that might still need closing.
   let opened: Nullable<Page> = null;
 
-  /* Closes the tab an abandoned open produced. The target-timeout path holds no page at all, so the tab is looked up among the browser's pages by the nonce its
-   * URL still carries: a tab left behind here is one nothing registered, which means the staleness sweep never judges it and it would sit in the window for the
-   * life of the browser.
+  /* Closes the tab an abandoned open produced. The target-timeout path holds no page at all, so the tab is looked up among the browser's pages by the marked
+   * URL it still carries: a tab left behind here is one nothing registered, which means the staleness sweep never judges it and it would sit in the window for
+   * the life of the browser.
    */
   const closeOpenedTab = async (): Promise<void> => {
 
-    const tab = opened ?? (await browser.pages()).find((page) => page.url().includes(nonce)) ?? null;
+    // A turn that failed before its first pass took a marker has nothing to look for, and a page that has yet to navigate reports an empty URL of its own.
+    if(!opened && (nonceUrl === "")) {
+
+      return;
+    }
+
+    const tab = opened ?? (await browser.pages()).find((page) => page.url() === nonceUrl) ?? null;
 
     opened = null;
 
@@ -596,6 +630,16 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
 
       LOG.debug("browser:lifecycle", "The tab an abandoned open produced could not be closed: %s.", formatError(error));
     }
+  };
+
+  /* Gives the current pass's nonce up and then looks for the tab it opened. The order is what covers the gap between the two: a tab already in the window is what
+   * the scan finds, and one that lands after the scan has looked carries a nonce nobody is waiting for, which is exactly what the reaper closes.
+   */
+  const abandonOpen = async (): Promise<void> => {
+
+    waitingOpens.delete(nonce);
+
+    await closeOpenedTab();
   };
 
   /* Creates the page the plain way, which is where every degradation ends: no carrier, an open Chrome refused, a spent retry, a lapsed turn, or an extension this
@@ -628,6 +672,12 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
 
     for(let attempt = 1; attempt <= OPEN_ATTEMPTS; attempt++) {
 
+      // One counter read per pass, spent on both halves of the pair, so the URL Chrome is asked for and the nonce this module reasons in can never disagree.
+      const serial = String(++nextOpenNonce);
+
+      nonce = OPEN_NONCE_PREFIX + serial;
+      nonceUrl = OPEN_NONCE_URL_PREFIX + serial;
+
       // eslint-disable-next-line no-await-in-loop -- Each pass is a fresh resolve and open, and the second only runs because the first told us the carrier was wrong.
       const carrier = await bounded(resolveCarrier(browser));
 
@@ -658,6 +708,9 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
 
         previousId = previous?.id;
 
+        // The pass is waiting from the moment Chrome is asked until it has a tab of its own, and a tab somebody is waiting for is one the reaper leaves alone.
+        waitingOpens.add(nonce);
+
         // A blocked open answers with a null window rather than throwing, so the return value is read rather than assumed. Chrome runs with popup blocking off,
         // which leaves a null answer as evidence about the carrier's own state.
         // eslint-disable-next-line no-await-in-loop -- The open is the pass.
@@ -677,6 +730,12 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
         // A carrier can close between the moment it was resolved and the moment the open is evaluated on it, which is the one failure another resolve can answer.
         LOG.debug("browser:lifecycle", "The page an open was to be evaluated on could not carry it: %s.", formatError(error));
 
+        /* Chrome can have run the open before the failure reached us, so this pass gives its own marker up and looks for a tab before the next pass opens under
+         * a new one. A tab already in the window is closed here, and one still on its way is the reaper's.
+         */
+        // eslint-disable-next-line no-await-in-loop -- The pass that failed clears up before the pass that follows opens.
+        await abandonOpen();
+
         continue;
       }
 
@@ -693,6 +752,10 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
       }
 
       opened = page;
+
+      // The pass has its tab: the wait is over, and the page itself is exempt from the reaper for as long as it lives, whatever its URL goes on to say.
+      waitingOpens.delete(nonce);
+      claimedOpens.add(page);
 
       // eslint-disable-next-line no-await-in-loop -- The confirmation is what decides whether this pass was the last one.
       if(!(await bounded(confirmPlacement(page)))) {
@@ -714,12 +777,12 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
       return page;
     }
 
-    await closeOpenedTab();
+    await abandonOpen();
 
     return await fallback(declined ?? "the tab did not open in PrismCast's own browser window", declined === null);
   } catch(error) {
 
-    await closeOpenedTab();
+    await abandonOpen();
 
     return await fallback((error === lapse) ? lapse.message : formatError(error), false);
   } finally {
@@ -727,4 +790,69 @@ async function openTurn(browser: Browser, context: OpenSharedWindowTabContext, r
     ceiling.cancel();
     released.resolve();
   }
+}
+
+/**
+ * Installs the listener that closes the tabs abandoned opens leave behind, for the life of the browser it is given.
+ *
+ * A turn's evaluate keeps running inside Chrome after the turn's own wait has ended, so a carrier that was merely slow can land its tab long after the turn
+ * scanned for one and created its page the plain way. Nothing registered that tab, so nothing judges it and nothing closes it. The browser's own target events
+ * are what make it findable: a page target whose URL carries the open marker, and whose nonce no pass is waiting for, is one nobody asked for. Both target
+ * events are read because a window.open target is created at about:blank and takes its URL on the change that follows, which leaves the judgment a function of
+ * the target's URL and this module's own state and nothing else.
+ * @param browser - The browser whose targets to watch.
+ */
+export function installStrayOpenTabReaper(browser: Browser): void {
+
+  /* The closing itself, entered only for a target the judgment below has already accepted. It resolves the target's page rather than being handed one, because
+   * a target event carries no page and the page behind a target that has just been created may not exist yet.
+   */
+  const reapTab = async (target: Target, nonce: string): Promise<void> => {
+
+    try {
+
+      const page = await target.page();
+
+      // A page the browser has already dropped, or one a pass claimed and handed to its caller, is not this listener's to close.
+      if(!page || page.isClosed() || claimedOpens.has(page)) {
+
+        return;
+      }
+
+      await page.close();
+
+      LOG.debug("browser:lifecycle", "Closed a stray tab from an abandoned open: %s.", nonce);
+    } catch(error) {
+
+      // A stray tab the browser has already dropped is not an error - there is nothing left to close and nothing anyone would do about it - so the whole chain
+      // ends here at debug.
+      LOG.debug("browser:lifecycle", "A stray tab from an abandoned open could not be closed: %s.", formatError(error));
+    }
+  };
+
+  /* The judgment every target event in the browser passes through. It is a synchronous read of the target's own type and URL against this module's state, so
+   * the events that have nothing to do with an open - which is nearly all of them - cost a type check and a prefix test and nothing more.
+   */
+  const onTarget = (target: Target): void => {
+
+    const url = target.url();
+
+    if((target.type() !== TargetType.PAGE) || !url.startsWith(OPEN_NONCE_URL_PREFIX)) {
+
+      return;
+    }
+
+    const nonce = OPEN_NONCE_PREFIX + url.slice(OPEN_NONCE_URL_PREFIX.length);
+
+    // A pass is still waiting for this tab, so it is that pass's to claim rather than this listener's to close.
+    if(waitingOpens.has(nonce)) {
+
+      return;
+    }
+
+    void reapTab(target, nonce);
+  };
+
+  browser.on("targetcreated", onTarget);
+  browser.on("targetchanged", onTarget);
 }
