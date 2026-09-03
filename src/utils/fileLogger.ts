@@ -31,6 +31,9 @@ export type LogColor = "cyan" | "red" | "yellow" | null;
  * 5. Terminal coloring - SGR escape codes are baked into the file output via styleText so that viewing the log with terminal commands (tail -f, less -R, cat)
  *    shows the same color scheme as console output. styleText emits both the opening color code and the trailing reset in one call, with validateStream disabled
  *    because the log file is not a TTY but we still want the codes preserved for downstream terminal viewers.
+ * 6. Startup window - The logger cannot open its file until the configuration that names the path and the size cap has been read, and reading it is itself
+ *    worth logging. Entries emitted before the one initialization are held in the write buffer and appended by the first flush after it, so the log file
+ *    opens with the boot messages that preceded it. The window is bounded and closes at that initialization whether it succeeds or fails.
  */
 
 /* The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
@@ -54,6 +57,13 @@ let flushTimer: Nullable<ReturnType<typeof setInterval>> = null;
 
 // Flag indicating whether the file logger is initialized and operational.
 let isInitialized = false;
+
+/* Whether the startup window is open. The window is the interval between process start and the logger's one initialization, and entries logged inside it are
+ * held in writeBuffer for the first flush after that initialization to append. The first initializeFileLogger call closes the window - success or failure -
+ * and nothing reopens it, so an entry logged once the logger has shut down is dropped rather than held for a later initialization that only the test suite
+ * performs, which would leak the entry into a different run's file.
+ */
+let startupWindowOpen = true;
 
 /* Tail of the write-ordering chain. Every asynchronous mutation of the log file (buffer flushes and trims) is appended to this promise so that the operations run
  * strictly one after another. Without this serialization a flush's appendFile could land between a trim's readFile and its rename, and the rename would then
@@ -87,10 +97,15 @@ const SIZE_CHECK_FREQUENCY = 100;
 // Duration in milliseconds to disable logging after a write error before retrying.
 const ERROR_RETRY_DELAY_MS = 60000;
 
+// The most entries the startup window holds. A push past the limit drops the oldest entry, because the newest lines are the ones that explain an exit.
+const STARTUP_BUFFER_LIMIT = 1000;
+
 // Initialization.
 
 /**
- * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist.
+ * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist. A call is the one
+ * initialization of the process: it closes the startup window either way, on success leaving the window's entries in the buffer for the first flush to append
+ * and counting their bytes toward the tracked file size, and on failure discarding them.
  * @param logPath - Absolute path to the log file, resolved by the caller via getLogFilePath().
  * @param maxSize - Maximum log file size in bytes from CONFIG.logging.maxSize.
  */
@@ -123,6 +138,14 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
       }
     }
 
+    /* The entries the startup window holds are appended by the first flush, so their bytes belong to the size the trim heuristic works from. Adding them after
+     * the stat above keeps approximateSize describing what the file holds once that flush lands.
+     */
+    for(const entry of writeBuffer) {
+
+      approximateSize += entry.length;
+    }
+
     // Start the periodic flush timer.
     flushTimer = setInterval((): void => {
 
@@ -130,7 +153,13 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
     }, FLUSH_INTERVAL_MS);
 
     isInitialized = true;
+    startupWindowOpen = false;
   } catch(error) {
+
+    // A failed initialization closes the startup window and discards what it held: no file will ever take those entries, and holding them would grow the
+    // buffer for the life of the process.
+    startupWindowOpen = false;
+    writeBuffer = [];
 
     // Log to console since file logging failed, but do not throw - file logging is a best-effort feature.
     // eslint-disable-next-line no-console
@@ -149,21 +178,25 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
  */
 export function writeLogEntry(level: string, message: string, color: LogColor, categoryTag?: string): void {
 
-  if(!isInitialized || !logFilePath) {
+  const isWritingToFile = isInitialized && (logFilePath !== null);
 
-    return;
-  }
+  if(isWritingToFile) {
 
-  // Check if logging is disabled due to previous error and whether retry delay has passed.
-  if(isDisabled) {
+    // Check if logging is disabled due to previous error and whether retry delay has passed.
+    if(isDisabled) {
 
-    if((Date.now() - disabledAt) < ERROR_RETRY_DELAY_MS) {
+      if((Date.now() - disabledAt) < ERROR_RETRY_DELAY_MS) {
 
-      return;
+        return;
+      }
+
+      // Re-enable logging and try again.
+      isDisabled = false;
     }
+  } else if(!startupWindowOpen) {
 
-    // Re-enable logging and try again.
-    isDisabled = false;
+    // Nothing holds the entry: no file is open and the startup window has closed for good.
+    return;
   }
 
   // Format the log entry with timestamp and level. See the file's design block for the rationale behind baking SGR codes into the file output.
@@ -176,6 +209,20 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
 
   // Add to buffer.
   writeBuffer.push(entry);
+
+  /* The size accounting and the periodic size check below describe an open file, which the startup window does not have, so the window skips them and bounds
+   * itself instead. The check runs on every push, so the oldest entry makes room as soon as one entry too many arrives.
+   */
+  if(!isWritingToFile) {
+
+    if(writeBuffer.length > STARTUP_BUFFER_LIMIT) {
+
+      writeBuffer.shift();
+    }
+
+    return;
+  }
+
   approximateSize += entry.length;
   writeCount++;
 
@@ -247,11 +294,24 @@ export async function flushLogBuffer(): Promise<void> {
 }
 
 /**
- * Flushes the write buffer to disk synchronously. Used during shutdown to ensure final logs are written.
+ * Flushes the write buffer to disk synchronously. Shutdown reaches it with the logger initialized and writes to the configured log file, and the process exit
+ * handler reaches it on either side of initialization. The fallback path serves that second position - an exit before initialization, where the buffer holds
+ * the startup window's entries and no log file was ever opened - and an initialized logger ignores it in favor of its own file.
+ * @param fallbackPath - Absolute path to write to when the logger never initialized. Shutdown omits it, and so does console mode, whose lines never enter the buffer.
  */
-export function flushLogBufferSync(): void {
+export function flushLogBufferSync(fallbackPath?: string): void {
 
-  if(!isInitialized || !logFilePath || (writeBuffer.length === 0)) {
+  if(writeBuffer.length === 0) {
+
+    return;
+  }
+
+  // Before initialization the fallback path is the only thing that says where the startup window's entries should land, and without one there is nowhere to
+  // put them.
+  const isWritingToFile = isInitialized && (logFilePath !== null);
+  const targetPath = isWritingToFile ? logFilePath : fallbackPath;
+
+  if(!targetPath) {
 
     return;
   }
@@ -262,7 +322,15 @@ export function flushLogBufferSync(): void {
 
   try {
 
-    fs.appendFileSync(logFilePath, content, "utf-8");
+    /* Only the fallback needs its parent directory created, and it shares the catch below so a read-only data directory yields the same console message a
+     * failed append does. An initialized logger created its directory at initialization, so repeating the syscall on its shutdown path would buy nothing.
+     */
+    if(!isWritingToFile) {
+
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    }
+
+    fs.appendFileSync(targetPath, content, "utf-8");
   } catch(error) {
 
     // Log to console as fallback.

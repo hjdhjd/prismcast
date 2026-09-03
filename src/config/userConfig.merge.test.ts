@@ -5,8 +5,8 @@
  * Split out from userConfig.test.ts to keep both files under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the
  * pure-function tests in the sibling suite.
  */
-import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, filterDefaults, getEnvOverrides, getNestedValue,
-  mergeConfiguration } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, filterDefaults, getEnvOverrideValue, getEnvOverrides,
+  getNestedValue, mergeConfiguration } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { LOG } from "../utils/index.ts";
 import type { UserConfig } from "./userConfig.ts";
@@ -410,6 +410,45 @@ describe("getEnvOverrides", () => {
     assert.match(String(call.arguments[0]), /is not a valid/, "and the message says the text was not a valid value for the setting's type");
     assert.equal(call.arguments[2], "not-a-number", "quoting the text that was discarded");
     assert.equal(call.arguments[4], "streaming.videoBitsPerSecond", "and naming the setting it belonged to");
+  });
+});
+
+describe("getEnvOverrideValue", () => {
+
+  /* The single-setting accessor over the environment resolver, for callers that want the value and have nothing to report about its absence. It is what
+   * lets a caller outside the configuration layer - the process exit handler asking where the log file would be - read the environment through the same
+   * parser the merge uses rather than reaching for process.env itself.
+   */
+
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+
+    for(const key of Object.keys(process.env)) {
+
+      Reflect.deleteProperty(process.env, key);
+    }
+
+    Object.assign(process.env, ORIGINAL_ENV);
+  });
+
+  test("returns the parsed value for a variable that is set", () => {
+
+    process.env["PRISMCAST_LOG_FILE"] = "/env/prismcast.log";
+
+    assert.equal(getEnvOverrideValue("paths.logFile"), "/env/prismcast.log");
+  });
+
+  test("returns undefined for a variable that is unset", () => {
+
+    Reflect.deleteProperty(process.env, "PRISMCAST_LOG_FILE");
+
+    assert.equal(getEnvOverrideValue("paths.logFile"), undefined);
+  });
+
+  test("returns undefined for a path that names no setting", () => {
+
+    assert.equal(getEnvOverrideValue("paths.nothingIsHere"), undefined);
   });
 });
 

@@ -135,7 +135,9 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 describe("initializeFileLogger - mkdir failure recovery", () => {
 
   /* When the parent directory cannot be created (e.g., the path collides with an existing file), initializeFileLogger logs to console.error and returns without
-   * throwing. Subsequent writeLogEntry calls become no-ops because isInitialized stays false.
+   * throwing. Subsequent writeLogEntry calls become no-ops because isInitialized stays false and the startup window is closed - the rows above have already
+   * spent this process's window, and a failed initialization closes it in any case. What a failure does to a window still open is asserted in
+   * fileLogger.startup-failure.test.ts.
    */
 
   afterEach(async () => {
@@ -178,7 +180,7 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 
         assert.equal(failureLogged, true, "console.error fired with the init-failure message");
 
-        // Subsequent writeLogEntry calls become no-ops since isInitialized stayed false.
+        // Subsequent writeLogEntry calls become no-ops: isInitialized stayed false and the startup window is closed, so nothing holds the entry.
         assert.doesNotThrow(() => { writeLogEntry("info", "Should be a no-op.", null); });
       } finally {
 
@@ -222,7 +224,8 @@ describe("shutdownFileLogger", () => {
 
   test("further writes after shutdown become no-ops", async () => {
 
-    // Negative test: once shut down, the logger must reject subsequent writes silently (until re-initialized).
+    // Negative test: once shut down, the logger must reject subsequent writes silently. Shutdown does not reopen the startup window, so a write here is
+    // dropped rather than held for a later initialization.
     await withTempDir(async (dir) => {
 
       const logPath = path.join(dir, "test.log");

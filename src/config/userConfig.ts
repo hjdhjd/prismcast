@@ -1351,6 +1351,27 @@ function resolveEnvOverride(setting: SettingMetadata): EnvOverride {
 }
 
 /**
+ * Returns what the environment contributes to one setting, for a caller that wants the value and nothing else. An unset variable, text that is not a value of
+ * the setting's type, and a path that names no setting all yield undefined. Reading an unparseable value here is not an event to report: the configuration
+ * merge has already named it.
+ * @param settingPath - The dot-separated path of the setting whose environment variable is consulted.
+ * @returns The parsed value the environment contributes, or undefined when it contributes none.
+ */
+export function getEnvOverrideValue(settingPath: string): Nullable<boolean | number | string | string[]> | undefined {
+
+  const setting = getSettingByPath(settingPath);
+
+  if(!setting) {
+
+    return undefined;
+  }
+
+  const override = resolveEnvOverride(setting);
+
+  return (override.kind === "value") ? override.value : undefined;
+}
+
+/**
  * Gets a value from a nested object using a dot-separated path.
  * @param obj - The object to read from.
  * @param settingPath - Dot-separated path (e.g., "browser.viewport.width").

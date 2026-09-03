@@ -644,14 +644,15 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // startup subsequently fails, the exit handler calls releaseInstanceSlot() to remove the stale file.
   claimInstanceSlot();
 
-  // Initialize file logger if not using console logging. This must happen after config loading (to resolve the log file path) and after ensureDataDirectory()
-  // (to create the parent directory). All startup log messages that should appear in the log file must come after this point.
+  // Initialize file logger if not using console logging. Initialization follows configuration loading, which resolves the log file path and the size cap, and
+  // ensureDataDirectory(), which creates the parent directory. Every line logged before this point is held by the logger and written by its first flush, so
+  // the startup messages above are under no ordering constraint.
   if(!parsedArgs.consoleLogging) {
 
     await initializeFileLogger(getLogFilePath(CONFIG), CONFIG.logging.maxSize);
   }
 
-  // Log the version and active configuration as the first messages captured by the file logger.
+  // Log the version and the active configuration, once the logger is up to record them.
   displayConfiguration();
 
   // Log the debug filter status after the file logger is ready so the message is captured.

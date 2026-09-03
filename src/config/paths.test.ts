@@ -5,9 +5,9 @@
  * contract for the Config-derived getters.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getExtensionDir, getHealthFilePath, getLogFilePath,
-  getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath, initializeDataDir,
-  serviceFileExists } from "./paths.ts";
+import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getDefaultLogFilePath, getExtensionDir, getHealthFilePath,
+  getLogFilePath, getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath,
+  getStartupLogFilePath, initializeDataDir, serviceFileExists } from "./paths.ts";
 import type { Config } from "../types/index.ts";
 import { SERVICE_ID } from "../identity.ts";
 import assert from "node:assert/strict";
@@ -374,6 +374,66 @@ describe("getLogFilePath", () => {
       const config = makeConfig();
 
       assert.equal(getLogFilePath(config), path.join(dir, "prismcast.log"));
+
+      return Promise.resolve();
+    });
+  });
+});
+
+describe("getDefaultLogFilePath", () => {
+
+  test("returns prismcast.log inside the data directory", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(getDefaultLogFilePath(), path.join(dir, "prismcast.log"));
+
+      return Promise.resolve();
+    });
+  });
+});
+
+describe("getStartupLogFilePath", () => {
+
+  /* The precedence the configuration merge applies, asked before the configuration file has been read: the command line over the environment over the
+   * default. The environment argument arrives already parsed, so null stands for a variable set to an empty value and undefined for one that is unset,
+   * and neither displaces the default.
+   */
+
+  test("takes the command line's log file over an environment value", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(getStartupLogFilePath("/cli/prismcast.log", "/env/prismcast.log"), "/cli/prismcast.log");
+
+      return Promise.resolve();
+    });
+  });
+
+  test("takes an environment value over the default when the command line supplied none", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(getStartupLogFilePath(undefined, "/env/prismcast.log"), "/env/prismcast.log");
+
+      return Promise.resolve();
+    });
+  });
+
+  test("falls back to the data directory's default for a cleared or an unset environment variable", async () => {
+
+    await withTempDir((dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(getStartupLogFilePath(undefined, null), path.join(dir, "prismcast.log"), "a cleared variable leaves the default in place");
+      assert.equal(getStartupLogFilePath(undefined, undefined), path.join(dir, "prismcast.log"), "an unset variable leaves the default in place");
 
       return Promise.resolve();
     });

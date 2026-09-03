@@ -172,10 +172,11 @@ describe("initializeFileLogger and writeLogEntry", () => {
     });
   });
 
-  test("writeLogEntry is a no-op when the file logger has not been initialized", async () => {
+  test("writeLogEntry is a no-op once the startup window has closed and the logger is uninitialized", async () => {
 
-    // Negative test: writes that happen before init must not crash. shutdownFileLogger() (in afterEach) returns to the uninitialized state, so calling
-    // writeLogEntry now should be silently dropped.
+    /* Negative test: a write with no file open must not crash. The rows above have already spent this process's startup window, and shutdownFileLogger()
+     * returns to the uninitialized state without reopening it, so the entry below has nowhere to wait and is dropped.
+     */
     await shutdownFileLogger();
 
     assert.doesNotThrow(() => {

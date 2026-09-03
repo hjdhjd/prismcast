@@ -7,9 +7,9 @@
 // the background-services stack in app.ts and the resource stacks in the stream setup path - reads a global that exists. It must be the first import here, before
 // any module that constructs one evaluates, and every launch path (the bin wrapper, the Docker entrypoint, the platform services) funnels through this file.
 import "homebridge-plugin-utils/polyfills";
-import { CONFIG_METADATA, DEFAULTS, getNestedValue } from "./config/userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, getEnvOverrideValue, getNestedValue } from "./config/userConfig.ts";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
-import { getDebugEnv, initializeDataDir } from "./config/paths.ts";
+import { getDebugEnv, getStartupLogFilePath, initializeDataDir } from "./config/paths.ts";
 import { isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
 import { releaseInstanceSlot, startServer } from "./app.ts";
 import { flushLogBufferSync } from "./utils/fileLogger.ts";
@@ -389,6 +389,11 @@ if(subcommand === "service") {
     setDebugLogging(true);
   }
 
+  // The environment's contribution to the log path, read once here rather than inside a handler that must stay synchronous. The path arm of the environment
+  // parser yields a string or null and never another type, so anything else is the absence of an override.
+  const override = getEnvOverrideValue("paths.logFile");
+  const envLogFile = (typeof override === "string") ? override : null;
+
   /* Safety net for server exit paths. When the process exits - whether via process.exit(1) from a fatal startup error, an unrecoverable exception, or any other
    * termination - we ensure Chrome processes are cleaned up and buffered log entries are flushed to disk. Without this, fatal exits during startup (e.g., capture
    * probe timeout) silently orphan Chrome processes and lose diagnostic messages that are still in the file logger's write buffer.
@@ -399,12 +404,15 @@ if(subcommand === "service") {
    *
    * This is registered only in the server branch - not for service subcommands like `prismcast service status`. Running killStaleChrome() from a service
    * subcommand would kill Chrome belonging to the running PrismCast server instance.
+   *
+   * An exit before the file logger initialized lands the startup lines it buffered at the command line's log file, else the environment's, else the data
+   * directory's default; console mode passes no path at all, because its lines go straight to the console and never enter the buffer.
    */
   process.on("exit", (): void => {
 
     // Flush logs first - this is the critical operation. The error messages from a failed startup are sitting in the write buffer and must reach disk before the
     // process terminates. Chrome will die when its pipes break since the parent is exiting; killing it explicitly is belt-and-suspenders.
-    flushLogBufferSync();
+    flushLogBufferSync(parsedArgs.consoleLogging ? undefined : getStartupLogFilePath(parsedArgs.logFile, envLogFile));
 
     try {
 

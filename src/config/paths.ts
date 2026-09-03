@@ -2,7 +2,7 @@
  *
  * paths.ts: Centralized filesystem path resolution for PrismCast.
  */
-import type { Config } from "../types/index.ts";
+import type { Config, Nullable } from "../types/index.ts";
 import { SERVICE_ID } from "../identity.ts";
 import fs from "node:fs";
 import { getPlatform } from "../utils/platform.ts";
@@ -220,13 +220,37 @@ export function getExtensionDir(config: Config): string {
 }
 
 /**
+ * Returns the default log file path inside the data directory. The configured path's fallback and the startup path both resolve to this expression, so the
+ * default location is written once.
+ * @returns The absolute path to the default log file.
+ */
+export function getDefaultLogFilePath(): string {
+
+  return path.join(getDataDir(), "prismcast.log");
+}
+
+/**
  * Returns the log file path. When config.paths.logFile is set, that absolute path is used directly. Otherwise, the default location inside the data directory is used.
  * @param config - The application configuration.
  * @returns The absolute path to the log file.
  */
 export function getLogFilePath(config: Config): string {
 
-  return config.paths.logFile ?? path.join(getDataDir(), "prismcast.log");
+  return config.paths.logFile ?? getDefaultLogFilePath();
+}
+
+/**
+ * Returns the best-known log file path before the configuration file has been read, in the precedence the configuration merge itself applies: the command line
+ * over the environment over the default. A relocation that lives only in config.json is unknowable here, because the file naming it is the one that has not
+ * been read, so a caller writing at this point writes to the default for an operator who moved the log that way.
+ * @param cliLogFile - The --log-file value, when the command line supplied one.
+ * @param envLogFile - What the environment contributes, already parsed by the configuration layer that owns the variable's name: an absolute path, or null
+ * for a variable set to an empty value, or undefined when it contributes nothing.
+ * @returns The absolute path to the log file the process would use knowing only the command line and the environment.
+ */
+export function getStartupLogFilePath(cliLogFile: Nullable<string> | undefined, envLogFile: Nullable<string> | undefined): string {
+
+  return cliLogFile ?? envLogFile ?? getDefaultLogFilePath();
 }
 
 /**

@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * logger.test.ts: Unit tests for the LOG primitives in logger.ts. The logger has multiple side-effect routes - SSE emission via logEmitter, file writes via
- * fileLogger, console writes when console mode is on. The fileLogger is not initialized in the test environment so its writeLogEntry path is a no-op; we
- * exercise console-mode and SSE emission instead by stubbing console methods and subscribing to the log emitter. Tests reset console-logging mode and the debug
- * filter between cases to avoid state leakage.
+ * logger.test.ts: Unit tests for the LOG primitives in logger.ts. The logger has multiple side-effect routes - SSE emission via logEmitter, file writes via fileLogger,
+ * console writes when console mode is on. The fileLogger is never initialized in the test environment, so writeLogEntry only holds entries in its startup buffer, which
+ * nothing here flushes; we exercise console-mode and SSE emission instead by stubbing console methods and subscribing to the log emitter. Tests reset console-logging
+ * mode and the debug filter between cases to avoid state leakage.
  */
 import { LOG, displayLine, isConsoleLogging, isDebugLogging, setConsoleLogging, setDebugLogging } from "./logger.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
