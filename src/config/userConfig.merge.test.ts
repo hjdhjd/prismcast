@@ -8,6 +8,7 @@
 import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, filterDefaults, getEnvOverrides, getNestedValue,
   mergeConfiguration } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { LOG } from "../utils/index.ts";
 import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
 
@@ -305,6 +306,110 @@ describe("getEnvOverrides", () => {
 
     assert.equal(overrides.get("server.port"), "9000");
     assert.equal(overrides.get("streaming.videoBitsPerSecond"), "10000000");
+  });
+
+  /* The map is what the settings form disables fields from and what the override badge beside each disabled field displays, so every row below compares the
+   * map's value against the value mergeConfiguration actually stored for the same variable. The pairing is the point: a badge that reports the raw variable
+   * text while the configuration holds a parsed and sanitized value tells the operator something untrue about their own server.
+   */
+
+  test("a free-string setting's padded, non-printable env value appears in the map as the sanitized text the merge stored", () => {
+
+    /* A zero-width space rather than a null byte: process.env values cross into the OS environment as NUL-terminated strings, so a NUL would be truncated by
+     * the assignment itself before sanitizeString ever saw it. The zero-width space is the same class of invisible corruption an operator pastes in.
+     */
+    process.env["HDHR_FRIENDLY_NAME"] = "  Living\u200B Room  ";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.get("hdhr.friendlyName"), "Living Room", "the map holds the sanitized text, not the raw variable");
+    assert.equal(merged.hdhr.friendlyName, "Living Room", "and that text is exactly what the merge stored");
+  });
+
+  test("a host setting's padded, non-printable env value appears in the map as the sanitized text the merge stored", () => {
+
+    process.env["HOST"] = "\uFEFF 10.0.0.5 ";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.get("server.host"), "10.0.0.5", "the map holds the sanitized host");
+    assert.equal(merged.server.host, "10.0.0.5", "and that host is exactly what the merge stored");
+  });
+
+  test("a boolean setting's \"yes\" env value appears in the map as \"true\" - the display form of the boolean the merge stored", () => {
+
+    process.env["HDHR_ENABLED"] = "yes";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.get("hdhr.enabled"), "true", "the map holds the applied boolean's display form");
+    assert.equal(merged.hdhr.enabled, true, "and the merge stored the boolean itself");
+  });
+
+  test("a comma-separated list env value appears in the map joined on the separator it was split with", () => {
+
+    process.env["CAPTURE_CODECS"] = " h264 , hevc ";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.get("streaming.captureCodecs"), "h264,hevc", "the map holds the list an operator could paste back into the variable");
+    assert.deepEqual(merged.streaming.captureCodecs, [ "h264", "hevc" ], "and the merge stored the parsed list");
+  });
+
+  test("a path setting cleared to the empty string appears in the map with no text, matching the null the merge stored", () => {
+
+    process.env["PRISMCAST_LOG_FILE"] = "";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.has("paths.logFile"), true, "an empty path variable is still an override - the field stays disabled");
+    assert.equal(overrides.get("paths.logFile"), "", "the null the merge stored has no text to display");
+    assert.equal(merged.paths.logFile, null, "and the merge stored the cleared-path sentinel");
+  });
+
+  test("an unparseable numeric env value is absent from the map, exactly as the merge declines to apply it", () => {
+
+    process.env["VIDEO_BITRATE"] = "not-a-number";
+
+    const overrides = getEnvOverrides();
+    const merged = mergeConfiguration({});
+
+    assert.equal(overrides.has("streaming.videoBitsPerSecond"), false, "an unparseable value is not an override, so the field stays editable");
+    assert.equal(merged.streaming.videoBitsPerSecond, DEFAULTS.streaming.videoBitsPerSecond, "and the merge left the layer below in place");
+  });
+
+  test("a discarded environment variable is reported by the merge and never by the badge reader", (t) => {
+
+    /* Which caller reports is the whole design, so the row asserts both halves against one variable. Rendering the settings page resolves the environment layer
+     * once per section, so a reader that reported would turn one operator mistake into a page-load-sized burst of identical lines; the merge runs on a boot and
+     * on each configuration reload, each an operator's own action, so a line per merge arrives when they would look for it. Spying on LOG.warn rather than
+     * swapping the logger keeps the assertion narrow, and reading the substitution arguments rather than a formatted string keeps it independent of the format.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+
+    process.env["VIDEO_BITRATE"] = "not-a-number";
+
+    getEnvOverrides();
+
+    assert.equal(warn.mock.calls.length, 0, "resolving the environment to render a badge reports nothing at all");
+
+    mergeConfiguration({});
+
+    const reported = warn.mock.calls.filter((entry) => entry.arguments[1] === "VIDEO_BITRATE");
+
+    assert.equal(reported.length, 1, "the merge reports the discarded variable exactly once");
+
+    const [call] = reported;
+
+    assert.ok(call, "sanity: the one reported call is in hand");
+    assert.match(String(call.arguments[0]), /is not a valid/, "and the message says the text was not a valid value for the setting's type");
+    assert.equal(call.arguments[2], "not-a-number", "quoting the text that was discarded");
+    assert.equal(call.arguments[4], "streaming.videoBitsPerSecond", "and naming the setting it belonged to");
   });
 });
 

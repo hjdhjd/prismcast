@@ -3,7 +3,7 @@
  * userConfig.ts: User configuration file management for PrismCast.
  */
 import type { Config, Nullable } from "../types/index.ts";
-import { LOG, sanitizeString } from "../utils/index.ts";
+import { LOG, assertNever, sanitizeString } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
 import type { Migration } from "./persistence.ts";
 import { createFileStore } from "./persistence.ts";
@@ -1067,8 +1067,13 @@ export async function mutateConfig(fn: (current: UserConfig) => void): Promise<v
  */
 
 /**
- * Returns a map of setting paths to their environment variable values for settings that are overridden by environment variables.
- * @returns Map of path -> env var value for overridden settings.
+ * Returns a map of setting paths to the display form of the environment override the merge applied, for every setting the environment overrides. The value is
+ * derived from the parsed override rather than the raw variable text, so the map describes what the configuration actually holds: a variable whose text does
+ * not parse for its setting's type is absent, because the merge does not apply it either, and a host, path, or free-string value appears sanitized because
+ * that is the text the merge stored. A boolean or a number renders through String(), a comma-separated list renders joined on commas, and the null that a
+ * cleared path setting resolves to renders as the empty string. The UI relies on both halves: presence decides whether a field is disabled, and the value is
+ * what the override badge shows beside it.
+ * @returns Map of path -> the applied override's display form, for the settings the environment overrides.
  */
 export function getEnvOverrides(): Map<string, string> {
 
@@ -1078,11 +1083,36 @@ export function getEnvOverrides(): Map<string, string> {
 
     for(const setting of settings) {
 
-      const envValue = setting.envVar ? process.env[setting.envVar] : undefined;
+      const override = resolveEnvOverride(setting);
 
-      if(envValue !== undefined) {
+      /* Every member of EnvOverride has an arm, and the default arm's assertNever is what keeps that true: a member added to the union without an arm here
+       * reaches the default as something other than never, which the compiler refuses, so the omission is a build failure rather than a silent no-op.
+       */
+      switch(override.kind) {
 
-        overrides.set(setting.path, envValue);
+        case "absent":
+        case "unparseable": {
+
+          // A variable nobody set and a value the merge refused to apply are both the same thing here: not an override. The field stays editable, and there is
+          // no badge, because there is no applied value to describe.
+          break;
+        }
+
+        case "value": {
+
+          const { value } = override;
+
+          // An array joins on the separator parseEnvValue split it with, so the badge shows the text an operator could paste back into the variable, and the
+          // null a cleared path setting resolves to has no text to show at all.
+          overrides.set(setting.path, Array.isArray(value) ? value.join(",") : ((value === null) ? "" : String(value)));
+
+          break;
+        }
+
+        default: {
+
+          assertNever(override);
+        }
       }
     }
   }
@@ -1273,6 +1303,53 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
   }
 }
 
+/* Every reader of the environment layer asks the same question - what does the environment contribute to this setting - and the answer is computed in exactly
+ * one place. The resolver reports; the callers act. The configuration merge acts by storing the value and by reporting a variable it had to discard, because
+ * the merge is where configuration is assembled and where discarding something is an event. The settings form acts by deciding which fields the operator may
+ * not edit and what text their override badges carry, and it reports nothing, because reading the environment to render a page is not an event. Both receive
+ * the same answer, which is what makes the badge describe the configuration it sits beside rather than the two of them agreeing to read process.env alike.
+ */
+
+/**
+ * What the environment contributes to one setting, as a report each caller acts on for itself. `absent` means the variable is unset. `unparseable` means the
+ * variable is set but its text is not a value of the setting's type, and carries that text along so a caller can name it. `value` carries what the text
+ * parsed to.
+ */
+type EnvOverride = { kind: "absent" } | { kind: "unparseable"; text: string } | { kind: "value"; value: Nullable<boolean | number | string | string[]> };
+
+/**
+ * Resolves what a setting's environment variable contributes to the configuration, without acting on it - no logging and no state, so the same call answers
+ * the merge and the settings form identically however many times either one asks.
+ * @param setting - The setting whose environment variable is consulted.
+ * @returns The resolution: absent, unparseable with the offending text, or the parsed value.
+ */
+function resolveEnvOverride(setting: SettingMetadata): EnvOverride {
+
+  const envVar = setting.envVar;
+
+  if(!envVar) {
+
+    return { kind: "absent" };
+  }
+
+  const envValue = process.env[envVar];
+
+  if(envValue === undefined) {
+
+    return { kind: "absent" };
+  }
+
+  const parsed = parseEnvValue(envValue, setting.type);
+
+  // The variable is set but its text is not a value of the setting's type, so it is not an override and the configuration layer below still owns the setting.
+  if(parsed === undefined) {
+
+    return { kind: "unparseable", text: envValue };
+  }
+
+  return { kind: "value", value: parsed };
+}
+
 /**
  * Gets a value from a nested object using a dot-separated path.
  * @param obj - The object to read from.
@@ -1361,20 +1438,45 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     }
   }
 
-  // Apply environment variable overrides.
+  /* Apply environment variable overrides. This loop is the one place that acts on what the resolver reports, because this is where configuration is assembled -
+   * which is also why the warning below belongs here and nowhere else. Every member of EnvOverride has an arm, and the default arm's assertNever is what keeps
+   * that true: a member added to the union without an arm here reaches the default as something other than never, which the compiler refuses, so the omission
+   * is a build failure rather than a silent no-op.
+   */
   for(const settings of Object.values(CONFIG_METADATA)) {
 
     for(const setting of settings) {
 
-      const envValue = setting.envVar ? process.env[setting.envVar] : undefined;
+      const override = resolveEnvOverride(setting);
 
-      if(envValue !== undefined) {
+      switch(override.kind) {
 
-        const parsedValue = parseEnvValue(envValue, setting.type);
+        case "absent": {
 
-        if(parsedValue !== undefined) {
+          // The environment says nothing about this setting, so whatever the user file or the defaults supplied stands.
+          break;
+        }
 
-          setNestedValue(config as unknown as Record<string, unknown>, setting.path, parsedValue);
+        case "unparseable": {
+
+          /* An operator who took the trouble to set the variable deserves to hear that it was discarded. Once per merge is the right cardinality: a merge is a
+           * boot or a configuration reload, each of them an operator's own action, so the line arrives when they would look for it and never on its own.
+           */
+          LOG.warn("Ignoring the %s environment variable: \"%s\" is not a valid %s value for %s.", setting.envVar, override.text, setting.type, setting.path);
+
+          break;
+        }
+
+        case "value": {
+
+          setNestedValue(config as unknown as Record<string, unknown>, setting.path, override.value);
+
+          break;
+        }
+
+        default: {
+
+          assertNever(override);
         }
       }
     }
