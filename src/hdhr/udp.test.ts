@@ -12,8 +12,9 @@
  *   3. Get and Set request paths are exercised similarly to confirm the transport composes the correct reply type for each parsed packet.
  *
  *   4. Negative and failure paths: a valid Upgrade request (which parses as an unsupported type) is dropped without a reply - distinct from the malformed-packet
- *      drop, which fails the parser's length/CRC check - and a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so
- *      the HTTP HDHR surface survives a discovery-port conflict.
+ *      drop, which fails the parser's length/CRC check - a Discover request addressed to another device type or another device id is dropped without a reply, and
+ *      a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so the HTTP HDHR surface survives a discovery-port
+ *      conflict. The expected-no-reply rows pass a shortened receive bound so the wait is a fraction of a second rather than the full round-trip budget.
  *
  *   5. The bind lifecycle: a second ensureUp call returns true without rebinding, ensureDown closes the socket and leaves the surface
  *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is asserted against the canonical SiliconDust value so a refactor cannot silently
@@ -28,6 +29,8 @@ import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, PACKET_UPGRADE_REQUEST, TLV_BA
   TLV_GETSET_VALUE, TLV_TUNER_COUNT } from "./protocol.ts";
 import { describe, test } from "node:test";
 import { makeDiscoverRequest, makeGetRequest, sealPacket } from "./protocol.helpers.ts";
+import { CONFIG } from "../config/index.ts";
+import { HDHR_DEVICE_TYPE_TUNER } from "./identity.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import type { UdpSurface } from "./udp.ts";
@@ -97,7 +100,7 @@ describe("selectLanAddress", () => {
 describe("UdpSurface - round-trip", () => {
 
   // sendAndReceive opens a client socket, sends the request to 127.0.0.1:<port>, and resolves with the first reply (or rejects on timeout).
-  async function sendAndReceive(port: number, request: Buffer): Promise<Buffer> {
+  async function sendAndReceive(port: number, request: Buffer, timeoutMs = 2000): Promise<Buffer> {
 
     const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
     const client = createSocket("udp4");
@@ -105,7 +108,7 @@ describe("UdpSurface - round-trip", () => {
 
       client.close();
       reject(new Error("Timed out waiting for UDP reply."));
-    }, 2000);
+    }, timeoutMs);
 
     client.once("message", (msg) => {
 
@@ -275,6 +278,68 @@ describe("UdpSurface - round-trip", () => {
 
     // Expect the sendAndReceive to time out because the responder drops malformed packets without replying.
     await assert.rejects(() => sendAndReceive(port, garbage), /Timed out waiting/);
+  });
+
+  test("a Discover request addressed to this device's own id and the tuner type is answered", async () => {
+
+    /* The addressed case. CONFIG.hdhr.deviceId is set to a known value for the row so the request can name this device explicitly rather than relying on the
+     * wildcard, which is what separates the id check from the type check in the rows below.
+     */
+    const originalDeviceId = CONFIG.hdhr.deviceId;
+
+    CONFIG.hdhr.deviceId = "1234ABCD";
+
+    try {
+
+      await using surface = createUdpSurface();
+
+      await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+      const port = requireBoundPort(surface);
+      const reply = await sendAndReceive(port, makeDiscoverRequest(HDHR_DEVICE_TYPE_TUNER, 0x1234ABCD));
+
+      assert.equal(reply.readUInt16BE(0), PACKET_DISCOVER_REPLY, "a request naming this device's type and id is answered");
+    } finally {
+
+      CONFIG.hdhr.deviceId = originalDeviceId;
+    }
+  });
+
+  test("a Discover request addressed to a foreign device id is dropped without a reply", async () => {
+
+    /* The detector for the id check. Without it the responder answers every Discover request it can parse, so a client looking for one specific tuner receives an
+     * answer from PrismCast as well and can bind to a device it never asked for.
+     */
+    const originalDeviceId = CONFIG.hdhr.deviceId;
+
+    CONFIG.hdhr.deviceId = "1234ABCD";
+
+    try {
+
+      await using surface = createUdpSurface();
+
+      await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+      const port = requireBoundPort(surface);
+
+      await assert.rejects(() => sendAndReceive(port, makeDiscoverRequest(HDHR_DEVICE_TYPE_TUNER, 0x0BADF00D), 300), /Timed out waiting/);
+    } finally {
+
+      CONFIG.hdhr.deviceId = originalDeviceId;
+    }
+  });
+
+  test("a Discover request addressed to a foreign device type is dropped without a reply", async () => {
+
+    // The type check, exercised with a wildcard id so only the type can decide the outcome. PrismCast presents as a tuner; a request for any other device class
+    // is not addressed to it.
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+
+    const port = requireBoundPort(surface);
+
+    await assert.rejects(() => sendAndReceive(port, makeDiscoverRequest(0x00000005, 0xFFFFFFFF), 300), /Timed out waiting/);
   });
 
   test("a valid but unsupported packet type (Upgrade) is dropped without a reply", async () => {

@@ -15,9 +15,9 @@
  * HDHR or another emulator on the same host) is logged at warn level and treated as graceful "discovery not available" rather than a startup failure - the HTTP
  * HDHR surface keeps working in that scenario, only LAN auto-detect is lost.
  */
+import { HDHR_WILDCARD, PACKET_UPGRADE_REQUEST, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
 import { LOG, getPackageVersion, isCategoryEnabled } from "../utils/index.ts";
 import type { NetworkInterfaceInfo, NetworkInterfaceInfoIPv4 } from "node:os";
-import { PACKET_UPGRADE_REQUEST, buildDiscoverReply, buildErrorReply, buildGetReply, parsePacket } from "./protocol.ts";
 import { CONFIG } from "../config/index.ts";
 import { HDHR_DEVICE_TYPE_TUNER } from "./identity.ts";
 import type { Nullable } from "../types/index.ts";
@@ -220,6 +220,23 @@ function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; por
 
     case "discover": {
 
+      const deviceId = parseDeviceId(CONFIG.hdhr.deviceId);
+
+      /* Answer only a request this device is actually addressed by. A Discover request carries a device-type filter and a device-id filter, each defaulting to the
+       * wildcard when the client sends neither, and a reply to a request aimed at another device type or another device would enrol PrismCast in a lineup the
+       * client never asked for - a client discovering a specific tuner would see two answers and could bind to the wrong one.
+       *
+       * The zero fallback in parseDeviceId cannot make a foreign request match here: ensureDeviceId writes a checksum-valid id into CONFIG before the UDP surface
+       * comes up, so a request targeting id zero matches no live device.
+       */
+      if(((parsed.requestedDeviceType !== HDHR_WILDCARD) && (parsed.requestedDeviceType !== HDHR_DEVICE_TYPE_TUNER)) ||
+        ((parsed.requestedDeviceId !== HDHR_WILDCARD) && (parsed.requestedDeviceId !== deviceId))) {
+
+        logDispatch("discover-ignored", rinfo, { requestedDeviceId: parsed.requestedDeviceId, requestedDeviceType: parsed.requestedDeviceType });
+
+        break;
+      }
+
       // Advertise the HTTP server's live bound port when known, falling back to CONFIG.hdhr.port. The provider reflects reality even when a rejected port
       // change has left HTTP on its prior port while CONFIG holds the new value.
       const advertisedPort = httpPortProvider?.() ?? CONFIG.hdhr.port;
@@ -227,7 +244,7 @@ function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; por
       const reply = buildDiscoverReply({
 
         baseUrl,
-        deviceId: parseDeviceId(CONFIG.hdhr.deviceId),
+        deviceId,
         deviceType: HDHR_DEVICE_TYPE_TUNER,
         tunerCount: CONFIG.streaming.maxConcurrentStreams
       });
