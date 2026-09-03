@@ -694,7 +694,20 @@ export interface NativeSegmentHealthDecision {
   // The health status to report for the native stream.
   readonly health: StreamHealthStatus;
 
-  // The issue label to record when one is not already tracked, or null when the stream is healthy.
+  // The cause this tick names, or null when the stream is healthy.
+  readonly issueType: Nullable<string>;
+}
+
+/**
+ * A native stream's recorded issue: the cause the classifier last named and the moment that cause began. The pair travels together because the time is only
+ * meaningful as the start of the labelled cause - a label replaced without its time would report a stall that has run since the fetch errors started.
+ */
+export interface NativeIssueRecord {
+
+  // When the recorded cause began, or null when no cause is recorded.
+  readonly issueTime: Nullable<number>;
+
+  // The recorded cause, or null when none is recorded.
   readonly issueType: Nullable<string>;
 }
 
@@ -745,6 +758,29 @@ export function classifyNativeSegmentHealth(inputs: {
   }
 
   return { action: "none", health: "stalled", issueType: "segment stall" };
+}
+
+/**
+ * Advances a native stream's issue record for one classification tick. Placed beside classifyNativeSegmentHealth because it completes that classifier's contract:
+ * the classifier names the cause each tick, and this decides what the record carries as a result.
+ *
+ * A null decision leaves the record alone, so a stream that recovers keeps whatever the caller's own recovery bookkeeping cleared or kept. A cause equal to the
+ * recorded one leaves the record alone too, and that rule is why the record cannot simply be overwritten: the start time has to survive across every tick the cause
+ * persists, so the display reports how long the stream has been in trouble rather than how long ago the last tick ran. A different cause replaces both fields, so a
+ * stream that degrades from fetch errors into a segment stall reports the stall and the moment the stall began.
+ * @param current - The record as it stands.
+ * @param issueType - The cause this tick named, or null when the stream is healthy.
+ * @param now - The current time in milliseconds, stamped when the cause changes.
+ * @returns The record for the next tick, which is the same object when nothing changed.
+ */
+export function nextNativeIssueRecord(current: NativeIssueRecord, issueType: Nullable<string>, now: number): NativeIssueRecord {
+
+  if((issueType === null) || (issueType === current.issueType)) {
+
+    return current;
+  }
+
+  return { issueTime: now, issueType };
 }
 
 /**

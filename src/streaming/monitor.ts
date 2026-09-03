@@ -10,7 +10,7 @@ import type { NativeStreamIdentity, StreamRegistryEntry } from "./registry.ts";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
 import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth,
   describeResolutionOutcome, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, isResolutionDegraded,
-  recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
+  nextNativeIssueRecord, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
   updateResolutionPeak } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage, getStreamSegmenter, isCaptureIdentity,
@@ -514,12 +514,13 @@ export function monitorPlaybackHealth(
       targetDurationMs: targetDuration * 1000
     });
 
-    // Record the issue label the decision named when none is already tracked, so an earlier issue keeps its original timestamp across ticks.
-    if(decision.issueType && !nativeHealthState.issueType) {
+    /* Advance the recorded issue through the pure rule in recovery.ts: an unchanged cause keeps its original start time across ticks, and a changed cause takes
+     * both the new label and a fresh stamp. A stream that degrades from fetch errors into a segment stall therefore reports the stall it is actually in.
+     */
+    const issueRecord = nextNativeIssueRecord(nativeHealthState, decision.issueType, now);
 
-      nativeHealthState.issueType = decision.issueType;
-      nativeHealthState.issueTime = now;
-    }
+    nativeHealthState.issueTime = issueRecord.issueTime;
+    nativeHealthState.issueType = issueRecord.issueType;
 
     const staleSec = Math.round(stalenessMs / 1000);
 

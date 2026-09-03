@@ -6,8 +6,8 @@
  */
 import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./setup.ts";
 import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, describeResolutionOutcome, formatIssueType,
-  getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError, isResolutionDegraded, resolutionAreaRatio, shouldTriggerRecovery,
-  updateResolutionPeak } from "./recovery.ts";
+  getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError, isResolutionDegraded, nextNativeIssueRecord, resolutionAreaRatio,
+  shouldTriggerRecovery, updateResolutionPeak } from "./recovery.ts";
 import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE } from "../browser/tabSelection.ts";
 import { describe, test } from "node:test";
 import { CaptureTurnTimeoutError } from "./captureLock.ts";
@@ -413,6 +413,48 @@ describe("classifyNativeSegmentHealth", () => {
     // escalates to the L3 capture fallback.
     assert.deepEqual(classifyNativeSegmentHealth({ consecutiveErrors: 0, lastSegmentTime: 1, recoveryAttempts: 1, stalenessMs: 5000, targetDurationMs }),
       { action: "l3", health: "stalled", issueType: "segment stall" });
+  });
+});
+
+describe("nextNativeIssueRecord", () => {
+
+  test("a null cause leaves the record untouched", () => {
+
+    // A healthy tick names no cause, so the record is not the place that clears it - the caller's segment-advance bookkeeping owns that.
+    const current = { issueTime: 1000, issueType: "fetch errors" };
+
+    assert.deepEqual(nextNativeIssueRecord(current, null, 9000), { issueTime: 1000, issueType: "fetch errors" });
+  });
+
+  test("a cause equal to the recorded one leaves the record untouched, so the start time survives across ticks", () => {
+
+    // The display reports how long the stream has been in trouble, which only holds if a repeated cause does not restamp itself every tick.
+    const current = { issueTime: 1000, issueType: "segment stall" };
+
+    assert.deepEqual(nextNativeIssueRecord(current, "segment stall", 9000), { issueTime: 1000, issueType: "segment stall" });
+  });
+
+  test("fetch errors that become a segment stall replace the label and restamp the time", () => {
+
+    /* Detector for the changed-cause rule. Under a first-only guard the record would still read "fetch errors" with its original timestamp while the classifier
+     * has moved on to a segment stall, so the stream reports a cause that has already passed and a duration measured from the wrong moment.
+     */
+    const afterFetchErrors = nextNativeIssueRecord({ issueTime: null, issueType: null }, "fetch errors", 1000);
+
+    assert.deepEqual(afterFetchErrors, { issueTime: 1000, issueType: "fetch errors" }, "the first cause is recorded with its own start time");
+
+    const afterStall = nextNativeIssueRecord(afterFetchErrors, "segment stall", 9000);
+
+    assert.deepEqual(afterStall, { issueTime: 9000, issueType: "segment stall" }, "the new cause takes both the label and a fresh stamp");
+  });
+
+  test("an unchanged record is returned as the same object, so an unchanged tick allocates nothing", () => {
+
+    // The two no-change rules return the record itself rather than a copy, which is what keeps the per-tick path free of an allocation on the common case.
+    const current = { issueTime: 1000, issueType: "segment stall" };
+
+    assert.equal(nextNativeIssueRecord(current, "segment stall", 9000), current);
+    assert.equal(nextNativeIssueRecord(current, null, 9000), current);
   });
 });
 
