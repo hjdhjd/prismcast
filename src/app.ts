@@ -4,6 +4,7 @@
  */
 import { CONFIG, displayConfiguration, initializeConfiguration, persistCoercedConfig, validateConfiguration } from "./config/index.ts";
 import type { Express, NextFunction, Request, Response } from "express";
+import type { IncomingMessage, Server } from "node:http";
 import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
   setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
@@ -22,7 +23,6 @@ import type { CliOverrides } from "./config/index.ts";
 import type { Nullable } from "./types/index.ts";
 import type { ParsedArgs } from "./index.ts";
 import type { ResumeStreamData } from "./streaming/hlsResume.ts";
-import type { Server } from "node:http";
 import { attachCdpUpgradeHandler } from "./routes/cdp.ts";
 import { cleanupIdleStreams } from "./streaming/hls.ts";
 import compression from "compression";
@@ -201,6 +201,143 @@ function setupGracefulShutdown(): void {
   });
 }
 
+// HTTP request logging.
+
+/* Every request's elapsed time comes from one stamp taken by the middleware below, and both readers of that time - the log line's token and the filtered mode's
+ * slow-request rule - derive from it. A single stamp is what lets the two agree: a rule that consulted a different clock than the line it decides to print could
+ * hold back a request the line would have reported as slow.
+ *
+ * process.hrtime.bigint() is the monotonic source, so a system clock adjustment mid-request cannot produce a negative or wildly inflated elapsed reading. The
+ * stamps are held in a WeakMap keyed on the request object rather than on a property of it, so a request that never reaches the logger is collected with no
+ * bookkeeping and no risk of a stale entry outliving its connection.
+ */
+const requestStartStamps = new WeakMap<IncomingMessage, bigint>();
+
+// Requests slower than this are always logged in filtered mode, whatever their path. A second is the threshold at which a response stops feeling immediate to a
+// client, which is the point at which it is worth a log line even on an endpoint the filter otherwise suppresses.
+const SLOW_REQUEST_MS = 1000;
+
+// Browser-initiated asset requests that return 404. These are noise from browsers automatically requesting files that do not exist.
+const BROWSER_ASSET_PATTERNS = [ "/apple-touch-icon", "/favicon", "/robots.txt", "/site.webmanifest" ];
+
+// High-frequency polling endpoints, skipped in filtered mode when they succeed.
+const FILTERED_SKIP_PATTERNS = [ "/logs", "/health", "/favicon", "/logo.png", "/logo.svg" ];
+
+// Streaming and management endpoints, always logged in filtered mode because they mark what the server is actually doing.
+const FILTERED_IMPORTANT_PATTERNS = [ "/stream", "/streams", "/config", "/playlist", "/debug" ];
+
+/**
+ * Records a request's arrival time. Registered ahead of the logger so both readers of the elapsed time measure from the moment the request reached the app rather
+ * than from whenever the logger happened to see it.
+ * @param req - The incoming request.
+ * @param _res - The response, unused.
+ * @param next - The next middleware in the chain.
+ */
+export function stampRequestStart(req: IncomingMessage, _res: unknown, next: () => void): void {
+
+  requestStartStamps.set(req, process.hrtime.bigint());
+
+  next();
+}
+
+/**
+ * Renders a request's elapsed time in milliseconds with three decimals, matching the shape morgan's own timing token produces, or an empty string when the request
+ * carries no stamp. An unstamped request is the ordering case: a request that reached morgan without passing the stamping middleware has no time to report, and an
+ * empty rendering leaves the log line's shape intact rather than printing a fabricated zero.
+ * @param req - The incoming request.
+ * @returns The elapsed milliseconds as a fixed-3 string, or an empty string.
+ */
+export function elapsedMillis(req: IncomingMessage): string {
+
+  const elapsed = elapsedMillisValue(req);
+
+  return (elapsed === null) ? "" : elapsed.toFixed(3);
+}
+
+/**
+ * Reads a request's elapsed time in milliseconds from its start stamp, or null when the request carries no stamp.
+ * @param req - The incoming request.
+ * @returns The elapsed milliseconds, or null.
+ */
+function elapsedMillisValue(req: IncomingMessage): Nullable<number> {
+
+  const startedAt = requestStartStamps.get(req);
+
+  if(startedAt === undefined) {
+
+    return null;
+  }
+
+  return Number(process.hrtime.bigint() - startedAt) / 1000000;
+}
+
+/**
+ * Decides whether errors mode skips a request. Errors mode logs 4xx and 5xx only, minus the expected non-errors: a 404 for an asset the browser asked
+ * for on its own, and a 503 carrying Retry-After, which announces a temporary unavailability the server chose rather than a fault.
+ * @param request - The response status, the request URL, and whether a Retry-After header is present.
+ * @returns True when the request should not be logged.
+ */
+export function skipInErrorsMode(request: { hasRetryAfter: boolean; statusCode: number; url: string }): boolean {
+
+  // Skip all non-error responses. In errors-only mode we log only 4xx and 5xx statuses, so any successful response is skipped here.
+  if(request.statusCode < 400) {
+
+    return true;
+  }
+
+  // Skip 404s for browser asset requests (favicon, apple-touch-icon, etc.).
+  if((request.statusCode === 404) && BROWSER_ASSET_PATTERNS.some((pattern) => request.url.startsWith(pattern))) {
+
+    return true;
+  }
+
+  // Skip 503s with Retry-After header. These indicate expected temporary unavailability (e.g., stream starting up) rather than a real error.
+  return (request.statusCode === 503) && request.hasRetryAfter;
+}
+
+/**
+ * Decides whether filtered mode skips a request. Errors, slow requests, and the streaming and management endpoints are always logged; the high-frequency polling
+ * endpoints and the landing page are skipped when they succeed; everything else is logged. A request with no elapsed reading is treated as not slow, so the
+ * remaining rules decide it.
+ * @param request - The elapsed milliseconds (null when unstamped), the response status, and the request URL.
+ * @returns True when the request should not be logged.
+ */
+export function skipInFilteredMode(request: { elapsedMs: Nullable<number>; statusCode: number; url: string }): boolean {
+
+  // Always log errors.
+  if(request.statusCode >= 400) {
+
+    return false;
+  }
+
+  // Always log slow requests.
+  if((request.elapsedMs !== null) && (request.elapsedMs > SLOW_REQUEST_MS)) {
+
+    return false;
+  }
+
+  // Always log streaming and management endpoints.
+  if(FILTERED_IMPORTANT_PATTERNS.some((pattern) => request.url.startsWith(pattern))) {
+
+    return false;
+  }
+
+  // Skip high-frequency endpoints when successful.
+  if(FILTERED_SKIP_PATTERNS.some((pattern) => request.url.startsWith(pattern))) {
+
+    return true;
+  }
+
+  // Skip successful requests to the root landing page, and log everything else.
+  return request.url === "/";
+}
+
+/* The token is defined once for the process, at module load. morgan's token registry is global to the module, so registering inside the app builder would re-register
+ * on every build - harmless today because the definition is constant, but a registration whose count tracks how often the app is assembled is the kind of coupling
+ * that only shows up once a second build carries different state.
+ */
+morgan.token("elapsed", elapsedMillis);
+
 /* The buildApp function creates and configures the Express application with all middleware and routes. This is separated from the server startup to allow for
  * testing and flexibility in deployment.
  */
@@ -250,94 +387,37 @@ async function buildApp(): Promise<Express> {
   // consistently for both console and file logging modes.
   if(CONFIG.logging.httpLogLevel !== "none") {
 
-    const morganFormat = ":method :url from :remote-addr responded :status in :response-time ms.";
+    const morganFormat = ":method :url from :remote-addr responded :status in :elapsed ms.";
     const morganStream = createMorganStream();
 
-    // Patterns for browser-initiated asset requests that return 404. These are noise from browsers automatically requesting files that don't exist.
-    const browserAssetPatterns = [ "/apple-touch-icon", "/favicon", "/robots.txt", "/site.webmanifest" ];
+    // Stamp each request's arrival before morgan sees it, so the elapsed token and the filtered mode's slow-request rule read the same start time.
+    app.use(stampRequestStart);
 
     if(CONFIG.logging.httpLogLevel === "errors") {
 
       // Log requests with 4xx or 5xx status codes, but skip 404s for common browser asset requests.
       app.use(morgan(morganFormat, {
 
-        skip: (req, res): boolean => {
+        skip: (req, res): boolean => skipInErrorsMode({
 
-          // Skip all non-error responses. In errors-only mode we log only 4xx and 5xx statuses, so any successful response is skipped here.
-          if(res.statusCode < 400) {
-
-            return true;
-          }
-
-          // Skip 404s for browser asset requests (favicon, apple-touch-icon, etc.).
-          if(res.statusCode === 404) {
-
-            const url = req.originalUrl || req.url;
-
-            if(browserAssetPatterns.some((pattern) => url.startsWith(pattern))) {
-
-              return true;
-            }
-          }
-
-          // Skip 503s with Retry-After header. These indicate expected temporary unavailability (e.g., stream starting up) rather than a real error.
-          if((res.statusCode === 503) && res.getHeader("Retry-After")) {
-
-            return true;
-          }
-
-          return false;
-        },
+          hasRetryAfter: res.getHeader("Retry-After") !== undefined,
+          statusCode: res.statusCode,
+          url: req.originalUrl || req.url
+        }),
 
         stream: morganStream
       }));
     } else if(CONFIG.logging.httpLogLevel === "filtered") {
 
       // Log important requests while skipping high-frequency polling endpoints. We always log errors, slow requests, and critical endpoints.
-      const skipPatterns = [ "/logs", "/health", "/favicon", "/logo.png", "/logo.svg" ];
-
       app.use(morgan(morganFormat, {
 
-        skip: (req, res) => {
+        skip: (req, res): boolean => skipInFilteredMode({
 
-          // Always log errors.
-          if(res.statusCode >= 400) {
-
-            return false;
-          }
-
-          // Always log slow requests (over 1 second).
-          const responseTime = parseFloat(res.getHeader("X-Response-Time") as string || "0");
-
-          if(responseTime > 1000) {
-
-            return false;
-          }
-
-          // Always log streaming and management endpoints.
-          const url = req.originalUrl || req.url;
-          const importantPatterns = [ "/stream", "/streams", "/config", "/playlist", "/debug" ];
-
-          if(importantPatterns.some((pattern) => url.startsWith(pattern))) {
-
-            return false;
-          }
-
-          // Skip high-frequency endpoints when successful.
-          if(skipPatterns.some((pattern) => url.startsWith(pattern))) {
-
-            return true;
-          }
-
-          // Skip successful requests to the root landing page.
-          if((url === "/") && (res.statusCode < 400)) {
-
-            return true;
-          }
-
-          // Log everything else.
-          return false;
-        },
+          elapsedMs: elapsedMillisValue(req),
+          statusCode: res.statusCode,
+          url: req.originalUrl || req.url
+        }),
 
         stream: morganStream
       }));

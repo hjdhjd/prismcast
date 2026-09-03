@@ -6,13 +6,17 @@
  * port, registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised here against the
  * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
  * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
+ *
+ * The HTTP request-logging rules are the second surface tested here. The two skip predicates and the elapsed-time renderer are pure of the Express plumbing - they
+ * take a plain record or a request object and return a decision - so the whole filtered/errors rule set is exercised without binding a port or booting the server.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
+import { elapsedMillis, releaseInstanceSlot, skipInErrorsMode, skipInFilteredMode, stampRequestStart } from "./app.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { getServerPidFilePath, initializeDataDir } from "./config/paths.ts";
+import type { IncomingMessage } from "node:http";
 import assert from "node:assert/strict";
-import { releaseInstanceSlot } from "./app.ts";
 import { serializeRecord } from "./utils/index.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -114,3 +118,116 @@ describe("releaseInstanceSlot", () => {
  * spawns ffmpeg children, and may call process.exit on failure - any of which is incompatible with a unit-test context. The integration tier covers it via the
  * test/e2e/ harness.
  */
+
+describe("skipInErrorsMode", () => {
+
+  test("skips every successful response", () => {
+
+    // Errors mode logs 4xx and 5xx only, so a 200 on an endpoint the other mode would always log is still skipped here.
+    assert.equal(skipInErrorsMode({ hasRetryAfter: false, statusCode: 200, url: "/stream/nbc" }), true);
+  });
+
+  test("skips a 404 for a browser-initiated asset request", () => {
+
+    // Browsers request these on their own; a 404 for one is noise rather than a fault worth a log line.
+    assert.equal(skipInErrorsMode({ hasRetryAfter: false, statusCode: 404, url: "/favicon.ico" }), true);
+  });
+
+  test("logs a 404 for a path the browser did not ask for on its own", () => {
+
+    // The asset patterns are prefixes, so a 404 outside them is a genuine miss and is logged.
+    assert.equal(skipInErrorsMode({ hasRetryAfter: false, statusCode: 404, url: "/hls/nbc/stream.m3u8" }), false);
+  });
+
+  test("skips a 503 that carries Retry-After", () => {
+
+    // A 503 with Retry-After announces an unavailability the server chose - a stream still starting up - rather than a fault.
+    assert.equal(skipInErrorsMode({ hasRetryAfter: true, statusCode: 503, url: "/hls/nbc/stream.m3u8" }), true);
+  });
+
+  test("logs a 503 with no Retry-After", () => {
+
+    // Without the header the 503 is an unexplained failure, so it stays in the log.
+    assert.equal(skipInErrorsMode({ hasRetryAfter: false, statusCode: 503, url: "/hls/nbc/stream.m3u8" }), false);
+  });
+});
+
+describe("skipInFilteredMode", () => {
+
+  test("logs a slow request even on an endpoint the filter otherwise skips", () => {
+
+    /* The detector for the elapsed rule. /logs is a high-frequency polling endpoint the filter suppresses when it is fast, so a slow one is logged only because
+     * the elapsed reading outranks the skip pattern. Removing the elapsed rule reds exactly this row.
+     */
+    assert.equal(skipInFilteredMode({ elapsedMs: 1500, statusCode: 200, url: "/logs" }), false);
+  });
+
+  test("skips a fast request on a high-frequency polling endpoint", () => {
+
+    // The complement of the row above: the same endpoint, under the threshold, is suppressed.
+    assert.equal(skipInFilteredMode({ elapsedMs: 5, statusCode: 200, url: "/logs" }), true);
+  });
+
+  test("logs an error whatever its path and whatever its elapsed time", () => {
+
+    // The error rule runs before the elapsed rule, so a fast 500 on a suppressed endpoint is still logged.
+    assert.equal(skipInFilteredMode({ elapsedMs: 5, statusCode: 500, url: "/logs" }), false);
+  });
+
+  test("logs a fast request to a streaming or management endpoint", () => {
+
+    // These endpoints mark what the server is doing, so they are logged regardless of speed.
+    assert.equal(skipInFilteredMode({ elapsedMs: 2, statusCode: 200, url: "/config" }), false);
+  });
+
+  test("skips a fast successful request to the root landing page", () => {
+
+    // The landing page is exact-matched, not prefixed, so only "/" itself is suppressed.
+    assert.equal(skipInFilteredMode({ elapsedMs: 2, statusCode: 200, url: "/" }), true);
+  });
+
+  test("logs anything that matches no rule", () => {
+
+    // The default is to log: a path outside every pattern list is reported.
+    assert.equal(skipInFilteredMode({ elapsedMs: 2, statusCode: 200, url: "/some/other/path" }), false);
+  });
+
+  test("treats a request with no elapsed reading as not slow and lets the remaining rules decide", () => {
+
+    // A request that reached the logger without a stamp has no time to compare, so the skip-pattern rule decides it rather than an assumed zero or infinity.
+    assert.equal(skipInFilteredMode({ elapsedMs: null, statusCode: 200, url: "/logs" }), true);
+  });
+
+  test("does not treat a request exactly at the threshold as slow", () => {
+
+    // The comparison is strictly greater than, so a request landing exactly on the threshold falls through to the pattern rules.
+    assert.equal(skipInFilteredMode({ elapsedMs: 1000, statusCode: 200, url: "/logs" }), true);
+  });
+});
+
+describe("elapsedMillis", () => {
+
+  test("renders an empty string for a request that carries no start stamp", () => {
+
+    // A request that never passed the stamping middleware has no time to report, and an empty rendering leaves the log line's shape intact.
+    assert.equal(elapsedMillis({} as IncomingMessage), "");
+  });
+
+  test("renders three decimal places for a stamped request, matching morgan's own timing shape", () => {
+
+    /* The stamp and the rendering are asserted together because they are one mechanism: stampRequestStart writes the monotonic start and elapsedMillis reads it.
+     * The value itself is timing-dependent, so the assertions are on the shape and on it being a real non-negative reading rather than on a fixed number.
+     */
+    const request = {} as IncomingMessage;
+
+    let nextCalls = 0;
+
+    stampRequestStart(request, null, () => { nextCalls++; });
+
+    const rendered = elapsedMillis(request);
+
+    assert.equal(nextCalls, 1, "the stamping middleware passes the request along exactly once");
+    assert.match(rendered, /^\d+\.\d{3}$/, "the rendering carries three decimals, as morgan's own timing token does");
+    assert.ok(Number(rendered) >= 0, "a monotonic source cannot produce a negative elapsed reading");
+  });
+});
