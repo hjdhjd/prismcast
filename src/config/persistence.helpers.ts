@@ -9,7 +9,7 @@
  *      benefit from a backend with no filesystem I/O - faster, no temp dirs, no after-test cleanup.
  *
  *   2. **Failure injection.** Override hooks let tests force any single backend operation to throw or return arbitrary content. This is how unreached safety
- *      paths (snapshot pruning's per-entry stat/unlink errors, post-write integrity check's readback mismatch, tryRecoverFromBackup's restore-write failure,
+ *      paths (snapshot pruning's per-entry stat/unlink errors, post-write integrity check's readback mismatch, restoreFromBackup's restore-write failure,
  *      doMutate's non-ENOENT backup failure) are asserted without resorting to fragile real-fs trickery (chmod, EISDIR via directory-as-file).
  *
  * Helper-location convention: this is a domain-specific factory tied to one production module (persistence.ts), so it co-locates with its owner. Cross-cutting

@@ -4,10 +4,11 @@
  * schema migrations, post-write integrity verification, and snapshot management - every config file (channels, config, profiles, health) goes through it.
  *
  * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization - plus the
- * recovery-guard behavior that intersects with mutate specifically (the corrupt-main rotation guard and the distinct temp-path contract between a
- * read-triggered recovery and an in-flight mutate). Three sibling files (persistence.snapshots.test.ts, persistence.integrity.test.ts,
- * persistence.migrations.test.ts) own the snapshot system, the remaining integrity-and-recovery branches, and the migration runner respectively. The split
- * is by concern, not alphabet, so each file's title corresponds directly to a section of the framework's contract.
+ * write-ownership rule that ties reads and mutates together: a read recovers a corrupt main from .bak in memory and writes nothing, the corrupt-main rotation
+ * guard keeps the good backup, and the durable restore lands under the queue at the boot step or through the next mutate. Three sibling files
+ * (persistence.snapshots.test.ts, persistence.integrity.test.ts, persistence.migrations.test.ts) own the snapshot system, the remaining integrity-and-recovery
+ * branches, and the migration runner respectively. The split is by concern, not alphabet, so each file's title corresponds directly to a section of the
+ * framework's contract.
  */
 import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { describe, test } from "node:test";
@@ -342,39 +343,24 @@ describe("FileStore.mutate - core paths", () => {
 
 describe("FileStore.mutate - corrupt-main rotation guard", () => {
 
-  test("a mutate that follows a failed .bak restore does not rotate the corrupt main into .bak (good copy survives)", async () => {
+  test("a mutate against a corrupt main does not rotate it into .bak (the good copy survives)", async () => {
 
-    /* This asserts the layered protection for the catastrophic data-loss window: when the main file is corrupt and read() recovers from .bak in memory but the
-     * on-disk restore-write fails, the .bak holds the ONLY good copy. A subsequent mutate's pre-write backup step must NOT copy the still-corrupt main over
-     * .bak - doing so would destroy that last good copy.
+    /* This asserts the layered protection for the catastrophic data-loss window: when the main file is corrupt, the .bak holds the ONLY good copy, and a
+     * mutate's pre-write backup step must NOT copy the still-corrupt main over it - doing so would destroy that last good copy.
      *
-     * We force the restore-write to fail by overriding rename for the recovery's temp-to-main path, leaving main corrupt on disk. The recovery still surfaces
-     * recovered=true with the .bak's content, so the in-memory state the mutate operates on is good. We then assert that after the mutate: .bak still holds the
-     * original good content (it was NOT clobbered by the corrupt main) and main holds the freshly-mutated good content (the atomic write replaced it).
+     * Reaching that window takes no injection. A read recovers the backup in memory and writes nothing, so the main file on disk is still corrupt when
+     * doMutate's backup step runs, which is exactly the state the guard exists for. We assert both halves of the outcome: .bak still holds the original good
+     * content (it was NOT clobbered by the corrupt main) and main holds the freshly-mutated good content (the atomic write replaced it).
      */
     const backend = makeMemoryStorageBackend();
     const filePath = "/data/rotation-guard.json";
     const goodBakContent = "{\"value\":99}\n";
 
-    // Seed: corrupt main, valid .bak. read() detects the corrupt main, recovers from .bak, and attempts to restore main.
+    // Seed: corrupt main, valid .bak. The mutate's internal read recovers from .bak and reports recoveredFromBackup, which is what trips the guard.
     backend.files.set(filePath, "{not valid json");
     backend.mtimes.set(filePath, 1);
     backend.files.set(filePath + ".bak", goodBakContent);
     backend.mtimes.set(filePath + ".bak", 2);
-
-    // Fail the recovery restore-write. tryRecoverFromBackup restores via <filePath>.recover.tmp -> filePath; we trip exactly that rename so main stays corrupt
-    // on disk. The post-mutate atomic rename (<filePath>.tmp -> filePath) flows through the default so the user's mutation still lands.
-    const realRename = backend.rename;
-
-    backend.rename = async (source: string, destination: string): Promise<void> => {
-
-      if((source === (filePath + ".recover.tmp")) && (destination === filePath)) {
-
-        throw new Error("synthetic-restore-rename-failure");
-      }
-
-      return realRename(source, destination);
-    };
 
     const store = makeMemoryStore<{ value: number }>(backend, filePath, {
 
@@ -394,37 +380,209 @@ describe("FileStore.mutate - corrupt-main rotation guard", () => {
   });
 });
 
-describe("FileStore - recovery and mutate use distinct temp paths", () => {
+describe("FileStore.read - recovery in memory, the durable restore under the queue", () => {
 
-  test("a read-triggered recovery writes to a recovery-specific temp path, distinct from the mutate temp path", async () => {
+  test("a bare read against a corrupt main returns the backup's data and writes nothing at all", async () => {
 
-    /* read() does not acquire the mutate serialization lock, so a read-triggered recovery can overlap an in-flight mutate. If recovery and mutate both wrote
-     * the SAME <filePath>.tmp, the recovery's write or rename could clobber the mutate's in-flight temp before the mutate's rename. The framework gives recovery
-     * a distinct suffix (.recover.tmp) so the two write paths never collide.
+    /* read() does not hold the mutate queue, so it must not write. A write outside the queue can interleave with a mutate's own temp-plus-rename and put stale
+     * bytes over data the mutate had already committed, which is a silent revert of a save the caller was told had succeeded. The recovery a read performs is
+     * therefore in-memory only, and the recorded write log below asserts that directly - not that the read wrote the right thing, but that it wrote nothing.
      *
-     * We assert the contract directly: drive a recovery (corrupt main, valid .bak) and a normal write (a subsequent mutate), recording every temp path the
-     * framework writes. The recovery must use <filePath>.recover.tmp and the mutate must use <filePath>.tmp - two distinct keys that can never overwrite one
-     * another.
+     * The mutate that follows is what makes the file good on disk, and it goes through the single temp path every writer shares. Sharing is safe precisely
+     * because every writer holds the queue, so no two temp writes for a path are ever in flight together.
      */
     const backend = makeMemoryStorageBackend();
-    const filePath = "/data/distinct-temp.json";
+    const filePath = "/data/read-writes-nothing.json";
+    const corruptMain = "{not valid json";
 
-    // Seed: corrupt main, valid .bak so the first read triggers recovery (which writes its restore temp), and the subsequent mutate writes its own atomic temp.
-    backend.files.set(filePath, "{not valid json");
+    backend.files.set(filePath, corruptMain);
     backend.mtimes.set(filePath, 1);
     backend.files.set(filePath + ".bak", "{\"value\":7}\n");
     backend.mtimes.set(filePath + ".bak", 2);
 
-    // Record every temp-family write target so we can assert the recovery and the mutate used distinct suffixes.
-    const tempWrites: string[] = [];
+    // Record every write target and every rename, so "wrote nothing" is read off the backend rather than inferred from the file's contents.
+    const writes: string[] = [];
+    const renames: string[] = [];
+    const realWriteFile = backend.writeFile;
+    const realRename = backend.rename;
+
+    backend.writeFile = async (p: string, content: string): Promise<void> => {
+
+      writes.push(p);
+
+      return realWriteFile(p, content);
+    };
+
+    backend.rename = async (source: string, destination: string): Promise<void> => {
+
+      renames.push(source + " -> " + destination);
+
+      return realRename(source, destination);
+    };
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+    const result = await store.read();
+
+    assert.equal(result.recoveredFromBackup, true, "the read recovered the backup's contents");
+    assert.deepEqual(result.data, { value: 7 }, "and returned the backup's data");
+    assert.deepEqual(writes, [], "the read issued no write at all");
+    assert.deepEqual(renames, [], "and no rename");
+    assert.equal(backend.files.get(filePath), corruptMain, "the corrupt bytes are still on disk, waiting for a writer that holds the queue");
+
+    // The mutate is the durable repair, and it lands through the one temp path.
+    await store.mutate((data) => { data.value = 11; });
+
+    assert.deepEqual(writes, [filePath + ".tmp"], "the mutate's atomic write is the only write, through the single temp path");
+    assert.deepEqual(renames, [filePath + ".tmp -> " + filePath], "and the single rename that puts it in place");
+
+    const mainParsed = JSON.parse(backend.files.get(filePath) ?? "") as { value: number };
+
+    assert.equal(mainParsed.value, 11, "the main file now holds the mutated good data");
+  });
+
+  test("a bare read parked inside its recovery cannot revert a mutate that completed while it waited", async () => {
+
+    /* The race the in-memory recovery closes. A bare read reaches its backup read and parks there; a mutate runs start to finish meanwhile; then the read is
+     * released. Because the read writes nothing, the file ends up holding the mutate's data and the read still answers with the backup's data - two correct
+     * answers about two different moments.
+     *
+     * Both outcomes of this rig are worth naming, because the difference between them is the whole reason the restore sits under the queue. In a design where
+     * a read restores the main file itself, the released read's rename lands after the mutate's and the file ends up reverted to the backup's content, losing a
+     * save the caller was told had succeeded. Giving the two paths distinct temp suffixes does not help: the collision is not between two temp files, it is
+     * between two renames over the same main file, one of them outside the queue.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/read-mutate-race.json";
+
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", "{\"value\":99}\n");
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    /* Park the FIRST read of the .bak and let every later one through. The bare read reads main before .bak, so the first .bak read is unambiguously the bare
+     * read's; the mutate's own internal read then flows through untouched, which is what lets the mutate finish while the bare read is still parked.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: parked, resolve: releaseRead } = Promise.withResolvers<void>();
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
+    const { promise: reachedBackup, resolve: markReachedBackup } = Promise.withResolvers<void>();
+    let parkedOnce = false;
+    const realReadFile = backend.readFile;
+
+    backend.readFile = async (p: string): Promise<string> => {
+
+      if(!parkedOnce && (p === (filePath + ".bak"))) {
+
+        parkedOnce = true;
+        markReachedBackup();
+
+        await parked;
+      }
+
+      return realReadFile(p);
+    };
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    // Start the bare read and wait until it is parked on its backup read.
+    const pendingRead = store.read();
+
+    await reachedBackup;
+
+    // The mutate runs start to finish while the read is parked, and commits its own content over the corrupt main.
+    await store.mutate((data) => { data.value = 4242; });
+
+    const mutatedMain = backend.files.get(filePath);
+
+    assert.match(mutatedMain ?? "", /4242/, "sanity: the mutate committed its data over the corrupt main while the read was parked");
+
+    // Release the parked read.
+    releaseRead();
+
+    const result = await pendingRead;
+
+    assert.equal(result.recoveredFromBackup, true, "the released read still reports the recovery it performed");
+    assert.deepEqual(result.data, { value: 99 }, "and answers with the backup's data, which is what it read");
+    assert.equal(backend.files.get(filePath), mutatedMain, "the mutate's committed content is exactly what is on disk - the read reverted nothing");
+  });
+});
+
+describe("FileStore.ensureMigrated - the durable restore at boot", () => {
+
+  test("a corrupt main with a valid backup is rewritten under the queue, and a repeat call writes nothing", async () => {
+
+    /* Boot is where a corrupt main file becomes a good main file on disk. ensureMigrated already persists an in-memory schema upgrade through a no-op mutate;
+     * an in-memory backup recovery is the same kind of debt - state the process holds that the disk does not - so it is settled the same way and in the same
+     * place, under the queue.
+     *
+     * The repeat call is the other half of the contract: once the file on disk parses, a later boot has nothing to persist and issues no write at all. Without
+     * that, every boot would rewrite a file it had already repaired.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/boot-restore.json";
+    const bakContent = "{\"value\":42}\n";
+
+    backend.files.set(filePath, "{not valid json");
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", bakContent);
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    await store.ensureMigrated();
+
+    const mainParsed = JSON.parse(backend.files.get(filePath) ?? "") as { value: number };
+
+    assert.equal(mainParsed.value, 42, "the main file carries the backup's data after the boot step");
+    assert.equal(backend.files.get(filePath + ".bak"), bakContent, ".bak is untouched - the rotation is skipped on a recovered read");
+
+    // Second call: the repaired file on disk parses, so there is nothing to persist. Recording from here means the log covers only the repeat call.
+    const writes: string[] = [];
     const realWriteFile = backend.writeFile;
 
     backend.writeFile = async (p: string, content: string): Promise<void> => {
 
-      if(p.endsWith(".tmp")) {
+      writes.push(p);
 
-        tempWrites.push(p);
-      }
+      return realWriteFile(p, content);
+    };
+
+    await store.ensureMigrated();
+
+    assert.deepEqual(writes, [], "a repeat boot step over a repaired file is a pure read");
+  });
+
+  test("a main file and a backup that are both unparseable leave the boot step a pure read rather than a failure", async () => {
+
+    /* The boundary between the repairs the boot step persists. A file with no usable backup has nothing to recover, so read() reports parseError with no
+     * migrations and no recovery, and the boot step must take neither branch: attempting the no-op mutate would hit doMutate's corruption guard and throw
+     * FileStoreParseError out of startup, turning an unreadable settings file into a server that will not start.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/doubly-corrupt.json";
+    const corruptMain = "{not valid json";
+    const corruptBak = "{also not valid";
+
+    backend.files.set(filePath, corruptMain);
+    backend.mtimes.set(filePath, 1);
+    backend.files.set(filePath + ".bak", corruptBak);
+    backend.mtimes.set(filePath + ".bak", 2);
+
+    const writes: string[] = [];
+    const realWriteFile = backend.writeFile;
+
+    backend.writeFile = async (p: string, content: string): Promise<void> => {
+
+      writes.push(p);
 
       return realWriteFile(p, content);
     };
@@ -433,12 +591,11 @@ describe("FileStore - recovery and mutate use distinct temp paths", () => {
 
       defaultValue: () => ({ value: 0 })
     });
+    const result = await store.ensureMigrated();
 
-    // The mutate's internal read recovers from .bak (restore-write to .recover.tmp), then the atomic write lands the mutation via .tmp.
-    await store.mutate((data) => { data.value = 11; });
-
-    assert.ok(tempWrites.includes(filePath + ".recover.tmp"), "recovery restore-write targets the recovery-specific temp path");
-    assert.ok(tempWrites.includes(filePath + ".tmp"), "the atomic mutate-write targets the plain temp path");
-    assert.notEqual(filePath + ".recover.tmp", filePath + ".tmp", "recovery and mutate temp paths are distinct - they can never clobber each other");
+    assert.deepEqual(result.applied, [], "no migrations were applied");
+    assert.deepEqual(writes, [], "and no write was attempted");
+    assert.equal(backend.files.get(filePath), corruptMain, "the main file is left for an operator to deal with");
+    assert.equal(backend.files.get(filePath + ".bak"), corruptBak, "and so is the backup");
   });
 });

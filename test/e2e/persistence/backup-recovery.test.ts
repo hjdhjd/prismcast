@@ -1,10 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * backup-recovery.test.ts: Asserts the file-store framework's auto-recovery contract for the worst-case persistence scenario - a corrupt main JSON file. The
- * framework's safety guarantee (src/config/persistence.ts createFileStore docstring): when the main file fails to parse, read() transparently restores from
- * .bak via atomic temp+rename and surfaces recoveredFromBackup on the result; only when both files are unparseable does the result fall back to defaults with
- * parseError=true. Without integration coverage, the next change to the recovery sequencing (e.g., a refactor that touched the order of restore and write,
- * or that mistakenly fed the corrupt main back into .bak before recovery) ships untested.
+ * framework's safety guarantee (src/config/persistence.ts createFileStore docstring): when the main file fails to parse, read() recovers the .bak rotation's
+ * contents in memory and surfaces recoveredFromBackup on the result, writing nothing itself, and the durable repair of the file on disk lands under the store's
+ * write queue - at boot through ensureAllMigrated, or through the next mutate, whose own write replaces the corrupt main with good data. Only when both files
+ * are unparseable does the result fall back to defaults with parseError=true. Without integration coverage, the next change to the recovery sequencing (e.g., a
+ * refactor that moved the restore back outside the queue, or that mistakenly fed the corrupt main back into .bak before recovery) ships untested.
  *
  * The scenarios tested here are the user-visible failure modes that recovery exists to handle: a kill-mid-save, an OS-level write failure, a partial flush
  * during shutdown. Each leaves the main file in a corrupt state that the .bak can rescue. The test deliberately corrupts files inside ctx.dataDir so the
@@ -27,6 +28,7 @@ import { describe, test } from "node:test";
 import { mutateConfig, readConfig } from "../../../src/config/userConfig.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
+import { ensureAllMigrated } from "../../../src/config/persistence.ts";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
 
@@ -125,15 +127,14 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
   test("recovery preserves .bak as the snapshot - the rotation does NOT overwrite .bak with the just-corrupted main during the recovery path itself", async () => {
 
-    /* The structural rule that makes recovery safe to call repeatedly: the recovery code path (tryRecoverFromBackup) reads .bak,
-     * restores main from .bak via atomic temp+rename, and never touches .bak. This means a corrupt main can be recovered any number of times against the same
-     * .bak - the .bak is the snapshot, never replaced by a worse version.
+    /* The structural rule that makes recovery safe to call repeatedly: the recovery code path reads .bak and never touches it. This means a corrupt main can be
+     * recovered any number of times against the same .bak - the .bak is the snapshot, never replaced by a worse version.
      *
-     * Note: when read() recovers the in-memory state from .bak, doMutate skips the .bak rotation entirely - the copy of main to .bak is guarded by
-     * `if(!result.recoveredFromBackup)`, so a mutate that triggered recovery leaves .bak untouched (no rotation occurs at all, not a rotation that re-writes
-     * identical bytes). To keep this test scoped to the recovery path alone, independent of any later mutate, we use readConfig (which restores main from
-     * .bak via the recovery path but performs no main->.bak rotation) instead of mutateConfig - the read-only path exercises tryRecoverFromBackup, which
-     * writes only to main.
+     * The row runs in two steps because the recovery does. A bare readConfig proves the in-memory half: the recovered host comes back, recoveredFromBackup is
+     * set, and the corrupt bytes are still on disk afterwards, because a read does not hold the write queue and so writes nothing. The boot step that follows
+     * proves the durable half: ensureAllMigrated sees a store whose read recovered and persists it through a no-op mutate, which is a write under the queue.
+     * Splitting the two also keeps the .bak assertion unambiguous - when read() recovers, doMutate skips the .bak rotation entirely (the copy of main to .bak
+     * is guarded by `if(!result.recoveredFromBackup)`), so the boot step leaves .bak untouched rather than re-writing identical bytes.
      */
     await using ctx = await createIntegrationContext();
 
@@ -159,15 +160,30 @@ describe("file-store backup recovery from a corrupt main file", () => {
     assert.equal(recovered.config.channelsDvr?.host, "snapshot.example.test",
       "the recovered config carries the .bak host - confirming the recovery actually executed");
 
-    // The .bak file's bytes are untouched after recovery. tryRecoverFromBackup's contract is to write to main, never to .bak.
+    // The .bak file's bytes are untouched after recovery. The recovery path reads .bak and never writes it - the rotation is the only writer of .bak, and it
+    // is skipped whenever a read recovered.
     const bakAfter = await readFile(pathInDataDir(ctx, "config.json.bak"), "utf-8");
 
     assert.equal(bakAfter, bakBefore, "the .bak file's bytes must be byte-identical after recovery - the recovery path must not mutate .bak");
 
-    // Bonus: the corrupted main has been atomically replaced with the recovered .bak content. tryRecoverFromBackup writes to a .tmp and renames over main.
-    const mainAfter = await readFile(pathInDataDir(ctx, "config.json"), "utf-8");
+    // The corrupt main is still corrupt on disk. The read recovered in memory and wrote nothing, which is what keeps a read from ever racing a mutate's write.
+    const mainAfterRead = await readFile(pathInDataDir(ctx, "config.json"), "utf-8");
 
-    assert.equal(mainAfter, bakBefore, "the recovered main file's bytes must match .bak's - confirming the temp+rename restore actually completed");
+    assert.equal(mainAfterRead, "garbage-main-content", "a bare read leaves the corrupt bytes untouched - the durable repair is not a read's to make");
+
+    /* The boot step is where the repair happens. ensureAllMigrated runs every store's ensureMigrated, and a store whose read reports recoveredFromBackup has
+     * in-memory state the disk does not carry, so it persists through a no-op mutate under the queue - the same path a schema upgrade takes.
+     */
+    await ensureAllMigrated();
+
+    const mainAfterBoot = await readFile(pathInDataDir(ctx, "config.json"), "utf-8");
+
+    assert.equal(mainAfterBoot, bakBefore, "the boot step replaced the corrupt bytes with the backup's, byte for byte, carried through the queue");
+    assert.match(mainAfterBoot, /snapshot\.example\.test/, "and the recovered host is what the file now holds");
+
+    const bakAfterBoot = await readFile(pathInDataDir(ctx, "config.json.bak"), "utf-8");
+
+    assert.equal(bakAfterBoot, bakBefore, ".bak is still the snapshot after the boot step - a recovered read skips the rotation");
   });
 
   test("per-store recovery isolation: corrupting only channels.json triggers recovery for channels alone, leaving config and profiles undisturbed", async () => {

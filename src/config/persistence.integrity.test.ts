@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * persistence.integrity.test.ts: Tests for the file-store framework's integrity-and-recovery branches - the validator severity router, the post-write integrity
- * check that catches encoder bugs and partial writes, and the recovery branches inside tryRecoverFromBackup, doMutate's backup step, and read()'s file-read
- * fallback. This file covers tryRecoverFromBackup's own restore-write-failure contract as exercised through read() (which is what doMutate calls internally
- * before applying a mutation); the mutate-specific recovery-guard behavior - the corrupt-main rotation guard and the distinct temp-path contract between a
- * read-triggered recovery and an in-flight mutate - is covered separately in persistence.test.ts. Each branch is a safety net the framework relies on but the
- * user-facing happy path never visits; the tests assert them so a refactor that breaks the sequence (e.g., dropping the .bak restore on integrity failure,
- * ENOENT-misclassifying a permission error) surfaces here rather than as user data loss.
+ * check that catches encoder bugs and partial writes, and the recovery branches inside restoreFromBackup, doMutate's backup step, and read()'s file-read
+ * fallback. This file covers the restore-write-failure contract on the one path that performs a restore write - doMutate's integrity-failure branch, which
+ * holds the queue - in both directions: the restore that succeeds and the restore whose rename fails. The write-ownership rules that span reads and mutates -
+ * a read recovering in memory without writing, the corrupt-main rotation guard, the boot-step restore - are covered in persistence.test.ts. Each branch is a
+ * safety net the framework relies on but the user-facing happy path never visits; the tests assert them so a refactor that breaks the sequence (e.g., dropping
+ * the .bak restore on integrity failure, ENOENT-misclassifying a permission error) surfaces here rather than as user data loss.
  *
  * The tests use the in-memory storage backend with override hooks to drive failure modes deterministically. Real-fs reproduction of "writeFile lies about what
  * it wrote" or "readFile fails for a permission reason but not ENOENT" is fragile or impossible; the in-memory backend lets the test author specify the exact
@@ -106,9 +106,8 @@ describe("FileStore.mutate - post-write integrity check", () => {
      *
      * To drive this, we override writeFile so that the FIRST write to <filePath>.tmp stores tampered content rather than what the framework asked for. The
      * subsequent rename moves the tampered tmp to main, the readback returns tampered bytes, byte-comparison fails, .bak is restored, and the mutate rejects.
-     * We use a one-shot guard so a second write to the identical <filePath>.tmp path would not re-trigger the tamper injection, should the framework ever
-     * reuse that path within a single mutate. The recovery path itself writes through a distinctly-suffixed <filePath>.recover.tmp, so it is unaffected by
-     * this guard either way.
+     * The one-shot guard is what keeps the restore uncorrupted: the restore writes through the same <filePath>.tmp path the mutate used, because both writes
+     * hold the queue and run one after the other, so without the guard the tamper would corrupt the restore too and the row would prove nothing.
      */
     const backend = makeMemoryStorageBackend();
     const filePath = "/data/integrity-fail.json";
@@ -224,33 +223,61 @@ describe("FileStore.read - non-ENOENT file read error", () => {
   });
 });
 
-describe("FileStore.mutate - tryRecoverFromBackup restore-write failure", () => {
+describe("FileStore.mutate - integrity-failure restore whose write fails", () => {
 
-  test("when .bak parses but the restore-write to main fails, the recovered data is returned and a warn is logged", async () => {
+  test("when the integrity check's restore cannot write, the mutate still rejects and the recovered data was read all the same", async () => {
 
-    /* tryRecoverFromBackup attempts an atomic temp+rename to restore main from .bak. The restore is best-effort: if the write step fails, the function still
-     * returns the recovered data (the in-memory state is good even if the on-disk restore could not complete) and logs a warn. We force the restore to fail
-     * by overriding rename for the restore-tmp path; the framework's recovery still surfaces recovered=true with the .bak's content.
+    /* The one restore write the framework performs lives on doMutate's integrity-failure branch, and it is best-effort: if the write step fails, the framework
+     * still obtained the recovered data (the in-memory state is good even when the on-disk repair could not complete) and logs a warn. Reaching that branch
+     * takes a compound injection, because the branch is two failures deep.
+     *
+     * The seed is a VALID main and a VALID .bak, so nothing is wrong until we make it wrong. First we tamper doMutate's own write so the post-write readback
+     * cannot match what was intended; that failure is what calls the restore. Then we fail the restore's rename, which is the second failure. Both writes go
+     * to the same <filePath>.tmp under the queue, one after the other, so the injections count occurrences rather than matching on the path.
      */
     const backend = makeMemoryStorageBackend();
     const filePath = "/data/restore-write-fail.json";
+    const priorGoodContent = "{\"value\":99}\n";
 
-    // Seed: corrupt main, valid .bak. The framework's read will detect the corrupt main, attempt to recover from .bak, and try to restore main.
-    backend.files.set(filePath, "{not valid json");
+    backend.files.set(filePath, priorGoodContent);
     backend.mtimes.set(filePath, 1);
-    backend.files.set(filePath + ".bak", "{\"value\":99}\n");
-    backend.mtimes.set(filePath + ".bak", 2);
+    backend.files.set(filePath + ".bak", priorGoodContent);
+    backend.mtimes.set(filePath + ".bak", 1);
 
-    // Override rename to fail when called against the recovery restore path. tryRecoverFromBackup restores main via a recovery-specific temp suffix (.recover.tmp,
-    // distinct from doMutate's .tmp so the two write paths never collide), so we detect by source matching `<filePath>.recover.tmp` and destination matching
-    // `filePath`. Other rename calls (e.g., the post-mutate atomic rename) flow through the default.
+    // Injection one: the mutate's own write lands bytes the readback will not match, which is what trips the integrity check.
+    let tamperedOnce = false;
+    const realWriteFile = backend.writeFile;
+
+    backend.writeFile = async (p: string, content: string): Promise<void> => {
+
+      if(!tamperedOnce && (p === (filePath + ".tmp"))) {
+
+        tamperedOnce = true;
+        backend.files.set(p, "TAMPERED-PAYLOAD-NOT-VALID-JSON");
+        backend.mtimes.set(p, (backend.mtimes.get(p) ?? 0) + 100);
+
+        return;
+      }
+
+      return realWriteFile(p, content);
+    };
+
+    /* Injection two: the restore's rename fails. The mutate's own rename must succeed first - that is what puts the tampered bytes on main and lets the
+     * integrity check see them - so we fail the second rename of the temp over main rather than the first.
+     */
+    let renameCount = 0;
     const realRename = backend.rename;
 
     backend.rename = async (source: string, destination: string): Promise<void> => {
 
-      if((source === (filePath + ".recover.tmp")) && (destination === filePath)) {
+      if((source === (filePath + ".tmp")) && (destination === filePath)) {
 
-        throw new Error("synthetic-rename-failure");
+        renameCount += 1;
+
+        if(renameCount === 2) {
+
+          throw new Error("synthetic-restore-rename-failure");
+        }
       }
 
       return realRename(source, destination);
@@ -261,16 +288,27 @@ describe("FileStore.mutate - tryRecoverFromBackup restore-write failure", () => 
       defaultValue: () => ({ value: 0 })
     });
 
-    // read() drives tryRecoverFromBackup. The recovered data still surfaces despite the failed restore.
-    const result = await store.read();
+    await assert.rejects(() => store.mutate((data) => { data.value = 2; }), /Post-write integrity check failed/,
+      "the integrity check still rejects - a failed restore does not change what the caller is told about the write");
 
-    assert.equal(result.recoveredFromBackup, true, "recoveredFromBackup is true even when the on-disk restore fails - in-memory state is what callers see");
-    assert.deepEqual(result.data, { value: 99 }, "the recovered data matches the .bak content");
+    assert.equal(renameCount, 2, "sanity: both renames were attempted, so the second injection actually fired");
 
-    // The warn line carries diagnostic context for operator triage.
+    // The warn is the operator-visible half: the framework read the recovered data and could not put it back on disk.
     const warnings = captured.filter((line) => (line.level === "warn") && line.message.includes("failed to restore the main file"));
 
-    assert.ok(warnings.length >= 1, "the restore-write failure is logged at warn level so operators see it on next read");
+    assert.ok(warnings.length >= 1, "the restore-write failure is logged at warn level so operators see it");
+
+    /* The recovered data was still obtained despite the failed write. The framework's own signal for the opposite case - no usable backup at all - is a
+     * distinct error line, and its absence here is what says restoreFromBackup returned data rather than null.
+     */
+    const recoveryFailures = captured.filter((line) => (line.level === "error") && line.message.includes("Backup recovery also failed"));
+
+    assert.equal(recoveryFailures.length, 0, "the backup was read successfully - only its write back to main failed");
+
+    // The main file is left exactly as the failed restore left it: the tampered bytes, because the restore's rename never happened.
+    assert.equal(backend.files.get(filePath), "TAMPERED-PAYLOAD-NOT-VALID-JSON", "main holds the tampered bytes - the restore could not replace them");
+    assert.equal(backend.files.get(filePath + ".bak"), priorGoodContent, ".bak still holds the prior good state, which is the copy that matters");
+    assert.equal(backend.files.has(filePath + ".tmp"), false, "the failed write cleaned up its temp file");
   });
 });
 

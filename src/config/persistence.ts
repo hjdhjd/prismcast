@@ -6,7 +6,7 @@
  *
  *   - Atomic writes (temp file + rename)
  *   - Serialized mutations (in-process queue)
- *   - Auto-recovery from .bak when the main file fails to parse
+ *   - Auto-recovery from .bak when the main file fails to parse: a read recovers in memory, and the durable restore lands under the write queue
  *   - Versioned snapshots at release boundaries (subdirectory + bounded retention)
  *   - Declarative schema migrations with an audit trail
  *   - Pluggable pre-write integrity validators
@@ -289,8 +289,10 @@ export async function ensureAllMigrated(): Promise<void> {
  * - **Serialization:** a promise chain ensures only one `mutate()` runs at a time. Concurrent callers queue behind the active operation.
  * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if both the main file and its `.bak` are unparseable, preventing save-over-corrupt cascades.
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
- * - **Auto-recovery:** when the main file fails to parse, `read()` transparently restores from `.bak` (atomic temp+rename) and surfaces `recoveredFromBackup`
- *   on the result so callers can banner the event. Only when both files are unparseable does the result fall back to defaults with `parseError: true`.
+ * - **Auto-recovery:** when the main file fails to parse, `read()` transparently recovers the `.bak` rotation's contents in memory and surfaces
+ *   `recoveredFromBackup` on the result so callers can banner the event. The read writes nothing: the durable restore belongs to the write queue, and it lands
+ *   there through `ensureMigrated()` at boot or through the next `mutate()`, whose own write replaces the corrupt main with good data. Only when both files are
+ *   unparseable does the result fall back to defaults with `parseError: true`.
  * - **Versioned snapshots:** `snapshot(label)` writes a copy of the current file into a `snapshots/` subdirectory, named `<file>.<label>`, safe to call more
  *   than once for the same label. After each successful create the directory is pruned to at most SNAPSHOT_RETENTION entries per file (by mtime).
  * - **Declarative migrations:** when `migrations` and `currentSchemaVersion` are provided, `read()` runs any pending migrations in memory and returns the
@@ -399,57 +401,26 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Attempts to recover from .bak when the main file fails to parse. Reads .bak, parses it, and on success restores the main file from .bak via atomic temp+
-   * rename. Returns the parsed recovered data, or null if .bak is missing or also unparseable.
+   * Writes content over a file atomically: the bytes land in a sibling temp file, then a rename moves that file over the target. rename() is atomic on POSIX
+   * and NTFS, so a concurrent reader sees either the whole prior file or the whole new one and never a partial write. A failure unlinks the temp file and
+   * rethrows, because the caller's belief that the write happened was wrong.
    *
-   * The restore-write is best-effort - the in-memory recovered data is what callers act on, and a failed restore leaves the main file corrupt on disk without
-   * losing the good copy. The actual protection against rotating a corrupt main into .bak lives in doMutate, which skips the main->bak rotation whenever read()
-   * reports recoveredFromBackup; this function's restore is the convenience that lets a subsequent clean read see a non-corrupt main once the write succeeds.
-   *
-   * The restore uses a recovery-specific temp suffix (.recover.tmp) distinct from doMutate's .tmp. Because read() runs outside the mutate serialization lock,
-   * a read-triggered recovery can overlap an in-flight mutate; distinct suffixes guarantee the recovery never clobbers the mutate's temp before its rename.
+   * One temp suffix serves every writer because every write to a main file runs under the mutate queue: there is only ever one write in flight for a given
+   * path, so the temp file cannot be clobbered by a second writer between its write and its rename.
+   * @param filePath - The file to overwrite.
+   * @param content - The bytes to write.
    */
-  async function tryRecoverFromBackup(filePath: string): Promise<T | null> {
+  async function writeAtomically(filePath: string, content: string): Promise<void> {
 
-    const bakPath = filePath + ".bak";
-
-    let bakContent: string;
+    const tmpPath = filePath + ".tmp";
 
     try {
 
-      bakContent = await backend.readFile(bakPath);
-    } catch {
-
-      return null;
-    }
-
-    let data: T;
-
-    try {
-
-      data = options.parse(bakContent);
-    } catch {
-
-      return null;
-    }
-
-    // Restore main from .bak via atomic temp+rename. Best-effort: if the restore write fails, we still return the recovered data so the caller can proceed
-    // with valid in-memory state. A subsequent read would attempt recovery again and produce the same result.
-    //
-    // The restore uses a recovery-specific temp suffix (.recover.tmp) rather than the .tmp suffix doMutate uses. read() does NOT acquire the mutate
-    // serialization lock, so a read-triggered recovery can run concurrently with an in-flight mutate. Sharing the .tmp path would let a recovery's write or
-    // rename clobber a mutate's in-flight temp file before the mutate renames it into place. Distinct suffixes keep the two write paths from ever colliding.
-    const tmpPath = filePath + ".recover.tmp";
-
-    try {
-
-      await backend.writeFile(tmpPath, bakContent);
+      await backend.writeFile(tmpPath, content);
       await backend.rename(tmpPath, filePath);
-    } catch(restoreError) {
+    } catch(writeError) {
 
-      LOG.warn("Recovered %s data from backup but failed to restore the main file: %s.", options.label,
-        (restoreError instanceof Error) ? restoreError.message : String(restoreError));
-
+      // Attempt cleanup of the temp file on failure.
       try {
 
         await backend.unlink(tmpPath);
@@ -457,15 +428,74 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
         // Cleanup is best-effort.
       }
-    }
 
-    return data;
+      throw writeError;
+    }
   }
 
   /**
-   * Reads the file from disk, parses it, runs any pending migrations in memory, and returns the result. On a parse failure of the main file, attempts to
-   * recover from .bak before falling back to defaults. Migrations applied here are not persisted by this method alone - callers who need to persist an upgrade
-   * should use ensureMigrated().
+   * Reads and parses a file's .bak rotation, returning the backup's raw content alongside the parsed data. Returns null when the backup is missing or is itself
+   * unparseable. This reads and nothing else, which is what makes it safe to call from read() - a caller that wants the main file repaired on disk calls
+   * restoreFromBackup instead, from under the queue.
+   * @param filePath - The main file whose .bak rotation is read.
+   * @returns The backup's content and its parsed data, or null when no usable backup exists.
+   */
+  async function readBackup(filePath: string): Promise<{ content: string; data: T } | null> {
+
+    let content: string;
+
+    try {
+
+      content = await backend.readFile(filePath + ".bak");
+    } catch {
+
+      return null;
+    }
+
+    try {
+
+      return { content, data: options.parse(content) };
+    } catch {
+
+      return null;
+    }
+  }
+
+  /**
+   * Restores the main file from its .bak rotation and returns the recovered data, or null when no usable backup exists. The restore write is best-effort: a
+   * failure is logged and the recovered data is still returned, because the in-memory state is good even when the on-disk repair could not complete.
+   *
+   * Callers hold the mutate queue. The restore is a write to the main file, and serializing every such write is what lets one temp suffix serve them all -
+   * a restore cannot overtake another writer's temp file because no other writer is running.
+   * @param filePath - The main file to restore from its backup.
+   * @returns The recovered data, or null when no usable backup exists.
+   */
+  async function restoreFromBackup(filePath: string): Promise<T | null> {
+
+    const backup = await readBackup(filePath);
+
+    if(backup === null) {
+
+      return null;
+    }
+
+    try {
+
+      await writeAtomically(filePath, backup.content);
+    } catch(restoreError) {
+
+      LOG.warn("Recovered %s data from backup but failed to restore the main file: %s.", options.label,
+        (restoreError instanceof Error) ? restoreError.message : String(restoreError));
+    }
+
+    return backup.data;
+  }
+
+  /**
+   * Reads the file from disk, parses it, runs any pending migrations in memory, and returns the result. On a parse failure of the main file, recovers the .bak
+   * rotation's contents in memory before falling back to defaults. Nothing this method observes is persisted by the method itself - neither a migration it ran
+   * nor a backup it recovered - because it does not hold the write queue. ensureMigrated() persists either at boot, and the next mutate() persists both as a
+   * side effect of its own write.
    */
   async function read(): Promise<FileStoreReadResult<T>> {
 
@@ -485,14 +515,15 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
         const message = (error instanceof Error) ? error.message : String(error);
 
-        // The main file is corrupt. Try to recover from the .bak rotation before falling back to defaults.
-        const recovered = await tryRecoverFromBackup(filePath);
+        // The main file is corrupt. Recover the .bak rotation's contents in memory before falling back to defaults, and leave the corrupt bytes on disk for a
+        // writer that holds the queue to replace. recoveredFromBackup on the result is what tells that writer the file needs one.
+        const backup = await readBackup(filePath);
 
-        if(recovered !== null) {
+        if(backup !== null) {
 
           LOG.warn("Recovered %s from backup; main file was corrupt: %s.", options.label, message);
 
-          parsed = { data: recovered, recoveredFromBackup: true };
+          parsed = { data: backup.data, recoveredFromBackup: true };
         } else {
 
           parseError = { message };
@@ -704,11 +735,10 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     // Backup: copy the current file to .bak before overwriting. Swallow ENOENT (file does not exist yet on first write).
     //
-    // We skip the rotation entirely when read() recovered the in-memory state from .bak. recoveredFromBackup being true means the main file on disk was
-    // unparseable and the good copy is the existing .bak - so .bak already holds the prior good state. Had tryRecoverFromBackup's restore-write to main failed,
-    // the main file on disk is still corrupt; copying it over .bak would destroy the only good copy. Had the restore succeeded, main now equals .bak and the
-    // upcoming atomic write overwrites it with the mutated good data while .bak keeps the prior good state. Either way, rotating is at best redundant and at
-    // worst destructive, so we leave the known-good .bak untouched and let the atomic write below replace the (recovered) main.
+    // We skip the rotation entirely when read() recovered the in-memory state from .bak. recoveredFromBackup being true means the main file on disk is
+    // unparseable and the good copy is the existing .bak, so rotating would copy the corrupt main over the only good copy there is. Leaving .bak untouched
+    // keeps the prior good state while the atomic write below replaces the corrupt main with the mutated good data, which is the pair we want: main holds the
+    // new state and .bak holds the one before it.
     const bakPath = filePath + ".bak";
 
     if(!result.recoveredFromBackup) {
@@ -725,26 +755,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
       }
     }
 
-    // Atomic write: write to a temp file, then rename over the original. rename() is atomic on POSIX and NTFS filesystems.
-    const tmpPath = filePath + ".tmp";
-
-    try {
-
-      await backend.writeFile(tmpPath, content);
-      await backend.rename(tmpPath, filePath);
-    } catch(writeError) {
-
-      // Attempt cleanup of the temp file on failure.
-      try {
-
-        await backend.unlink(tmpPath);
-      } catch {
-
-        // Cleanup is best-effort.
-      }
-
-      throw writeError;
-    }
+    // Atomic write. We are under the queue, which is what makes the shared temp path safe here and in the restore below.
+    await writeAtomically(filePath, content);
 
     // Post-write integrity check: read the file we just wrote and verify it byte-matches what we intended to write. Catches encoder bugs, partial writes, and
     // any disk- or filesystem-level corruption that happened between writeFile and now. On a verification failure the main file is structurally suspect, so
@@ -769,8 +781,9 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
       LOG.error("Post-write integrity check failed for %s: %d bytes on disk, expected %d bytes. Restoring from backup.",
         filePath, written.length, content.length);
 
-      // Restore the prior good state. tryRecoverFromBackup handles the atomic rename of .bak -> main.
-      const recovered = await tryRecoverFromBackup(filePath);
+      // Restore the prior good state. We hold the queue, so this is a place the durable restore belongs; restoreFromBackup handles the atomic rename of
+      // .bak over main.
+      const recovered = await restoreFromBackup(filePath);
 
       if(recovered === null) {
 
@@ -799,22 +812,27 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Verifies the file is at the current schema version, persisting any required upgrade. A no-op on repeat - when the file is already current this is a
-   * single read with no write. The release boot coordinator calls this on every store after snapshots have been captured.
+   * Verifies the file on disk is at the current schema version and is parseable, persisting whatever repair either one needs. A no-op on repeat - when the file
+   * is already current and parses, this is a single read with no write. The release boot coordinator calls this on every store after snapshots have been
+   * captured, which makes boot the moment a corrupt main file with a good backup becomes a good main file on disk.
    */
   async function ensureMigrated(): Promise<MigrationResult> {
 
-    // Peek to determine whether migrations are needed. read() runs migrations in memory but does not persist.
+    // Peek to determine whether the file on disk needs a write. read() runs migrations in memory and recovers a corrupt main from .bak in memory, and persists
+    // neither, because it does not hold the queue.
     const peek = await read();
 
-    if(peek.migrationResult.applied.length === 0) {
+    if((peek.migrationResult.applied.length === 0) && !peek.recoveredFromBackup) {
 
       return peek.migrationResult;
     }
 
-    // Migrations were applied in memory - persist via a no-op mutate. mutate's internal read re-runs the migrations so the persisted state matches what we
-    // observed. The cost is one extra read, but only on boots where migrations were actually needed.
-    await mutate(() => { /* no-op: the write exists to persist the schema upgrade. */ });
+    /* Persist via a no-op mutate. mutate's internal read repeats both recoveries - the migration and the backup - so the state that lands on disk is the state
+     * we just observed, and the write runs under the queue where every write to a main file belongs. A doubly-corrupt file (main and .bak both unparseable)
+     * reaches neither branch: read() reports parseError with no migrations and no recovery, so no mutate is attempted and the corruption guard never fires.
+     * The cost is one extra read, on the boots where the file needed a repair.
+     */
+    await mutate(() => { /* no-op: the write exists to persist the schema upgrade or the recovered backup. */ });
 
     return peek.migrationResult;
   }
