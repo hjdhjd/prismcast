@@ -4,7 +4,7 @@
  */
 import type { ApplyResult, ChangeOutcome, ConfigChange } from "./reactivity.ts";
 import type { Config, Nullable } from "../types/index.ts";
-import { DEFAULTS, mergeConfiguration, mutateConfig, readConfig } from "./userConfig.ts";
+import { DEFAULTS, getNestedValue, getSettingByPath, mergeConfiguration, mutateConfig, readConfig } from "./userConfig.ts";
 import { LOG, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
 import { applyConfigChanges, computeConfigDiff, registerConfigChangeHandler } from "./reactivity.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
@@ -470,6 +470,97 @@ function applyCoercions(config: Config, coercions: ConfigCoercions): void {
   }
 }
 
+/** The settings whose value the server refuses to start with out of range. Each entry is a CONFIG_METADATA path, and the floor, the ceiling, and the name the
+ * error reports all come from that path's metadata - the same metadata the settings form validates a save against. One declaration of a bound means a value
+ * the form accepts is a value the boot accepts, and there is no second copy to fall out of step with the first.
+ *
+ * The list is narrower than the metadata's full set of bounded numeric settings, and deliberately so: these are the values the server cannot run with, while
+ * the settings form validates the rest when they are saved. Widening boot-time validation to every bounded setting is a separate decision, because each
+ * addition is a new way for a configuration that boots today to stop booting.
+ *
+ * hdhr.port is bounded and startup-validated too, but it is not here: its check is conditional on HDHomeRun emulation being enabled, so it lives inside that
+ * guard in collectHardErrors and calls the same helper for its bounds.
+ */
+export const STARTUP_BOUNDED_SETTINGS: readonly string[] = [
+
+  // Server configuration.
+  "server.port",
+
+  // Streaming bitrates.
+  "streaming.videoBitsPerSecond",
+  "streaming.audioBitsPerSecond",
+
+  // Timeouts. The floor prevents premature failures and the ceiling prevents indefinite hangs.
+  "streaming.navigationTimeout",
+  "streaming.videoTimeout",
+
+  // Concurrent stream limit.
+  "streaming.maxConcurrentStreams",
+
+  // Circuit breaker threshold.
+  "recovery.circuitBreakerThreshold",
+
+  // Browser relaunch governor bounds.
+  "recovery.relaunchFailureThreshold",
+  "recovery.relaunchFailureWindow",
+  "recovery.relaunchHealthHold",
+
+  // Stall threshold, the one float among these.
+  "playback.stallThreshold",
+
+  // Logging.
+  "logging.maxSize",
+
+  // HLS configuration.
+  "hls.segmentDuration",
+  "hls.maxSegments",
+  "hls.idleTimeout"
+];
+
+/**
+ * Validates one bounded setting against the floor and ceiling its CONFIG_METADATA entry declares, naming the error by that entry's environment variable so the
+ * message points at the knob an operator would turn. The metadata type picks the validator: an integer or port setting must be a whole number, a float setting
+ * need only be positive.
+ * @param config - The configuration to read the value from.
+ * @param settingPath - The dot-separated CONFIG_METADATA path of the setting to validate.
+ * @returns Error message if the value is invalid, null if it is within bounds.
+ */
+function validateBoundedSetting(config: Config, settingPath: string): Nullable<string> {
+
+  const setting = getSettingByPath(settingPath);
+  const errorName = setting?.envVar;
+
+  /* A path that does not name a setting with an environment variable answers as a failure rather than passing silently, because the server cannot vouch for a
+   * value whose bounds it was unable to find. The drift-guard test in config/index.test.ts asserts every path here resolves, so this reports a coding error
+   * rather than an operator's.
+   */
+  if(!setting || !errorName) {
+
+    return settingPath + " has no configuration metadata naming an environment variable, so its bounds cannot be validated.";
+  }
+
+  const value = getNestedValue(config, settingPath) as number;
+
+  switch(setting.type) {
+
+    case "float": {
+
+      return validatePositiveNumber(errorName, value, setting.min, setting.max);
+    }
+
+    case "integer":
+    case "port": {
+
+      return validatePositiveInt(errorName, value, setting.min, setting.max);
+    }
+
+    default: {
+
+      return settingPath + " is a " + setting.type + " setting, which carries no numeric bounds to validate.";
+    }
+  }
+}
+
 /**
  * Collects every hard configuration error - an always-fatal value that no coercion can repair - for the given configuration. Pure: it never mutates and never
  * throws, so both validateConfiguration (which throws on a non-empty result at startup) and reloadConfiguration (which rejects the save) can reuse it.
@@ -483,38 +574,11 @@ function collectHardErrors(config: Config): string[] {
   const errors: string[] = [];
   const check = (result: Nullable<string>): void => { if(result) { errors.push(result); } };
 
-  // Server configuration.
-  check(validatePositiveInt("PORT", config.server.port, 1, 65535));
+  // Bounded settings, each validated against the floor and ceiling its own metadata declares. The list's group comments record what each group is for.
+  for(const settingPath of STARTUP_BOUNDED_SETTINGS) {
 
-  // Streaming bitrates. Video: 100kbps-50Mbps. Audio: 32-512kbps.
-  check(validatePositiveInt("VIDEO_BITRATE", config.streaming.videoBitsPerSecond, 100000, 50000000));
-  check(validatePositiveInt("AUDIO_BITRATE", config.streaming.audioBitsPerSecond, 32000, 512000));
-
-  // Timeouts. 1 second minimum prevents premature failures. 10 minutes maximum prevents indefinite hangs.
-  check(validatePositiveInt("NAV_TIMEOUT", config.streaming.navigationTimeout, 1000, 600000));
-  check(validatePositiveInt("VIDEO_TIMEOUT", config.streaming.videoTimeout, 1000, 600000));
-
-  // Concurrent stream limit.
-  check(validatePositiveInt("MAX_CONCURRENT_STREAMS", config.streaming.maxConcurrentStreams, 1, 100));
-
-  // Circuit breaker threshold.
-  check(validatePositiveInt("CIRCUIT_BREAKER_THRESHOLD", config.recovery.circuitBreakerThreshold, 1, 100));
-
-  // Browser relaunch governor bounds.
-  check(validatePositiveInt("RELAUNCH_FAILURE_THRESHOLD", config.recovery.relaunchFailureThreshold, 1, 20));
-  check(validatePositiveInt("RELAUNCH_FAILURE_WINDOW", config.recovery.relaunchFailureWindow, 60000, 3600000));
-  check(validatePositiveInt("RELAUNCH_HEALTH_HOLD", config.recovery.relaunchHealthHold, 60000, 600000));
-
-  // Stall threshold (float).
-  check(validatePositiveNumber("STALL_THRESHOLD", config.playback.stallThreshold, 0.01, 5));
-
-  // Logging. 10KB minimum ensures meaningful content. 100MB maximum prevents excessive disk usage.
-  check(validatePositiveInt("LOG_MAX_SIZE", config.logging.maxSize, 10240, 104857600));
-
-  // HLS configuration.
-  check(validatePositiveInt("HLS_SEGMENT_DURATION", config.hls.segmentDuration, 1, 10));
-  check(validatePositiveInt("HLS_MAX_SEGMENTS", config.hls.maxSegments, 3, 60));
-  check(validatePositiveInt("HLS_IDLE_TIMEOUT", config.hls.idleTimeout, 10000, 300000));
+    check(validateBoundedSetting(config, settingPath));
+  }
 
   // Validate path overrides. When set, both chromeDataDir and logFile must be absolute paths to prevent ambiguity.
   if((config.paths.chromeDataDir !== null) && !path.isAbsolute(config.paths.chromeDataDir)) {
@@ -533,7 +597,7 @@ function collectHardErrors(config: Config): string[] {
   // with native mode active.
   if(config.hdhr.enabled && (config.streaming.captureMode === "ffmpeg")) {
 
-    check(validatePositiveInt("HDHR_PORT", config.hdhr.port, 1, 65535));
+    check(validateBoundedSetting(config, "hdhr.port"));
 
     // Reject if the HDHR port conflicts with the main server port (same host).
     if((config.hdhr.port === config.server.port) && ((config.server.host === "0.0.0.0") || (config.server.host === "::"))) {

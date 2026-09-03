@@ -5,11 +5,11 @@
  * accessor surface, and the displayConfiguration startup block. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
  * independent of any other suite that touches CONFIG.
  */
-import { CONFIG, applyLoggingConfigChanges, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration,
-  validatePositiveInt, validatePositiveNumber } from "./index.ts";
+import { CONFIG, STARTUP_BOUNDED_SETTINGS, applyLoggingConfigChanges, configParseError, configParseErrorMessage, displayConfiguration, getDefaults,
+  validateConfiguration, validatePositiveInt, validatePositiveNumber } from "./index.ts";
+import { DEFAULTS, getNestedValue, getSettingByPath } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
-import { DEFAULTS } from "./userConfig.ts";
 import { LOG } from "../utils/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import assert from "node:assert/strict";
@@ -303,6 +303,75 @@ describe("validateConfiguration", () => {
     CONFIG.server.host = "127.0.0.1";
 
     assert.doesNotThrow(() => { validateConfiguration(); });
+  });
+
+  test("a bounded setting below its metadata floor is refused, and the error quotes the floor the metadata declares", () => {
+
+    /* logging.maxSize is the setting whose metadata floor and whose startup floor are furthest apart, so it is the one that shows which of the two the boot
+     * reads. The value below is inside the metadata's own range test only if the floor is read from the metadata; a startup path carrying its own smaller
+     * number would accept it and boot with a log file too small to hold anything useful, while the settings form refused the very same value on save.
+     */
+    const floor = getSettingByPath("logging.maxSize")?.min;
+
+    assert.ok(typeof floor === "number", "sanity: the metadata declares a floor for logging.maxSize");
+
+    CONFIG.logging.maxSize = floor - 1;
+
+    assert.throws(() => { validateConfiguration(); }, new RegExp("LOG_MAX_SIZE must be at least " + String(floor)));
+  });
+
+  test("an out-of-range hdhr.port is refused only when HDHomeRun emulation is enabled", () => {
+
+    /* The HDHR port check sits inside its own guard rather than in the startup list, so a configuration with HDHomeRun off boots with any hdhr.port value at
+     * all - including one no socket could ever bind. Both directions are asserted together because the guard is the whole contract: moving the check into the
+     * list would turn a dormant setting into a boot refusal for every operator who left it alone.
+     */
+    CONFIG.hdhr.enabled = false;
+    CONFIG.hdhr.port = 999999;
+
+    assert.doesNotThrow(() => { validateConfiguration(); }, "an out-of-range port is not read while HDHomeRun emulation is off");
+
+    CONFIG.hdhr.enabled = true;
+    CONFIG.streaming.captureMode = "ffmpeg";
+
+    assert.throws(() => { validateConfiguration(); }, /HDHR_PORT must be at most 65535/, "with emulation on, the same value is refused by name and bound");
+  });
+});
+
+describe("STARTUP_BOUNDED_SETTINGS", () => {
+
+  test("every startup-validated path resolves to a metadata entry carrying a floor, a ceiling, and an environment variable name", () => {
+
+    /* The drift guard. The startup list names paths; CONFIG_METADATA supplies the bounds and the name each error reports. A path renamed or a bound removed on
+     * the metadata side would leave the boot silently unable to validate a value it is supposed to refuse, so every entry is checked for each piece the helper
+     * reads. hdhr.port is checked alongside the list because its conditional check reads the same pieces through the same helper.
+     */
+    for(const settingPath of [ ...STARTUP_BOUNDED_SETTINGS, "hdhr.port" ]) {
+
+      const setting = getSettingByPath(settingPath);
+
+      assert.ok(setting, settingPath + " resolves to a CONFIG_METADATA entry");
+      assert.equal(typeof setting.min, "number", settingPath + " declares a minimum");
+      assert.equal(typeof setting.max, "number", settingPath + " declares a maximum");
+      assert.equal(typeof setting.envVar, "string", settingPath + " declares an environment variable name to report errors by");
+    }
+  });
+
+  test("every startup-validated setting's default value sits inside the bounds its metadata declares", () => {
+
+    /* The bounds and the defaults are separate declarations, and a default outside its own bounds would refuse to boot a server nobody had configured. This is
+     * the row that would have caught the logging.maxSize floor rising above its default, had it risen that far.
+     */
+    for(const settingPath of [ ...STARTUP_BOUNDED_SETTINGS, "hdhr.port" ]) {
+
+      const setting = getSettingByPath(settingPath);
+      const value = getNestedValue(DEFAULTS, settingPath);
+
+      assert.ok((typeof setting?.min === "number") && (typeof setting.max === "number"), settingPath + " declares both bounds");
+      assert.ok(typeof value === "number", settingPath + " has a numeric default");
+      assert.ok(value >= setting.min, settingPath + " default is at or above its metadata floor");
+      assert.ok(value <= setting.max, settingPath + " default is at or below its metadata ceiling");
+    }
   });
 });
 
