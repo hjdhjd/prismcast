@@ -450,6 +450,17 @@ describe("status.handlers: getDomain (pure)", () => {
      */
     assert.equal(handlers.getDomain("http://localhost:5589/stream"), "localhost");
   });
+
+  test("returns an IPv4 host whole, matching the server-side extractDomain", () => {
+
+    /* Detector for the dotted-quad check: without it the last-two-parts rule renders "10.0.1.50" as "1.50" in the popover while the server's own extractDomain
+     * renders the full address, and the two sides of the mirror would disagree on what "the domain" means for a stream tuned by address. The bracketed IPv6 row
+     * is parity - URL.hostname yields it with no dots, so the part-count branch already returned it whole.
+     */
+    assert.equal(handlers.getDomain("http://10.0.1.50:5589/hls/nbc/stream.m3u8"), "10.0.1.50");
+    assert.equal(handlers.getDomain("http://192.168.1.1/"), "192.168.1.1", "a four-part private address is not shortened either");
+    assert.equal(handlers.getDomain("http://[2001:db8::1]:5589/stream"), "[2001:db8::1]", "a bracketed IPv6 literal stays whole");
+  });
 });
 
 describe("status.handlers: getRecoveringLabel (pure)", () => {

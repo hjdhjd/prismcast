@@ -319,9 +319,12 @@ function formatTimeAgo(ts: number): string {
   return String(days) + (days === 1 ? " day ago" : " days ago");
 }
 
-// Extract a concise display domain from a URL (last two hostname parts). Mirrors the server-side extractDomain() in utils/format.ts so the popover label and the
-// table fallback agree on what "the domain" means. Uses the static URL.parse, which returns null on a malformed URL rather than throwing... this is the deliberate
-// browser-side counterpart to the new URL() + try/catch shape used server-side, and it requires the target browser runtime to support URL.parse.
+// Extract a concise display domain from a URL (last two hostname parts), returning an IP-literal host whole because an address has no registrable domain to
+// shorten. Mirrors the server-side extractDomain() in utils/format.ts so the popover label and the table fallback agree on what "the domain" means. Uses the static
+// URL.parse, which returns null on a malformed URL rather than throwing... this is the deliberate browser-side counterpart to the new URL() + try/catch shape used
+// server-side, and it requires the target browser runtime to support URL.parse. The IP test is a dotted-quad shape check rather than the server's node:net isIP,
+// which the browser has no access to; only the dotted-quad form needs it, since a bracketed IPv6 literal carries no dots and the part count already returns it
+// whole. No registrable domain ends in a numeric label, so the shape check cannot claim a real domain.
 function getDomain(url: string): string {
 
   const parsed = URL.parse(url);
@@ -329,6 +332,13 @@ function getDomain(url: string): string {
   if(!parsed) {
 
     return url;
+  }
+
+  // The IPv4 literal shape URL.hostname yields: exactly four dot-separated numeric groups. The literal lives here rather than as a module constant because this
+  // function reaches the browser through its own source text, where the module's constants do not exist.
+  if(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(parsed.hostname)) {
+
+    return parsed.hostname;
   }
 
   const parts = parsed.hostname.split(".");

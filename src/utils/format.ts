@@ -3,6 +3,7 @@
  * format.ts: Formatting utilities for PrismCast.
  */
 import type { Nullable } from "../types/index.ts";
+import { isIP } from "node:net";
 
 /**
  * Formats the current date and time as a log timestamp string: `yyyy/mm/dd hh:mm:ss.mmm AM/PM`. Uses 12-hour time with decimalized seconds and AM/PM.
@@ -130,7 +131,8 @@ export function formatResolutionLabel(resolution: string): string {
 
 /**
  * Extracts a concise domain from a URL by keeping only the last two portions of the hostname (e.g., "watch.foodnetwork.com" becomes "foodnetwork.com",
- * "www.hulu.com" becomes "hulu.com"). Used as a standard domain key for DOMAIN_CONFIG lookups and as a display fallback when no service name is configured.
+ * "www.hulu.com" becomes "hulu.com"). An IP-literal host is returned whole, because an address has no registrable domain to shorten. Used as a standard domain key
+ * for DOMAIN_CONFIG lookups and as a display fallback when no service name is configured.
  * @param url - The URL to extract the domain from.
  * @returns The concise domain, or the original URL if parsing fails.
  */
@@ -139,6 +141,16 @@ export function extractDomain(url: string): string {
   try {
 
     const hostname = new URL(url).hostname;
+
+    /* An IP literal has no registrable domain to shorten, so it is returned whole: "10.0.1.50" names one host, and its last two parts ("1.50") name nothing. Only
+     * the dotted-quad form needs the check - an IPv6 literal arrives from URL.hostname bracketed and with no dots at all, so the part count below already returns
+     * it unchanged - but isIP covers both and states the rule the code is actually applying.
+     */
+    if(isIP(hostname) !== 0) {
+
+      return hostname;
+    }
+
     const parts = hostname.split(".");
 
     // Keep only the last two parts (e.g., "foodnetwork.com"). For single-part hostnames (e.g., "localhost"), return as-is.

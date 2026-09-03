@@ -269,6 +269,22 @@ describe("extractDomain", () => {
 
     assert.equal(extractDomain("https://a.b.c.d.example.com/path"), "example.com", "deep subdomains collapse to last two");
   });
+
+  test("returns an IPv4 host whole, port and path notwithstanding", () => {
+
+    /* Detector: without the isIP check the last-two-parts rule renders "10.0.1.50" as "1.50", which names nothing. The URL carries a port and a path because
+     * URL.hostname strips both, and this row is what proves the check reads the bare hostname rather than the authority.
+     */
+    assert.equal(extractDomain("http://10.0.1.50:5589/hls/nbc/stream.m3u8"), "10.0.1.50");
+    assert.equal(extractDomain("http://192.168.1.1/"), "192.168.1.1", "a four-part private address is not shortened either");
+  });
+
+  test("returns a bracketed IPv6 host whole", () => {
+
+    // Parity: URL.hostname returns an IPv6 literal bracketed and with no dots, so the part-count rule already returned it unchanged. This row asserts the isIP
+    // check did not disturb that.
+    assert.equal(extractDomain("http://[2001:db8::1]:5589/hls/nbc/stream.m3u8"), "[2001:db8::1]");
+  });
 });
 
 describe("extractPathname", () => {
