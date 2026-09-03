@@ -449,6 +449,19 @@ describe("buildLaunchOptions", () => {
     assert.equal(buildLaunchOptions().pipe, true, "pipe: true");
   });
 
+  test("turns off the launcher's own SIGHUP, SIGINT, and SIGTERM listeners so PrismCast owns process signals", () => {
+
+    /* All three are asserted because each one hands a different signal back to PrismCast's handlers, and a launch that carried only two would still let the third
+     * signal end Chrome's process group with SIGKILL before the graceful path could run. Asserting false rather than the keys' absence is the point: the launcher
+     * defaults every one of them to true, so an omitted key is silently the wrong behavior.
+     */
+    const options = buildLaunchOptions();
+
+    assert.equal(options.handleSIGHUP, false, "handleSIGHUP: false");
+    assert.equal(options.handleSIGINT, false, "handleSIGINT: false");
+    assert.equal(options.handleSIGTERM, false, "handleSIGTERM: false");
+  });
+
   test("includes the autoplay-no-user-gesture-required flag in the args list", () => {
 
     // The autoplay flag is critical for unattended capture. We assert it is present in the args.

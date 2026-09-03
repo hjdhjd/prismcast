@@ -1146,6 +1146,16 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
     // Path to the Chrome executable, either from environment variable or autodetected.
     executablePath: getExecutablePath(),
 
+    /* PrismCast owns process signals, so the launcher's own listeners are off. Left on, the puppeteer launcher installs handlers for SIGHUP, SIGINT, and SIGTERM
+     * on the node process and, on SIGTERM or SIGHUP, ends Chrome's entire process group with SIGKILL - and on SIGINT it kills the group and then exits the process
+     * outright. Either way it races the shutdown handlers in app.ts and preempts closeBrowserInstance's SIGTERM ladder below, so Chrome gets no shutdown at all
+     * and forfeits whatever it had pending: a window placement inside its save debounce, its session state. With the listeners off, a signal reaches PrismCast's
+     * own handler, the graceful path runs, and Chrome exits through the ladder with its pending writes committed.
+     */
+    handleSIGHUP: false,
+    handleSIGINT: false,
+    handleSIGTERM: false,
+
     // Run Chrome in headed (visible) mode, not headless. The puppeteer-stream extension captures the compositor's output for a real window, which a headless
     // browser does not have. The window is on screen while any capture stream runs or a login session is active, and minimized otherwise.
     headless: false,
