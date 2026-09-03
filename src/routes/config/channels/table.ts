@@ -609,7 +609,7 @@ export function generateTagFilterContent(): string {
 
   for(const tag of vocabulary) {
 
-    lines.push("<label class=\"provider-option\" data-click-stop-propagation>" +
+    lines.push("<label class=\"provider-option\">" +
       "<input type=\"checkbox\" class=\"tag-filter-checkbox\" data-tag=\"" + escapeHtml(tag) + "\" checked data-change-action=\"" +
       ACTIONS.applyTagColumnFilter + "\"> " + escapeHtml(tag) + "</label>");
   }
@@ -618,7 +618,7 @@ export function generateTagFilterContent(): string {
 
     lines.push("<div class=\"dropdown-divider\"></div>");
     lines.push("<div class=\"dropdown-item\" id=\"tag-filter-toggle\" data-click-action=\"" + ACTIONS.toggleTagColumnFilter +
-      "\" data-click-stop-propagation>Show None</div>");
+      "\">Show None</div>");
   }
 
   return lines.join("");
@@ -1615,7 +1615,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   lines.push("<div class=\"bulk-assign-row\">");
   lines.push("<span>Auto-number from:</span>");
   lines.push("<input type=\"number\" id=\"auto-number-start\" class=\"auto-number-input\" value=\"1\" min=\"0\" max=\"99999\" " +
-    "placeholder=\"Clear\" data-click-stop-propagation>");
+    "placeholder=\"Clear\">");
   lines.push("<button type=\"button\" class=\"btn btn-sm btn-secondary\" data-click-action=\"" + ACTIONS.autoNumberChannels +
     "\" data-click-close-dropdown>Apply</button>");
   lines.push("</div>");
@@ -1883,7 +1883,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   // All sortable headers use the same DOM structure: <th data-click-action> wraps a <span class="sort-label"> for the label text. The sort update logic
   // targets .sort-label to modify only the label - never touching other children like the Tags filter dropdown. Clicking anywhere on the <th> triggers sort;
-  // additional children (like the filter button) use event.stopPropagation() to prevent sort when interacting with them.
+  // a click on the Tags filter button never sorts, because the dispatcher resolves the nearest trigger - the button itself - rather than the header.
   for(const hdr of sortableHeaders) {
 
     const isActive = (sortField === hdr.field);
@@ -1900,7 +1900,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
       lines.push("<div class=\"dropdown tag-filter-dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-tag-filter\" title=\"Filter by tag\" " +
-        "data-click-action=\"" + ACTIONS.toggleDropdown + "\" data-click-stop-propagation>" + ICON_FILTER + "</button>");
+        "data-click-action=\"" + ACTIONS.toggleDropdown + "\">" + ICON_FILTER + "</button>");
       lines.push("<div class=\"dropdown-menu\" id=\"tag-filter-menu\">" + generateTagFilterContent() + "</div>");
       lines.push("</div>");
 
@@ -1909,7 +1909,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
       lines.push("<div class=\"dropdown\" style=\"display: inline;\">");
       lines.push("<button type=\"button\" class=\"btn-icon btn-playlist-hint\" id=\"playlist-hint-btn\" " +
         "title=\"Playlist URL for this filter\" style=\"display: none;\" " +
-        "data-click-action=\"" + ACTIONS.showPlaylistHint + "\" data-click-stop-propagation>" + ICON_LINK + "</button>");
+        "data-click-action=\"" + ACTIONS.showPlaylistHint + "\">" + ICON_LINK + "</button>");
       lines.push("<div class=\"dropdown-menu playlist-hint-menu\"></div>");
       lines.push("</div>");
     }
@@ -1983,7 +1983,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
 
   for(const tag of vocabulary) {
 
-    lines.push("<label class=\"provider-option\" data-click-stop-propagation>" +
+    lines.push("<label class=\"provider-option\">" +
       "<input type=\"checkbox\" class=\"inline-tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"> " + escapeHtml(tag) + "</label>");
   }
 

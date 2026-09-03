@@ -1260,8 +1260,8 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
   /* This block guards the class of bug that escaped string-shape tests in the past: an event modifier on an ancestor element (e.g., a form's preventDefault
    * intended for its submit event) silently breaking unrelated events (e.g., keydown on input fields inside the form). The dispatcher uses event-type-prefixed
-   * modifier attributes (data-<event>-prevent-default, data-<event>-stop-propagation, data-<event>-close-dropdown) so each modifier fires only for its own
-   * event type. We assert this property by dispatching synthetic events and reading event.defaultPrevented / a propagation observer.
+   * modifier attributes (data-<event>-prevent-default, data-<event>-close-dropdown) so each modifier fires only for its own event type. We assert this
+   * property by dispatching synthetic events and reading event.defaultPrevented or the open state of a seeded dropdown menu.
    */
 
   test("data-submit-prevent-default on a form prevents the submit default but NOT keydown defaults on input fields inside the form", async () => {
@@ -1347,44 +1347,37 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
     assert.equal(submitPrevented, false, "submit on an inner form must NOT have its default prevented by an outer data-CLICK-prevent-default");
   });
 
-  test("data-click-stop-propagation stops click propagation but does not affect keydown propagation through the same element", async () => {
+  test("data-click-close-dropdown closes the open menus on click but does not close them on keydown through the same element", async () => {
 
-    /* Same scoping property for stopPropagation: a click-scoped stopPropagation must not interfere with keydown events bubbling through the same element. We
-     * attach a probe listener at the document level to observe whether the keydown reaches it.
+    /* Same scoping property for the close-dropdown modifier: a click-scoped close must not fire for a keydown travelling through the same element, so typing
+     * in a field inside an open menu leaves that menu open. We seed an open .dropdown-menu next to the trigger and read its show class after each event.
      */
     await using ctx = await setupSharedRuntime();
 
     ctx.evaluate(
       "document.body.insertAdjacentHTML('beforeend', " +
-      "'<div id=\"stop-outer\">' +" +
-      "'<div id=\"stop-inner\" data-click-stop-propagation>' +" +
-      "'<input id=\"stop-input\" />' +" +
-      "'</div></div>');"
+      "'<div class=\"dropdown-menu show\" id=\"close-menu\"></div>' +" +
+      "'<div id=\"close-trigger\" data-click-close-dropdown>' +" +
+      "'<input id=\"close-input\" />' +" +
+      "'</div>');"
     );
 
-    // Observe whether click and keydown reach an outer probe listener.
-    ctx.evaluate("window.__probe = { clickFired: false, keydownFired: false };");
+    // Click on the trigger - the close-dropdown modifier routes through window.dropdowns.close(), which strips show from every open menu.
     ctx.evaluate(
-      "document.getElementById('stop-outer').addEventListener('click', () => { window.__probe.clickFired = true; });"
+      "document.getElementById('close-trigger').dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));"
     );
+
+    assert.equal(ctx.evaluate("document.getElementById('close-menu').classList.contains('show')"), false,
+      "click on the data-click-close-dropdown element should close the open menu");
+
+    // Re-open the menu and send a keydown through the same element. The click-scoped modifier must NOT fire for it.
+    ctx.evaluate("document.getElementById('close-menu').classList.add('show');");
     ctx.evaluate(
-      "document.getElementById('stop-outer').addEventListener('keydown', () => { window.__probe.keydownFired = true; });"
+      "document.getElementById('close-input').dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' }));"
     );
 
-    // Click on the inner element - the stop-propagation modifier should prevent the outer click listener from firing.
-    ctx.evaluate(
-      "document.getElementById('stop-inner').dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));"
-    );
-
-    // Keydown on the input - the click-scoped stop-propagation must NOT prevent the outer keydown listener from firing.
-    ctx.evaluate(
-      "document.getElementById('stop-input').dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' }));"
-    );
-
-    const probe = ctx.evaluateJson("window.__probe") as { clickFired: boolean; keydownFired: boolean };
-
-    assert.equal(probe.clickFired, false, "click on the data-click-stop-propagation element must not reach the outer click listener");
-    assert.equal(probe.keydownFired, true, "keydown on an input inside data-CLICK-stop-propagation must still reach the outer keydown listener");
+    assert.equal(ctx.evaluate("document.getElementById('close-menu').classList.contains('show')"), true,
+      "keydown on an input inside data-CLICK-close-dropdown must NOT close the open menu");
   });
 
   test("registerAction throws on a duplicate action name", async () => {
@@ -1403,6 +1396,62 @@ describe("shared.ts: action dispatcher modifier scoping", () => {
 
     assert.equal(result.threw, true, "second registerAction call for the same name should throw");
     assert.match(result.message ?? "", /already registered/, "error message should name the collision");
+  });
+});
+
+describe("shared.ts: action dispatcher delegation", () => {
+
+  /* These rows guard the delegation rules the dispatcher relies on instead of controlling propagation: dispatchAction resolves the CLOSEST trigger, so a
+   * trigger nested inside another fires only its own action; and dispatch is registered in the bubble phase without stopping anything, so element-level
+   * listeners above a trigger keep receiving the click. Together they let a control sit inside a larger clickable region - the Tags filter button inside the
+   * sortable Tags header - without either one cancelling the other.
+   */
+
+  test("a click on a trigger nested inside another trigger fires only the nearest action", async () => {
+
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div id=\"outer-trigger\" data-click-action=\"outer-probe\">' +" +
+      "'<button id=\"inner-trigger\" type=\"button\" data-click-action=\"inner-probe\"></button>' +" +
+      "'</div>');"
+    );
+
+    // Both actions record into one probe so the assertion reads the full firing set rather than two independent booleans.
+    ctx.evaluate("window.__probe = { fired: [] };");
+    ctx.evaluate("window.registerAction('outer-probe', () => { window.__probe.fired.push('outer'); });");
+    ctx.evaluate("window.registerAction('inner-probe', () => { window.__probe.fired.push('inner'); });");
+
+    ctx.evaluate("document.getElementById('inner-trigger').click();");
+
+    const probe = ctx.evaluateJson("window.__probe") as { fired: string[] };
+
+    assert.deepEqual(probe.fired, ["inner"], "only the nearest trigger's action should fire for a click inside a nested trigger");
+  });
+
+  test("an element-level click listener on an ancestor fires alongside the trigger's action", async () => {
+
+    await using ctx = await setupSharedRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div id=\"ancestor-listener\">' +" +
+      "'<button id=\"listener-trigger\" type=\"button\" data-click-action=\"listener-probe\"></button>' +" +
+      "'</div>');"
+    );
+
+    ctx.evaluate("window.__probe = { fired: [] };");
+    ctx.evaluate("window.registerAction('listener-probe', () => { window.__probe.fired.push('action'); });");
+    ctx.evaluate("document.getElementById('ancestor-listener').addEventListener('click', () => { window.__probe.fired.push('ancestor'); });");
+
+    ctx.evaluate("document.getElementById('listener-trigger').click();");
+
+    const probe = ctx.evaluateJson("window.__probe") as { fired: string[] };
+
+    // The ancestor sits between the trigger and the document, so its bubble-phase listener runs before the document-level action dispatch.
+    assert.deepEqual(probe.fired, [ "ancestor", "action" ],
+      "an ancestor's own click listener and the trigger's action should both fire, the ancestor's first");
   });
 });
 

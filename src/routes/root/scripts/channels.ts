@@ -1486,8 +1486,8 @@ export function generateChannelsSubtabScript(): string {
 
     /* Action registrations. Each binds an ACTIONS name to a window-exposed handler defined above; the project-wide dispatcher in shared.ts looks up the handler
      * by name when a click / change / keydown / submit event lands on a matching [data-<event>-action] element. Handlers express only the action's intent -
-     * event mechanics (preventDefault, stopPropagation, dropdown close) live declaratively on the trigger element via the event-type-scoped data-<event>-prevent
-     * -default, data-<event>-stop-propagation, and data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs.
+     * event mechanics (default prevention and dropdown close) live declaratively on the trigger element via the event-type-scoped
+     * data-<event>-prevent-default and data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs.
      */
     "  window.registerAction('" + ACTIONS.applyTagColumnFilter + "', () => applyTagColumnFilter());",
     "  window.registerAction('" + ACTIONS.authDone + "', () => setupAuthDone());",

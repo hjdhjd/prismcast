@@ -32,11 +32,11 @@ export function generateSharedUtilitiesScript(): string {
      * one document-level delegated listener routes click / change / keydown / submit events to the registered handler. Triggers declare their intent on the
      * element via data-<event>-action="name" (with optional sibling data-* attributes for per-instance arguments).
      *
-     * Event mechanics are also declarative AND event-type-scoped, symmetric with actions: data-<event>-prevent-default calls event.preventDefault(),
-     * data-<event>-stop-propagation calls event.stopPropagation(), data-<event>-close-dropdown closes any open dropdown menus. Each modifier fires only for
-     * the event type encoded in its attribute name, so a <form data-submit-prevent-default> prevents the form's submit default without affecting keydown
-     * events on input fields inside the form. The event-type-in-the-name shape is self-documenting and uniform with data-<event>-action: one mental model
-     * for "when does this fire", expressed entirely in the attribute name.
+     * Event mechanics are also declarative AND event-type-scoped, symmetric with actions: data-<event>-prevent-default calls event.preventDefault() and
+     * data-<event>-close-dropdown closes any open dropdown menus. Each modifier fires only for the event type encoded in its attribute name, so a
+     * <form data-submit-prevent-default> prevents the form's submit default without affecting keydown events on input fields inside the form. The
+     * event-type-in-the-name shape is self-documenting and uniform with data-<event>-action: one mental model for "when does this fire", expressed entirely
+     * in the attribute name.
      *
      * The registration API enforces uniqueness - a second registerAction call for an already-registered name throws, so silent overwrites are impossible.
      * When a click/change/etc. lands on an element carrying a data-<event>-action whose value is not registered, the dispatcher logs a console warning
@@ -49,17 +49,20 @@ export function generateSharedUtilitiesScript(): string {
     "    }",
     "    actionHandlers.set(name, handler);",
     "  };",
-    /* Modifier handling runs in the capture phase so stopPropagation actually stops further propagation. Capture phase fires from document down to target -
-     * before any element-level listener between the document and the trigger - so stopPropagation called here prevents intermediate bubble-phase listeners
-     * from firing. preventDefault and close-dropdown are side-effect modifiers that work equally well in either phase but live here for cohesion: every
-     * declarative modifier flows through one listener. The selector is built from event.type so each modifier fires only for its own event type.
+    /* Modifier handling runs in the capture phase, where the document sees the event before anything between it and the trigger: a close-dropdown modifier
+     * closes the open menus before the trigger's own action runs, and a prevented default lands before any element-level listener observes the event. The
+     * selector is built from event.type so each modifier fires only for its own event type.
+     *
+     * The dispatcher never stops the event's propagation. A stop issued from this capture listener would cancel every later listener invocation for that
+     * event - the document's own bubble-phase action dispatch included - so the trigger asking for it would lose its own action. Delegation removes the need
+     * for propagation control anyway: dispatchAction resolves the closest trigger, so a trigger nested inside another never fires the outer one, and the
+     * outside-click closer decides by containment rather than by whether the click reached it.
      */
     "  const dispatchModifiers = (event) => {",
     "    const prefix = 'data-' + event.type + '-';",
-    "    const modTarget = event.target.closest('[' + prefix + 'prevent-default], [' + prefix + 'stop-propagation], [' + prefix + 'close-dropdown]');",
+    "    const modTarget = event.target.closest('[' + prefix + 'prevent-default], [' + prefix + 'close-dropdown]');",
     "    if(!modTarget) return;",
     "    if(modTarget.hasAttribute(prefix + 'prevent-default')) event.preventDefault();",
-    "    if(modTarget.hasAttribute(prefix + 'stop-propagation')) event.stopPropagation();",
     "    if(modTarget.hasAttribute(prefix + 'close-dropdown') && window.dropdowns) window.dropdowns.close();",
     "  };",
     /* Action dispatch runs in the bubble phase so element-level listeners get a chance to fire first. Action handlers see the event after the element-level
@@ -823,7 +826,7 @@ export function generateSharedUtilitiesScript(): string {
 
     /* Action registrations. The cross-cutting actions bound to functions defined in this same script (toggleDropdown, channelTable.sort). Each subsystem
      * registers its own actions in its corresponding script file; this block keeps shared-utility actions colocated with their definitions. Event mechanics
-     * (preventDefault, stopPropagation, close-dropdown) live declaratively on the trigger element, not in these handler bodies.
+     * (data-<event>-prevent-default and data-<event>-close-dropdown) live declaratively on the trigger element, not in these handler bodies.
      */
     "  window.registerAction('" + ACTIONS.channelTableSort + "', (target) => channelTable.sort(target.dataset.field));",
     "  window.registerAction('" + ACTIONS.toggleDropdown + "', (target) => toggleDropdown(target));",

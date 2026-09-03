@@ -2212,3 +2212,33 @@ describe("config.ts: window.toggleColumn", () => {
     assert.deepEqual(body.visibleColumns, ["channelNumber"], "visibleColumns must reflect the checked column-picker entries");
   });
 });
+
+describe("config.ts: the outside-click closer decides by containment", () => {
+
+  test("a click inside an open menu leaves it open and a click outside closes it", async () => {
+
+    /* The document-level closer config.ts installs is what keeps an open menu open while the operator works inside it, and the only thing that closes it on a
+     * click elsewhere. It tests both .dropdown and .dropdown-menu because toggleDropdown portals an opened menu onto body, away from its .dropdown container -
+     * so the seeded markup below puts the open menu directly under body beside its container, the state every opened menu is actually in. Seeded back inside
+     * its container the row would pass on the .dropdown check alone and never exercise the .dropdown-menu one.
+     */
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div class=\"dropdown\"><button id=\"oc-btn\"></button></div>' +" +
+      "'<div class=\"dropdown-menu show\" id=\"oc-menu\"><label id=\"oc-label\"><input type=\"checkbox\"></label></div>' +" +
+      "'<div id=\"oc-outside\"></div>');"
+    );
+
+    ctx.evaluate("document.getElementById('oc-label').click();");
+
+    assert.equal(ctx.document.getElementById("oc-menu")?.classList.contains("show"), true,
+      "a click on a control inside an open menu must leave the menu open");
+
+    ctx.evaluate("document.getElementById('oc-outside').click();");
+
+    assert.equal(ctx.document.getElementById("oc-menu")?.classList.contains("show"), false,
+      "a click outside every dropdown and menu must close the open menu");
+  });
+});

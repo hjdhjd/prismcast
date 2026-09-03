@@ -349,7 +349,7 @@ export function generateLandingPageStyles(): string {
     ".channel-table tr.tag-filtered { display: none; }",
 
     // Tag filter dropdown button in the column header. Sized to sit inline with the column label.
-    ".btn-tag-filter { padding: 0 3px; margin-left: 4px; vertical-align: middle; opacity: 0.6; }",
+    ".btn-tag-filter { margin-left: 4px; vertical-align: middle; opacity: 0.6; }",
     ".btn-tag-filter svg { width: 12px; height: 12px; }",
     ".btn-tag-filter:hover { opacity: 1; }",
 

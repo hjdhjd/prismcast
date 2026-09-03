@@ -341,17 +341,17 @@ describe("setupRootEndpoint", () => {
     assert.deepEqual(undefinedTokens, [], "every referenced custom property must be defined in the document; undefined: " + JSON.stringify(undefinedTokens));
   });
 
-  test("every emitted data-<event>-(action|prevent-default|stop-propagation|close-dropdown) attribute uses a supported event type", async () => {
+  test("every emitted data-<event>-(action|prevent-default|close-dropdown) attribute uses a supported event type", async () => {
 
     /* The dispatcher listens for exactly four event types: click, change, keydown, submit. A typo (data-keydon-action, missing "w") or an unsupported event
      * type (data-pointerdown-prevent-default) silently no-ops at runtime - the modifier or action never fires, and nothing catches it. This test walks every
-     * data-*-(action|prevent-default|stop-propagation|close-dropdown) attribute in the rendered HTML and asserts the event prefix is in the supported set.
+     * data-*-(action|prevent-default|close-dropdown) attribute in the rendered HTML and asserts the event prefix is in the supported set.
      * Class of bug it catches: any future emission of an attribute name whose event word is misspelled or out of scope for the dispatcher.
      */
     const body = await (await fetch(urlFor("/"))).text();
 
     const SUPPORTED_EVENTS = new Set([ "change", "click", "keydown", "submit" ]);
-    const attrRegex = /data-([a-z]+)-(action|prevent-default|stop-propagation|close-dropdown)\b/g;
+    const attrRegex = /data-([a-z]+)-(action|prevent-default|close-dropdown)\b/g;
     const offenders = new Set<string>();
     let m: RegExpExecArray | null;
 

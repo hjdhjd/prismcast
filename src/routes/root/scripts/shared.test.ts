@@ -218,10 +218,9 @@ describe("generateSharedUtilitiesScript", () => {
     // Modifier walk is event-type-scoped: the selector is constructed from event.type so data-<event>-prevent-default fires only for its own event type. This
     // is what prevents a <form data-submit-prevent-default> from blocking keydown events on input fields inside it.
     assert.match(script, /const prefix = 'data-' \+ event\.type \+ '-'/, "modifier selector is event-type-prefixed");
-    assert.match(script, /closest\('\[' \+ prefix \+ 'prevent-default\], \[' \+ prefix \+ 'stop-propagation\], \[' \+ prefix \+ 'close-dropdown\]'\)/,
+    assert.match(script, /closest\('\[' \+ prefix \+ 'prevent-default\], \[' \+ prefix \+ 'close-dropdown\]'\)/,
       "modifier walk uses the event-type-prefixed selector");
     assert.match(script, /hasAttribute\(prefix \+ 'prevent-default'\)\) event\.preventDefault\(\)/);
-    assert.match(script, /hasAttribute\(prefix \+ 'stop-propagation'\)\) event\.stopPropagation\(\)/);
     assert.match(script, /hasAttribute\(prefix \+ 'close-dropdown'\) && window\.dropdowns\) window\.dropdowns\.close\(\)/);
 
     // Action walk: matches the closest [data-<type>-action] ancestor and warns when no handler is registered.
@@ -229,8 +228,9 @@ describe("generateSharedUtilitiesScript", () => {
     assert.match(script, /console\.warn\('No handler registered for ' \+ attrName/,
       "missing handlers log a console warning so typos surface fast");
 
-    // Four event types delegated through document-level listeners: a capture-phase listener for the modifier walk (so stopPropagation fires before any
-    // intermediate bubble-phase listener can run), and a bubble-phase listener for action dispatch (so element-level listeners get a chance to fire first).
+    // Four event types delegated through document-level listeners: a capture-phase listener for the modifier walk (so a close-dropdown closes the open menus
+    // and a prevented default lands before any element-level listener sees the event), and a bubble-phase listener for action dispatch (so element-level
+    // listeners get a chance to fire first).
     assert.match(script, /for\(const type of \[ 'click', 'change', 'keydown', 'submit' \]\)/, "every delegated event type in one loop");
     assert.match(script, /document\.addEventListener\(type, dispatchModifiers, \{ capture: true \}\)/, "modifier walk uses the modern { capture: true } object form");
     assert.match(script, /document\.addEventListener\(type, dispatchAction\)/, "action dispatch is bubble-phase");

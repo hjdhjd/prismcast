@@ -1575,6 +1575,62 @@ describe("channels.ts: playlist hint dropdown", () => {
   });
 });
 
+describe("channels.ts: the tag filter controls respond to clicks", () => {
+
+  /* The rows above drive the tag filter through its window.* entry points. The rows here drive it the way an operator does - a click on the rendered control -
+   * so they cover the whole path from the emitted markup through the document-level dispatcher into the handler. A trigger whose markup cancels its own
+   * dispatch passes every window.* row and fails these.
+   */
+
+  test("a click on the tag filter funnel opens the tag filter menu", async () => {
+
+    await using ctx = await setupChannelsRuntime();
+
+    ctx.evaluate("document.querySelector('.btn-tag-filter').click();");
+
+    const menu = ctx.document.getElementById("tag-filter-menu");
+
+    assert.ok(menu, "the tag filter menu should exist on the rendered page");
+    assert.equal(menu.classList.contains("show"), true, "clicking the funnel should open the tag filter menu");
+
+    // toggleDropdown portals an opened menu onto <body> so it escapes the header cell's clipping and positions against the viewport.
+    assert.equal(menu.parentElement?.tagName, "BODY", "an opened menu should be portaled onto body");
+  });
+
+  test("a click on Show None unchecks every tag and reveals the playlist hint icon", async () => {
+
+    await using ctx = await setupChannelsRuntime();
+
+    const toggle = ctx.document.getElementById("tag-filter-toggle");
+
+    assert.ok(toggle, "the Show None toggle should exist on the rendered page");
+
+    ctx.evaluate("document.getElementById('tag-filter-toggle').click();");
+
+    const checkedCount = ctx.evaluate("Array.from(document.querySelectorAll('.tag-filter-checkbox')).filter((cb) => cb.checked).length");
+
+    assert.equal(ctx.document.querySelectorAll(".tag-filter-checkbox").length > 0, true, "the rendered page should carry tag filter checkboxes");
+    assert.equal(checkedCount, 0, "clicking Show None should uncheck every tag");
+    assert.equal(getDisplay(ctx, "playlist-hint-btn"), "", "an active filter should reveal the playlist hint icon");
+    assert.equal(toggle.textContent, "Show All", "the toggle should offer the inverse operation once the filter is active");
+  });
+
+  test("a click on the playlist hint icon opens the popover carrying the playlist URL", async () => {
+
+    await using ctx = await setupChannelsRuntime();
+
+    // The hint icon is only meaningful once a filter is active, so the row reaches that state through the toggle exactly as an operator would.
+    ctx.evaluate("document.getElementById('tag-filter-toggle').click();");
+    ctx.evaluate("document.getElementById('playlist-hint-btn').click();");
+
+    const menu = ctx.document.querySelector(".playlist-hint-menu");
+
+    assert.ok(menu, "the playlist hint menu should exist on the rendered page");
+    assert.equal(menu.classList.contains("show"), true, "clicking the hint icon should open the popover");
+    assert.match(menu.textContent, /\/playlist\?tag=/, "the popover should carry the playlist URL for the active filter");
+  });
+});
+
 describe("channels.ts: setup wizard handlers", () => {
 
   test("openSetupWizard opens the setup-modal and renders the step-1 service grid", async () => {
