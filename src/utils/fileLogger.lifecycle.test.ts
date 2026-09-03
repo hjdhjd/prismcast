@@ -18,9 +18,9 @@ describe("flushLogBuffer - error-path retry-disable", () => {
    * cascades when the underlying filesystem is in a degraded state.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("disables logging temporarily when appendFile throws and drops subsequent writes within the retry window", async () => {
@@ -74,9 +74,9 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
    * (it clears isDisabled). We exercise the re-enable branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     mock.reset();
   });
 
@@ -138,9 +138,9 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
    * throwing. Subsequent writeLogEntry calls become no-ops because isInitialized stays false.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("does not throw when mkdir fails because a parent path component is a file (returns gracefully)", async () => {
@@ -191,13 +191,14 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 
 describe("shutdownFileLogger", () => {
 
-  test("is a no-op on an already-shut-down logger", () => {
+  test("is a no-op on an already-shut-down logger", async () => {
 
-    // Boundary: calling shutdown twice (or before init) must not crash.
-    assert.doesNotThrow(() => {
+    // Boundary: calling shutdown twice (or before init) must not crash. The assertion is doesNotReject rather than doesNotThrow because shutdown awaits the write
+    // chain's drain, and an await cannot sit inside a synchronous callback.
+    await assert.doesNotReject(async () => {
 
-      shutdownFileLogger();
-      shutdownFileLogger();
+      await shutdownFileLogger();
+      await shutdownFileLogger();
     });
   });
 
@@ -211,7 +212,7 @@ describe("shutdownFileLogger", () => {
 
       writeLogEntry("info", "Final entry.", null);
 
-      shutdownFileLogger();
+      await shutdownFileLogger();
 
       const content = await readFile(logPath, "utf-8");
 
@@ -227,7 +228,7 @@ describe("shutdownFileLogger", () => {
       const logPath = path.join(dir, "test.log");
 
       await initializeFileLogger(logPath, 1_000_000);
-      shutdownFileLogger();
+      await shutdownFileLogger();
 
       writeLogEntry("info", "After shutdown.", null);
 

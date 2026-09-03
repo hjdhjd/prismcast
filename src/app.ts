@@ -181,10 +181,11 @@ function setupGracefulShutdown(): void {
       LOG.error("Error closing server during shutdown: %s.", formatError(error));
     }
 
-    // Shut down file logger if in use.
+    // Shut down file logger if in use. Awaited because shutdown drains the outstanding write chain before its final synchronous flush, and the process exit below
+    // would otherwise cut that drain short.
     if(!usingConsoleLogging) {
 
-      shutdownFileLogger();
+      await shutdownFileLogger();
     }
 
     process.exit(0);

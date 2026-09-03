@@ -3,6 +3,7 @@
  * fileLogger.ts: File-based logging with automatic size-based rotation for PrismCast.
  */
 import type { Nullable } from "../types/index.ts";
+import { boundedWait } from "./delay.ts";
 import { formatTimestamp } from "./format.ts";
 import fs from "node:fs";
 import { isAnyDebugEnabled } from "./debugFilter.ts";
@@ -61,6 +62,10 @@ let isInitialized = false;
  * outcome before chaining the next operation, so one failing operation cannot poison the chain for subsequent writes.
  */
 let writeChain: Promise<void> = Promise.resolve();
+
+// How long shutdown waits for the outstanding write chain to drain. Generous enough for a trim's read, write, and rename on a busy disk, and short enough that a
+// wedged filesystem operation cannot hold the process open through its own shutdown.
+const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
 // Flag to temporarily disable logging on write errors, preventing error cascades.
 let isDisabled = false;
@@ -395,9 +400,16 @@ async function trimLogFile(): Promise<void> {
 // Shutdown.
 
 /**
- * Shuts down the file logger, flushing any remaining buffer synchronously.
+ * Shuts down the file logger: stops the flush timer, waits for the write chain to drain, then flushes any remaining buffer synchronously and clears module state.
+ *
+ * The drain is what keeps shutdown from racing the writes it is meant to finish. A trim holds the log file across a read, a temp write, and a rename; a synchronous
+ * final flush issued while that rename is still pending appends to the file the rename is about to replace, so the last entries of the run are discarded along with
+ * the stale snapshot. Awaiting the chain first puts the final flush strictly after every mutation already in flight.
+ *
+ * The wait is bounded because a wedged filesystem operation must not hold the process open through its own shutdown. When the bound lapses the flush and the state
+ * reset proceed anyway, which is the same outcome an unbounded wait would eventually reach minus the hang.
  */
-export function shutdownFileLogger(): void {
+export async function shutdownFileLogger(): Promise<void> {
 
   if(!isInitialized) {
 
@@ -410,6 +422,10 @@ export function shutdownFileLogger(): void {
     clearInterval(flushTimer);
     flushTimer = null;
   }
+
+  // Drain the outstanding write chain so the synchronous flush below lands after every mutation already in flight rather than into a file a pending rename is
+  // about to replace. The chain never rejects - serializeWrite swallows each operation's outcome - so this only ever resolves or lapses.
+  await boundedWait(writeChain, SHUTDOWN_DRAIN_BOUND_MS);
 
   // Flush remaining buffer synchronously.
   flushLogBufferSync();

@@ -95,7 +95,7 @@ describe("createMorganStream", () => {
       assert.equal(logCalls.length, 0, "console.log not called in file-logging mode");
     } finally {
 
-      shutdownFileLogger();
+      await shutdownFileLogger();
       await rm(dir, { force: true, recursive: true });
     }
   });

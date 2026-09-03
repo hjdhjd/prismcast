@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * fileLogger.test.ts: Unit tests for the file-based logger's basic write and buffer paths - initializeFileLogger + writeLogEntry happy paths, flushLogBuffer,
- * flushLogBufferSync, the existing-file initialization branch, the periodic flushTimer interval, and the trim/flush write-ordering race between a real trim
- * and a concurrent append. Additional trim-path unit tests (computeTrimmedLogContent, checkAndTrimFile branches) live in fileLogger.trim.test.ts; lifecycle
- * and error-recovery paths live in fileLogger.lifecycle.test.ts.
+ * flushLogBufferSync, the existing-file initialization branch, the periodic flushTimer interval, the trim/flush write-ordering race between a real trim
+ * and a concurrent append, and shutdown's drain of an in-flight trim. Additional trim-path unit tests (computeTrimmedLogContent, checkAndTrimFile branches)
+ * live in fileLogger.trim.test.ts; lifecycle and error-recovery paths live in fileLogger.lifecycle.test.ts.
  *
  * The module holds module-scope state (initialization status, write buffer, file path) that persists across tests. Each test scopes its filesystem state to a
  * temp directory via withTempDir and calls shutdownFileLogger() in afterEach to reset the singleton between cases. The flush timer would run in the background
@@ -13,15 +13,16 @@ import { afterEach, describe, mock, test } from "node:test";
 import { flushLogBuffer, flushLogBufferSync, initializeFileLogger, shutdownFileLogger, writeLogEntry } from "./fileLogger.ts";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { initDebugFilter } from "./debugFilter.ts";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
 describe("initializeFileLogger and writeLogEntry", () => {
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("creates the log file when it does not exist", async () => {
@@ -171,11 +172,11 @@ describe("initializeFileLogger and writeLogEntry", () => {
     });
   });
 
-  test("writeLogEntry is a no-op when the file logger has not been initialized", () => {
+  test("writeLogEntry is a no-op when the file logger has not been initialized", async () => {
 
     // Negative test: writes that happen before init must not crash. shutdownFileLogger() (in afterEach) returns to the uninitialized state, so calling
     // writeLogEntry now should be silently dropped.
-    shutdownFileLogger();
+    await shutdownFileLogger();
 
     assert.doesNotThrow(() => {
 
@@ -186,9 +187,9 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
 describe("flushLogBuffer", () => {
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("returns without writing when the buffer is empty", async () => {
@@ -209,16 +210,16 @@ describe("flushLogBuffer", () => {
 
   test("does not throw when called before init (boundary)", async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     await assert.doesNotReject(() => flushLogBuffer());
   });
 });
 
 describe("flushLogBufferSync", () => {
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("synchronously persists buffered entries", async () => {
@@ -251,18 +252,18 @@ describe("flushLogBufferSync", () => {
     });
   });
 
-  test("does not throw when called before init", () => {
+  test("does not throw when called before init", async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     assert.doesNotThrow(() => { flushLogBufferSync(); });
   });
 });
 
 describe("initializeFileLogger - existing-file branch", () => {
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("preserves existing file content when the log file already exists", async () => {
@@ -299,9 +300,9 @@ describe("flushTimer interval", () => {
    * directly; here we exercise the timer-driven flush path by enabling mock.timers and ticking past the interval boundary.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     mock.timers.reset();
   });
 
@@ -344,9 +345,9 @@ describe("trim/flush write-ordering (interleave race)", () => {
    * in-flight trim. These tests assert that a flush issued concurrently with a trim is not lost.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     initDebugFilter("");
   });
 
@@ -475,5 +476,84 @@ describe("trim/flush write-ordering (interleave race)", () => {
       assert.match(finalContent, new RegExp(marker), "the marker flushed alongside the trim survived");
     });
   });
-});
 
+  test("shutdown settles only after an in-flight trim completes, and its final flush lands after the rename", async (t) => {
+
+    /* The drain, exercised against a real trim held open at its rename. The row takes over fs.promises.rename - the same object fileLogger destructured at load -
+     * so the trim reaches its critical moment and stops there until this test releases it. With the trim parked, a marker is buffered and shutdown is called
+     * without awaiting, which is what lets the row observe that shutdown has NOT settled while the rename is pending.
+     *
+     * Detector: without the drain, shutdown flushes the marker synchronously into the file the parked rename is about to replace, and the rename then overwrites
+     * it with the pre-append snapshot - the last entries of the run silently discarded. The row asserts both halves of the fix: shutdown waits for the rename, and
+     * the marker is on disk afterwards.
+     *
+     * The held window is a handful of microtask turns rather than a sleep, so the 1000 ms periodic flush timer cannot fire inside it and flush the marker onto
+     * the chain by itself, which would make the marker survive for a reason other than the drain.
+     */
+    initDebugFilter("");
+
+    await withTempDir(async (dir) => {
+
+      const logPath = path.join(dir, "drain.log");
+      const maxSize = 16384;
+      const seedLine = "[2026/01/01 12:00:00.000 PM] Seed line for the shutdown drain test.\n";
+      const seedContent = seedLine.repeat(400);
+
+      await writeFile(logPath, seedContent, "utf-8");
+
+      assert.ok(seedContent.length > maxSize, "seed content exceeds maxSize");
+
+      await initializeFileLogger(logPath, maxSize);
+
+      const realRename = fs.promises.rename;
+      const renameReached = Promise.withResolvers<true>();
+      const releaseRename = Promise.withResolvers<true>();
+
+      t.mock.method(fs.promises, "rename", async (from: string, to: string): Promise<void> => {
+
+        renameReached.resolve(true);
+
+        await releaseRename.promise;
+
+        return realRename.call(fs.promises, from, to);
+      });
+
+      // Fire the size check so a trim enqueues on the write chain and runs into the parked rename.
+      for(let i = 0; i < 100; i++) {
+
+        writeLogEntry("info", "Filler " + String(i), null);
+      }
+
+      await renameReached.promise;
+
+      // Buffer the marker while the trim is parked. This entry is exactly what a shutdown without the drain would append into the doomed file.
+      const marker = "DRAIN_MARKER_lands_after_the_trim";
+
+      writeLogEntry("info", marker + ".", null);
+
+      let settled = false;
+
+      const shutdownPromise = shutdownFileLogger().then(() => { settled = true; });
+
+      // Give shutdown several turns to run. It cannot get past the drain while the rename is parked, so it must still be pending here.
+      for(let i = 0; i < 5; i++) {
+
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      assert.equal(settled, false, "shutdown is still waiting while the trim's rename is in flight");
+
+      releaseRename.resolve(true);
+
+      await shutdownPromise;
+
+      assert.equal(settled, true, "shutdown settles once the trim completes");
+
+      const finalContent = await readFile(logPath, "utf-8");
+
+      assert.match(finalContent, new RegExp(marker), "the final flush landed after the rename, so the marker is on disk");
+      assert.ok(finalContent.length < seedContent.length, "the trim genuinely ran - the file is smaller than the seed");
+    });
+  });
+});

@@ -128,9 +128,9 @@ describe("checkAndTrimFile + trimLogFile - I/O orchestration (integration)", () 
    * deterministically in the "trimLogFile end-to-end" describe block below, which seeds an oversized file and polls on-disk size until the trim completes.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
   });
 
   test("does not trim when the file is below maxSize at size-check time", async () => {
@@ -166,9 +166,9 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
    * when the log file is removed externally between writes.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     initDebugFilter("");
   });
 
@@ -260,9 +260,9 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
    * enough content to push past maxSize, triggering a trim via the size-check counter, and asserting the on-disk file ends up at half maxSize or less.
    */
 
-  afterEach(() => {
+  afterEach(async () => {
 
-    shutdownFileLogger();
+    await shutdownFileLogger();
     initDebugFilter("");
   });
 
