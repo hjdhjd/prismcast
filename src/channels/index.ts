@@ -29,8 +29,8 @@ const SITE_KEY = "site";
  * Pacific timezone support:
  * - pacificStationId on an East ChannelDefinition triggers auto-generation of a Pacific sibling.
  * - Manual Pacific definitions (keys ending in "p") can pre-declare overrides (e.g., West-specific channelSelectors).
- * - Pacific generation merges inherited services from the East definition into the Pacific definition, skipping services whose channelSelector contains
- *   "East" or "West" and never overwriting existing Pacific services. See generatePacificDefinitions() for full rules.
+ * - Pacific generation merges inherited services from the East definition into the Pacific definition, skipping services whose channelSelector ends with the word
+ *   East or West, and never overwriting existing Pacific services. See generatePacificDefinitions() for full rules.
  *
  * FAST channels: This list contains only traditional linear TV networks and public broadcasters - no FAST (Free Ad-Supported Streaming Television) channels.
  * FAST channels from platforms like Pluto TV or Tubi should not be added here. Users who want FAST content can add them as user-defined channels through the
@@ -2310,6 +2310,27 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
 
 // Pacific channel auto-generation.
 
+/* A provider's selector names a timezone feed when it ends with the word East or West - "HBO East", "Oxygen_West", "Cartoon Network (East)". The separator before
+ * the word and the optional parentheses are the whole shape: providers spell the marker as a trailing word set off by a space or an underscore, sometimes wrapped
+ * in parentheses, and never as a bare suffix on the preceding word.
+ *
+ * Anchoring on that trailing word is what distinguishes a timezone feed from a channel whose name merely contains the letters. "Starz Encore Westerns" is a
+ * distinct network carried on Sling, not the West feed of Starz Encore, so it merges into the Pacific definition like any other service; a substring rule drops it
+ * and leaves the Pacific channel without its Sling binding. The same holds for "Northwest Sports" and "MidWest Sports" shapes a provider may add later.
+ */
+const TIMEZONE_SELECTOR_PATTERN = /[ _](?:\((?:East|West)\)|East|West)$/i;
+
+/**
+ * Reports whether a provider's channel selector names an East or West timezone feed, which is what keeps such a service out of an auto-generated Pacific
+ * definition: the Pacific channel needs the provider's West selector, which only a manual Pacific entry can supply.
+ * @param channelSelector - The provider's selector text for one service variant.
+ * @returns True when the selector names a timezone feed.
+ */
+export function isTimezoneSpecificSelector(channelSelector: string): boolean {
+
+  return TIMEZONE_SELECTOR_PATTERN.test(channelSelector);
+}
+
 /* PrismCast automatically generates Pacific timezone channel definitions to reduce manual maintenance. Generation runs at module load, producing definitions
  * that are functionally identical to hand-written ones. Generated definitions never override manually-defined ones - if a key already exists in
  * BASE_CHANNEL_DEFINITIONS, the manual definition takes precedence.
@@ -2327,8 +2348,8 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
  * Step 2 - Merge East services into Pacific definitions:
  *
  *   For every Pacific definition "{key}p" (manual or generated), if a corresponding East definition "{key}" exists, its services are merged into the Pacific
- *   definition. Services are skipped if: (a) they already exist in the Pacific definition, or (b) their channelSelector contains "East" or "West" (these have
- *   timezone-specific entries and need manual Pacific definitions with the correct West selector).
+ *   definition. Services are skipped if: (a) they already exist in the Pacific definition, or (b) their channelSelector names a timezone feed (these have
+ *   timezone-specific entries and need manual Pacific definitions with the correct West selector). isTimezoneSpecificSelector holds that second rule.
  *
  *   Example - East services merged into auto-generated Pacific:
  *     animal's cox service: { channelSelector: "Animal Planet", url: "https://watchtv.cox.com/listings" }
@@ -2344,7 +2365,6 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
  */
 function generatePacificDefinitions(definitions: Record<string, ChannelDefinition>): Record<string, ChannelDefinition> {
 
-  const eastWestPattern = /east|west/i;
   const generated: Record<string, ChannelDefinition> = {};
 
   // Step 1: Generate Pacific ChannelDefinitions from East entries with pacificStationId.
@@ -2406,8 +2426,8 @@ function generatePacificDefinitions(definitions: Record<string, ChannelDefinitio
         continue;
       }
 
-      // Skip services with timezone-specific channelSelectors - these need manual Pacific entries.
-      if(variant.channelSelector && eastWestPattern.test(variant.channelSelector)) {
+      // Skip services whose selector names a timezone feed - these need manual Pacific entries carrying the West selector.
+      if(variant.channelSelector && isTimezoneSpecificSelector(variant.channelSelector)) {
 
         continue;
       }

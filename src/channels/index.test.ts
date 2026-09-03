@@ -5,9 +5,9 @@
  * concern: the tag vocabulary, the two exports sharing one map, the catalog-wide structural guarantees (every entry well-formed, canonical/variant key shapes,
  * identity vs binding partition), the canonical resolution rules (site-wins, alphabetically-first, single-service, identity inheritance, tags copy,
  * pacificStationId presence, variant binding-only), the Pacific generation rules (auto-generation step 1, service merging step 2, manual-override precedence,
- * East/West skip), and a sampling of known catalog entries.
+ * timezone-feed skip), and a sampling of known catalog entries. isTimezoneSpecificSelector is exported for the table-driven fixture that holds its rule.
  */
-import { CHANNELS, PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "./index.ts";
+import { CHANNELS, PREDEFINED_CHANNELS, PREDEFINED_TAGS, isTimezoneSpecificSelector } from "./index.ts";
 import type { CanonicalChannel, Channel, VariantChannel } from "../types/index.ts";
 import { describe, test } from "node:test";
 import { CHANNEL_BINDING_KEYS } from "../types/index.ts";
@@ -392,15 +392,26 @@ describe("Pacific auto-generation: Step 2 (merge East services into Pacific)", (
     }
   });
 
-  test("Step 2 skips services with East/West-specific channelSelectors", () => {
+  test("Step 2 leaves a manually declared Pacific selector untouched", () => {
 
-    // cartoonp manually declares hulu with selector "Cartoon Network (West)"; East cartoon's hulu carries the timezone-specific selector "Cartoon Network (East)".
-    // The already-declared rule skips hulu first because cartoonp already declares it, so the East selector is never copied - and the East/West skip would filter
-    // that timezone-specific selector as a backstop even without the manual entry. The manual West entry remains untouched.
+    // cartoonp manually declares hulu with selector "Cartoon Network (West)"; East cartoon's hulu carries "Cartoon Network (East)". The already-declared rule
+    // wins first because cartoonp declares hulu, so the skip predicate never sees the East selector and this row asserts only what it can see: the manual West
+    // entry survives the merge. The skip predicate's own rule is asserted directly by the isTimezoneSpecificSelector fixture below.
     const cartoonpHulu = CHANNELS["cartoonp-hulu"] as VariantChannel | undefined;
 
     assert.ok(cartoonpHulu, "cartoonp-hulu manual variant must exist");
     assert.equal(cartoonpHulu.channelSelector, "Cartoon Network (West)", "manual West selector preserved, East selector not copied over it");
+  });
+
+  test("Step 2 merges a service whose selector merely contains the letters of a timezone word", () => {
+
+    /* "Starz Encore Westerns" is a distinct network on Sling, not the West feed of Starz Encore. A substring rule reads it as timezone-specific and drops it, which
+     * leaves the auto-generated Pacific channel with no Sling binding at all. This row is the live case the trailing-word rule exists for.
+     */
+    const westernspSling = CHANNELS["starzencorewesternsp-sling"] as VariantChannel | undefined;
+
+    assert.ok(westernspSling, "starzencorewesternsp-sling must exist - the Sling service merges into the Pacific definition");
+    assert.equal(westernspSling.channelSelector, "Starz Encore Westerns", "the Sling selector merges through unchanged");
   });
 
   test("Step 2 does not overwrite a Pacific service that was already manually declared", () => {
@@ -485,5 +496,67 @@ describe("known catalog entries (sampling)", () => {
         assert.ok(tagSet.has(tag), key + " references unknown tag: " + tag);
       }
     }
+  });
+});
+
+describe("isTimezoneSpecificSelector", () => {
+
+  /* The predicate is the contract for which East services a Pacific definition inherits, so its fixture is the catalog's own selector corpus rather than a handful
+   * of samples. The three skip groups below are every selector in the catalog that carries the word East or West in a trailing position, spelled the three ways
+   * providers spell it: parenthesized, set off by a space, and set off by an underscore. The copy group holds the one catalog selector that merely contains the
+   * letters plus design controls for shapes a provider could plausibly add later. A substring rule passes every skip row and fails the copy rows, which is what
+   * makes this table the detector rather than a restatement.
+   */
+  const parenthesizedSkips = [
+
+    "Cartoon Network (East)", "Cartoon Network (West)", "IndiePlex (East)", "IndiePlex (West)", "MoviePlex (East)", "MoviePlex (West)", "RetroPlex (East)",
+    "RetroPlex (West)", "STARZ (East)", "STARZ (West)", "STARZ Cinema (East)", "STARZ Cinema (West)", "STARZ Comedy (East)", "STARZ Comedy (West)", "STARZ Edge (East)",
+    "STARZ Edge (West)", "STARZ Encore (East)", "STARZ Encore (West)", "STARZ Encore Action (East)", "STARZ Encore Action (West)", "STARZ Encore Black (East)",
+    "STARZ Encore Black (West)", "STARZ Encore Classic (East)", "STARZ Encore Classic (West)", "STARZ Encore Español (East)", "STARZ Encore Español (West)",
+    "STARZ Encore Family (East)", "STARZ Encore Family (West)", "STARZ Encore Suspense (East)", "STARZ Encore Suspense (West)", "STARZ Encore Westerns (East)",
+    "STARZ Encore Westerns (West)", "STARZ in Black (East)", "STARZ in Black (West)", "STARZ Kids (East)", "STARZ Kids (West)", "TBS (East)", "TBS (West)",
+    "TCM (East)", "TCM (West)", "TNT (East)", "TNT (West)", "truTV (East)", "truTV (West)"
+  ];
+
+  const spacedSkips = [ "CNNi HD East", "HBO East", "HBO Comedy East", "HBO Drama East", "HBO Hits East", "HBO Movies East", "Showtime East", "Starz Encore West",
+    "Starz West" ];
+
+  const underscoredSkips = [ "E-_East", "E-_West", "Oxygen_East", "Oxygen_West", "Syfy_East", "Syfy_West", "USA_East", "USA_West" ];
+
+  for(const selector of [ ...parenthesizedSkips, ...spacedSkips, ...underscoredSkips ]) {
+
+    test("skips \"" + selector + "\" - the selector names a timezone feed", () => {
+
+      assert.equal(isTimezoneSpecificSelector(selector), true, selector + " must not merge into a Pacific definition");
+    });
+  }
+
+  for(const selector of [ "Starz Encore Westerns", "Northwest Sports", "Southeast Sports", "MidWest Sports", "Westworld", "CNN" ]) {
+
+    test("copies \"" + selector + "\" - the selector names a network, not a timezone feed", () => {
+
+      assert.equal(isTimezoneSpecificSelector(selector), false, selector + " must merge into a Pacific definition");
+    });
+  }
+
+  test("the skip verdict covers every timezone selector the catalog carries and nothing else", () => {
+
+    /* A completeness assertion over the fixture itself: the three skip groups hold every catalog selector the predicate rejects. A selector added to the catalog in
+     * a shape the rule does not cover would leave this count short, which turns a silent behavior change into a failing row.
+     */
+    const fixtureSkips = new Set([ ...parenthesizedSkips, ...spacedSkips, ...underscoredSkips ]);
+    const catalogSkips = new Set<string>();
+
+    for(const channel of Object.values(CHANNELS)) {
+
+      const selector = channel.channelSelector;
+
+      if(selector && isTimezoneSpecificSelector(selector)) {
+
+        catalogSkips.add(selector);
+      }
+    }
+
+    assert.deepEqual([...catalogSkips].sort(), [...fixtureSkips].sort(), "the fixture's skip groups and the catalog's rejected selectors are the same set");
   });
 });
