@@ -364,7 +364,9 @@ export function locateSelectorCoordinate(sel: string): { x: number; y: number } 
 /**
  * Clicks an element identified by a CSS selector using a real coordinate mouse click, if the element is present and laid out. Coordinate clicking generates the
  * full pointer event chain, which consent buttons in SPA frameworks require to register (a synthetic element.click() is silently dropped by some, as observed on
- * the embed-gate accept button). Returns false when the element is absent or has zero layout size, so callers can keep polling.
+ * the embed-gate accept button). A hit test after the settle decides which click dispatches: the pointer chain when the element is what paints at the resolved
+ * coordinates, and the in-page synthetic click when another element covers it, so a control beneath a lifted page element is still reached. Returns false when the
+ * element is absent, has zero layout size, or is covered and the in-page click finds nothing, so callers can keep polling.
  * @param page - The Puppeteer page.
  * @param selector - The CSS selector for the element to click.
  * @returns True if the element was found and clicked.
@@ -381,6 +383,22 @@ async function clickSelectorByCoordinate(page: Page, selector: string): Promise<
   // Brief settle delay after scrolling, mirroring the shared scrollAndClick helper, before dispatching the real pointer-event chain. This paces real page physics
   // inside an action and is exercised only when a click actually dispatches, so it stays on delay() rather than the injected poll clock.
   await delay(SCROLL_SETTLE_DELAY);
+
+  /* The hit test sits between the settle and the dispatch because it has to read the layout the click will land on: the resolver measured its coordinates before the
+   * scroll settled, and once capture is established the video and its ancestors are lifted above the rest of the page, so a banner that appears afterwards sits
+   * beneath them at those coordinates and the pointer click lands on the video. When the target is covered, the in-page synthetic click reaches the element whatever
+   * paints over it. That click is the fallback and not the first choice because some SPA consent buttons drop a synthetic click - the reason this path dispatches a
+   * real pointer chain at all - so the pointer chain stays first wherever it can land on the target.
+   */
+  const onTop = await page.evaluate(isSelectorAtPoint, { selector, x: target.x, y: target.y });
+
+  if(!onTop) {
+
+    const result = await page.evaluate(clickSelectorInPage, selector);
+
+    return result === "clicked";
+  }
+
   await page.mouse.click(target.x, target.y);
 
   return true;
@@ -417,6 +435,31 @@ export function clickSelectorInPage(sel: string): SyntheticClickResult {
   }
 
   return "absent";
+}
+
+/**
+ * In-page hit test for a selector-identified element at a viewport point: reports whether the element, or one of its own descendants, is what the document paints
+ * there. It runs after the settle and immediately before the pointer chain is dispatched at that point, so a page element lifted above the target since the
+ * coordinates were resolved - the capture's video after establishment - is seen. A null hit (a point outside the viewport) answers false, so the caller never
+ * clicks blind.
+ *
+ * This function crosses the page.evaluate boundary by source serialization, so it is self-contained: it references only its argument and the page's document global,
+ * with every input a parameter and zero outer-scope references. Exported so unit tests can run it against a synthetic DOM.
+ * @param input - The selector and the viewport point to test.
+ * @returns True when the element or one of its descendants paints at the point.
+ */
+export function isSelectorAtPoint(input: { selector: string; x: number; y: number }): boolean {
+
+  const el = document.querySelector(input.selector);
+
+  if(!el) {
+
+    return false;
+  }
+
+  const top = document.elementFromPoint(input.x, input.y);
+
+  return (top !== null) && ((top === el) || el.contains(top));
 }
 
 /**

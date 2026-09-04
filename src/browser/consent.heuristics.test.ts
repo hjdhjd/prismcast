@@ -1,9 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * consent.heuristics.test.ts: DOM-fixture unit tests for the in-page heuristics consent.ts serializes across the page.evaluate boundary - the embed-gate scanner
- * (scanForEmbedGate), the coordinate resolver (locateSelectorCoordinate), and the synthetic dismisser (clickSelectorInPage). The Node-side orchestration (the poll,
- * the phase masking, the unified auto-dismiss logging) is covered by consent.test.ts; this file asserts the pure in-page decision logic those serialized functions
- * embody, running them directly in the test process against a synthetic happy-dom document exactly as the collector tests in blockedPage.test.ts do.
+ * (scanForEmbedGate), the coordinate resolver (locateSelectorCoordinate), the hit test (isSelectorAtPoint), and the synthetic dismisser (clickSelectorInPage). The
+ * Node-side orchestration (the poll, the phase masking, the unified auto-dismiss logging) is covered by consent.test.ts; this file asserts the pure in-page decision
+ * logic those serialized functions embody, running them directly in the test process against a synthetic happy-dom document exactly as the collector tests in
+ * blockedPage.test.ts do.
  *
  * Home: co-located unit tier, mirroring blockedPage.test.ts's treatment of collectSignInContainers - the established precedent for exercising consent.ts's sibling
  * in-page functions against a synthetic DOM. This is deliberately NOT the test/e2e/dom-runtime/ tier, whose harness (createDomTestContext) boots the app and executes
@@ -14,7 +15,8 @@
  * candidate. The fixtures stub rects on the candidate controls (per element) so the heuristics' DECISION logic - the accept/exclude/gate phrasing, the readyState
  * short-circuit, the probe/act split, the ancestor depth bound - is what the assertions check; real viewport geometry remains live-smoke territory for a browser tier.
  */
-import { ACCEPT_AFFORDANCE_SOURCE, CMP_REGISTRY, EMBED_GATE_SOURCE, EXCLUDE_SOURCE, clickSelectorInPage, locateSelectorCoordinate, scanForEmbedGate } from "./consent.ts";
+import { ACCEPT_AFFORDANCE_SOURCE, CMP_REGISTRY, EMBED_GATE_SOURCE, EXCLUDE_SOURCE, clickSelectorInPage, isSelectorAtPoint, locateSelectorCoordinate,
+  scanForEmbedGate } from "./consent.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { withDocument } from "../testing.helpers.ts";
@@ -322,6 +324,69 @@ describe("locateSelectorCoordinate - coordinate resolver", () => {
     withDocument("<button id=\"hidden\">Reject</button>", () => {
 
       assert.equal(locateSelectorCoordinate("#hidden"), null, "a zero-size element is skipped so the caller keeps polling");
+    });
+  });
+});
+
+describe("isSelectorAtPoint - hit test", () => {
+
+  /* One fixture serves every row: a cookie banner holding a reject button that holds an icon span, beside a stand-in for the capture video that establishment
+   * lifts above the rest of the page. happy-dom implements elementFromPoint as a stub answering null for every point, so a row that needs a hit assigns the answer
+   * on the fixture's document exactly as stubRect assigns a rect on an element.
+   */
+  const fixture = "<div id=\"banner\"><button id=\"reject\"><span id=\"icon\">Reject</span></button></div><div id=\"video\"></div>";
+
+  test("answers true when the control itself paints at the point", () => {
+
+    withDocument(fixture, () => {
+
+      const button = requireElement("#reject");
+
+      document.elementFromPoint = (): Element => button;
+
+      assert.equal(isSelectorAtPoint({ selector: "#reject", x: 60, y: 25 }), true, "the control paints at its own coordinates, so the pointer chain can land");
+    });
+  });
+
+  test("answers true when one of the control's own descendants paints there", () => {
+
+    withDocument(fixture, () => {
+
+      const icon = requireElement("#icon");
+
+      document.elementFromPoint = (): Element => icon;
+
+      assert.equal(isSelectorAtPoint({ selector: "#reject", x: 60, y: 25 }), true, "a descendant takes the click the control would have taken, so the hit counts");
+    });
+  });
+
+  test("answers false when another element paints there", () => {
+
+    withDocument(fixture, () => {
+
+      const video = requireElement("#video");
+
+      document.elementFromPoint = (): Element => video;
+
+      assert.equal(isSelectorAtPoint({ selector: "#reject", x: 60, y: 25 }), false, "an element lifted over the control makes a coordinate click miss it");
+    });
+  });
+
+  test("answers false when nothing paints there", () => {
+
+    withDocument(fixture, () => {
+
+      document.elementFromPoint = (): Element | null => null;
+
+      assert.equal(isSelectorAtPoint({ selector: "#reject", x: 60, y: 25 }), false, "a point that hits nothing answers false, so the caller never clicks blind");
+    });
+  });
+
+  test("answers false when the selector matches nothing", () => {
+
+    withDocument(fixture, () => {
+
+      assert.equal(isSelectorAtPoint({ selector: "#missing", x: 60, y: 25 }), false, "an absent element cannot be what the document paints at the point");
     });
   });
 });

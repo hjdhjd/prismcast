@@ -8,7 +8,7 @@
  * so multi-tick behavior is deterministic with no real timers. LOG is spied via the test-context mock so the logging contract is asserted directly on the
  * production LOG object.
  */
-import { consentOverlayPresent, logAutoDismiss, startOverlayHandling } from "./consent.ts";
+import { clickSelectorInPage, consentOverlayPresent, isSelectorAtPoint, logAutoDismiss, startOverlayHandling } from "./consent.ts";
 import { describe, test } from "node:test";
 import type { Clock } from "../utils/index.ts";
 import { LOG } from "../utils/index.ts";
@@ -35,27 +35,36 @@ interface PageStub {
 }
 
 /**
- * Options for makePageStub: the browser-connected state and the isClosed result the tick-error taxonomy reads when an evaluate rejects.
+ * Options for makePageStub: the browser-connected state, the isClosed result the tick-error taxonomy reads when an evaluate rejects, and the answer the stub gives
+ * to the coordinate click's hit test.
  */
 interface PageStubOptions {
 
   connected?: boolean;
   isClosed?: () => boolean;
+  onTop?: boolean;
 }
 
-function makePageStub(router: (arg: unknown) => unknown, options: PageStubOptions = {}): { page: Page; stub: PageStub } {
+function makePageStub(router: (arg: unknown, fn: unknown) => unknown, options: PageStubOptions = {}): { page: Page; stub: PageStub } {
 
-  const { connected = true, isClosed = (): boolean => false } = options;
+  const { connected = true, isClosed = (): boolean => false, onTop = true } = options;
   const stub: PageStub = { clicks: [], evaluateArgs: [] };
 
   const page = {
 
     browser: (): { connected: boolean } => ({ connected }),
-    evaluate: async (_fn: unknown, arg?: unknown): Promise<unknown> => {
+    evaluate: async (fn: unknown, arg?: unknown): Promise<unknown> => {
 
       stub.evaluateArgs.push(arg);
 
-      return router(arg);
+      // The coordinate click's hit test is answered by the stub rather than by each router, so every routing table stays a map from a probe's argument to its
+      // scripted result. The default reports the target as what paints at its own coordinates, which is what every row asserting a dispatched pointer click needs.
+      if(fn === isSelectorAtPoint) {
+
+        return onTop;
+      }
+
+      return router(arg, fn);
     },
     isClosed,
     mouse: {
@@ -370,6 +379,84 @@ describe("startOverlayHandling", () => {
     const rejectProbes = stub.evaluateArgs.filter((arg) => arg === DIDOMI_REJECT);
 
     assert.equal(rejectProbes.length, 1, "the CMP vendor is rejected once and not re-probed once handled");
+  });
+
+  test("falls back to the in-page click when the reject control is covered, and marks the vendor handled", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    t.mock.method(LOG, "debug", () => { /* Silenced. */ });
+
+    /* The Didomi banner resolves to coordinates, but the hit test reports that another element paints there - the state a page reaches when the capture's video is
+     * lifted above a banner that arrives afterwards. The poll has to reach the control with the in-page synthetic click instead, dispatch no pointer click at all,
+     * and treat that click's "clicked" result exactly as it treats a landed coordinate click: the vendor is marked handled, so neither the click nor the log line
+     * repeats on the ticks that follow.
+     */
+    let syntheticClicks = 0;
+
+    const { page, stub } = makePageStub((arg, fn) => {
+
+      if(arg !== DIDOMI_REJECT) {
+
+        return null;
+      }
+
+      if(fn === clickSelectorInPage) {
+
+        syntheticClicks++;
+
+        return "clicked";
+      }
+
+      return { x: 2, y: 2 };
+    }, { onTop: false });
+
+    await startOverlayHandling(page, makeProfile({ videoTimeout: 1000 }),
+      { clock: makeFakeClock(), onEmbedGateAccepted: () => { /* No gate is ever located in this row. */ }, phase: "videoWait" });
+
+    const messages = info.mock.calls.map((call) => String(call.arguments[0]));
+
+    assert.equal(stub.clicks.length, 0, "a covered control is never pointer-clicked");
+    assert.equal(syntheticClicks, 1, "the in-page click ran once, on the same selector the coordinate click resolved");
+    assert.equal(messages.filter((m) => m.includes("cookie-consent prompt")).length, 1, "the fallback dismissal is logged once and the vendor is handled");
+  });
+
+  test("leaves a covered reject control unhandled when the in-page click finds nothing", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    t.mock.method(LOG, "debug", () => { /* Silenced. */ });
+
+    /* The same covered control, except the element is gone by the time the in-page click runs, so it reports "absent". Nothing was dismissed, so the vendor stays
+     * unhandled and the poll resolves its coordinates again on a later tick - the behavior that keeps a banner recoverable rather than silently written off.
+     */
+    let locateProbes = 0;
+
+    const { page, stub } = makePageStub((arg, fn) => {
+
+      if(arg !== DIDOMI_REJECT) {
+
+        return null;
+      }
+
+      if(fn === clickSelectorInPage) {
+
+        return "absent";
+      }
+
+      locateProbes++;
+
+      return { x: 2, y: 2 };
+    }, { onTop: false });
+
+    await startOverlayHandling(page, makeProfile({ videoTimeout: 1000 }),
+      { clock: makeFakeClock(), onEmbedGateAccepted: () => { /* No gate is ever located in this row. */ }, phase: "videoWait" });
+
+    const messages = info.mock.calls.map((call) => String(call.arguments[0]));
+
+    assert.equal(stub.clicks.length, 0, "a covered control is never pointer-clicked");
+    assert.ok(locateProbes >= 2, "an unhandled vendor is resolved again on a later tick");
+    assert.ok(!messages.some((m) => m.includes("cookie-consent prompt")), "nothing was dismissed, so no dismissal is logged");
   });
 
   // Every non-videoWait phase masks the embed-gate accept: its policy forbids the gate, so the acting gate probe never runs, while cookie rejection and per-site
