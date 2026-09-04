@@ -451,7 +451,6 @@ describe("barrel re-exports", () => {
     assert.equal(typeof mod.generateCollapsibleSection, "function", "generateCollapsibleSection re-export");
     assert.equal(typeof mod.generateSettingsFormFooter, "function", "generateSettingsFormFooter re-export");
     assert.equal(typeof mod.generateSettingsTabContent, "function", "generateSettingsTabContent re-export");
-    assert.equal(typeof mod.hasEnvOverrides, "function", "hasEnvOverrides re-export");
     assert.equal(typeof mod.generateCustomProfilesPanel, "function", "generateCustomProfilesPanel re-export");
     assert.equal(typeof mod.generateProfileWizardModal, "function", "generateProfileWizardModal re-export");
   });

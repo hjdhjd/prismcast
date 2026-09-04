@@ -4,10 +4,10 @@
  */
 import { escapeHtml, isRunningAsService } from "../../utils/index.ts";
 import { generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal, generateSettingsFormFooter,
-  generateSettingsTabContent, hasEnvOverrides } from "../config/index.ts";
+  generateSettingsTabContent } from "../config/index.ts";
+import { getEnvOverrides, getUITabs } from "../../config/userConfig.ts";
 import { ACTIONS } from "../clientActions.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
-import { getUITabs } from "../../config/userConfig.ts";
 
 /**
  * Generates the active streams table for the Overview tab.
@@ -1055,10 +1055,16 @@ export function generateLogsContent(): string {
 export function generateConfigContent(): string {
 
   const tabs = getUITabs();
+
+  /* The environment overrides are read once here and handed to every generator below. Each of them renders a disabled field and a badge for the settings the
+   * environment owns, so resolving the map per generator - or per advanced section, as the pass-through would do - would walk CONFIG_METADATA and process.env
+   * once per section for an answer that cannot change inside one render.
+   */
+  const envOverrides = getEnvOverrides();
   const lines: string[] = [];
 
   // Environment variable warning if applicable.
-  if(hasEnvOverrides()) {
+  if(envOverrides.size > 0) {
 
     lines.push("<div class=\"warning\">");
     lines.push("<div class=\"warning-title\">Environment Variable Overrides</div>");
@@ -1090,12 +1096,12 @@ export function generateConfigContent(): string {
 
   // Settings subtab panel with non-collapsible section headers (default active subtab).
   lines.push("<div id=\"subtab-settings\" class=\"subtab-panel active\" role=\"tabpanel\">");
-  lines.push(generateSettingsTabContent());
+  lines.push(generateSettingsTabContent(envOverrides));
   lines.push("</div>");
 
   // Advanced subtab panel with collapsible sections.
   lines.push("<div id=\"subtab-advanced\" class=\"subtab-panel\" role=\"tabpanel\">");
-  lines.push(generateAdvancedTabContent());
+  lines.push(generateAdvancedTabContent(envOverrides));
   lines.push("</div>");
 
   // Settings buttons (hidden on Backup subtab). Button text varies based on whether running as a managed service.

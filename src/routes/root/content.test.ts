@@ -343,6 +343,45 @@ describe("generateConfigContent", () => {
     assert.doesNotMatch(html, /\[object Object\]/);
   });
 
+  test("resolves the environment overrides once and hands the same map to both subtab generators", () => {
+
+    /* The render root reads getEnvOverrides() a single time and passes the result down, so a variable set for a settings-tab field and one set for an
+     * advanced-section field both have to surface from one call. Setting one of each and finding both disabled fields with their badges, inside their own
+     * subtab panels, is what distinguishes a map that travelled from a root that quietly handed a generator nothing.
+     */
+    const originalAdvanced = process.env["HLS_MAX_SEGMENTS"];
+    const originalPort = process.env["PORT"];
+
+    process.env["HLS_MAX_SEGMENTS"] = "42";
+    process.env["PORT"] = "8080";
+
+    try {
+
+      const html = generateConfigContent();
+      const settingsPanel = html.slice(html.indexOf("id=\"subtab-settings\""), html.indexOf("id=\"subtab-advanced\""));
+      const advancedPanel = html.slice(html.indexOf("id=\"subtab-advanced\""));
+
+      assert.match(html, /class="warning-title">Environment Variable Overrides/, "the override banner renders from the one resolved map");
+      assert.match(settingsPanel, /id="server-port"[^>]*disabled/, "the settings subtab renders its overridden field disabled");
+      assert.match(settingsPanel, /<code>PORT=8080<\/code>/, "the settings subtab renders the badge for its overridden field");
+      assert.match(advancedPanel, /id="hls-maxSegments"[^>]*disabled/, "the advanced subtab renders its overridden field disabled");
+      assert.match(advancedPanel, /<code>HLS_MAX_SEGMENTS=42<\/code>/, "the advanced subtab renders the badge for its overridden field");
+    } finally {
+
+      for(const [ name, value ] of [ [ "HLS_MAX_SEGMENTS", originalAdvanced ], [ "PORT", originalPort ] ] as const) {
+
+        if(value === undefined) {
+
+          Reflect.deleteProperty(process.env, name);
+
+          continue;
+        }
+
+        process.env[name] = value;
+      }
+    }
+  });
+
   test("opens settings-form correctly with closing form tag (balanced)", () => {
 
     // Crude balance check: the form must have a closing tag. If a refactor accidentally drops it, every input below would be parented to the wrong ancestor.

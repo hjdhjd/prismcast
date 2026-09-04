@@ -202,6 +202,5 @@ export function setupConfigEndpoint(app: Express): void {
 
 export type { ChannelRowHtml } from "./channels/index.ts";
 export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateServiceFilterToolbar } from "./channels/index.ts";
-export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
-  hasEnvOverrides } from "./settings.ts";
+export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent } from "./settings.ts";
 export { generateCustomProfilesPanel, generateProfileWizardModal } from "./services.ts";

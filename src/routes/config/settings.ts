@@ -301,15 +301,12 @@ function getFieldWidthClass(setting: SettingMetadata): string {
  * @param currentValue - The current effective value (in storage units).
  * @param defaultValue - The default value (in storage units).
  * @param envOverride - The environment variable value if overridden, undefined otherwise.
- * @param validationError - Validation error message if any.
  * @returns HTML string for the form field.
  */
-function generateSettingField(setting: SettingMetadata, currentValue: unknown, defaultValue: unknown, envOverride: string | undefined,
-  validationError?: string): string {
+function generateSettingField(setting: SettingMetadata, currentValue: unknown, defaultValue: unknown, envOverride: string | undefined): string {
 
   const isDisabled = (envOverride !== undefined) || (setting.disabledReason !== undefined);
   const inputId = setting.path.replaceAll(".", "-");
-  const hasError = validationError !== undefined;
   const isModified = !isDisabled && !isEqualToDefault(currentValue, defaultValue);
 
   // Convert values for display.
@@ -377,7 +374,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
     // Render as select dropdown.
     const selectAttrs = [
-      "class=\"form-select " + getFieldWidthClass(setting) + (hasError ? " error" : "") + "\"",
+      "class=\"form-select " + getFieldWidthClass(setting) + "\"",
       "id=\"" + inputId + "\"",
       "name=\"" + setting.path + "\"",
       "data-default=\"" + escapeHtml(String(displayDefault ?? "")) + "\""
@@ -518,7 +515,7 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     }
 
     const inputAttrs = [
-      "class=\"form-input " + getFieldWidthClass(setting) + (hasError ? " error" : "") + "\"",
+      "class=\"form-input " + getFieldWidthClass(setting) + "\"",
       "type=\"" + inputType + "\"",
       "id=\"" + inputId + "\"",
       "name=\"" + setting.path + "\"",
@@ -630,12 +627,6 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
     lines.push("<div class=\"form-env\">Overridden by environment variable: <code>" + escapeHtml(setting.envVar) + "=" +
       escapeHtml(envOverride) + "</code></div>");
-  }
-
-  // Add validation error if present.
-  if(hasError) {
-
-    lines.push("<div class=\"form-error\">" + escapeHtml(validationError) + "</div>");
   }
 
   lines.push("</div>");
@@ -850,17 +841,15 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 
 /**
  * Generates the content for the Settings tab with non-collapsible section headers.
- * @param validationErrors - Map of setting path to validation error message.
- * @param formValues - Map of setting path to submitted form value.
+ * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
  * @returns HTML string for the Settings tab content.
  */
-export function generateSettingsTabContent(validationErrors?: Map<string, string>, formValues?: Map<string, string>): string {
+export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, string>): string {
 
   const sections = getSettingsTabSections();
   const tabs = getUITabs();
   const settingsTab = tabs.find((t) => t.id === "settings");
   const defaults = getDefaults();
-  const envOverrides = getEnvOverrides();
   const lines: string[] = [];
 
   // Panel header with description and reset button.
@@ -879,12 +868,11 @@ export function generateSettingsTabContent(validationErrors?: Map<string, string
     // Generate setting fields for this section.
     for(const setting of section.settings) {
 
-      const currentValue = formValues?.get(setting.path) ?? getNestedValue(CONFIG, setting.path);
+      const currentValue = getNestedValue(CONFIG, setting.path);
       const defaultValue = getNestedValue(defaults, setting.path);
       const envOverride = envOverrides.get(setting.path);
-      const validationError = validationErrors?.get(setting.path);
 
-      lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride, validationError));
+      lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride));
     }
 
     lines.push("</div>");
@@ -896,15 +884,12 @@ export function generateSettingsTabContent(validationErrors?: Map<string, string
 /**
  * Generates the content for a collapsible section within the Advanced tab.
  * @param section - The section definition.
- * @param validationErrors - Map of setting path to validation error message.
- * @param formValues - Map of setting path to submitted form value.
+ * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
  * @returns HTML string for the section.
  */
-export function generateCollapsibleSection(section: AdvancedSection, validationErrors?: Map<string, string>,
-  formValues?: Map<string, string>): string {
+export function generateCollapsibleSection(section: AdvancedSection, envOverrides: ReadonlyMap<string, string>): string {
 
   const defaults = getDefaults();
-  const envOverrides = getEnvOverrides();
   const lines: string[] = [];
   const settingCount = section.settings.length;
 
@@ -924,12 +909,11 @@ export function generateCollapsibleSection(section: AdvancedSection, validationE
   // Generate setting fields for this section.
   for(const setting of section.settings) {
 
-    const currentValue = formValues?.get(setting.path) ?? getNestedValue(CONFIG, setting.path);
+    const currentValue = getNestedValue(CONFIG, setting.path);
     const defaultValue = getNestedValue(defaults, setting.path);
     const envOverride = envOverrides.get(setting.path);
-    const validationError = validationErrors?.get(setting.path);
 
-    lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride, validationError));
+    lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride));
   }
 
   // Close section-content, then advanced-section, in reverse order of the opens above.
@@ -941,11 +925,10 @@ export function generateCollapsibleSection(section: AdvancedSection, validationE
 
 /**
  * Generates the content for the Advanced tab with collapsible sections.
- * @param validationErrors - Map of setting path to validation error message.
- * @param formValues - Map of setting path to submitted form value.
+ * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
  * @returns HTML string for the Advanced tab content.
  */
-export function generateAdvancedTabContent(validationErrors?: Map<string, string>, formValues?: Map<string, string>): string {
+export function generateAdvancedTabContent(envOverrides: ReadonlyMap<string, string>): string {
 
   const sections = getAdvancedSections();
   const tabs = getUITabs();
@@ -962,7 +945,7 @@ export function generateAdvancedTabContent(validationErrors?: Map<string, string
   // Generate each collapsible section.
   for(const section of sections) {
 
-    lines.push(generateCollapsibleSection(section, validationErrors, formValues));
+    lines.push(generateCollapsibleSection(section, envOverrides));
   }
 
   return lines.join("\n");
@@ -975,15 +958,6 @@ export function generateAdvancedTabContent(validationErrors?: Map<string, string
 export function generateSettingsFormFooter(): string {
 
   return "<div class=\"config-path\">Configuration file: <code>" + escapeHtml(getConfigFilePath()) + "</code></div>";
-}
-
-/**
- * Checks if there are any environment variable overrides for configuration settings.
- * @returns True if any settings are overridden by environment variables.
- */
-export function hasEnvOverrides(): boolean {
-
-  return getEnvOverrides().size > 0;
 }
 
 /**
