@@ -1018,7 +1018,7 @@ function buildPersistResolutionCallback(canonicalKey: string, serviceTag: string
       data.channels[variantKey] = { ...existing, channelSelector: resolvedSelector };
     });
 
-    LOG.debug("tuning", "Persisted resolved selector \"%s\" to channel store as \"%s\".", resolvedSelector, variantKey);
+    LOG.debug("tuning:selector", "Persisted resolved selector \"%s\" to channel store as \"%s\".", resolvedSelector, variantKey);
   };
 }
 

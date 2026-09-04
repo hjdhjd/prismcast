@@ -385,7 +385,8 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile, op
 
     if("callSign" in resolution) {
 
-      LOG.debug("tuning", "Resolved category selector \"%s\" to \"%s\" via %s.", activeProfile.channelSelector, resolution.callSign, provider?.label ?? "unknown");
+      LOG.debug("tuning:selector", "Resolved category selector \"%s\" to \"%s\" via %s.", activeProfile.channelSelector, resolution.callSign,
+        provider?.label ?? "unknown");
 
       activeProfile = { ...activeProfile, channelSelector: resolution.callSign };
 
@@ -395,7 +396,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile, op
 
         options.persistResolution(resolved).catch((persistError: unknown) => {
 
-          LOG.debug("tuning", "Failed to persist resolved category selector to \"%s\": %s.", resolved, formatError(persistError));
+          LOG.debug("tuning:selector", "Failed to persist resolved category selector to \"%s\": %s.", resolved, formatError(persistError));
         });
       }
     } else if(categoryResolution.requireResolution) {
@@ -409,7 +410,7 @@ export async function selectChannel(page: Page, profile: ResolvedSiteProfile, op
       // Permissive provider: log the resolver-authored reason at debug level and fall through. The strategy will attempt a best-effort match against the original
       // category selector, and the verifier will fail open for the wildcard case if the captured manifest URL cannot be cross-checked against discovered category
       // members.
-      LOG.debug("tuning", "%s", resolution.reason);
+      LOG.debug("tuning:selector", "%s", resolution.reason);
     }
   }
 
