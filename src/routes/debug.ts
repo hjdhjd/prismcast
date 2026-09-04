@@ -193,7 +193,7 @@ function generateDebugStyles(): string {
     ".debug-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 24px; }",
     ".debug-actions button { padding: 8px 20px; border-radius: 6px; border: 1px solid var(--border-default); cursor: pointer; font-size: 0.9rem;",
     "  font-weight: 500; transition: background 0.15s, border-color 0.15s; }",
-    ".debug-btn-apply { background: var(--interactive-primary); color: var(--text-inverse); border-color: var(--interactive-primary); }",
+    ".debug-btn-apply { background: var(--interactive-primary); color: var(--text-inverse); }",
     ".debug-btn-apply:hover { background: var(--interactive-primary-hover); border-color: var(--interactive-primary-hover); }",
     ".debug-btn-secondary { background: var(--surface-elevated); color: var(--text-primary); }",
     ".debug-btn-secondary:hover { background: var(--surface-code); border-color: var(--border-strong); }",

@@ -147,9 +147,9 @@ export function generateBaseStyles(): string {
     ".form-input.field-narrow { flex: none; width: 55px; }",
     ".form-input.field-medium { flex: none; width: 100px; }",
     ".form-input.field-wide { flex: none; width: 200px; }",
-    ".form-select.field-narrow { flex: 0 0 auto; min-width: 55px; }",
-    ".form-select.field-medium { flex: 0 0 auto; min-width: 100px; }",
-    ".form-select.field-wide { flex: 0 0 auto; min-width: 200px; }",
+    ".form-select.field-narrow { min-width: 55px; }",
+    ".form-select.field-medium { min-width: 100px; }",
+    ".form-select.field-wide { min-width: 200px; }",
 
     // Form metadata styles.
     ".form-unit { color: var(--text-secondary); font-size: 13px; min-width: 40px; }",

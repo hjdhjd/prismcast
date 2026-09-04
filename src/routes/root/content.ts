@@ -858,7 +858,7 @@ export function generateChannelsTabContent(): string {
     "<div class=\"login-modal-content\">",
     "<h3>Channel Authentication</h3>",
     "<p id=\"login-modal-message\">Complete authentication in the Chrome window on the PrismCast server, then click Done.</p>",
-    "<p class=\"login-modal-hint\">A Chrome window has been opened on the machine running PrismCast. ",
+    "<p>A Chrome window has been opened on the machine running PrismCast. ",
     "If PrismCast is running on a remote server or headless system, you'll need screen sharing ",
     "(VNC, Screen Sharing, etc.) to access it. Sign in with your TV provider credentials in that window. ",
     "This login session will automatically close after 15 minutes.</p>",

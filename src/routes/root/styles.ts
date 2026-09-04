@@ -188,9 +188,6 @@ export function generateLandingPageStyles(): string {
     ".import-summary-table td { padding: 4px 0; }",
     ".import-summary-label { color: var(--text-muted); }",
 
-    // Panel header layout for description and reset link alignment.
-    ".panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }",
-
     // Settings panel description styling (replaces redundant header titles).
     ".settings-panel-description { margin: 0; font-size: 15px; color: var(--text-primary); }",
     ".settings-panel-description p { margin: 0; }",
@@ -278,10 +275,8 @@ export function generateLandingPageStyles(): string {
     // Column picker dropdown. The Actions header uses flex layout to push the ellipsis button to the far right.
     ".channel-table th.col-actions { display: flex; align-items: center; justify-content: space-between; }",
     ".column-picker { position: relative; }",
-    ".btn-col-picker { font-size: 16px; line-height: 1; vertical-align: middle; padding: 0 4px; color: var(--text-muted); cursor: pointer; " +
-      "background: none; border: none; border-radius: 3px; }",
-    ".btn-col-picker:hover { color: var(--text-primary); background: var(--surface-hover); }",
-    ".column-picker-menu { min-width: 140px; }",
+    ".btn-col-picker { font-size: 16px; line-height: 1; vertical-align: middle; }",
+    ".btn-col-picker:hover { color: var(--text-primary); }",
 
     // Key column styling: monospace at a slightly smaller size with secondary color to reduce visual weight.
     ".ch-key { color: var(--text-secondary); font-family: var(--font-mono); font-size: 13px; }",
@@ -321,14 +316,13 @@ export function generateLandingPageStyles(): string {
     ".tag-badge-deleted { opacity: 0.5; text-decoration: line-through; }",
     // Tag checkbox grid in the channel edit form. Each tag is a pill-styled checkbox label.
     ".tag-checkbox-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }",
-    ".tag-checkbox-label { cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }",
+    ".tag-checkbox-label { cursor: pointer; }",
     ".tag-checkbox-label input { margin: 0; }",
     ".tag-checkbox-label .tag-badge { cursor: pointer; }",
 
     // Inline tag edit portal - shared dropdown portaled to <body> via JS. The td has the dropdown class so the document click handler recognizes it as a dropdown
     // context. The display override preserves table-cell layout (the .dropdown class defaults to display: inline-block for div-based dropdowns).
     "td.dropdown { display: table-cell; }",
-    ".inline-tag-menu { min-width: 140px; }",
 
     ".tag-editable { cursor: pointer; }",
     ".tag-editable:hover { background: var(--surface-hover); }",
@@ -337,7 +331,7 @@ export function generateLandingPageStyles(): string {
 
     // Tag manager modal - list of tags with add/delete/restore actions. Hint and error styling use shared wizard classes.
     ".tag-manager-add { display: flex; gap: 8px; margin-bottom: 8px; }",
-    ".tag-manager-add input { flex: 1; padding: 4px 8px; font-size: 13px; border: 1px solid var(--form-input-border); border-radius: 4px; }",
+    ".tag-manager-add input { flex: 1; }",
     ".tag-manager-list { display: flex; flex-direction: column; gap: 4px; }",
     ".tag-manager-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; }",
     ".tag-manager-item .btn-icon { margin-left: auto; }",
@@ -379,7 +373,7 @@ export function generateLandingPageStyles(): string {
     ".provider-toolbar .toolbar-group { display: flex; align-items: center; gap: 6px; }",
 
     // Provider dropdown multi-select.
-    ".provider-dropdown-menu { min-width: 200px; max-height: 70vh; overflow-y: auto; }",
+    ".provider-dropdown-menu { max-height: 70vh; overflow-y: auto; }",
     ".provider-option { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--text-primary); }",
     ".provider-option:hover { background: var(--surface-sunken); }",
     ".provider-option input[type=\"checkbox\"] { margin: 0; }",
@@ -545,7 +539,6 @@ export function generateLandingPageStyles(): string {
     "box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); }",
     ".login-modal-content h3 { margin-top: 0; margin-bottom: 15px; color: var(--text-heading); }",
     ".login-modal-content p { color: var(--text-secondary); margin-bottom: 15px; font-size: 14px; line-height: 1.5; }",
-    ".login-modal-hint { font-size: 13px; color: var(--text-muted); }",
     ".login-modal-buttons { margin-top: 20px; text-align: right; }",
 
     // Restart dialog modal styles for pending restart notification.
@@ -557,9 +550,6 @@ export function generateLandingPageStyles(): string {
     ".restart-modal-content p { color: var(--text-secondary); margin-bottom: 0; font-size: 14px; line-height: 1.5; }",
     ".restart-modal-status { margin: 16px 0; color: var(--text-muted); font-size: 13px; }",
     ".restart-modal-buttons { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }",
-    ".btn-danger { background: var(--interactive-danger); color: white; border: none; padding: 10px 20px; border-radius: var(--radius-md); ",
-    "font-size: 14px; cursor: pointer; transition: all 0.15s ease; }",
-    ".btn-danger:hover { opacity: 0.9; }",
 
     // Toast notification container: fixed top-right, above all modals.
     ".toast-container { position: fixed; top: 20px; right: 20px; z-index: 1001; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }",
