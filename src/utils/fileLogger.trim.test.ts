@@ -162,8 +162,8 @@ describe("checkAndTrimFile + trimLogFile - I/O orchestration (integration)", () 
 describe("checkAndTrimFile - debug-active gate and missing-file recovery", () => {
 
   /* checkAndTrimFile fires every SIZE_CHECK_FREQUENCY (100) writes. Branches that the integration suite above does not exercise: the debug-active gate (when
-   * any debug category is enabled, trim is skipped to preserve diagnostic output across the session), and the ENOENT clear-of-approximateSize path that fires
-   * when the log file is removed externally between writes.
+   * any debug category is enabled, trim is skipped to preserve diagnostic output across the session), and the ENOENT path that warns and keeps running when
+   * the log file is removed externally between writes.
    */
 
   afterEach(async () => {
@@ -200,10 +200,10 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
     });
   });
 
-  test("resets approximateSize to 0 when the log file is removed mid-flight (ENOENT recovery)", async () => {
+  test("warns and keeps running when the log file is removed mid-flight (ENOENT at the size check)", async () => {
 
     // Boundary: the size-check stat call can fail with ENOENT if the log file was removed externally (rotation by an outside process, accidental deletion, etc).
-    // The implementation catches ENOENT, sets approximateSize = 0, and emits a console.warn so subsequent writes append fresh from a known-empty state.
+    // The implementation catches the error and emits a console.warn; the next append recreates the file, so logging continues into an empty one.
     await withTempDir(async (dir) => {
 
       const logPath = path.join(dir, "ephemeral.log");
@@ -276,7 +276,7 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
       const logPath = path.join(dir, "trim.log");
       const maxSize = 16384;
 
-      // Pre-seed the log file with content that already exceeds maxSize. checkAndTrimFile reads the on-disk size (not approximateSize), so a fresh logger
+      // Pre-seed the log file with content that already exceeds maxSize. checkAndTrimFile reads the on-disk size, so a fresh logger
       // pointing at an oversized file triggers trim on the first size-check fire. Each pre-seeded line is a complete entry so computeTrimmedLogContent's
       // newline-aligned cut works deterministically.
       const seedLine = "[2026/01/01 12:00:00.000 PM] Pre-seeded oversized history line.\n";

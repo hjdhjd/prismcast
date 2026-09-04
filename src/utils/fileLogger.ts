@@ -36,7 +36,7 @@ export type LogColor = "cyan" | "red" | "yellow" | null;
  *    opens with the boot messages that preceded it. The window is bounded and closes at that initialization whether it succeeds or fails.
  */
 
-/* The file logger maintains state for the log file path, write buffer, and size tracking. State is initialized when initializeFileLogger() is called during server
+/* The file logger maintains state for the log file path and the write buffer. State is initialized when initializeFileLogger() is called during server
  * startup.
  */
 
@@ -50,9 +50,6 @@ let closedFilePath: Nullable<string> = null;
 
 // Buffer for collecting log entries before flushing to disk.
 let writeBuffer: string[] = [];
-
-// Approximate file size tracked in memory between actual file size checks.
-let approximateSize = 0;
 
 // Counter for tracking writes since last file size check.
 let writeCount = 0;
@@ -110,8 +107,8 @@ const STARTUP_BUFFER_LIMIT = 1000;
 
 /**
  * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist. A call is the one
- * initialization of the process: it closes the startup window either way, on success leaving the window's entries in the buffer for the first flush to append
- * and counting their bytes toward the tracked file size, and on failure discarding them.
+ * initialization of the process: it closes the startup window either way, on success leaving the window's entries in the buffer for the first flush to append,
+ * and on failure discarding them.
  * @param logPath - Absolute path to the log file, resolved by the caller via getLogFilePath().
  * @param maxSize - Maximum log file size in bytes from CONFIG.logging.maxSize.
  */
@@ -127,31 +124,21 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
     // Ensure the parent directory of the log file exists.
     await fsPromises.mkdir(path.dirname(logFilePath), { recursive: true });
 
-    // Check if log file exists and get its size.
+    // The stat asks one question - does the file exist - and its result is not needed beyond that, because an existing file is appended to as it stands and
+    // the periodic check reads the size from the disk when it needs one.
     try {
 
-      const stats = await fsPromises.stat(logFilePath);
-
-      approximateSize = stats.size;
+      await fsPromises.stat(logFilePath);
     } catch(error) {
 
       // File does not exist, create it.
       if((error as NodeJS.ErrnoException).code === "ENOENT") {
 
         await fsPromises.writeFile(logFilePath, "", "utf-8");
-        approximateSize = 0;
       } else {
 
         throw error;
       }
-    }
-
-    /* The entries the startup window holds are appended by the first flush, so their bytes belong to the size the trim heuristic works from. Adding them after
-     * the stat above keeps approximateSize describing what the file holds once that flush lands.
-     */
-    for(const entry of writeBuffer) {
-
-      approximateSize += entry.length;
     }
 
     // Start the periodic flush timer.
@@ -251,8 +238,8 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
   // Add to buffer.
   writeBuffer.push(entry);
 
-  /* The size accounting and the periodic size check below describe an open file, which the startup window does not have, so the window skips them and bounds
-   * itself instead. The check runs on every push, so the oldest entry makes room as soon as one entry too many arrives.
+  /* The periodic size check below describes an open file, which the startup window does not have, so the window skips it and bounds itself instead. The bound
+   * is tested on every push, so the oldest entry makes room as soon as one entry too many arrives.
    */
   if(!isWritingToFile) {
 
@@ -264,7 +251,6 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
     return;
   }
 
-  approximateSize += entry.length;
   writeCount++;
 
   // Check if we should verify actual file size.
@@ -396,23 +382,16 @@ async function checkAndTrimFile(): Promise<void> {
 
     const stats = await fsPromises.stat(logFilePath);
 
-    approximateSize = stats.size;
-
     // Skip trimming when debug logging is active. Debug sessions generate high-volume output that is valuable for diagnosis - trimming mid-session would discard
     // the very data we are trying to capture.
-    if((approximateSize > maxLogSize) && !isAnyDebugEnabled()) {
+    if((stats.size > maxLogSize) && !isAnyDebugEnabled()) {
 
       await trimLogFile();
     }
   } catch(error) {
 
-    // File might have been deleted externally - reset size tracking.
-    if((error as NodeJS.ErrnoException).code === "ENOENT") {
-
-      approximateSize = 0;
-    }
-
-    // Log to console but continue operating.
+    // A file removed externally arrives here as the stat's ENOENT, and the warning is the whole response: the next append recreates the file, so logging
+    // continues into an empty one rather than stopping.
     // eslint-disable-next-line no-console
     console.warn("Error checking log file size: %s.", (error instanceof Error) ? error.message : String(error));
   }
@@ -495,8 +474,6 @@ async function trimLogFile(): Promise<void> {
 
       await fsPromises.writeFile(tempPath, trimmedContent, "utf-8");
       await fsPromises.rename(tempPath, targetPath);
-
-      approximateSize = trimmedContent.length;
     } catch(error) {
 
       // Log to console but continue operating - trim will be retried on next check.
@@ -548,7 +525,6 @@ export async function shutdownFileLogger(): Promise<void> {
   isDisabled = false;
   disabledAt = 0;
   writeBuffer = [];
-  approximateSize = 0;
   writeCount = 0;
 
   // Keep the file this run wrote to, so a line logged from here on still reaches it rather than falling into the gap between the reset and the process exit.
