@@ -72,7 +72,7 @@ export function assertSameShape(actual: object, expected: object, description: s
  * Usage:
  *
  *   const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
- *     "captureCodec", "channelName", ... // every key
+ *     "channelName", "clientAddress", ... // every key
  *   ] as const);
  *
  * If StreamRegistryEntry gains a new key, the function call fails to compile with a "Type 'X' is not assignable to type" error that names the missing key,

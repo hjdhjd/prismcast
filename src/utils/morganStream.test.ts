@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * morganStream.test.ts: Unit tests for the Morgan logging stream adapter in morganStream.ts. The adapter routes Morgan output to console.log when console mode
- * is enabled, otherwise to writeLogEntry on the file logger. We exercise both branches by toggling setConsoleLogging and stubbing console.log. For the file-logger
+ * is enabled, otherwise to writeLogEntry on the file logger, and stamps neither - the console wrapper installed at startup stamps the one, the file logger
+ * stamps the other - so the console row asserts the payload reaches console.log exactly as Morgan wrote it, minus the newline. For the file-logger
  * branch we initialize the file logger against a temporary directory, drive the morgan stream through writeLogEntry, flush, and assert the payload round-trips to
  * disk; we also cover the uninitialized no-op boundary case (an empty payload must not throw).
  */
@@ -34,7 +35,7 @@ describe("createMorganStream", () => {
     assert.equal(typeof stream.write, "function", "Morgan stream interface requires a write callable");
   });
 
-  test("routes to console.log with a timestamp prefix when console logging is enabled", () => {
+  test("routes the trimmed payload to console.log with no timestamp of its own when console logging is enabled", () => {
 
     setConsoleLogging(true);
     const stream = createMorganStream();
@@ -43,10 +44,10 @@ describe("createMorganStream", () => {
 
     assert.equal(logCalls.length, 1, "console.log invoked once");
 
-    const message = String(logCalls[0]?.[0]);
-
-    assert.match(message, /^\[\d{4}\/\d{2}\/\d{2} /, "timestamp prefix matches yyyy/mm/dd format");
-    assert.match(message, /GET \/index\.html 200 5ms\]?$/, "Morgan payload preserved (newline trimmed)");
+    /* The exact payload, not a pattern: a stamp added here would be the second one on the line, because the console wrapper the entry path installs prepends
+     * one to every console call in the process.
+     */
+    assert.deepEqual(logCalls[0], ["GET /index.html 200 5ms"], "the adapter passes Morgan's payload through untouched apart from the trailing newline");
   });
 
   test("trims the trailing newline added by Morgan", () => {

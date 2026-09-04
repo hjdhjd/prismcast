@@ -3,8 +3,9 @@
  * errors.ts: Error formatting and handling utilities for PrismCast.
  */
 
-/* These helpers group the error-handling primitives shared across the application: one normalizes arbitrary errors into log-ready text, the others classify
- * browser-state failures so callers can abort a retry loop early, tell a dead page apart from a bad subject, or escalate an unrecoverable capture.
+/* These helpers group the error-handling primitives shared across the application: one normalizes arbitrary errors into log-ready text, and two classify
+ * browser-state failures - one so a retry loop aborts as soon as the session it was retrying against is gone, the other so a caller can tell a page that
+ * died apart from a subject that was never there.
  */
 
 /**
