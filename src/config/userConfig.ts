@@ -851,10 +851,6 @@ export interface UserConfigLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
-
-  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
-  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
-  recoveredFromBackup: boolean;
 }
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
@@ -1047,8 +1043,7 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
 
     config: result.data,
     parseError: result.parseError,
-    parseErrorMessage: result.parseErrorMessage,
-    recoveredFromBackup: result.recoveredFromBackup
+    parseErrorMessage: result.parseErrorMessage
   };
 }
 

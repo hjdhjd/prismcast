@@ -385,10 +385,6 @@ export interface UserProfilesLoadResult {
 
   // User-defined site profiles (empty object if file doesn't exist or parse error).
   profiles: Record<string, SiteProfile>;
-
-  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
-  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
-  recoveredFromBackup: boolean;
 }
 
 /**

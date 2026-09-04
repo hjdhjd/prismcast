@@ -131,7 +131,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
   test("rejects a native capture mode without committing CONFIG", async () => {
 
-    readConfigOverride = { config: { streaming: { captureMode: "native" } }, parseError: false, recoveredFromBackup: false };
+    readConfigOverride = { config: { streaming: { captureMode: "native" } }, parseError: false };
 
     try {
 
@@ -156,7 +156,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
     // side effect - must stay untouched: the live-apply (commitDebugFilter) runs only after a reload commits, never on the reject path.
     const before = indexModule.CONFIG;
 
-    readConfigOverride = { config: { logging: { debugFilter: "tuning:hulu" }, streaming: { captureMode: "native" } }, parseError: false, recoveredFromBackup: false };
+    readConfigOverride = { config: { logging: { debugFilter: "tuning:hulu" }, streaming: { captureMode: "native" } }, parseError: false };
 
     try {
 
@@ -174,7 +174,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
   test("rejects an out-of-range port and surfaces the hard-error reason", async () => {
 
-    readConfigOverride = { config: { server: { port: 0 } }, parseError: false, recoveredFromBackup: false };
+    readConfigOverride = { config: { server: { port: 0 } }, parseError: false };
 
     try {
 
@@ -191,7 +191,7 @@ describe("reloadConfiguration - rejects an invalid or coercion-needing save", ()
 
   test("commits a valid change and dispatches it (deferred with no handler registered)", async () => {
 
-    readConfigOverride = { config: { server: { port: 6000 } }, parseError: false, recoveredFromBackup: false };
+    readConfigOverride = { config: { server: { port: 6000 } }, parseError: false };
 
     try {
 
@@ -264,8 +264,8 @@ describe("reloadConfiguration - serialized reloads", () => {
       const older = indexModule.reloadConfiguration(io);
       const newer = indexModule.reloadConfiguration(io);
 
-      secondRead.resolve({ config: { server: { port: 6200 } }, parseError: false, recoveredFromBackup: false });
-      firstRead.resolve({ config: { server: { port: 6100 } }, parseError: false, recoveredFromBackup: false });
+      secondRead.resolve({ config: { server: { port: 6200 } }, parseError: false });
+      firstRead.resolve({ config: { server: { port: 6100 } }, parseError: false });
 
       await older;
       await newer;
@@ -291,7 +291,7 @@ describe("reloadConfiguration - serialized reloads", () => {
       const succeeded = indexModule.reloadConfiguration(io);
 
       firstRead.reject(new Error(queuedReadFailureMessage));
-      secondRead.resolve({ config: { server: { port: 6300 } }, parseError: false, recoveredFromBackup: false });
+      secondRead.resolve({ config: { server: { port: 6300 } }, parseError: false });
 
       await assert.rejects(() => failed, { message: queuedReadFailureMessage });
       await succeeded;

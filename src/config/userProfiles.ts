@@ -285,8 +285,7 @@ export async function readProfiles(): Promise<UserProfilesLoadResult> {
     domains: result.data.domains,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
-    profiles: result.data.profiles,
-    recoveredFromBackup: result.recoveredFromBackup
+    profiles: result.data.profiles
   };
 }
 

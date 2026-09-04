@@ -93,7 +93,7 @@ describe("readConfig adapter shape", () => {
 
   /* The readConfig wrapper projects the file-store framework's read result onto the UserConfigLoadResult shape. The contract:
    *   - "config" carries the parsed (and migrated) UserConfig;
-   *   - "parseError" / "parseErrorMessage" / "recoveredFromBackup" pass through;
+   *   - "parseError" / "parseErrorMessage" pass through;
    *   - "migrationResult" (which the framework returns alongside data) is intentionally dropped from the wrapper's return shape so callers can't accidentally
    *     act on framework metadata that's already been applied to the data.
    *
@@ -112,11 +112,10 @@ describe("readConfig adapter shape", () => {
 
     const keys = Object.keys(result).toSorted();
 
-    assert.deepEqual(keys, [ "config", "parseError", "parseErrorMessage", "recoveredFromBackup" ].toSorted(),
-      "readConfig wrapper returns exactly the four documented keys; framework's migrationResult is dropped");
+    assert.deepEqual(keys, [ "config", "parseError", "parseErrorMessage" ].toSorted(),
+      "readConfig wrapper returns exactly the three documented keys; framework's migrationResult is dropped");
     assert.equal(result.config.server?.port, 9999, "config carries the parsed UserConfig content");
     assert.equal(result.parseError, false, "fresh config parses cleanly");
-    assert.equal(result.recoveredFromBackup, false, "no backup recovery occurred for a clean read");
   });
 });
 

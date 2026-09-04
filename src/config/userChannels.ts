@@ -73,10 +73,6 @@ export interface UserChannelsLoadResult {
   // Error message if parseError is true.
   parseErrorMessage?: string;
 
-  // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Mirrors the framework's read-result flag
-  // (FileStoreReadResult.recoveredFromBackup) so callers can surface a UI banner or log a recovery event without reaching into the framework's compound result.
-  recoveredFromBackup: boolean;
-
   // Service selections loaded from the file (canonical key -> service variant key).
   serviceSelections: Record<string, string>;
 
@@ -1179,7 +1175,6 @@ export async function readChannels(): Promise<UserChannelsLoadResult> {
     channels: result.data.channels,
     parseError: result.parseError,
     parseErrorMessage: result.parseErrorMessage,
-    recoveredFromBackup: result.recoveredFromBackup,
     serviceSelections: result.data.serviceSelections,
     tagRegistry: result.data.tagRegistry
   };

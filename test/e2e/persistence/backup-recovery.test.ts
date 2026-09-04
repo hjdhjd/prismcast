@@ -2,7 +2,7 @@
  *
  * backup-recovery.test.ts: Asserts the file-store framework's auto-recovery contract for the worst-case persistence scenario - a corrupt main JSON file. The
  * framework's safety guarantee (src/config/persistence.ts createFileStore docstring): when the main file fails to parse, read() recovers the .bak rotation's
- * contents in memory and surfaces recoveredFromBackup on the result, writing nothing itself, and the durable repair of the file on disk lands under the store's
+ * contents in memory and surfaces recoveredFromBackup on its own result, writing nothing itself, and the durable repair of the file on disk lands under the store's
  * write queue - at boot through ensureAllMigrated, or through the next mutate, whose own write replaces the corrupt main with good data. Only when both files
  * are unparseable does the result fall back to defaults with parseError=true. Without integration coverage, the next change to the recovery sequencing (e.g., a
  * refactor that moved the restore back outside the queue, or that mistakenly fed the corrupt main back into .bak before recovery) ships untested.
@@ -11,12 +11,13 @@
  * during shutdown. Each leaves the main file in a corrupt state that the .bak can rescue. The test deliberately corrupts files inside ctx.dataDir so the
  * corruption falls out of scope at disposal - the production data directory is never touched.
  *
- * recoveredFromBackup propagation: the framework's FileStore.read() exposes recoveredFromBackup on the FileStoreReadResult interface and the per-store
- * wrapper read functions (readConfig, readChannels, readProfiles) project it onto their respective UserConfigLoadResult / UserChannelsLoadResult /
- * UserProfilesLoadResult return shapes. Read-path tests (Tests 2 and 3 below) assert the flag directly. Tests 1 and 4 trigger recovery through mutateConfig /
- * mutateChannels - the mutate API does not return a read result, so the flag is not observable from those callers. Their assertions cover separate guarantees
- * (post-recovery disk state, runtime CONFIG via initializeConfiguration, no FileStoreParseError thrown, per-store isolation) that remain meaningful regardless
- * of how the flag is surfaced.
+ * Where the recovery is reported: the framework's FileStore.read() carries recoveredFromBackup on its FileStoreReadResult, and that result is what the
+ * framework itself branches on - the .bak rotation inside doMutate is skipped whenever a read recovered. The per-store wrapper read functions (readConfig,
+ * readChannels, readProfiles) project the data and the parse status onto their respective UserConfigLoadResult / UserChannelsLoadResult /
+ * UserProfilesLoadResult shapes, and nothing more, so the rows below assert the recovery through what it produces: the recovered content, the parse status,
+ * and the state of the two files on disk. Tests 1 and 4 trigger recovery through mutateConfig / mutateChannels, whose API returns no read result at all;
+ * their assertions cover separate guarantees (post-recovery disk state, runtime CONFIG via initializeConfiguration, no FileStoreParseError thrown, per-store
+ * isolation).
  *
  * Why corrupt the file by writing garbage instead of using mock.module to inject parse failure: the contract under test is "the framework recovers from a
  * corrupt MAIN FILE on disk." A mocked parser failure would skip the framework's actual fs.readFile and fs.copyFile chain - the production code path. Real
@@ -120,8 +121,6 @@ describe("file-store backup recovery from a corrupt main file", () => {
 
     assert.equal(result.parseError, true, "parseError must be true when both main and .bak are unparseable");
     assert.ok(result.parseErrorMessage, "parseErrorMessage must carry diagnostic context for operator triage");
-    assert.equal(result.recoveredFromBackup, false,
-      "recoveredFromBackup must be false when both main and .bak are unparseable - recovery was attempted but failed, so the flag stays false");
     assert.equal(typeof result.config, "object", "config must still be an object - the framework returns defaults rather than throwing");
   });
 
@@ -130,8 +129,8 @@ describe("file-store backup recovery from a corrupt main file", () => {
     /* The structural rule that makes recovery safe to call repeatedly: the recovery code path reads .bak and never touches it. This means a corrupt main can be
      * recovered any number of times against the same .bak - the .bak is the snapshot, never replaced by a worse version.
      *
-     * The row runs in two steps because the recovery does. A bare readConfig proves the in-memory half: the recovered host comes back, recoveredFromBackup is
-     * set, and the corrupt bytes are still on disk afterwards, because a read does not hold the write queue and so writes nothing. The boot step that follows
+     * The row runs in two steps because the recovery does. A bare readConfig proves the in-memory half: the recovered host comes back and the corrupt bytes
+     * are still on disk afterwards, because a read does not hold the write queue and so writes nothing. The boot step that follows
      * proves the durable half: ensureAllMigrated sees a store whose read recovered and persists it through a no-op mutate, which is a write under the queue.
      * Splitting the two also keeps the .bak assertion unambiguous - when read() recovers, doMutate skips the .bak rotation entirely (the copy of main to .bak
      * is guarded by `if(!result.recoveredFromBackup)`), so the boot step leaves .bak untouched rather than re-writing identical bytes.
@@ -155,8 +154,6 @@ describe("file-store backup recovery from a corrupt main file", () => {
     const recovered = await readConfig();
 
     assert.equal(recovered.parseError, false, "the read recovered from .bak - parseError must be false");
-    assert.equal(recovered.recoveredFromBackup, true,
-      "recoveredFromBackup must be true when main was unparseable but .bak was usable - the wrapper projects the framework's flag directly");
     assert.equal(recovered.config.channelsDvr?.host, "snapshot.example.test",
       "the recovered config carries the .bak host - confirming the recovery actually executed");
 
