@@ -5,7 +5,7 @@
  * and a concurrent append, and shutdown's drain of an in-flight trim. Additional trim-path unit tests (computeTrimmedLogContent, checkAndTrimFile branches)
  * live in fileLogger.trim.test.ts; lifecycle and error-recovery paths live in fileLogger.lifecycle.test.ts.
  *
- * The module holds module-scope state (initialization status, write buffer, file path) that persists across tests. Each test scopes its filesystem state to a
+ * The module holds module-scope state (the lifecycle state, the write buffer) that persists across tests. Each test scopes its filesystem state to a
  * temp directory via withTempDir and calls shutdownFileLogger() in afterEach to reset the singleton between cases. The flush timer would run in the background
  * during real use; we always shut it down to avoid cross-test interference.
  */

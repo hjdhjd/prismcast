@@ -8,11 +8,15 @@ import { afterEach, describe, mock, test } from "node:test";
 import { flushLogBuffer, initializeFileLogger, shutdownFileLogger, writeLogEntry } from "./fileLogger.ts";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
 // A size cap far above anything these rows write, so no trim runs and the assertions read the file exactly as it was appended.
 const MAX_LOG_SIZE = 1000000;
+
+// The bound the module's shutdown waits under for its write chain to drain, restated here so the row that lapses it reads against a name rather than a number.
+const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
 describe("flushLogBuffer - error-path retry-disable", () => {
 
@@ -72,9 +76,9 @@ describe("flushLogBuffer - error-path retry-disable", () => {
 
 describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
-  /* When flushLogBuffer fails (e.g., directory removed mid-flight), its catch sets isDisabled=true and disabledAt=Date.now(). Subsequent writes are silently
-   * dropped during the retry window (ERROR_RETRY_DELAY_MS = 60s). Once Date.now() advances past the threshold, the next writeLogEntry call re-enables logging
-   * (it clears isDisabled). We exercise the re-enable branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
+  /* When flushLogBuffer fails (e.g., directory removed mid-flight), its catch pauses the file the logger is open on. Subsequent writes are silently dropped
+   * during the retry window (ERROR_RETRY_DELAY_MS = 60s). Once Date.now() advances past the threshold, the next writeLogEntry call re-opens the file and
+   * clears the pause. We exercise that branch by stubbing Date.now to advance past the threshold deterministically without waiting 60s.
    */
 
   afterEach(async () => {
@@ -118,8 +122,8 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
         mock.method(Date, "now", () => baseNow);
 
-        // The next writeLogEntry should observe (Date.now() - disabledAt) >= ERROR_RETRY_DELAY_MS, clear the isDisabled flag, and append the entry to
-        // the buffer instead of silently dropping it.
+        // The next writeLogEntry should observe the retry delay elapsed, clear the pause on the file it holds open, and append the entry to the buffer
+        // instead of silently dropping it.
         writeLogEntry("info", "Post-retry entry.", null);
         await flushLogBuffer();
 
@@ -138,8 +142,8 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 describe("initializeFileLogger - mkdir failure recovery", () => {
 
   /* When the parent directory cannot be created (e.g., the path collides with an existing file), initializeFileLogger logs to console.error and returns without
-   * throwing. Subsequent writeLogEntry calls become no-ops because isInitialized stays false and the startup window is closed - the rows above have already
-   * spent this process's window, and a failed initialization closes it in any case. What a failure does to a window still open is asserted in
+   * throwing. Subsequent writeLogEntry calls become no-ops because the logger is off and the startup window is closed - the rows above have already spent
+   * this process's window, and a failed initialization leaves it in any case. What a failure does to a window still open is asserted in
    * fileLogger.startup-failure.test.ts.
    */
 
@@ -183,7 +187,7 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 
         assert.equal(failureLogged, true, "console.error fired with the init-failure message");
 
-        // Subsequent writeLogEntry calls become no-ops: isInitialized stayed false and the startup window is closed, so nothing holds the entry.
+        // Subsequent writeLogEntry calls become no-ops: the logger is off and the startup window is closed, so nothing holds the entry.
         assert.doesNotThrow(() => { writeLogEntry("info", "Should be a no-op.", null); });
       } finally {
 
@@ -195,6 +199,15 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 });
 
 describe("shutdownFileLogger", () => {
+
+  /* The rows here leave loggers running: the later-initialization row opens a second file, and the rows below park appends and a mkdir on one. The reset
+   * releases the flush timer that would otherwise hold the process open past the last row, and returns the clock APIs the rows enable.
+   */
+  afterEach(async () => {
+
+    await shutdownFileLogger();
+    mock.timers.reset();
+  });
 
   test("is a no-op on an already-shut-down logger", async () => {
 
@@ -277,8 +290,8 @@ describe("shutdownFileLogger", () => {
 
   test("drops a line logged after an initialization that failed, rather than sending it to the file the previous run closed", async () => {
 
-    /* An initialization leaves the log path set even when it fails, so the open-file gate is false and the closed-file branch is the next one in line. The
-     * clear at the start of every initialization is what keeps that branch from writing a failed run's lines into the run before it.
+    /* An initialization that fails leaves the logger off, where a line is dropped, rather than leaving the file the previous run closed in place. The move
+     * to off at the start of every initialization is what keeps a failed run's lines out of the run before it.
      */
     await withTempDir(async (dir) => {
 
@@ -312,6 +325,220 @@ describe("shutdownFileLogger", () => {
       const firstContent = await readFile(firstPath, "utf-8");
 
       assert.doesNotMatch(firstContent, /Logged after the failed initialization\./, "the closed file must not take a line from a later, failed run");
+    });
+  });
+
+  test("a write failure whose append settles after shutdown leaves the run that follows open", async (t) => {
+
+    /* The shutdown drain is bounded, so a shutdown can complete while an append is still in flight. When that append then fails, the failure belongs to the
+     * run that ended: a later initialization must stay open and take its lines. The row parks the append, lapses the drain bound under mock timers, opens a
+     * second file, releases the failure, and asserts the second file still takes a line. Both timer APIs are virtual, so the periodic flush cannot slip a
+     * write of its own between the row's writes and flushes.
+     */
+    mock.timers.enable({ apis: [ "setInterval", "setTimeout" ] });
+
+    await withTempDir(async (dir) => {
+
+      const firstPath = path.join(dir, "first.log");
+      const secondPath = path.join(dir, "second.log");
+      const realAppendFile = fs.promises.appendFile;
+      const appendReached = Promise.withResolvers<true>();
+      const releaseAppend = Promise.withResolvers<true>();
+
+      // The first append parks until released and then fails; every later append runs for real.
+      t.mock.method(fs.promises, "appendFile", async (file: fs.PathLike | fs.promises.FileHandle, data: string | Uint8Array, options?: unknown): Promise<void> => {
+
+        if(file === firstPath) {
+
+          appendReached.resolve(true);
+
+          await releaseAppend.promise;
+
+          throw new Error("The disk is full.");
+        }
+
+        return realAppendFile.call(fs.promises, file, data, options as BufferEncoding);
+      });
+
+      // eslint-disable-next-line no-console
+      const originalError = console.error;
+
+      // eslint-disable-next-line no-console
+      console.error = (): void => undefined;
+
+      try {
+
+        await initializeFileLogger(firstPath, MAX_LOG_SIZE);
+
+        writeLogEntry("info", "Parked in the first run.", null);
+
+        const parkedFlush = flushLogBuffer();
+
+        await appendReached.promise;
+
+        const shutdown = shutdownFileLogger();
+
+        mock.timers.tick(SHUTDOWN_DRAIN_BOUND_MS);
+
+        await shutdown;
+        await initializeFileLogger(secondPath, MAX_LOG_SIZE);
+
+        releaseAppend.resolve(true);
+
+        await parkedFlush;
+
+        writeLogEntry("info", "Written by the second run.", null);
+        await flushLogBuffer();
+      } finally {
+
+        // eslint-disable-next-line no-console
+        console.error = originalError;
+      }
+
+      const secondContent = await readFile(secondPath, "utf-8");
+
+      assert.match(secondContent, /Written by the second run\./, "the failure of the first run's append does not pause the second run");
+    });
+  });
+
+  test("the final flush attempts a line logged during the drain even when the file was paused before the shutdown", async (t) => {
+
+    /* A pause bounds a cascade of periodic retries against a disk that is refusing writes, and the final flush is one attempt rather than a cascade, so a line
+     * logged while the drain runs is written whether or not the file was paused going in. The row parks two appends on one file: the first fails and pauses
+     * the file, and the second is still in flight when the shutdown starts, which holds the drain open long enough to log line C into it. Line A goes down
+     * with the append that failed, line B is the one that queued behind it, and line C is the one the final flush has to attempt. Only setInterval is virtual
+     * here, because the drain's own bound has to stay real for the shutdown to settle on the released append rather than on a tick.
+     */
+    mock.timers.enable({ apis: ["setInterval"] });
+
+    await withTempDir(async (dir) => {
+
+      const logPath = path.join(dir, "drain-pause.log");
+      const realAppendFile = fs.promises.appendFile;
+      const firstReached = Promise.withResolvers<true>();
+      const releaseFirst = Promise.withResolvers<true>();
+      const secondReached = Promise.withResolvers<true>();
+      const releaseSecond = Promise.withResolvers<true>();
+
+      let appendCall = 0;
+
+      // The first append parks and then fails, pausing the file; the second parks and then writes for real, holding the drain open while the row logs into it.
+      t.mock.method(fs.promises, "appendFile", async (file: fs.PathLike | fs.promises.FileHandle, data: string | Uint8Array, options?: unknown): Promise<void> => {
+
+        appendCall++;
+
+        if(appendCall === 1) {
+
+          firstReached.resolve(true);
+
+          await releaseFirst.promise;
+
+          throw new Error("The disk is full.");
+        }
+
+        if(appendCall === 2) {
+
+          secondReached.resolve(true);
+
+          await releaseSecond.promise;
+        }
+
+        return realAppendFile.call(fs.promises, file, data, options as BufferEncoding);
+      });
+
+      // eslint-disable-next-line no-console
+      const originalError = console.error;
+
+      // eslint-disable-next-line no-console
+      console.error = (): void => undefined;
+
+      try {
+
+        await initializeFileLogger(logPath, MAX_LOG_SIZE);
+
+        writeLogEntry("info", "Line A, carried by the append that fails.", null);
+
+        const firstFlush = flushLogBuffer();
+
+        await firstReached.promise;
+
+        writeLogEntry("info", "Line B, carried by the append that queues behind it.", null);
+
+        const secondFlush = flushLogBuffer();
+
+        releaseFirst.resolve(true);
+
+        await firstFlush;
+        await secondReached.promise;
+
+        // The file is paused and its second append is in flight, so the shutdown below enters the drain with both conditions in place.
+        const shutdown = shutdownFileLogger();
+
+        writeLogEntry("info", "Line C, logged while the drain runs.", null);
+
+        releaseSecond.resolve(true);
+
+        await secondFlush;
+        await shutdown;
+      } finally {
+
+        // eslint-disable-next-line no-console
+        console.error = originalError;
+      }
+
+      const content = await readFile(logPath, "utf-8");
+
+      assert.doesNotMatch(content, /Line A,/, "the append that failed took its entries with it");
+      assert.match(content, /Line B,/, "the append that queued behind the failure still wrote its entries");
+      assert.match(content, /Line C,/, "the final flush attempts a line the drain buffered, whether or not the file was paused before the shutdown");
+    });
+  });
+
+  test("drops a line logged inside a later initialization's own awaits rather than sending it to the file the previous run closed", async (t) => {
+
+    /* An initialization supersedes the file the last run closed, and it does so before it awaits anything, so the gap its own mkdir and stat open is a gap in
+     * which no file can take a line. The row parks the mkdir of a second initialization, logs into that gap, and asserts the line reached neither the file the
+     * first run closed nor the file the second run is still opening.
+     */
+    mock.timers.enable({ apis: ["setInterval"] });
+
+    await withTempDir(async (dir) => {
+
+      const firstPath = path.join(dir, "first.log");
+      const secondPath = path.join(dir, "second.log");
+      const realMkdir = fs.promises.mkdir;
+      const mkdirReached = Promise.withResolvers<true>();
+      const releaseMkdir = Promise.withResolvers<true>();
+
+      await initializeFileLogger(firstPath, MAX_LOG_SIZE);
+      await shutdownFileLogger();
+
+      // The second initialization's mkdir parks, which holds that initialization inside its own awaits while the row logs a line into the gap.
+      t.mock.method(fs.promises, "mkdir", async (dirPath: fs.PathLike, options?: unknown): Promise<string | undefined> => {
+
+        mkdirReached.resolve(true);
+
+        await releaseMkdir.promise;
+
+        return realMkdir.call(fs.promises, dirPath, options as fs.MakeDirectoryOptions & { recursive: true });
+      });
+
+      const initialization = initializeFileLogger(secondPath, MAX_LOG_SIZE);
+
+      await mkdirReached.promise;
+
+      writeLogEntry("info", "Logged inside the second initialization.", null);
+
+      releaseMkdir.resolve(true);
+
+      await initialization;
+      await flushLogBuffer();
+
+      const firstContent = await readFile(firstPath, "utf-8");
+      const secondContent = await readFile(secondPath, "utf-8");
+
+      assert.doesNotMatch(firstContent, /Logged inside the second initialization\./, "the file the previous run closed is superseded before the awaits begin");
+      assert.doesNotMatch(secondContent, /Logged inside the second initialization\./, "the file this run is opening cannot take a line before it is open");
     });
   });
 });

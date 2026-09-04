@@ -3,6 +3,7 @@
  * fileLogger.ts: File-based logging with automatic size-based rotation for PrismCast.
  */
 import type { Nullable } from "../types/index.ts";
+import { assertNever } from "./never.ts";
 import { boundedWait } from "./delay.ts";
 import { formatTimestamp } from "./format.ts";
 import fs from "node:fs";
@@ -16,6 +17,31 @@ const { promises: fsPromises } = fs;
  * default terminal color (used by info-level messages).
  */
 export type LogColor = "cyan" | "red" | "yellow" | null;
+
+/* Where the logger is in its lifecycle, which is the one thing that says where a line goes. The logger occupies exactly one of these states at a time, and each
+ * arm carries only what that state needs, so a combination that cannot happen cannot be written down either.
+ *
+ * window - Process start, before the one initialization. Entries are held in the write buffer for the first flush after that initialization to append, because
+ *   they are the boot messages that explain how the run began.
+ * open - The initialization succeeded and the file is the logger's to write. The timer flushes the buffer periodically, and pausedSince is set while the file is
+ *   refusing writes: a flush failure sets or refreshes it, entries are dropped while it is set and the retry delay has not elapsed, and the first write past the
+ *   delay clears it. The pause is what keeps a failing disk from turning every periodic flush into another failed syscall.
+ * closing - Shutdown, while the drain runs. The timer is stopped and any pause is lifted, and entries are buffered for the final flush: that flush is the run's
+ *   one last attempt at the file, and a pause bounds a cascade of periodic retries, which a single final flush cannot start.
+ * closed - After shutdown. A line logged from here is appended synchronously to the file the run wrote, rather than falling into the gap between the shutdown
+ *   and the process exit.
+ * off - No file can take a line: after an initialization that failed, after a post-shutdown append that failed, and inside a later initialization's own awaits,
+ *   where the previous run's closed file has been superseded and this run's file is not open yet.
+ *
+ * An initialization moves every state but the window to off before its first await and then enters open or off; the window is the one state that keeps holding
+ * lines across an initialization. Every assignment goes through transition(), which disposes a flush timer the next state does not carry.
+ */
+type LoggerState =
+  { readonly kind: "window" } |
+  { readonly kind: "open"; readonly path: string; readonly pausedSince: Nullable<number>; readonly timer: ReturnType<typeof setInterval> } |
+  { readonly kind: "closing"; readonly path: string } |
+  { readonly kind: "closed"; readonly path: string } |
+  { readonly kind: "off" };
 
 /* The file logger provides persistent logging to a configurable log file with automatic size-based trimming. When the log file exceeds the configured maximum
  * size, it is trimmed to half the maximum size, keeping only complete lines (the most recent logs are preserved). This approach prevents unbounded log growth while
@@ -32,47 +58,31 @@ export type LogColor = "cyan" | "red" | "yellow" | null;
  *    shows the same color scheme as console output. styleText emits both the opening color code and the trailing reset in one call, with validateStream disabled
  *    because the log file is not a TTY but we still want the codes preserved for downstream terminal viewers.
  * 6. Startup window - The logger cannot open its file until the configuration that names the path and the size cap has been read, and reading it is itself
- *    worth logging. Entries emitted before the one initialization are held in the write buffer and appended by the first flush after it, so the log file
- *    opens with the boot messages that preceded it. The window is bounded and closes at that initialization whether it succeeds or fails.
+ *    worth logging. Entries emitted in the window state, before the one initialization, are held in the write buffer and appended by the first flush after it,
+ *    so the log file opens with the boot messages that preceded it. The window is bounded, and the initialization leaves it whether it succeeds or fails.
  */
 
-/* The file logger maintains state for the log file path and the write buffer. State is initialized when initializeFileLogger() is called during server
- * startup.
+/* The file logger's module state: the lifecycle state that says where a line goes, plus the bookkeeping of the file it is open on. Every one of them is set up
+ * by the initializeFileLogger() call during server startup.
  */
 
-// Path to the log file, set during initialization.
-let logFilePath: Nullable<string> = null;
+// Where the logger is in its lifecycle. Only transition() assigns it, which is what gives the flush timer a single owner.
+let state: LoggerState = { kind: "window" };
 
-/* The file the logger shut down, kept so a line logged after that shutdown - the exit handler's Chrome cleanup, a late process-level handler - is written to
- * the run's own file rather than dropped. A new initialization supersedes it, and a single failed append abandons it.
+/* Buffer collecting log entries between flushes. It is the open file's bookkeeping rather than a member of the open state: the write path pushes to it once per
+ * line, and rebuilding a state object per line would allocate on every log call.
  */
-let closedFilePath: Nullable<string> = null;
-
-// Buffer for collecting log entries before flushing to disk.
 let writeBuffer: string[] = [];
 
-// Counter for tracking writes since last file size check.
+// Writes since the last file size check, beside the state for the same reason the buffer is - the write path bumps it once per line.
 let writeCount = 0;
 
-// Timer for periodic buffer flushing.
-let flushTimer: Nullable<ReturnType<typeof setInterval>> = null;
-
-// Flag indicating whether the file logger is initialized and operational.
-let isInitialized = false;
-
-/* Whether the startup window is open. The window is the interval between process start and the logger's one initialization, and entries logged inside it are
- * held in writeBuffer for the first flush after that initialization to append. The first initializeFileLogger call closes the window - success or failure -
- * and nothing reopens it, and what happens to a later entry follows from that: once the logger has shut down the entry goes straight to the file that shutdown
- * closed, and after an initialization that failed there is no file to take it, so it is dropped. Holding it for a later initialization instead - something only
- * the test suite performs - would leak the entry into a different run's file.
- */
-let startupWindowOpen = true;
-
-/* Tail of the write-ordering chain. Every asynchronous mutation of the log file (buffer flushes and trims) is appended to this promise so that the operations run
- * strictly one after another. Without this serialization a flush's appendFile could land between a trim's readFile and its rename, and the rename would then
- * overwrite the just-appended lines with stale trimmed content - silently dropping log entries. Routing both paths through a single ordering primitive makes
- * "read-modify-rename" and "append" mutually exclusive without an explicit lock. The tail never rejects: the helper that enqueues work swallows the settled
- * outcome before chaining the next operation, so one failing operation cannot poison the chain for subsequent writes.
+/* Tail of the write-ordering chain, the open file's bookkeeping rather than a member of its state. Every asynchronous mutation of the log file (buffer flushes
+ * and trims) is appended to this promise so that the operations run strictly one after another. Without this serialization a flush's appendFile could land
+ * between a trim's readFile and its rename, and the rename would then overwrite the just-appended lines with stale trimmed content - silently dropping log
+ * entries. Routing both paths through a single ordering primitive makes "read-modify-rename" and "append" mutually exclusive without an explicit lock. The tail
+ * never rejects: the helper that enqueues work swallows the settled outcome before chaining the next operation, so one failing operation cannot poison the chain
+ * for subsequent writes.
  */
 let writeChain: Promise<void> = Promise.resolve();
 
@@ -80,13 +90,7 @@ let writeChain: Promise<void> = Promise.resolve();
 // wedged filesystem operation cannot hold the process open through its own shutdown.
 const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
-// Flag to temporarily disable logging on write errors, preventing error cascades.
-let isDisabled = false;
-
-// Timestamp when logging was disabled due to error, for retry timing.
-let disabledAt = 0;
-
-// Maximum log file size, set during initialization.
+// Maximum log file size, set during initialization. It is configuration the trim reads rather than lifecycle, so it stays beside the state.
 let maxLogSize = 1048576;
 
 // Configuration Constants.
@@ -97,64 +101,116 @@ const FLUSH_INTERVAL_MS = 1000;
 // Number of writes between file size checks.
 const SIZE_CHECK_FREQUENCY = 100;
 
-// Duration in milliseconds to disable logging after a write error before retrying.
+// Duration in milliseconds a paused file drops entries for before the next write retries it.
 const ERROR_RETRY_DELAY_MS = 60000;
 
 // The most entries the startup window holds. A push past the limit drops the oldest entry, because the newest lines are the ones that explain an exit.
 const STARTUP_BUFFER_LIMIT = 1000;
 
+// Lifecycle State.
+
+/**
+ * Moves the logger to its next state. Every transition goes through here, and this is where the flush timer's lifetime is decided: a timer belongs to the
+ * states that carry one, so leaving them for a state that does not carry the same timer stops it, whichever transition is leaving.
+ * @param next - The state the logger enters.
+ */
+function transition(next: LoggerState): void {
+
+  if(("timer" in state) && (!("timer" in next) || (next.timer !== state.timer))) {
+
+    clearInterval(state.timer);
+  }
+
+  state = next;
+}
+
+/**
+ * The path of the file the logger writes through its buffer, while it has one: the open and closing states. The window has no file yet, the off state has
+ * none, and the closed state keeps its path for the synchronous append in writeLogEntry rather than for the buffered paths this reader serves.
+ * @returns The path, or null when no file is open.
+ */
+function openFilePath(): Nullable<string> {
+
+  switch(state.kind) {
+
+    case "open":
+    case "closing": {
+
+      return state.path;
+    }
+
+    case "window":
+    case "closed":
+    case "off": {
+
+      return null;
+    }
+
+    default: {
+
+      return assertNever(state);
+    }
+  }
+}
+
 // Initialization.
 
 /**
  * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist. A call is the one
- * initialization of the process: it closes the startup window either way, on success leaving the window's entries in the buffer for the first flush to append,
- * and on failure discarding them.
+ * initialization of the process: it enters open, leaving the window's entries in the buffer for the first flush to append, or off, discarding them. Either
+ * outcome leaves the startup window behind.
  * @param logPath - Absolute path to the log file, resolved by the caller via getLogFilePath().
  * @param maxSize - Maximum log file size in bytes from CONFIG.logging.maxSize.
  */
 export async function initializeFileLogger(logPath: string, maxSize: number): Promise<void> {
 
-  // A new initialization supersedes the file the last shutdown closed, so every line from here on belongs to this run's file.
-  closedFilePath = null;
-  logFilePath = logPath;
+  /* This runs before the first await below, because the states it leaves must not survive into that gap. A later initialization supersedes the file the last
+   * run closed, so a line landing inside these awaits is dropped rather than appended to a file this run has moved on from; a timer a still-open logger carried
+   * is stopped by the chokepoint on the way through; and the window is the one state left alone, because the lines it holds are the boot messages the first
+   * flush appends.
+   */
+  if(state.kind !== "window") {
+
+    transition({ kind: "off" });
+  }
+
   maxLogSize = maxSize;
 
   try {
 
     // Ensure the parent directory of the log file exists.
-    await fsPromises.mkdir(path.dirname(logFilePath), { recursive: true });
+    await fsPromises.mkdir(path.dirname(logPath), { recursive: true });
 
     // The stat asks one question - does the file exist - and its result is not needed beyond that, because an existing file is appended to as it stands and
     // the periodic check reads the size from the disk when it needs one.
     try {
 
-      await fsPromises.stat(logFilePath);
+      await fsPromises.stat(logPath);
     } catch(error) {
 
       // File does not exist, create it.
       if((error as NodeJS.ErrnoException).code === "ENOENT") {
 
-        await fsPromises.writeFile(logFilePath, "", "utf-8");
+        await fsPromises.writeFile(logPath, "", "utf-8");
       } else {
 
         throw error;
       }
     }
 
-    // Start the periodic flush timer.
-    flushTimer = setInterval((): void => {
+    // The timer belongs to the state that holds the file, so it is created with that state and disposed by the chokepoint when the logger leaves it.
+    const timer = setInterval((): void => {
 
       void flushLogBuffer();
     }, FLUSH_INTERVAL_MS);
 
-    isInitialized = true;
-    startupWindowOpen = false;
+    transition({ kind: "open", path: logPath, pausedSince: null, timer });
   } catch(error) {
 
-    // A failed initialization closes the startup window and discards what it held: no file will ever take those entries, and holding them would grow the
-    // buffer for the life of the process.
-    startupWindowOpen = false;
+    // A failed initialization discards what the window held and leaves the logger where no state takes a line: no file will ever take those entries, and
+    // holding them would grow the buffer for the life of the process.
     writeBuffer = [];
+    transition({ kind: "off" });
 
     // Log to console since file logging failed, but do not throw - file logging is a best-effort feature.
     // eslint-disable-next-line no-console
@@ -194,69 +250,82 @@ function formatLogEntry(level: string, message: string, color: LogColor, categor
  */
 export function writeLogEntry(level: string, message: string, color: LogColor, categoryTag?: string): void {
 
-  const isWritingToFile = isInitialized && (logFilePath !== null);
+  switch(state.kind) {
 
-  if(isWritingToFile) {
+    case "window": {
 
-    // Check if logging is disabled due to previous error and whether retry delay has passed.
-    if(isDisabled) {
+      writeBuffer.push(formatLogEntry(level, message, color, categoryTag));
 
-      if((Date.now() - disabledAt) < ERROR_RETRY_DELAY_MS) {
+      /* The window has no open file, so it bounds itself where the open state runs a periodic size check instead. The bound is tested on every push, so the
+       * oldest entry makes room as soon as one entry too many arrives.
+       */
+      if(writeBuffer.length > STARTUP_BUFFER_LIMIT) {
 
-        return;
+        writeBuffer.shift();
       }
 
-      // Re-enable logging and try again.
-      isDisabled = false;
-    }
-  } else if(closedFilePath !== null) {
-
-    /* The logger has shut down and this line still belongs to the run that just ended, so it goes to that run's file. The append is synchronous because
-     * nothing asynchronous is left to carry it: the flush timer is stopped, the write chain has drained, and the process may exit on the next tick.
-     */
-    try {
-
-      fs.appendFileSync(closedFilePath, formatLogEntry(level, message, color, categoryTag), "utf-8");
-    } catch(error) {
-
-      // eslint-disable-next-line no-console
-      console.error("Failed to write a log entry after shutdown: %s.", (error instanceof Error) ? error.message : String(error));
-
-      // Abandon the closed file so a path that cannot be written is reported once rather than once per line.
-      closedFilePath = null;
+      return;
     }
 
-    return;
-  } else if(!startupWindowOpen) {
+    case "open":
+    case "closing": {
 
-    // Nothing holds the entry: no file is open, no closed file is waiting for it, and the startup window has closed for good.
-    return;
-  }
+      if((state.kind === "open") && (state.pausedSince !== null)) {
 
-  const entry = formatLogEntry(level, message, color, categoryTag);
+        if((Date.now() - state.pausedSince) < ERROR_RETRY_DELAY_MS) {
 
-  // Add to buffer.
-  writeBuffer.push(entry);
+          return;
+        }
 
-  /* The periodic size check below describes an open file, which the startup window does not have, so the window skips it and bounds itself instead. The bound
-   * is tested on every push, so the oldest entry makes room as soon as one entry too many arrives.
-   */
-  if(!isWritingToFile) {
+        /* The first write past the retry delay re-opens the file, and the next failure on it sets a fresh pause. Clearing the field here is what keeps it
+         * describing the file's standing rather than a moment that has passed, and it has no observable of its own, because every failure on the file the
+         * logger holds open refreshes the timestamp.
+         */
+        transition({ ...state, pausedSince: null });
+      }
 
-    if(writeBuffer.length > STARTUP_BUFFER_LIMIT) {
+      writeBuffer.push(formatLogEntry(level, message, color, categoryTag));
+      writeCount++;
 
-      writeBuffer.shift();
+      // Check if we should verify actual file size.
+      if((writeCount % SIZE_CHECK_FREQUENCY) === 0) {
+
+        void checkAndTrimFile();
+      }
+
+      return;
     }
 
-    return;
-  }
+    case "closed": {
 
-  writeCount++;
+      /* The logger has shut down and this line still belongs to the run that just ended, so it goes to that run's file. The append is synchronous because
+       * nothing asynchronous is left to carry it: the flush timer is stopped, the write chain has drained, and the process may exit on the next tick.
+       */
+      try {
 
-  // Check if we should verify actual file size.
-  if((writeCount % SIZE_CHECK_FREQUENCY) === 0) {
+        fs.appendFileSync(state.path, formatLogEntry(level, message, color, categoryTag), "utf-8");
+      } catch(error) {
 
-    void checkAndTrimFile();
+        // eslint-disable-next-line no-console
+        console.error("Failed to write a log entry after shutdown: %s.", (error instanceof Error) ? error.message : String(error));
+
+        // A closed file that cannot be written is where the logger goes off, so the path is reported once rather than once per line.
+        transition({ kind: "off" });
+      }
+
+      return;
+    }
+
+    case "off": {
+
+      // Nothing takes the entry: no file is open, no closed file is waiting for it, and the startup window is behind us.
+      return;
+    }
+
+    default: {
+
+      assertNever(state);
+    }
   }
 }
 
@@ -288,14 +357,16 @@ async function serializeWrite(operation: () => Promise<void>): Promise<void> {
  */
 export async function flushLogBuffer(): Promise<void> {
 
-  if(!isInitialized || !logFilePath || (writeBuffer.length === 0)) {
+  // The path is read once here so the serialized operation below writes to the file the logger held when the flush was issued, whatever the state does next.
+  const targetPath = openFilePath();
+
+  if((targetPath === null) || (writeBuffer.length === 0)) {
 
     return;
   }
 
-  // Take the current buffer and reset. We snapshot the path as well so the serialized operation is not affected by a concurrent shutdown clearing logFilePath.
+  // Take the current buffer and reset.
   const entries = writeBuffer;
-  const targetPath = logFilePath;
 
   writeBuffer = [];
 
@@ -308,22 +379,33 @@ export async function flushLogBuffer(): Promise<void> {
       await fsPromises.appendFile(targetPath, content, "utf-8");
     } catch(error) {
 
-      // Disable logging temporarily to prevent error cascade.
-      isDisabled = true;
-      disabledAt = Date.now();
+      /* Every failure on the file the logger still holds open sets or refreshes the pause, so the delay before the next attempt runs from the latest failure
+       * rather than the first. A failure that settles while the logger is closing that file, or has already left it, touches no state: the final flush is the
+       * run's one attempt either way, and the drain bound lets a shutdown complete with an append still in flight, so a run that has since opened its own file
+       * must not inherit a pause the run before it earned.
+       */
+      if((state.kind === "open") && (state.path === targetPath)) {
 
-      // Log to console as fallback.
-      // eslint-disable-next-line no-console
-      console.error("Failed to write to log file: %s. File logging disabled for %s seconds.",
-        (error instanceof Error) ? error.message : String(error), ERROR_RETRY_DELAY_MS / 1000);
+        transition({ ...state, pausedSince: Date.now() });
+
+        // Log to console as fallback.
+        // eslint-disable-next-line no-console
+        console.error("Failed to write to log file: %s. File logging disabled for %s seconds.",
+          (error instanceof Error) ? error.message : String(error), ERROR_RETRY_DELAY_MS / 1000);
+      } else {
+
+        // Log to console as fallback.
+        // eslint-disable-next-line no-console
+        console.error("Failed to write to the log file: %s.", (error instanceof Error) ? error.message : String(error));
+      }
     }
   });
 }
 
 /**
- * Flushes the write buffer to disk synchronously. Shutdown reaches it with the logger initialized and writes to the configured log file, and the process exit
- * handler reaches it on either side of initialization. The fallback path serves that second position - an exit before initialization, where the buffer holds
- * the startup window's entries and no log file was ever opened - and an initialized logger ignores it in favor of its own file.
+ * Flushes the write buffer to disk synchronously. Shutdown reaches it while the logger is closing and writes to the configured log file, and the process exit
+ * handler reaches it on either side of initialization. The fallback path serves that second position - an exit in the startup window, where the buffer holds
+ * the window's entries and no log file was ever opened - and a logger holding a file of its own ignores it in favor of that file.
  * @param fallbackPath - Absolute path to write to when the logger never initialized. Shutdown omits it, and so does console mode, whose lines never enter the buffer.
  */
 export function flushLogBufferSync(fallbackPath?: string): void {
@@ -333,10 +415,9 @@ export function flushLogBufferSync(fallbackPath?: string): void {
     return;
   }
 
-  // Before initialization the fallback path is the only thing that says where the startup window's entries should land, and without one there is nowhere to
-  // put them.
-  const isWritingToFile = isInitialized && (logFilePath !== null);
-  const targetPath = isWritingToFile ? logFilePath : fallbackPath;
+  // With no file of its own, the fallback path is the only thing that says where these entries should land, and without one there is nowhere to put them.
+  const openPath = openFilePath();
+  const targetPath = openPath ?? fallbackPath;
 
   if(!targetPath) {
 
@@ -350,9 +431,9 @@ export function flushLogBufferSync(fallbackPath?: string): void {
   try {
 
     /* Only the fallback needs its parent directory created, and it shares the catch below so a read-only data directory yields the same console message a
-     * failed append does. An initialized logger created its directory at initialization, so repeating the syscall on its shutdown path would buy nothing.
+     * failed append does. A logger holding its own file created that directory at initialization, so repeating the syscall here would buy nothing.
      */
-    if(!isWritingToFile) {
+    if(openPath === null) {
 
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     }
@@ -373,14 +454,16 @@ export function flushLogBufferSync(fallbackPath?: string): void {
  */
 async function checkAndTrimFile(): Promise<void> {
 
-  if(!logFilePath) {
+  const targetPath = openFilePath();
+
+  if(targetPath === null) {
 
     return;
   }
 
   try {
 
-    const stats = await fsPromises.stat(logFilePath);
+    const stats = await fsPromises.stat(targetPath);
 
     // Skip trimming when debug logging is active. Debug sessions generate high-volume output that is valuable for diagnosis - trimming mid-session would discard
     // the very data we are trying to capture.
@@ -449,13 +532,14 @@ export function computeTrimmedLogContent(content: string, maxSize: number): Null
  */
 async function trimLogFile(): Promise<void> {
 
-  if(!logFilePath) {
+  // The path is read once here because a shutdown can move the state under the serialized operation below, and the rename has to land on the file the read
+  // came from rather than on wherever the logger has since gone.
+  const targetPath = openFilePath();
+
+  if(targetPath === null) {
 
     return;
   }
-
-  // Snapshot the path so a concurrent shutdown clearing logFilePath cannot redirect the rename target mid-operation.
-  const targetPath = logFilePath;
 
   return serializeWrite(async (): Promise<void> => {
 
@@ -486,31 +570,36 @@ async function trimLogFile(): Promise<void> {
 // Shutdown.
 
 /**
- * Shuts down the file logger: stops the flush timer, waits for the write chain to drain, then flushes any remaining buffer synchronously and clears module state.
+ * Shuts down the file logger: enters the closing state, waits for the write chain to drain, then flushes any remaining buffer synchronously and enters closed.
+ *
+ * The flush timer stops the moment the logger enters closing, because the chokepoint disposes a timer the next state does not carry, so no periodic flush can
+ * fire into the drain.
  *
  * The drain is what keeps shutdown from racing the writes it is meant to finish. A trim holds the log file across a read, a temp write, and a rename; a synchronous
  * final flush issued while that rename is still pending appends to the file the rename is about to replace, so the last entries of the run are discarded along with
  * the stale snapshot. Awaiting the chain first puts the final flush strictly after every mutation already in flight.
  *
- * The wait is bounded because a wedged filesystem operation must not hold the process open through its own shutdown. When the bound lapses the flush and the state
- * reset proceed anyway, which is the same outcome an unbounded wait would eventually reach minus the hang.
+ * The wait is bounded because a wedged filesystem operation must not hold the process open through its own shutdown. When the bound lapses the flush and the move
+ * to closed proceed anyway, which is the same outcome an unbounded wait would eventually reach minus the hang.
  *
- * The reset keeps the path of the file it closed, so a line logged after this point - the exit handler's Chrome cleanup, a late process-level handler - is
- * appended to that file synchronously instead of falling into the gap between the reset and the process exit.
+ * The closed state keeps the path of the file it closed, so a line logged after this point - the exit handler's Chrome cleanup, a late process-level handler - is
+ * appended to that file synchronously instead of falling into the gap between the shutdown and the process exit.
  */
 export async function shutdownFileLogger(): Promise<void> {
 
-  if(!isInitialized) {
+  // The window, closed, and off states have no file to shut down, and returning here is what leaves a window's buffered entries for the exit handler's fallback.
+  if((state.kind !== "open") && (state.kind !== "closing")) {
 
     return;
   }
 
-  // Stop the flush timer.
-  if(flushTimer) {
+  const targetPath = state.path;
 
-    clearInterval(flushTimer);
-    flushTimer = null;
-  }
+  /* Entering closing stops the flush timer through the chokepoint, so no periodic flush fires into the drain, and it lifts any pause the open file carried: the
+   * drain buffers every line logged under it and the final flush is the run's one last attempt at them, which a pause - a bound on a cascade of periodic
+   * retries - has no reason to prevent.
+   */
+  transition({ kind: "closing", path: targetPath });
 
   // Drain the outstanding write chain so the synchronous flush below lands after every mutation already in flight rather than into a file a pending rename is
   // about to replace. The chain never rejects - serializeWrite swallows each operation's outcome - so this only ever resolves or lapses.
@@ -519,17 +608,12 @@ export async function shutdownFileLogger(): Promise<void> {
   // Flush remaining buffer synchronously.
   flushLogBufferSync();
 
-  // Reset all module state so a subsequent initializeFileLogger() starts from a clean slate. The disabled-on-write-error flag in particular must not survive
-  // shutdown - if a prior run hit a write failure and entered the 60-second retry window, that window should not silently drop writes from the next run.
-  isInitialized = false;
-  isDisabled = false;
-  disabledAt = 0;
-  writeBuffer = [];
   writeCount = 0;
+  writeBuffer = [];
 
-  // Keep the file this run wrote to, so a line logged from here on still reaches it rather than falling into the gap between the reset and the process exit.
-  closedFilePath = logFilePath;
-  logFilePath = null;
+  // The closed state keeps the file this run wrote to, so a line logged from here on still reaches it rather than falling into the gap between the shutdown and
+  // the process exit.
+  transition({ kind: "closed", path: targetPath });
 
   // Reset the write-ordering chain so the next run starts from a fresh, already-resolved tail rather than chaining onto the previous run's last operation.
   writeChain = Promise.resolve();
