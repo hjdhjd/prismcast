@@ -130,7 +130,7 @@ describe("buildChannelMap", () => {
     // The function rebuilds from the channel map on each call; no caching. Mutating the returned array must not affect subsequent calls.
     const a = buildChannelMap();
 
-    a.push({ key: "fake", name: "Fake", number: 999_999 });
+    a.push({ key: "fake", name: "Fake", number: 999999 });
 
     const b = buildChannelMap();
 
@@ -180,7 +180,7 @@ describe("getChannelKeyByNumber", () => {
     const last = map[map.length - 1];
 
     assert.ok(last, "map has at least one entry");
-    assert.equal(getChannelKeyByNumber(last.number + 1_000_000), undefined);
+    assert.equal(getChannelKeyByNumber(last.number + 1000000), undefined);
   });
 
   test("returns undefined for a negative number", () => {

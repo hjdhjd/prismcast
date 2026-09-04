@@ -20,7 +20,7 @@ describe("getShowName / clearShowName", () => {
 
     // The cache is a private Map keyed by stream ID. A never-set ID must surface as the empty string, not undefined - this is the contract the SSE status emitter
     // depends on for falling back to the empty string in StreamStatus.
-    assert.equal(getShowName(999_999), "");
+    assert.equal(getShowName(999999), "");
   });
 
   test("clear is a no-op for an unknown ID", () => {
@@ -28,7 +28,7 @@ describe("getShowName / clearShowName", () => {
     // Negative test: cleanup paths in lifecycle.terminateStream call clearShowName for every stream regardless of whether a name was ever cached.
     assert.doesNotThrow(() => {
 
-      clearShowName(999_999);
+      clearShowName(999999);
     });
   });
 });

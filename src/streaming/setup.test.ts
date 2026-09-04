@@ -221,7 +221,7 @@ describe("withSignInGuidance", () => {
     await loadHealthState();
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1700000000000 });
   });
 
   afterEach(async () => {

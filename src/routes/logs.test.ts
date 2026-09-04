@@ -502,7 +502,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
       invokeLogsStreamHandler(route, req, res);
 
       // The heartbeat fires every 30s; confirm it ticks before close.
-      mock.timers.tick(30_000);
+      mock.timers.tick(30000);
       assert.equal(write.mock.callCount(), 1, "heartbeat fires while connection is open");
       assert.deepEqual(write.mock.calls[0]?.arguments, ["event: heartbeat\ndata: \n\n"]);
 
@@ -510,7 +510,7 @@ describe("setupLogsEndpoint - GET /logs/stream (direct-handler wire bytes)", () 
       triggerReqEvent("close");
 
       // Advance another full interval - no further writes.
-      mock.timers.tick(30_000);
+      mock.timers.tick(30000);
       assert.equal(write.mock.callCount(), 1, "no heartbeat after close()");
     } finally {
 

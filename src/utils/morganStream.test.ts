@@ -78,7 +78,7 @@ describe("createMorganStream", () => {
 
       const logPath = join(dir, "morgan.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, 1000000);
       setConsoleLogging(false);
 
       const stream = createMorganStream();

@@ -17,7 +17,7 @@ import { makeReqRes } from "./express.helpers.ts";
 // silently change the on-the-wire shape that EventSource clients and intermediaries observe.
 const HEARTBEAT_FRAME = "event: heartbeat\ndata: \n\n";
 
-const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 30000;
 
 describe("installSseStream - response headers", () => {
 

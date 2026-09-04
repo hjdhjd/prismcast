@@ -199,7 +199,7 @@ describe("login icon tri-state rendering", () => {
     await loadHealthState();
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flush timer the mark calls below schedule.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1700000000000 });
   });
 
   afterEach(async () => {
@@ -264,7 +264,7 @@ describe("login icon tri-state rendering", () => {
 
     mock.timers.reset();
     await loadHealthState();
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1700000000000 });
 
     assert.match(renderAbcRow(), /class="btn-icon btn-icon-login"/, "reloaded state renders neutral again");
   });

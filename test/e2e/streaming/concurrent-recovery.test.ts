@@ -35,7 +35,7 @@ import assert from "node:assert/strict";
 describe("recovery state machine - per-stream isolation across concurrent streams", () => {
 
   // Same baseline as recovery-escalation.test.ts so test-failure timestamps are consistent across both tiers.
-  const baseTime = 1_700_000_000_000;
+  const baseTime = 1700000000000;
 
   beforeEach(() => {
 
@@ -71,7 +71,7 @@ describe("recovery state machine - per-stream isolation across concurrent stream
     recordRecoveryAttempt(streamA, getRecoveryMethod(1));
     mock.timers.tick(800);
     recordRecoveryAttempt(streamA, getRecoveryMethod(2));
-    mock.timers.tick(2_000);
+    mock.timers.tick(2000);
     recordRecoveryAttempt(streamA, getRecoveryMethod(3));
 
     // Stream A's counters reflect the three attempts, one per level.

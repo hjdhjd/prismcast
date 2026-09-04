@@ -42,7 +42,7 @@ describe("waitForPlaylist", () => {
     updatePlaylist(streamId, "#EXTM3U");
 
     const { clock } = makeFakeClock();
-    const ready = await waitForPlaylist(streamId, 1_000, clock);
+    const ready = await waitForPlaylist(streamId, 1000, clock);
 
     assert.equal(ready, true);
   });
@@ -67,7 +67,7 @@ describe("waitForPlaylist", () => {
   test("returns false for an unknown stream", async () => {
 
     // The early-return path never reaches the clock, so default-arg is fine; locks the early-return contract independently of clock injection.
-    assert.equal(await waitForPlaylist(999_999, 5), false);
+    assert.equal(await waitForPlaylist(999999, 5), false);
   });
 });
 
@@ -91,7 +91,7 @@ describe("waitForInitSegment", () => {
     storeInitSegment(streamId, Buffer.from("init"));
 
     const { clock } = makeFakeClock();
-    const ready = await waitForInitSegment(streamId, 1_000, clock);
+    const ready = await waitForInitSegment(streamId, 1000, clock);
 
     assert.equal(ready, true);
   });
@@ -113,7 +113,7 @@ describe("waitForInitSegment", () => {
 
   test("returns false for an unknown stream", async () => {
 
-    assert.equal(await waitForInitSegment(999_999, 5), false);
+    assert.equal(await waitForInitSegment(999999, 5), false);
   });
 });
 

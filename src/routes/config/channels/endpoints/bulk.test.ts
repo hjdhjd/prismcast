@@ -103,7 +103,7 @@ describe("POST /config/channels/auto-number", () => {
 
   test("rejects a starting number outside [1, 99999] (too large)", async () => {
 
-    const { json, req, res, status } = makeReqRes({ body: { start: 100_000 } });
+    const { json, req, res, status } = makeReqRes({ body: { start: 100000 } });
 
     await autoNumber(req, res, () => undefined);
 

@@ -185,7 +185,7 @@ describe("getLoginStatus", () => {
 
     installAccessors(makeBrowserStub({ pageStub }));
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
 
     try {
 
@@ -195,7 +195,7 @@ describe("getLoginStatus", () => {
 
       assert.equal(status.active, true, "active");
       assert.equal(status.url, "https://example.test/x", "stored URL surfaces");
-      assert.equal(status.startTime, 1_700_000_000_000, "startTime captured from Date.now()");
+      assert.equal(status.startTime, 1700000000000, "startTime captured from Date.now()");
     } finally {
 
       mock.timers.reset();

@@ -27,7 +27,7 @@ describe("checkCircuitBreaker", () => {
 
     for(let i = 0; i < (threshold - 1); i++) {
 
-      const result = checkCircuitBreaker(state, 1_000 + i);
+      const result = checkCircuitBreaker(state, 1000 + i);
 
       assert.equal(result.shouldTrip, false, "should not trip below threshold (count " + String(i + 1) + ")");
     }
@@ -38,11 +38,11 @@ describe("checkCircuitBreaker", () => {
   test("trips when the threshold count is reached within the window", () => {
 
     const state = freshState();
-    let result = checkCircuitBreaker(state, 1_000);
+    let result = checkCircuitBreaker(state, 1000);
 
     for(let i = 1; i < threshold; i++) {
 
-      result = checkCircuitBreaker(state, 1_000 + i);
+      result = checkCircuitBreaker(state, 1000 + i);
     }
 
     assert.equal(result.shouldTrip, true, "threshold-th failure trips the breaker");
@@ -55,17 +55,17 @@ describe("checkCircuitBreaker", () => {
     const state = freshState();
 
     // Two failures inside a baseline window starting at t=1000.
-    checkCircuitBreaker(state, 1_000);
-    checkCircuitBreaker(state, 1_500);
+    checkCircuitBreaker(state, 1000);
+    checkCircuitBreaker(state, 1500);
 
     assert.equal(state.totalFailureCount, 2, "two failures recorded inside the window");
 
     // Third failure beyond the window from the first - state must be reset to count 1, with a fresh start time.
-    const result = checkCircuitBreaker(state, 1_000 + window + 1);
+    const result = checkCircuitBreaker(state, 1000 + window + 1);
 
     assert.equal(result.withinWindow, false, "post-window failure should report withinWindow=false");
     assert.equal(state.totalFailureCount, 1, "count reset to 1 after the window expires");
-    assert.equal(state.firstFailureTime, 1_000 + window + 1, "first-failure timestamp updated to the new failure");
+    assert.equal(state.firstFailureTime, 1000 + window + 1, "first-failure timestamp updated to the new failure");
   });
 
   test("populates firstFailureTime on the very first failure", () => {
@@ -84,8 +84,8 @@ describe("checkCircuitBreaker", () => {
     // The implementation uses `(now - firstFailureTime) < window`, so a delta equal to (window - 1) is inside the window. Lock the off-by-one boundary.
     const state = freshState();
 
-    checkCircuitBreaker(state, 1_000);
-    const result = checkCircuitBreaker(state, 1_000 + window - 1);
+    checkCircuitBreaker(state, 1000);
+    const result = checkCircuitBreaker(state, 1000 + window - 1);
 
     assert.equal(result.withinWindow, true, "delta of window-1 ms is still inside");
   });
@@ -94,8 +94,8 @@ describe("checkCircuitBreaker", () => {
 
     const state = freshState();
 
-    checkCircuitBreaker(state, 1_000);
-    const result = checkCircuitBreaker(state, 1_000 + window);
+    checkCircuitBreaker(state, 1000);
+    const result = checkCircuitBreaker(state, 1000 + window);
 
     assert.equal(result.withinWindow, false, "delta of exactly the window is OUTSIDE per the strict-less-than comparison");
   });

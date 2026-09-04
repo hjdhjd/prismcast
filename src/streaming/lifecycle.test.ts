@@ -163,7 +163,7 @@ describe("terminateStream", () => {
 
     // We disable graceful shutdown by default so the page-close branch executes if reached. Tests that need graceful shutdown enable it explicitly.
     setGracefulShutdown(false);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
   });
 
   afterEach(() => {
@@ -414,7 +414,7 @@ describe("terminateStream", () => {
     // both of which are no-ops in this case.
     assert.doesNotThrow(() => {
 
-      terminateStream(999_999, "ghost-channel", "test");
+      terminateStream(999999, "ghost-channel", "test");
     });
   });
 

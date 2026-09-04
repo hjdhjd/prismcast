@@ -22,7 +22,7 @@ import { getTunerStates } from "./tunerState.ts";
 import { makeRegistryEntry } from "../streaming/registry.helpers.ts";
 
 // Stream IDs in the test range are chosen well above any real stream id to avoid collision; the registry is keyed by id so deterministic test ids are safe.
-const TEST_ID_BASE = 2_000_000;
+const TEST_ID_BASE = 2000000;
 
 describe("getTunerStates", () => {
 

@@ -9,6 +9,9 @@ import { RECOVERY_METHODS, createRecoveryMetrics, formatRecoveryDuration, format
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 describe("createRecoveryMetrics", () => {
 
   test("returns a fresh object with every counter at zero and recovery state cleared", () => {
@@ -72,7 +75,7 @@ describe("recordRecoveryAttempt", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -98,7 +101,7 @@ describe("recordRecoveryAttempt", () => {
 
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.sourceReload);
 
-    assert.equal(metrics.currentRecoveryStartTime, 1_700_000_000_000, "start time captured from Date.now()");
+    assert.equal(metrics.currentRecoveryStartTime, BASE_TIME_MS, "start time captured from Date.now()");
     assert.equal(metrics.currentRecoveryMethod, RECOVERY_METHODS.sourceReload, "current method tracked");
   });
 
@@ -130,7 +133,7 @@ describe("recordRecoverySuccess", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -143,7 +146,7 @@ describe("recordRecoverySuccess", () => {
     const metrics = createRecoveryMetrics();
 
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.playUnmute);
-    mock.timers.tick(2_500);
+    mock.timers.tick(2500);
     recordRecoverySuccess(metrics, RECOVERY_METHODS.playUnmute);
 
     assert.equal(metrics.playUnmuteSuccesses, 1, "success counter incremented");
@@ -156,15 +159,15 @@ describe("recordRecoverySuccess", () => {
     const metrics = createRecoveryMetrics();
 
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.sourceReload);
-    mock.timers.tick(1_000);
+    mock.timers.tick(1000);
     recordRecoverySuccess(metrics, RECOVERY_METHODS.sourceReload);
 
-    mock.timers.tick(50_000);
+    mock.timers.tick(50000);
     recordRecoveryAttempt(metrics, RECOVERY_METHODS.sourceReload);
-    mock.timers.tick(2_500);
+    mock.timers.tick(2500);
     recordRecoverySuccess(metrics, RECOVERY_METHODS.sourceReload);
 
-    assert.equal(metrics.totalRecoveryTimeMs, 3_500, "two successful recoveries sum 1000ms + 2500ms");
+    assert.equal(metrics.totalRecoveryTimeMs, 3500, "two successful recoveries sum 1000ms + 2500ms");
   });
 
   test("does NOT accumulate duration when called without a preceding attempt (no start time recorded)", () => {
@@ -197,7 +200,7 @@ describe("formatRecoveryDuration", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_010_500 });
+    mock.timers.enable({ apis: ["Date"], now: 1700000010500 });
   });
 
   afterEach(() => {
@@ -208,25 +211,25 @@ describe("formatRecoveryDuration", () => {
   test("formats elapsed milliseconds since startTime as seconds with one decimal", () => {
 
     // 10500ms elapsed -> "10.5s".
-    assert.equal(formatRecoveryDuration(1_700_000_000_000), "10.5s");
+    assert.equal(formatRecoveryDuration(BASE_TIME_MS), "10.5s");
   });
 
   test("rounds to the nearest tenth at the boundary", () => {
 
     // 1499ms -> "1.5s" via toFixed(1).
-    assert.equal(formatRecoveryDuration(1_700_000_009_001), "1.5s");
+    assert.equal(formatRecoveryDuration(1700000009001), "1.5s");
   });
 
   test("returns 0.0s for a startTime equal to now (zero elapsed)", () => {
 
     // Boundary: zero elapsed.
-    assert.equal(formatRecoveryDuration(1_700_000_010_500), "0.0s");
+    assert.equal(formatRecoveryDuration(1700000010500), "0.0s");
   });
 
   test("handles a future startTime (negative elapsed) without throwing", () => {
 
     // Boundary: clock skew or out-of-order calls. The function does not guard against negative input; we lock the resulting "-N.Ns" rather than crashing.
-    assert.equal(formatRecoveryDuration(1_700_000_011_500), "-1.0s");
+    assert.equal(formatRecoveryDuration(1700000011500), "-1.0s");
   });
 });
 
@@ -245,7 +248,7 @@ describe("formatRecoveryMetricsSummary", () => {
     metrics.sourceReloadSuccesses = 5;
     metrics.pageNavigationAttempts = 3;
     metrics.pageNavigationSuccesses = 3;
-    metrics.totalRecoveryTimeMs = 33_600;
+    metrics.totalRecoveryTimeMs = 33600;
 
     const summary = formatRecoveryMetricsSummary(metrics);
 

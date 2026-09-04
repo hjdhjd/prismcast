@@ -937,7 +937,7 @@ describe("PATCH /config/channels/:key", () => {
 
   test("rejects an out-of-range channelNumber via the shared validator", async () => {
 
-    const { req, res, status } = makeReqRes({ body: { channelNumber: 999_999 }, params: { key: "abc" } });
+    const { req, res, status } = makeReqRes({ body: { channelNumber: 999999 }, params: { key: "abc" } });
 
     await patch(req, res, () => undefined);
 

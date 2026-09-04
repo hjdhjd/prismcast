@@ -13,13 +13,16 @@ import { getHealthFilePath, initializeDataDir } from "./paths.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 describe("markChannelSuccess", () => {
 
   beforeEach(() => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -35,14 +38,14 @@ describe("markChannelSuccess", () => {
 
     assert.ok(result, "channel health entry exists");
     assert.equal(result.status, "success");
-    assert.equal(result.timestamp, 1_700_000_000_000);
+    assert.equal(result.timestamp, BASE_TIME_MS);
   });
 
   test("marks the domain as authenticated by default", () => {
 
     markChannelSuccess("nbc", "nbc.com");
 
-    assert.deepEqual(getDomainAuthState("nbc.com"), { status: "verified", timestamp: 1_700_000_000_000 });
+    assert.deepEqual(getDomainAuthState("nbc.com"), { status: "verified", timestamp: BASE_TIME_MS });
   });
 
   test("does NOT mark the domain when markAuth=false", () => {
@@ -66,7 +69,7 @@ describe("markChannelSuccess", () => {
 
       markChannelSuccess("abc", "abc.com");
 
-      assert.deepEqual(captured, { channelKey: "abc", domain: "abc.com", status: "success", timestamp: 1_700_000_000_000 });
+      assert.deepEqual(captured, { channelKey: "abc", domain: "abc.com", status: "success", timestamp: BASE_TIME_MS });
     } finally {
 
       unsubscribe();
@@ -91,12 +94,12 @@ describe("markChannelSuccess", () => {
       markChannelSuccess("event-count-markauth", "event-count.com");
 
       assert.equal(captured.length, 1, "markAuth path emits exactly one event");
-      assert.deepEqual(captured[0], { channelKey: "event-count-markauth", domain: "event-count.com", status: "success", timestamp: 1_700_000_000_000 });
+      assert.deepEqual(captured[0], { channelKey: "event-count-markauth", domain: "event-count.com", status: "success", timestamp: BASE_TIME_MS });
 
       markChannelSuccess("event-count-plain", "event-count.com", false);
 
       assert.equal(captured.length, 2, "non-markAuth path emits exactly one additional event");
-      assert.deepEqual(captured[1], { channelKey: "event-count-plain", domain: "event-count.com", status: "success", timestamp: 1_700_000_000_000 });
+      assert.deepEqual(captured[1], { channelKey: "event-count-plain", domain: "event-count.com", status: "success", timestamp: BASE_TIME_MS });
     } finally {
 
       unsubscribe();
@@ -115,7 +118,7 @@ describe("markChannelSuccess", () => {
 
     markChannelSuccess("overwrite-flag-channel", "overwrite-flag.com");
 
-    assert.deepEqual(getDomainAuthState("overwrite-flag.com"), { status: "verified", timestamp: 1_700_000_000_000 }, "success evidence overwrites to verified");
+    assert.deepEqual(getDomainAuthState("overwrite-flag.com"), { status: "verified", timestamp: BASE_TIME_MS }, "success evidence overwrites to verified");
   });
 });
 
@@ -125,7 +128,7 @@ describe("markChannelFailure", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -151,7 +154,7 @@ describe("markChannelFailure", () => {
     markDomainAuthRequired("failure-preserves.com");
     markChannelFailure("failure-preserves-channel", "failure-preserves.com");
 
-    assert.deepEqual(getDomainAuthState("failure-preserves.com"), { status: "needsLogin", timestamp: 1_700_000_000_000 }, "needsLogin entry survives a channel failure");
+    assert.deepEqual(getDomainAuthState("failure-preserves.com"), { status: "needsLogin", timestamp: BASE_TIME_MS }, "needsLogin entry survives a channel failure");
   });
 
   test("emits a healthChanged event with the failed payload", () => {
@@ -179,7 +182,7 @@ describe("markDomainAuth", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -195,7 +198,7 @@ describe("markDomainAuth", () => {
     const domain = "just-domain-" + String(Date.now());
 
     markDomainAuth(domain);
-    assert.deepEqual(getDomainAuthState(domain), { status: "verified", timestamp: 1_700_000_000_000 });
+    assert.deepEqual(getDomainAuthState(domain), { status: "verified", timestamp: BASE_TIME_MS });
   });
 
   test("emits a healthChanged event with empty channelKey", () => {
@@ -223,7 +226,7 @@ describe("getChannelHealth", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -261,7 +264,7 @@ describe("getDomainAuthState", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -293,7 +296,7 @@ describe("getDomainAuthState", () => {
 
     mock.timers.tick(8 * 24 * 60 * 60 * 1000);
 
-    assert.deepEqual(getDomainAuthState("ttl-exempt-domain-test"), { status: "needsLogin", timestamp: 1_700_000_000_000 },
+    assert.deepEqual(getDomainAuthState("ttl-exempt-domain-test"), { status: "needsLogin", timestamp: BASE_TIME_MS },
       "needsLogin entry survives past the TTL with its original timestamp");
   });
 });
@@ -304,7 +307,7 @@ describe("markDomainAuthRequired", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -318,7 +321,7 @@ describe("markDomainAuthRequired", () => {
 
     markDomainAuthRequired(domain);
 
-    assert.deepEqual(getDomainAuthState(domain), { status: "needsLogin", timestamp: 1_700_000_000_000 });
+    assert.deepEqual(getDomainAuthState(domain), { status: "needsLogin", timestamp: BASE_TIME_MS });
   });
 
   test("overwrites an existing verified entry (a fresh auth wall trumps stale verification)", () => {
@@ -345,7 +348,7 @@ describe("markDomainAuthRequired", () => {
       markDomainAuthRequired("needs-login-event.com");
 
       assert.equal(captured.length, 1, "exactly one event per call");
-      assert.deepEqual(captured[0], { channelKey: "", domain: "needs-login-event.com", status: "needsLogin", timestamp: 1_700_000_000_000 });
+      assert.deepEqual(captured[0], { channelKey: "", domain: "needs-login-event.com", status: "needsLogin", timestamp: BASE_TIME_MS });
     } finally {
 
       unsubscribe();
@@ -359,7 +362,7 @@ describe("clearDomainAuthRequirement", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -419,7 +422,7 @@ describe("clearDomainAuthRequirement", () => {
 
       clearDomainAuthRequirement("clear-verified.com");
 
-      assert.deepEqual(getDomainAuthState("clear-verified.com"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified entry untouched");
+      assert.deepEqual(getDomainAuthState("clear-verified.com"), { status: "verified", timestamp: BASE_TIME_MS }, "verified entry untouched");
       assert.equal(captured.length, 0, "no event fires when nothing changes");
     } finally {
 
@@ -453,7 +456,7 @@ describe("getHealthSnapshot", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -472,7 +475,7 @@ describe("getHealthSnapshot", () => {
     // Lock the shape of the snapshot. The maps are objects keyed by name/domain; domain values are status-bearing entries.
     assert.ok(snapEntry, "snap-channel present in snapshot");
     assert.equal(snapEntry.status, "success");
-    assert.deepEqual(snapshot.domains["only-domain.com"], { status: "verified", timestamp: 1_700_000_000_000 });
+    assert.deepEqual(snapshot.domains["only-domain.com"], { status: "verified", timestamp: BASE_TIME_MS });
   });
 
   test("includes a needs-sign-in entry past the TTL window (needsLogin is exempt from the snapshot prune)", () => {
@@ -486,7 +489,7 @@ describe("getHealthSnapshot", () => {
 
     mock.timers.tick(8 * 24 * 60 * 60 * 1000);
 
-    assert.deepEqual(getHealthSnapshot().domains[domain], { status: "needsLogin", timestamp: 1_700_000_000_000 }, "aged needsLogin entry survives the snapshot prune");
+    assert.deepEqual(getHealthSnapshot().domains[domain], { status: "needsLogin", timestamp: BASE_TIME_MS }, "aged needsLogin entry survives the snapshot prune");
   });
 
   test("excludes stale entries (older than TTL) from the snapshot", () => {
@@ -507,7 +510,7 @@ describe("subscribeToHealth", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -547,7 +550,7 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced flushHealthState() write timer. Without setTimeout mocking,
     // the timer would survive the test, attempt a write to (potentially missing) data-dir, and keep the test process alive.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -663,7 +666,7 @@ describe("expired-entry pruning (memory hygiene)", () => {
 
       const written = JSON.parse(await readFile(getHealthFilePath(), "utf8")) as { domains: Record<string, { status: string; timestamp: number }> };
 
-      assert.deepEqual(written.domains[flaggedDomain], { status: "needsLogin", timestamp: 1_700_000_000_000 }, "aged needsLogin entry persists");
+      assert.deepEqual(written.domains[flaggedDomain], { status: "needsLogin", timestamp: BASE_TIME_MS }, "aged needsLogin entry persists");
       assert.equal(written.domains[verifiedDomain], undefined, "the identically-aged verified entry is pruned");
     });
   });

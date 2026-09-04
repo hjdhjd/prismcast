@@ -11,6 +11,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
+// A size cap far above anything these rows write, so no trim runs and the assertions read the file exactly as it was appended.
+const MAX_LOG_SIZE = 1000000;
+
 describe("flushLogBuffer - error-path retry-disable", () => {
 
   /* When fsPromises.appendFile throws (e.g., because the log file's directory was removed mid-flight), flushLogBuffer disables logging for ERROR_RETRY_DELAY_MS
@@ -29,7 +32,7 @@ describe("flushLogBuffer - error-path retry-disable", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Pre-error entry.", null);
       await flushLogBuffer();
@@ -86,7 +89,7 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
       const logPath = path.join(dir, "retry.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       // Stub console.error so the cascading-error message isn't printed during the test.
       // eslint-disable-next-line no-console
@@ -111,7 +114,7 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
         // Advance Date.now() past the 60-second retry window. We stub only Date.now via mock.method rather than enabling mock.timers with the Date API, because
         // mock.timers would also take over setInterval and freeze the logger's live flush-timer interval running throughout this test.
-        const baseNow = Date.now() + 70_000;
+        const baseNow = Date.now() + 70000;
 
         mock.method(Date, "now", () => baseNow);
 
@@ -167,7 +170,7 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
       try {
 
         // Must not throw - the implementation absorbs the error and disables file logging.
-        await assert.doesNotReject(() => initializeFileLogger(logPath, 1_000_000),
+        await assert.doesNotReject(() => initializeFileLogger(logPath, MAX_LOG_SIZE),
           "initializeFileLogger absorbs the mkdir failure");
 
         // The console.error should have fired with the "Failed to initialize file logger" message.
@@ -210,7 +213,7 @@ describe("shutdownFileLogger", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Final entry.", null);
 
@@ -231,7 +234,7 @@ describe("shutdownFileLogger", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
       await shutdownFileLogger();
 
       writeLogEntry("info", "After shutdown.", null);
@@ -252,12 +255,12 @@ describe("shutdownFileLogger", () => {
       const firstPath = path.join(dir, "first.log");
       const secondPath = path.join(dir, "second.log");
 
-      await initializeFileLogger(firstPath, 1_000_000);
+      await initializeFileLogger(firstPath, MAX_LOG_SIZE);
       await shutdownFileLogger();
 
       writeLogEntry("info", "Belongs to the first run.", null);
 
-      await initializeFileLogger(secondPath, 1_000_000);
+      await initializeFileLogger(secondPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Belongs to the second run.", null);
       await flushLogBuffer();
@@ -282,7 +285,7 @@ describe("shutdownFileLogger", () => {
       const firstPath = path.join(dir, "first.log");
       const collidingFile = path.join(dir, "not-a-directory");
 
-      await initializeFileLogger(firstPath, 1_000_000);
+      await initializeFileLogger(firstPath, MAX_LOG_SIZE);
       await shutdownFileLogger();
 
       // A regular file where a parent directory should go: mkdir(parent, { recursive: true }) fails with ENOTDIR or similar.
@@ -297,7 +300,7 @@ describe("shutdownFileLogger", () => {
 
       try {
 
-        await initializeFileLogger(path.join(collidingFile, "subdir", "second.log"), 1_000_000);
+        await initializeFileLogger(path.join(collidingFile, "subdir", "second.log"), MAX_LOG_SIZE);
 
         writeLogEntry("info", "Logged after the failed initialization.", null);
       } finally {

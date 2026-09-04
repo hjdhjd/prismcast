@@ -122,7 +122,7 @@ describe("storeSegment", () => {
     // Negative test: store on a never-registered stream silently does nothing - protects against post-termination races.
     assert.doesNotThrow(() => {
 
-      storeSegment(999_999, "ghost.m4s", Buffer.from("x"));
+      storeSegment(999999, "ghost.m4s", Buffer.from("x"));
     });
   });
 });
@@ -148,7 +148,7 @@ describe("getSegment", () => {
 
   test("returns undefined for an unknown stream", () => {
 
-    assert.equal(getSegment(999_999, "any.m4s"), undefined);
+    assert.equal(getSegment(999999, "any.m4s"), undefined);
   });
 });
 
@@ -174,7 +174,7 @@ describe("getSegmentCount", () => {
   test("returns 0 for an unknown stream (no throw)", () => {
 
     // The segmenter calls this to clamp its playlist window; it must tolerate a torn-down stream.
-    assert.equal(getSegmentCount(999_999), 0);
+    assert.equal(getSegmentCount(999999), 0);
   });
 });
 
@@ -223,7 +223,7 @@ describe("storeAudioSegment / getAudioSegment", () => {
 
     assert.doesNotThrow(() => {
 
-      storeAudioSegment(999_999, "ghost.m4s", Buffer.from("x"));
+      storeAudioSegment(999999, "ghost.m4s", Buffer.from("x"));
     });
   });
 
@@ -283,13 +283,13 @@ describe("updateAudioPlaylist / getAudioPlaylist", () => {
 
     assert.doesNotThrow(() => {
 
-      updateAudioPlaylist(999_999, "x");
+      updateAudioPlaylist(999999, "x");
     });
   });
 
   test("get returns undefined for an unknown stream", () => {
 
-    assert.equal(getAudioPlaylist(999_999), undefined);
+    assert.equal(getAudioPlaylist(999999), undefined);
   });
 });
 
@@ -323,13 +323,13 @@ describe("updateVideoPlaylist / getVideoPlaylist", () => {
 
     assert.doesNotThrow(() => {
 
-      updateVideoPlaylist(999_999, "x");
+      updateVideoPlaylist(999999, "x");
     });
   });
 
   test("get returns undefined for an unknown stream", () => {
 
-    assert.equal(getVideoPlaylist(999_999), undefined);
+    assert.equal(getVideoPlaylist(999999), undefined);
   });
 });
 
@@ -407,13 +407,13 @@ describe("storeInitSegment / getInitSegment", () => {
 
     assert.doesNotThrow(() => {
 
-      storeInitSegment(999_999, Buffer.from("x"));
+      storeInitSegment(999999, Buffer.from("x"));
     });
   });
 
   test("getInitSegment returns undefined for an unknown stream", () => {
 
-    assert.equal(getInitSegment(999_999), undefined);
+    assert.equal(getInitSegment(999999), undefined);
   });
 });
 
@@ -481,13 +481,13 @@ describe("updatePlaylist / getPlaylist", () => {
 
     assert.doesNotThrow(() => {
 
-      updatePlaylist(999_999, "x");
+      updatePlaylist(999999, "x");
     });
   });
 
   test("getPlaylist returns undefined for an unknown stream", () => {
 
-    assert.equal(getPlaylist(999_999), undefined);
+    assert.equal(getPlaylist(999999), undefined);
   });
 
   test("returns the empty string explicitly when the playlist is unset (not undefined)", () => {

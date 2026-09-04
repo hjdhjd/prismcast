@@ -332,13 +332,13 @@ describe("setupHdhrEndpoints - GET /status.json", () => {
 
   test("active stream produces a tuner entry with channel info populated from the channel map", async () => {
 
-    // Pick the first key from the predefined map so the tuner entry hydrates from buildChannelMap. We emit a deterministic id (1_000_001) to avoid colliding with
+    // Pick the first key from the predefined map so the tuner entry hydrates from buildChannelMap. We emit a deterministic id (1000001) to avoid colliding with
     // any concurrent test stream registration; the registry keys by id.
     const all = await import("../config/userChannels.ts");
     const channels = all.getAllChannels();
     const firstKey = firstOf(Object.keys(channels), "predefined channel key");
 
-    const entry = makeRegistryEntry({ id: 1_000_001, info: { lastPlaylistRequest: 0, storeKey: firstKey } });
+    const entry = makeRegistryEntry({ id: 1000001, info: { lastPlaylistRequest: 0, storeKey: firstKey } });
 
     registerStream(entry);
 
@@ -369,7 +369,7 @@ describe("setupHdhrEndpoints - GET /status.json", () => {
     const entry = makeRegistryEntry({
 
       channelName: "Removed Channel",
-      id: 1_000_002,
+      id: 1000002,
       info: { lastPlaylistRequest: 0, storeKey: "definitely-not-a-real-channel-key" }
     });
 
@@ -393,9 +393,9 @@ describe("setupHdhrEndpoints - GET /status.json", () => {
 
     // Three sub-cases collapsed into one test: IPv6-mapped IPv4 strips the ::ffff: prefix; plain IPv4 passes through; null produces no TargetIP.
     const cases = [
-      { address: "::ffff:192.168.1.42", expected: "192.168.1.42", id: 1_000_003 },
-      { address: "10.0.0.1", expected: "10.0.0.1", id: 1_000_004 },
-      { address: null, expected: undefined, id: 1_000_005 }
+      { address: "::ffff:192.168.1.42", expected: "192.168.1.42", id: 1000003 },
+      { address: "10.0.0.1", expected: "10.0.0.1", id: 1000004 },
+      { address: null, expected: undefined, id: 1000005 }
     ] as const;
 
     for(const c of cases) {
@@ -426,7 +426,7 @@ describe("setupHdhrEndpoints - GET /status.json", () => {
 
   test("fills remaining slots with idle entries after the active stream", async () => {
 
-    const entry = makeRegistryEntry({ id: 1_000_006, info: { lastPlaylistRequest: 0, storeKey: "definitely-not-a-real-channel-key" } });
+    const entry = makeRegistryEntry({ id: 1000006, info: { lastPlaylistRequest: 0, storeKey: "definitely-not-a-real-channel-key" } });
 
     registerStream(entry);
 

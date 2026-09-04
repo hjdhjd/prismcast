@@ -117,7 +117,7 @@ describe("computeTrimmedLogContent", () => {
   test("returns the full content when cutPosition would be negative (file much smaller than half maxSize)", () => {
 
     // Already covered by the "returns null" test set, but documenting separately: cutPosition < 0 -> early return null. The caller skips the rename.
-    assert.equal(computeTrimmedLogContent("tiny", 100_000_000), null);
+    assert.equal(computeTrimmedLogContent("tiny", 100000000), null);
   });
 });
 
@@ -142,7 +142,7 @@ describe("checkAndTrimFile + trimLogFile - I/O orchestration (integration)", () 
       const logPath = path.join(dir, "test.log");
 
       // Initialize with a generous maxSize so the file never approaches the trim threshold.
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, 1000000);
 
       for(let i = 0; i < 100; i++) {
 

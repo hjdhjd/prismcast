@@ -89,7 +89,7 @@ describe("EvaluateTimeoutError", () => {
 
   test("carries the timeout duration in its message and a stable name", () => {
 
-    const error = new EvaluateTimeoutError(5_000);
+    const error = new EvaluateTimeoutError(5000);
 
     assert.equal(error.name, "EvaluateTimeoutError");
     assert.match(error.message, /5000ms/, "duration in milliseconds appears in the message");
@@ -165,7 +165,7 @@ describe("evaluateWithAbort timeout", () => {
     const page = makeFakePage(() => Promise.reject(new Error("inner failure")));
 
     await assert.rejects(
-      () => evaluateWithAbort(page, () => "value", undefined, 1_000),
+      () => evaluateWithAbort(page, () => "value", undefined, 1000),
       /inner failure/
     );
   });
@@ -208,7 +208,7 @@ describe("evaluateWithAbort with stream context", () => {
 
       // The wrapper builds its composed signal synchronously, so by the time the call returns its promise the wait is live and the stream signal has seen
       // whatever registration it is ever going to see. Reading the count here is the during-the-wait half of the guarantee.
-      const pending = evaluateWithAbort(page, () => "v", undefined, 5_000);
+      const pending = evaluateWithAbort(page, () => "v", undefined, 5000);
 
       assert.equal(getEventListeners(controller.signal, "abort").length, 0, "no abort listener lands on the stream signal while a wait is live");
 
@@ -244,7 +244,7 @@ describe("evaluateWithAbort with stream context", () => {
       });
 
       await assert.rejects(
-        () => evaluateWithAbort(page, () => "v", undefined, 5_000),
+        () => evaluateWithAbort(page, () => "v", undefined, 5000),
         (err: Error) => err instanceof EvaluateAbortError
       );
     });

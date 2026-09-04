@@ -438,7 +438,7 @@ describe("attemptNativeStreaming", () => {
       // Advance past the 5-second INTERCEPTION_AWAIT_TIMEOUT. The bound's timer fires and aborts its signal, the wait settles null, and the function returns
       // through the "No manifest intercepted" branch. A small extra tick (1ms) ensures we are past the timer's exact firing boundary regardless of
       // strict-vs-loose comparison semantics in the runtime's timer wheel.
-      mock.timers.tick(5_001);
+      mock.timers.tick(5001);
 
       const result = await resultPromise;
 

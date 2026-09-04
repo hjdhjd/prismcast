@@ -154,7 +154,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => proxy.getSegmentIndex() >= 3, 5_000, "first poll cycle stores all three segments");
+    await waitFor(() => proxy.getSegmentIndex() >= 3, 5000, "first poll cycle stores all three segments");
 
     const stored = getStream(entry.id);
 
@@ -240,7 +240,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => proxy.getSegmentIndex() >= 2, 5_000, "first poll cycle decrypts and stores both segments");
+    await waitFor(() => proxy.getSegmentIndex() >= 2, 5000, "first poll cycle decrypts and stores both segments");
 
     const stored = getStream(entry.id);
 
@@ -718,13 +718,13 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => proxy.getSegmentIndex() >= 2, 5_000, "first poll cycle stores the initial two segments");
+    await waitFor(() => proxy.getSegmentIndex() >= 2, 5000, "first poll cycle stores the initial two segments");
 
     // Flip the stub to manifest B. The proxy's next poll (MANIFEST_BACKOFF_BASE = 3s in production) must pick up seg2 and seg3 only - seg0 and seg1 already
     // live in the fetchedSequences set and the high-water mark is at sequence 301.
     manifestVersion = 1;
 
-    await waitFor(() => proxy.getSegmentIndex() >= 4, 6_000, "next poll cycle picks up the two newly-published segments");
+    await waitFor(() => proxy.getSegmentIndex() >= 4, 6000, "next poll cycle picks up the two newly-published segments");
 
     const stored = getStream(entry.id);
 
@@ -818,7 +818,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     // Wait for the first poll to land AND the post-poll awaiter to enter clock.sleep. Both are observable: manifestRequestCount goes to 1 when the first
     // fetch completes; sleepDurations is populated when the awaiter calls clock.sleep with the next-poll backoff. Combining the two asserts the proxy is
     // sitting in the exact state we want to test against - one fetch issued, one sleep pending.
-    await waitFor(() => (manifestRequestCount >= 1) && (sleepDurations.length >= 1), 5_000, "first manifest poll lands and the next-poll sleep is queued");
+    await waitFor(() => (manifestRequestCount >= 1) && (sleepDurations.length >= 1), 5000, "first manifest poll lands and the next-poll sleep is queued");
 
     proxy.stop();
 
@@ -841,7 +841,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
 
     assert.equal(manifestRequestCount, countAtStop, "no further manifest polls should hit the stub after stop() even when the in-flight sleep resolves");
     assert.equal(proxy.isStopped(), true, "the proxy reports itself as stopped");
-    assert.equal(sleepDurations[0], 3_000, "the next-poll sleep used MANIFEST_BACKOFF_BASE on a successful first poll");
+    assert.equal(sleepDurations[0], 3000, "the next-poll sleep used MANIFEST_BACKOFF_BASE on a successful first poll");
   });
 
   test("polls a separate-audio rendition and stores its audio segments as audioN.ts with a master + audio variant playlist", async () => {
@@ -940,7 +940,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => ((getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2) && (proxy.getSegmentIndex() >= 2), 5_000,
+    await waitFor(() => ((getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2) && (proxy.getSegmentIndex() >= 2), 5000,
       "first poll cycle stores both video and audio segments");
 
     const stored = getStream(entry.id);
@@ -1073,13 +1073,13 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     activeProxy = proxy;
     proxy.start();
 
-    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2, 5_000, "first poll cycle stores the initial two audio segments");
+    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 2, 5000, "first poll cycle stores the initial two audio segments");
 
     // Flip the audio rendition to its four-segment version. The next poll must store only the two newly-published segments - aud0/aud1 at sequence 600/601 are
     // already in the audio fetchedSequences set and below the high-water mark (601).
     audioVersion = 1;
 
-    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 4, 6_000, "next poll cycle picks up the two newly-published audio segments");
+    await waitFor(() => (getStream(entry.id)?.hls.audioSegments.size ?? 0) >= 4, 6000, "next poll cycle picks up the two newly-published audio segments");
 
     const stored = getStream(entry.id);
 
@@ -1150,7 +1150,7 @@ describe("native HLS proxy - upstream fetch and registry-write contract", () => 
     proxy.start();
 
     // Three consecutive audio failures at MANIFEST_BACKOFF_BASE (3s) spacing land the onError within roughly six seconds; the generous deadline absorbs CI jitter.
-    await waitFor(() => errors.length > 0, 20_000, "three consecutive audio manifest failures escalate to onError");
+    await waitFor(() => errors.length > 0, 20000, "three consecutive audio manifest failures escalate to onError");
 
     assert.match(firstOf(errors), /audio manifest poll failed 3 times/, "the error reports the audio-specific message at exactly the shared 4xx threshold of 3");
     assert.equal(proxy.isStopped(), true, "the proxy flips itself to stopped once the audio manifest failure threshold is reached");

@@ -191,14 +191,14 @@ describe("offsetMoofTimestamps", () => {
 
     // Pure pass-through case: empty offsets map, function returns the original tfdt as the originalTfdt result and does not change the buffer's tfdt value.
     const tfhd = makeTfhd({ defaultSampleDuration: 100, trackId: 1 });
-    const tfdt = makeTfdt(5_000);
+    const tfdt = makeTfdt(5000);
     const trun = makeTrun({ sampleCount: 0 });
     const moof = makeMoof(makeTraf(tfhd, tfdt, trun));
 
     const result = offsetMoofTimestamps(moof, new Map());
 
     assert.equal(result.size, 1, "one track result");
-    assert.equal(result.get(1)?.originalTfdt, 5_000n, "original tfdt extracted");
+    assert.equal(result.get(1)?.originalTfdt, 5000n, "original tfdt extracted");
   });
 
   test("returns per-track durations as the sum of sample durations (default sample duration path)", () => {
@@ -218,7 +218,7 @@ describe("offsetMoofTimestamps", () => {
 
     // The function rewrites the tfdt in place. After invocation, reading the buffer at the tfdt offset must show the new value.
     const tfhd = makeTfhd({ trackId: 1 });
-    const tfdt = makeTfdt(1_000);
+    const tfdt = makeTfdt(1000);
     const trun = makeTrun({ sampleCount: 0 });
     const moof = makeMoof(makeTraf(tfhd, tfdt, trun));
 
@@ -231,7 +231,7 @@ describe("offsetMoofTimestamps", () => {
     // Re-parse to check the rewritten value. The offset for track 1 was 500, applied to the original 1000 -> new tfdt should be 1500.
     const reread = offsetMoofTimestamps(moof, new Map());
 
-    assert.equal(reread.get(1)?.originalTfdt, 1_500n, "tfdt was rewritten in place");
+    assert.equal(reread.get(1)?.originalTfdt, 1500n, "tfdt was rewritten in place");
   });
 
   test("re-applies the offset on a second call with the same map (stateless per-call addition)", () => {

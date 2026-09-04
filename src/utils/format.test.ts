@@ -9,6 +9,12 @@ import { capitalize, extractDomain, extractPathname, formatDuration, formatResol
   stringifySorted } from "./format.ts";
 import assert from "node:assert/strict";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
+// One hour in milliseconds, the span the duration and interval rows measure against.
+const ONE_HOUR_MS = 3600000;
+
 describe("formatTimestamp", () => {
 
   beforeEach(() => {
@@ -78,28 +84,28 @@ describe("formatDuration", () => {
 
   test("formats sub-minute durations as seconds with the s suffix", () => {
 
-    assert.equal(formatDuration(45_000), "45s", "45 seconds in ms");
+    assert.equal(formatDuration(45000), "45s", "45 seconds in ms");
     assert.equal(formatDuration(45, "s"), "45s", "45 seconds in s unit");
   });
 
   test("formats sub-hour durations as minutes and seconds", () => {
 
-    assert.equal(formatDuration(399_000), "6m 39s", "399 seconds = 6m 39s");
+    assert.equal(formatDuration(399000), "6m 39s", "399 seconds = 6m 39s");
   });
 
   test("omits trailing zero components (exactly 2 minutes -> '2m', not '2m 0s')", () => {
 
-    assert.equal(formatDuration(120_000), "2m", "exact-minute boundary drops the zero seconds");
+    assert.equal(formatDuration(120000), "2m", "exact-minute boundary drops the zero seconds");
   });
 
   test("formats hour-plus durations as hours and minutes", () => {
 
-    assert.equal(formatDuration(5_000_000), "1h 23m", "1 hour 23 minutes");
+    assert.equal(formatDuration(5000000), "1h 23m", "1 hour 23 minutes");
   });
 
   test("omits zero minutes from hour output (exactly 2 hours -> '2h')", () => {
 
-    assert.equal(formatDuration(7_200_000), "2h", "exact-hour boundary drops zero minutes");
+    assert.equal(formatDuration(7200000), "2h", "exact-hour boundary drops zero minutes");
   });
 
   test("returns '0s' for a zero duration (boundary)", () => {
@@ -117,8 +123,8 @@ describe("formatDuration", () => {
   test("rounds milliseconds to the nearest second", () => {
 
     // Math.round behavior: 1499 -> 1, 1500 -> 2.
-    assert.equal(formatDuration(1_499), "1s");
-    assert.equal(formatDuration(1_500), "2s");
+    assert.equal(formatDuration(1499), "1s");
+    assert.equal(formatDuration(1500), "2s");
   });
 
   test("treats the 's' unit as already-in-seconds without rounding fractional input", () => {
@@ -134,7 +140,7 @@ describe("formatTimeAgo", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -144,59 +150,59 @@ describe("formatTimeAgo", () => {
 
   test("returns 'just now' for timestamps less than 60 seconds old", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 30_000), "just now", "30 seconds ago");
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 59_000), "just now", "59 seconds ago (boundary inside)");
-    assert.equal(formatTimeAgo(1_700_000_000_000), "just now", "0 seconds ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 30000), "just now", "30 seconds ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 59000), "just now", "59 seconds ago (boundary inside)");
+    assert.equal(formatTimeAgo(BASE_TIME_MS), "just now", "0 seconds ago");
   });
 
   test("returns singular 'minute ago' for exactly one minute", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 60_000), "1 minute ago", "60 seconds = 1 minute, singular");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 60000), "1 minute ago", "60 seconds = 1 minute, singular");
   });
 
   test("returns plural 'minutes ago' for two or more minutes", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 120_000), "2 minutes ago");
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 30 * 60_000), "30 minutes ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 120000), "2 minutes ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 30 * 60000), "30 minutes ago");
   });
 
   test("transitions from minutes to hours at 60 minutes", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 59 * 60_000), "59 minutes ago", "59 minutes still in minutes");
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 60 * 60_000), "1 hour ago", "60 minutes = 1 hour");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 59 * 60000), "59 minutes ago", "59 minutes still in minutes");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 60 * 60000), "1 hour ago", "60 minutes = 1 hour");
   });
 
   test("returns singular 'hour ago' for exactly one hour", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 3_600_000), "1 hour ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - ONE_HOUR_MS), "1 hour ago");
   });
 
   test("returns plural 'hours ago' for two or more hours", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 3 * 3_600_000), "3 hours ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 3 * ONE_HOUR_MS), "3 hours ago");
   });
 
   test("transitions from hours to days at 24 hours", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 23 * 3_600_000), "23 hours ago", "23 hours still in hours");
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 24 * 3_600_000), "1 day ago", "24 hours = 1 day");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 23 * ONE_HOUR_MS), "23 hours ago", "23 hours still in hours");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 24 * ONE_HOUR_MS), "1 day ago", "24 hours = 1 day");
   });
 
   test("returns singular 'day ago' for exactly one day", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 86_400_000), "1 day ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 86400000), "1 day ago");
   });
 
   test("returns plural 'days ago' for multi-day spans", () => {
 
-    assert.equal(formatTimeAgo(1_700_000_000_000 - 7 * 86_400_000), "7 days ago");
+    assert.equal(formatTimeAgo(BASE_TIME_MS - 7 * 86400000), "7 days ago");
   });
 
   test("future timestamps (negative elapsed) round to 'just now'", () => {
 
     // Boundary: clock skew or a future timestamp produces a negative seconds value, which Math.floor rounds toward -Infinity. The first guard `seconds < 60`
     // catches negatives too, so the function gracefully reports "just now" rather than "-N minutes ago".
-    assert.equal(formatTimeAgo(1_700_000_000_000 + 5_000), "just now");
+    assert.equal(formatTimeAgo(BASE_TIME_MS + 5000), "just now");
   });
 });
 

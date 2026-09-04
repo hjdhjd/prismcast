@@ -28,7 +28,7 @@ describe("retryOperation", () => {
 
         return "ok";
       },
-      timeoutMs: 1_000
+      timeoutMs: 1000
     });
 
     assert.equal(result, "ok", "successful op returns its value");
@@ -57,7 +57,7 @@ describe("retryOperation", () => {
 
         return "succeeded";
       },
-      timeoutMs: 1_000
+      timeoutMs: 1000
     });
 
     assert.equal(result, "succeeded", "third attempt succeeded");
@@ -86,7 +86,7 @@ describe("retryOperation", () => {
 
           throw new Error("attempt " + String(attempts) + " failed");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /attempt 3 failed/,
       "throws the most recent error after exhaustion"
@@ -118,7 +118,7 @@ describe("retryOperation", () => {
 
           throw new Error("fail");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /fail/
     );
@@ -135,17 +135,17 @@ describe("retryOperation", () => {
         clock: grow.clock,
         description: "growing",
         maxAttempts: 3,
-        maxBackoffDelay: 5_000,
+        maxBackoffDelay: 5000,
         operation: async () => {
 
           throw new Error("fail");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /fail/
     );
 
-    assert.deepEqual(grow.sleeps, [ 1_000, 2_000 ], "exponential growth follows 1000 * 2^(attempt-1) when below the cap");
+    assert.deepEqual(grow.sleeps, [ 1000, 2000 ], "exponential growth follows 1000 * 2^(attempt-1) when below the cap");
   });
 
   test("throws immediately on a session-closed error without consuming a retry budget", async () => {
@@ -166,7 +166,7 @@ describe("retryOperation", () => {
 
           throw new Error("Target closed");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /Target closed/,
       "session-closed errors propagate immediately"
@@ -190,7 +190,7 @@ describe("retryOperation", () => {
         maxAttempts: 3,
         operation,
         shouldAbort: () => true,
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /Operation aborted/,
       "abort throws the documented sentinel"
@@ -225,7 +225,7 @@ describe("retryOperation", () => {
           throw new Error("attempt " + String(attempts));
         },
         shouldAbort: () => aborted,
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /Operation aborted/,
       "abort short-circuits the retry loop"
@@ -256,7 +256,7 @@ describe("retryOperation", () => {
 
         throw new Error("Operation timed out after 1000ms.");
       },
-      timeoutMs: 1_000
+      timeoutMs: 1000
     });
 
     assert.equal(result, undefined, "early-success path returns undefined (no value to surface)");
@@ -285,7 +285,7 @@ describe("retryOperation", () => {
 
           throw new Error("Operation timed out after 1000ms.");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /timed out/,
       "outer rejection surfaces the operation error, not the early-check error"
@@ -324,7 +324,7 @@ describe("retryOperation", () => {
           // Operation never resolves - real production code would hang here, but the fake clock pre-empts it with the timeout reject.
           return new Promise<string>(() => { /* never resolves */ });
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /timed out after 1000ms/,
       "the timeout error from waitWithTimeout is the error the loop ultimately throws"
@@ -352,7 +352,7 @@ describe("retryOperation", () => {
 
           throw new Error("nope");
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       }),
       /nope/,
       "single attempt, single throw"
@@ -383,7 +383,7 @@ describe("retryOperation", () => {
 
           return "should-not-run";
         },
-        timeoutMs: 1_000
+        timeoutMs: 1000
       });
     } catch(err) {
 
@@ -410,7 +410,7 @@ describe("retryOperation", () => {
 
         return "wired";
       },
-      timeoutMs: 1_000
+      timeoutMs: 1000
     });
 
     assert.equal(result, "wired");

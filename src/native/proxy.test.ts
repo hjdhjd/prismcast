@@ -200,7 +200,7 @@ describe("NativeProxy.setTokenRefreshTimer", () => {
     // Boundary: setTokenRefreshTimer is purely a side-channel for the coordinator to register a cancel handle. None of the public counters or state observers
     // should change when a timer is registered.
     const proxy = createNativeProxy(makeProxyOptions());
-    const timer = setTimeout((): void => undefined, 100_000);
+    const timer = setTimeout((): void => undefined, 100000);
 
     proxy.setTokenRefreshTimer(timer);
 

@@ -69,10 +69,10 @@ describe("formatKeyframeStatsSummary", () => {
     const stats = makeKeyframeStats({
 
 
-      averageKeyframeIntervalMs: 2_000,
-      keyframeCount: 2_490,
-      maxKeyframeIntervalMs: 2_100,
-      minKeyframeIntervalMs: 1_900
+      averageKeyframeIntervalMs: 2000,
+      keyframeCount: 2490,
+      maxKeyframeIntervalMs: 2100,
+      minKeyframeIntervalMs: 1900
     });
 
     assert.equal(formatKeyframeStatsSummary(stats), "Keyframes: 2490 of 2490 moofs (100.0%), interval 1.9-2.1s avg 2.0s.");
@@ -83,10 +83,10 @@ describe("formatKeyframeStatsSummary", () => {
     const stats = makeKeyframeStats({
 
 
-      averageKeyframeIntervalMs: 3_100,
+      averageKeyframeIntervalMs: 3100,
       keyframeCount: 85,
-      maxKeyframeIntervalMs: 12_400,
-      minKeyframeIntervalMs: 1_800,
+      maxKeyframeIntervalMs: 12400,
+      minKeyframeIntervalMs: 1800,
       nonKeyframeCount: 113,
       segmentsWithoutLeadingKeyframe: 5
     });
@@ -100,10 +100,10 @@ describe("formatKeyframeStatsSummary", () => {
     const stats = makeKeyframeStats({
 
 
-      averageKeyframeIntervalMs: 2_000,
+      averageKeyframeIntervalMs: 2000,
       keyframeCount: 99,
-      maxKeyframeIntervalMs: 2_100,
-      minKeyframeIntervalMs: 1_900,
+      maxKeyframeIntervalMs: 2100,
+      minKeyframeIntervalMs: 1900,
       segmentsWithoutLeadingKeyframe: 1
     });
 
@@ -159,10 +159,10 @@ describe("formatSessionStatsSummary", () => {
       syncSpreadCount: 100,
       syncSpreadMaxMs: 25.7,
       syncSpreadMinMs: 0.7,
-      syncSpreadSumMs: 1_200
+      syncSpreadSumMs: 1200
     });
 
-    assert.equal(formatSessionStatsSummary(stats, 1_725), "Session: 1725 segments, A-V sync: mean 12.0ms, min 0.7ms, max 25.7ms.");
+    assert.equal(formatSessionStatsSummary(stats, 1725), "Session: 1725 segments, A-V sync: mean 12.0ms, min 0.7ms, max 25.7ms.");
   });
 
   test("appends tab replacement count when present (singular form)", () => {
@@ -615,7 +615,7 @@ describe("createFMP4Segmenter", () => {
 
   test("cuts the second segment only once elapsed time reaches CONFIG.hls.segmentDuration, never before", () => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
 
     const onError = mock.fn();
     const onStop = mock.fn();

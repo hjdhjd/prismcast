@@ -343,14 +343,14 @@ describe("setupStreamsEndpoint - GET /streams/status (direct-handler wire bytes)
       write.mock.resetCalls();
 
       // The heartbeat fires every 30s; confirm it ticks before close.
-      mock.timers.tick(30_000);
+      mock.timers.tick(30000);
       assert.equal(write.mock.callCount(), 1, "heartbeat fires while connection is open");
       assert.deepEqual(write.mock.calls[0]?.arguments, ["event: heartbeat\ndata: \n\n"]);
 
       triggerReqEvent("close");
 
       // Advance another full interval - no further writes.
-      mock.timers.tick(30_000);
+      mock.timers.tick(30000);
       assert.equal(write.mock.callCount(), 1, "no heartbeat after close()");
     } finally {
 

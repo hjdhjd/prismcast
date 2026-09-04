@@ -105,7 +105,7 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     // assertion below is that terminateStream cleared it. unref() prevents the timer from holding the test-runner event loop open if the cleanup branch is
     // ever broken (the test would still fail loudly via the assertion, but we do not want the suite to hang).
     let prerollTimerFired = false;
-    const prerollTimer = setTimeout(() => { prerollTimerFired = true; }, 60_000);
+    const prerollTimer = setTimeout(() => { prerollTimerFired = true; }, 60000);
 
     prerollTimer.unref();
 

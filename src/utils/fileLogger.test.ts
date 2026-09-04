@@ -18,6 +18,9 @@ import { initDebugFilter } from "./debugFilter.ts";
 import path from "node:path";
 import { withTempDir } from "../testing.helpers.ts";
 
+// A size cap far above anything these rows write, so no trim runs and the assertions read the file exactly as it was appended.
+const MAX_LOG_SIZE = 1000000;
+
 describe("initializeFileLogger and writeLogEntry", () => {
 
   afterEach(async () => {
@@ -31,7 +34,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       // The init step writes an empty file. We can read it back to verify creation.
       const content = await readFile(logPath, "utf-8");
@@ -47,7 +50,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "nested", "subdir", "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       const content = await readFile(logPath, "utf-8");
 
@@ -61,7 +64,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Hello, world.", null);
 
@@ -80,7 +83,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("warn", "This is a warning.", "yellow");
 
@@ -99,7 +102,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("error", "Something failed.", "red");
 
@@ -118,7 +121,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("debug", "Detailed trace.", "cyan", "tuning:hulu");
 
@@ -138,7 +141,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Plain info.", null);
 
@@ -157,7 +160,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "First.", null);
       writeLogEntry("info", "Second.", null);
@@ -182,7 +185,7 @@ describe("initializeFileLogger and writeLogEntry", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
       await shutdownFileLogger();
       await rm(dir, { force: true, recursive: true });
 
@@ -225,7 +228,7 @@ describe("flushLogBuffer", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       await flushLogBuffer();
 
@@ -255,7 +258,7 @@ describe("flushLogBufferSync", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Sync write.", null);
 
@@ -273,7 +276,7 @@ describe("flushLogBufferSync", () => {
 
       const logPath = path.join(dir, "test.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       assert.doesNotThrow(() => { flushLogBufferSync(); });
     });
@@ -305,7 +308,7 @@ describe("initializeFileLogger - existing-file branch", () => {
 
       await writeFile(logPath, previousContent, "utf-8");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       // Append a new entry and flush.
       writeLogEntry("info", "New run line.", null);
@@ -341,7 +344,7 @@ describe("flushTimer interval", () => {
 
       const logPath = path.join(dir, "timer.log");
 
-      await initializeFileLogger(logPath, 1_000_000);
+      await initializeFileLogger(logPath, MAX_LOG_SIZE);
 
       writeLogEntry("info", "Buffered entry.", null);
 

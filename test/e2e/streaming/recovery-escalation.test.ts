@@ -32,8 +32,8 @@ import assert from "node:assert/strict";
 
 describe("recovery state machine - escalation, accumulation, and breaker reset", () => {
 
-  // The unit suite uses 1_700_000_000_000 as its baseline; we match that so test failures across both tiers anchor on the same wall-clock for consistency.
-  const baseTime = 1_700_000_000_000;
+  // The unit suite uses 1700000000000 as its baseline; we match that so test failures across both tiers anchor on the same wall-clock for consistency.
+  const baseTime = 1700000000000;
 
   beforeEach(() => {
 
@@ -78,7 +78,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     assert.equal(metrics.currentRecoveryStartTime, baseTime + 800, "L2 attempt captures the post-tick start time");
 
     // 2000ms passes; L2 also failed. Escalate to L3.
-    mock.timers.tick(2_000);
+    mock.timers.tick(2000);
 
     recordRecoveryAttempt(metrics, getRecoveryMethod(3));
 
@@ -86,7 +86,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     assert.equal(metrics.pageNavigationAttempts, 1, "L3 attempt incremented page-navigation counter");
 
     // 1500ms passes; L3 succeeds. The monitor records a success against the page-navigation method, which clears the in-progress fields.
-    mock.timers.tick(1_500);
+    mock.timers.tick(1500);
 
     recordRecoverySuccess(metrics, RECOVERY_METHODS.pageNavigation);
 
@@ -101,7 +101,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
 
     // totalRecoveryTimeMs accumulates only on success and only since the most recent attempt's start time. The L3 attempt started at baseTime+2800 and
     // succeeded 1500ms later, so the duration credited is 1500ms - L1 and L2 do not contribute because they had no recordRecoverySuccess paired with them.
-    assert.equal(metrics.totalRecoveryTimeMs, 1_500, "duration credited equals only the L3 attempt-to-success delta");
+    assert.equal(metrics.totalRecoveryTimeMs, 1500, "duration credited equals only the L3 attempt-to-success delta");
   });
 
   test("two consecutive recovery cycles accumulate metrics; nothing resets between cycles unless a reset call happens", async () => {
@@ -118,13 +118,13 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     recordRecoverySuccess(metrics, RECOVERY_METHODS.playUnmute);
 
     // Healthy interval - 30 seconds of clean playback. Time advances; no metrics calls.
-    mock.timers.tick(30_000);
+    mock.timers.tick(30000);
 
     // Cycle 2: L1 fails (no success), escalates to L2 which succeeds in 2000ms.
     recordRecoveryAttempt(metrics, getRecoveryMethod(1));
     mock.timers.tick(500);
     recordRecoveryAttempt(metrics, getRecoveryMethod(2));
-    mock.timers.tick(2_000);
+    mock.timers.tick(2000);
     recordRecoverySuccess(metrics, RECOVERY_METHODS.sourceReload);
 
     // Both cycles' attempts are reflected.
@@ -137,7 +137,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     assert.equal(metrics.sourceReloadSuccesses, 1, "one L2 success (cycle 2)");
 
     // Total duration is the sum of cycle 1's L1 (600ms) and cycle 2's L2 (2000ms). Cycle 2's L1 had no success so its duration is not credited.
-    assert.equal(metrics.totalRecoveryTimeMs, 2_600, "totalRecoveryTimeMs sums both successful recoveries");
+    assert.equal(metrics.totalRecoveryTimeMs, 2600, "totalRecoveryTimeMs sums both successful recoveries");
   });
 
   test("circuit breaker accumulates failures within the window, trips at threshold, and starts fresh after an explicit reset", async () => {
@@ -173,7 +173,7 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
 
     // The monitor's "60s sustained-healthy" policy fires - we simulate that by ticking time forward (only relevant for narrative completeness; the breaker's
     // internal logic is time-agnostic) and then calling the explicit reset hook.
-    mock.timers.tick(60_000);
+    mock.timers.tick(60000);
 
     resetCircuitBreaker(breaker);
 
@@ -181,11 +181,11 @@ describe("recovery state machine - escalation, accumulation, and breaker reset",
     assert.equal(breaker.totalFailureCount, 0, "post-reset count is zeroed");
 
     // A new failure after reset must start a fresh window with count=1, no trip.
-    const postReset = checkCircuitBreaker(breaker, baseTime + 60_000 + 1);
+    const postReset = checkCircuitBreaker(breaker, baseTime + 60000 + 1);
 
     assert.equal(postReset.shouldTrip, false, "the first failure after reset does not trip");
     assert.equal(postReset.totalCount, 1, "post-reset count starts at 1, not at threshold-1");
-    assert.equal(breaker.firstFailureTime, baseTime + 60_000 + 1, "first-failure timestamp anchors a fresh window");
+    assert.equal(breaker.firstFailureTime, baseTime + 60000 + 1, "first-failure timestamp anchors a fresh window");
   });
 
   test("metrics state and circuit-breaker state are independent: recording a recovery success does not touch the breaker", async () => {

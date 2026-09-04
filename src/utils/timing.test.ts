@@ -49,7 +49,7 @@ describe("startTimer", () => {
     mockTime = 250;
     assert.equal(elapsed(), 150, "first read sees the delta from the captured start");
 
-    mockTime = 1_000;
+    mockTime = 1000;
     assert.equal(elapsed(), 900, "second read still measures from the original start, not the previous read");
   });
 
@@ -80,12 +80,12 @@ describe("startTimer", () => {
   test("reflects a clock advance of N ms as an elapsed value of N", () => {
 
     // The deterministic equivalent of "real-time delay" - we advance the fake clock by 30 and verify the closure reports exactly 30. No slack, no flake.
-    let mockTime = 1_000;
+    let mockTime = 1000;
     const { clock } = makeFakeClock({ now: () => mockTime });
 
     const elapsed = startTimer(clock);
 
-    mockTime = 1_030;
+    mockTime = 1030;
 
     assert.equal(elapsed(), 30);
   });

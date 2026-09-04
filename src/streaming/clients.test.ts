@@ -10,13 +10,16 @@ import { getNextStreamId, registerStream, unregisterStream } from "./registry.ts
 import assert from "node:assert/strict";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 describe("registerClient", () => {
 
   let streamId: number;
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
     streamId = getNextStreamId();
     registerStream(makeRegistryEntry({ id: streamId }));
   });
@@ -72,11 +75,11 @@ describe("registerClient", () => {
     // at 1 and that an outside-TTL gap still keeps the client visible if a refresh occurred in between.
     registerClient(streamId, "192.168.1.50", "hls");
 
-    mock.timers.tick(20_000);
+    mock.timers.tick(20000);
     registerClient(streamId, "192.168.1.50", "hls");
 
     // Now advance past 30s but only 11s past the second registration. The TTL is computed from lastSeen, so the client must still be visible.
-    mock.timers.tick(11_000);
+    mock.timers.tick(11000);
 
     const summary = getClientSummary(streamId);
 
@@ -87,7 +90,7 @@ describe("registerClient", () => {
 
     // Negative test: the registerClient guard checks getStream() and silently no-ops if the stream is gone. This is the protection against orphan client entries
     // surviving across stream termination.
-    const phantomId = 999_999;
+    const phantomId = 999999;
 
     registerClient(phantomId, "10.0.0.1", "hls");
 
@@ -104,7 +107,7 @@ describe("unregisterClient", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
     streamId = getNextStreamId();
     registerStream(makeRegistryEntry({ id: streamId }));
   });
@@ -177,7 +180,7 @@ describe("getClientSummary", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
     streamId = getNextStreamId();
     registerStream(makeRegistryEntry({ id: streamId }));
   });
@@ -203,7 +206,7 @@ describe("getClientSummary", () => {
     registerClient(streamId, "10.0.0.1", "hls");
     assert.equal(getClientSummary(streamId).total, 1);
 
-    mock.timers.tick(30_001);
+    mock.timers.tick(30001);
 
     assert.equal(getClientSummary(streamId).total, 0, "HLS client expired past 30s TTL");
   });
@@ -213,7 +216,7 @@ describe("getClientSummary", () => {
     // The implementation uses '> TTL' not '>= TTL', so a delta of exactly 30000 keeps the client alive. Locks the off-by-one boundary.
     registerClient(streamId, "10.0.0.1", "hls");
 
-    mock.timers.tick(30_000);
+    mock.timers.tick(30000);
 
     assert.equal(getClientSummary(streamId).total, 1, "boundary is strict-greater, so 30000ms is still inside TTL");
   });
@@ -223,7 +226,7 @@ describe("getClientSummary", () => {
     // MPEG-TS clients have persistent connections - they are managed by explicit register/unregister, not TTL. Locks the protocol-specific lifecycle contract.
     registerClient(streamId, "10.0.0.1", "mpegts");
 
-    mock.timers.tick(60_000);
+    mock.timers.tick(60000);
 
     assert.equal(getClientSummary(streamId).total, 1, "MPEG-TS survives well past the HLS TTL");
   });
@@ -274,7 +277,7 @@ describe("getClientSummary", () => {
     registerClient(streamId, "10.0.0.1", "hls");
     registerClient(streamId, "10.0.0.2", "hls");
 
-    mock.timers.tick(30_001);
+    mock.timers.tick(30001);
 
     const summary = getClientSummary(streamId);
 
@@ -289,7 +292,7 @@ describe("clearClients", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
     streamId = getNextStreamId();
     registerStream(makeRegistryEntry({ id: streamId }));
   });
@@ -315,7 +318,7 @@ describe("clearClients", () => {
     // Negative test: cleanup paths may call clearClients with an ID whose registration was rolled back. Must not throw.
     assert.doesNotThrow(() => {
 
-      clearClients(999_999);
+      clearClients(999999);
     });
   });
 

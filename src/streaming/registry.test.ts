@@ -89,7 +89,7 @@ describe("registerStream / getStream", () => {
   test("returns undefined for an unknown stream ID", () => {
 
     // Negative test: looking up a never-registered ID must return undefined, not throw and not return a default.
-    assert.equal(getStream(999_999), undefined, "unknown ID returns undefined");
+    assert.equal(getStream(999999), undefined, "unknown ID returns undefined");
   });
 
   test("registering with the same ID twice replaces the existing entry", () => {
@@ -130,7 +130,7 @@ describe("unregisterStream", () => {
     // Negative test: the registry must tolerate stale unregister calls (e.g., double cleanup paths) without throwing.
     assert.doesNotThrow(() => {
 
-      unregisterStream(123_456_789);
+      unregisterStream(123456789);
     });
   });
 
@@ -300,7 +300,7 @@ describe("updateLastAccess", () => {
   beforeEach(() => {
 
     clearRegistry();
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
   });
 
   afterEach(() => {
@@ -317,7 +317,7 @@ describe("updateLastAccess", () => {
     registerStream(entry);
     updateLastAccess(entry.id);
 
-    assert.equal(entry.info.lastPlaylistRequest, 1_700_000_000_000, "stamped to current Date.now()");
+    assert.equal(entry.info.lastPlaylistRequest, 1700000000000, "stamped to current Date.now()");
   });
 
   test("is a no-op for an unknown stream", () => {
@@ -505,28 +505,28 @@ describe("getStreamMemoryUsage", () => {
     // We verify that getStreamMemoryUsage trusts the counters - if the contract changes to iterate, this test catches it.
     const entry = makeRegistryEntry();
 
-    entry.hls.segmentBytes = 500_000;
-    entry.hls.audioSegmentBytes = 100_000;
+    entry.hls.segmentBytes = 500000;
+    entry.hls.audioSegmentBytes = 100000;
 
     const usage = getStreamMemoryUsage(entry);
 
-    assert.equal(usage.segments, 600_000, "video + audio counters summed");
-    assert.equal(usage.total, 600_000, "no init -> total equals segments");
+    assert.equal(usage.segments, 600000, "video + audio counters summed");
+    assert.equal(usage.total, 600000, "no init -> total equals segments");
   });
 
   test("totals init plus video plus audio segment bytes", () => {
 
     const entry = makeRegistryEntry();
 
-    entry.hls.initSegment = Buffer.alloc(1_000);
-    entry.hls.segmentBytes = 50_000;
-    entry.hls.audioSegmentBytes = 20_000;
+    entry.hls.initSegment = Buffer.alloc(1000);
+    entry.hls.segmentBytes = 50000;
+    entry.hls.audioSegmentBytes = 20000;
 
     const usage = getStreamMemoryUsage(entry);
 
-    assert.equal(usage.initSegment, 1_000);
-    assert.equal(usage.segments, 70_000);
-    assert.equal(usage.total, 71_000, "init (1000) + video (50000) + audio (20000)");
+    assert.equal(usage.initSegment, 1000);
+    assert.equal(usage.segments, 70000);
+    assert.equal(usage.total, 71000, "init (1000) + video (50000) + audio (20000)");
   });
 });
 
@@ -547,16 +547,16 @@ describe("getTotalSegmentMemory", () => {
     const a = makeRegistryEntry();
     const b = makeRegistryEntry();
 
-    a.hls.initSegment = Buffer.alloc(1_000);
-    a.hls.segmentBytes = 10_000;
+    a.hls.initSegment = Buffer.alloc(1000);
+    a.hls.segmentBytes = 10000;
 
-    b.hls.segmentBytes = 30_000;
-    b.hls.audioSegmentBytes = 5_000;
+    b.hls.segmentBytes = 30000;
+    b.hls.audioSegmentBytes = 5000;
 
     registerStream(a);
     registerStream(b);
 
-    assert.equal(getTotalSegmentMemory(), 1_000 + 10_000 + 30_000 + 5_000, "sums every entry's total");
+    assert.equal(getTotalSegmentMemory(), 1000 + 10000 + 30000 + 5000, "sums every entry's total");
   });
 });
 
@@ -631,9 +631,9 @@ describe("getLastSegmentSize", () => {
 
   test("returns the size reported by the segmenter", () => {
 
-    const entry = entryWithSegmenter({ getLastSegmentSize: (): number => 12_345 });
+    const entry = entryWithSegmenter({ getLastSegmentSize: (): number => 12345 });
 
-    assert.equal(getLastSegmentSize(entry), 12_345);
+    assert.equal(getLastSegmentSize(entry), 12345);
   });
 
   test("returns null when the segmenter returns undefined / nullish (??)", () => {

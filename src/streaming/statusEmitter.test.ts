@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
  */
 function makeStreamStatus(overrides: Partial<StreamStatus> = {}): StreamStatus {
 
-  const id = overrides.id ?? Math.floor(Math.random() * 1_000_000);
+  const id = overrides.id ?? Math.floor(Math.random() * 1000000);
 
   return {
 
@@ -208,7 +208,7 @@ describe("emitStreamRemoved", () => {
     // Negative test: cleanup paths may double-call emitStreamRemoved. The function must not throw on stale IDs.
     assert.doesNotThrow(() => {
 
-      emitStreamRemoved(999_999);
+      emitStreamRemoved(999999);
     });
   });
 });
@@ -490,7 +490,7 @@ describe("getStreamStatus", () => {
 
   test("returns undefined for an unknown stream", () => {
 
-    assert.equal(getStreamStatus(999_999), undefined);
+    assert.equal(getStreamStatus(999999), undefined);
   });
 });
 
@@ -522,7 +522,7 @@ describe("removeStreamStatus", () => {
 
     assert.doesNotThrow(() => {
 
-      removeStreamStatus(999_999);
+      removeStreamStatus(999999);
     });
   });
 });

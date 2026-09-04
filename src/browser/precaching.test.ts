@@ -24,6 +24,9 @@ import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "./precaching.ts";
 import assert from "node:assert/strict";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 // The lineup writes the recorder issues, captured by the injected port below so each case can assert what was persisted without touching a real file.
 let persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
@@ -130,7 +133,7 @@ describe("recordDiscoveryOutcome", () => {
 
     // We mock Date for deterministic timestamps and setTimeout to suppress the 2-second debounced health flush timer the mark calls below schedule. Each test uses
     // unique synthetic domains so state from one scenario cannot color another.
-    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: [ "Date", "setTimeout" ], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -175,7 +178,7 @@ describe("recordDiscoveryOutcome", () => {
 
     await recordDiscoveryOutcome(provider, [], makePage("https://auth.case-wall.test/login"), recorderDeps);
 
-    assert.deepEqual(getDomainAuthState("case-wall.test"), { status: "needsLogin", timestamp: 1_700_000_000_000 }, "domain marked needs-sign-in");
+    assert.deepEqual(getDomainAuthState("case-wall.test"), { status: "needsLogin", timestamp: BASE_TIME_MS }, "domain marked needs-sign-in");
     assert.equal(warn.mock.calls.length, 1, "exactly one WARN");
 
     const message = String(warn.mock.calls[0]?.arguments[0]);
@@ -230,7 +233,7 @@ describe("recordDiscoveryOutcome", () => {
 
     await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-plain.test/guide"), recorderDeps);
 
-    assert.deepEqual(getDomainAuthState("case-plain.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified without a validator");
+    assert.deepEqual(getDomainAuthState("case-plain.test"), { status: "verified", timestamp: BASE_TIME_MS }, "verified without a validator");
   });
 
   test("a non-empty result passing validatePrecache marks the domain verified", async () => {
@@ -240,7 +243,7 @@ describe("recordDiscoveryOutcome", () => {
 
     await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-validated.test/guide"), recorderDeps);
 
-    assert.deepEqual(getDomainAuthState("case-validated.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified through the validator");
+    assert.deepEqual(getDomainAuthState("case-validated.test"), { status: "verified", timestamp: BASE_TIME_MS }, "verified through the validator");
   });
 
   test("a non-empty result failing validatePrecache clears a standing needs-sign-in flag back to unknown", async () => {
@@ -269,7 +272,7 @@ describe("recordDiscoveryOutcome", () => {
 
     await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-keeps-verified.test/guide"), recorderDeps);
 
-    assert.deepEqual(getDomainAuthState("case-keeps-verified.test"), { status: "verified", timestamp: 1_700_000_000_000 }, "verified state untouched");
+    assert.deepEqual(getDomainAuthState("case-keeps-verified.test"), { status: "verified", timestamp: BASE_TIME_MS }, "verified state untouched");
   });
 
   test("a non-empty result failing validatePrecache on an unknown domain changes nothing", async () => {

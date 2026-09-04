@@ -14,6 +14,9 @@ import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 /**
  * Shape of a single channel's persisted resume entry. Mirrors ResumeEntryJSON in the production module; we keep a local copy so tests do not import a private
  * type.
@@ -55,7 +58,7 @@ describe("loadResumeState", () => {
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-resume-test-"));
     initializeDataDir(tempDir);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(async () => {
@@ -72,7 +75,7 @@ describe("loadResumeState", () => {
     await makeResumeFile(tempDir, {
 
 
-      cnn: { initVersion: 5, segmentIndex: 1234, timestamp: 1_700_000_000_000, trackTimestamps: { 1: "9000000" } }
+      cnn: { initVersion: 5, segmentIndex: 1234, timestamp: BASE_TIME_MS, trackTimestamps: { 1: "9000000" } }
     });
 
     loadResumeState();
@@ -96,7 +99,7 @@ describe("loadResumeState", () => {
     await makeResumeFile(tempDir, {
 
 
-      espn: { initVersion: 0, segmentIndex: 42, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      espn: { initVersion: 0, segmentIndex: 42, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
@@ -108,7 +111,7 @@ describe("loadResumeState", () => {
   test("discards entries older than the 90-second TTL", async () => {
 
     // Boundary: an entry with timestamp older than (now - 90000) is dropped at load time.
-    const expiredTs = 1_700_000_000_000 - 91_000;
+    const expiredTs = BASE_TIME_MS - 91000;
 
     await makeResumeFile(tempDir, {
 
@@ -124,7 +127,7 @@ describe("loadResumeState", () => {
   test("loads entries inside the TTL window even at the boundary", async () => {
 
     // The TTL check uses '> RESUME_TTL', so an entry exactly 90000ms old is still inside the window.
-    const boundaryTs = 1_700_000_000_000 - 90_000;
+    const boundaryTs = BASE_TIME_MS - 90000;
 
     await makeResumeFile(tempDir, {
 
@@ -184,7 +187,7 @@ describe("peekResumeData", () => {
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-resume-test-"));
     initializeDataDir(tempDir);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(async () => {
@@ -199,7 +202,7 @@ describe("peekResumeData", () => {
     await makeResumeFile(tempDir, {
 
 
-      foo: { initVersion: 3, segmentIndex: 100, timestamp: 1_700_000_000_000, trackTimestamps: { 1: "1000" } }
+      foo: { initVersion: 3, segmentIndex: 100, timestamp: BASE_TIME_MS, trackTimestamps: { 1: "1000" } }
     });
 
     loadResumeState();
@@ -223,13 +226,13 @@ describe("peekResumeData", () => {
     await makeResumeFile(tempDir, {
 
 
-      stale: { initVersion: 0, segmentIndex: 1, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      stale: { initVersion: 0, segmentIndex: 1, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
 
     // Advance clock past TTL.
-    mock.timers.tick(91_000);
+    mock.timers.tick(91000);
 
     assertEqual(peekResumeData("stale"), null, "expired entry returns null");
     // After eviction, the segment index lookup must also fail.
@@ -242,7 +245,7 @@ describe("peekResumeData", () => {
     await makeResumeFile(tempDir, {
 
 
-      bar: { initVersion: 1, segmentIndex: 50, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      bar: { initVersion: 1, segmentIndex: 50, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
@@ -264,7 +267,7 @@ describe("deleteResumeData", () => {
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-resume-test-"));
     initializeDataDir(tempDir);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(async () => {
@@ -278,7 +281,7 @@ describe("deleteResumeData", () => {
     await makeResumeFile(tempDir, {
 
 
-      gone: { initVersion: 0, segmentIndex: 99, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      gone: { initVersion: 0, segmentIndex: 99, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
@@ -312,7 +315,7 @@ describe("getResumeSegmentIndex", () => {
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-resume-test-"));
     initializeDataDir(tempDir);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(async () => {
@@ -331,7 +334,7 @@ describe("getResumeSegmentIndex", () => {
     await makeResumeFile(tempDir, {
 
 
-      ok: { initVersion: 0, segmentIndex: 17, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      ok: { initVersion: 0, segmentIndex: 17, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
@@ -345,12 +348,12 @@ describe("getResumeSegmentIndex", () => {
     await makeResumeFile(tempDir, {
 
 
-      maybe: { initVersion: 0, segmentIndex: 5, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      maybe: { initVersion: 0, segmentIndex: 5, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
 
-    mock.timers.tick(91_000);
+    mock.timers.tick(91000);
 
     assertEqual(getResumeSegmentIndex("maybe"), null, "stale entry filtered at read time");
   });
@@ -364,7 +367,7 @@ describe("saveResumeState", () => {
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-resume-test-"));
     initializeDataDir(tempDir);
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(async () => {
@@ -383,7 +386,7 @@ describe("saveResumeState", () => {
       initSegment: null,
       initVersion: 2,
       segmentIndex: 200,
-      trackTimestamps: new Map([[ 1, 9_000_000n ]])
+      trackTimestamps: new Map([[ 1, 9000000n ]])
     }]);
 
     loadResumeState();
@@ -394,7 +397,7 @@ describe("saveResumeState", () => {
 
     assert(data);
     assertEqual(data.initVersion, 3, "init version incremented on peek");
-    assertEqual(data.trackTimestamps.get(1), 9_000_000n);
+    assertEqual(data.trackTimestamps.get(1), 9000000n);
   });
 
   test("does NOT create the file when there are no active entries and no carry-forward state", () => {
@@ -428,7 +431,7 @@ describe("saveResumeState", () => {
     await makeResumeFile(tempDir, {
 
 
-      same: { initVersion: 1, segmentIndex: 1, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      same: { initVersion: 1, segmentIndex: 1, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
@@ -528,14 +531,14 @@ describe("saveResumeState", () => {
     await makeResumeFile(tempDir, {
 
 
-      stale: { initVersion: 0, segmentIndex: 50, timestamp: 1_700_000_000_000, trackTimestamps: {} }
+      stale: { initVersion: 0, segmentIndex: 50, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState();
 
     // Advance virtual time past the 90-second TTL boundary so the in-memory entry now classifies as stale. The mock.timers harness above is enabled by
     // beforeEach and reset in afterEach, so the advance survives until this test completes.
-    mock.timers.tick(91_000);
+    mock.timers.tick(91000);
 
     // Save with NO active streams. The carry-forward filter should drop the stale entry, producing zero entries; saveResumeState's "Nothing to save" branch
     // skips the write entirely so the file does not exist on disk afterward.

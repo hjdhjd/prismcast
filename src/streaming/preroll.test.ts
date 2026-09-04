@@ -13,6 +13,9 @@ import { makeExpressStub, makeReqRes } from "../routes/express.helpers.ts";
 import type { Express } from "express";
 import assert from "node:assert/strict";
 
+// The reference instant every mocked clock in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
+const BASE_TIME_MS = 1700000000000;
+
 describe("isPrerollReady", () => {
 
   test("returns false for a codec that has not been generated", () => {
@@ -245,7 +248,7 @@ describe("computeProgressiveReveal", () => {
 
   beforeEach(() => {
 
-    mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    mock.timers.enable({ apis: ["Date"], now: BASE_TIME_MS });
   });
 
   afterEach(() => {
@@ -256,7 +259,7 @@ describe("computeProgressiveReveal", () => {
   test("returns 0 when no variant has been generated for the codec", () => {
 
     // Boundary: the function returns 0 if the variant lookup fails. The compositor's downstream code treats 0 as "no segments visible yet."
-    const reveal = computeProgressiveReveal("h264", new Date(1_700_000_000_000));
+    const reveal = computeProgressiveReveal("h264", new Date(BASE_TIME_MS));
 
     assert.equal(reveal, 0);
   });
@@ -264,9 +267,9 @@ describe("computeProgressiveReveal", () => {
   test("returns 0 immediately when no variant exists regardless of elapsed time", () => {
 
     // Same negative path, but with elapsed time advanced. The variant absence dominates.
-    mock.timers.tick(60_000);
+    mock.timers.tick(60000);
 
-    const reveal = computeProgressiveReveal("hevc", new Date(1_700_000_000_000));
+    const reveal = computeProgressiveReveal("hevc", new Date(BASE_TIME_MS));
 
     assert.equal(reveal, 0);
   });
@@ -346,7 +349,7 @@ describe("generatePrerollPlaylist", () => {
      * spawning FFmpeg, which belongs to integration coverage rather than this unit suite. The early-return path is the one observable surface the unit tier
      * can assert without that subprocess.
      */
-    const playlist = generatePrerollPlaylist("http://example.test:5589", "h264", 0, new Date(1_700_000_000_000));
+    const playlist = generatePrerollPlaylist("http://example.test:5589", "h264", 0, new Date(BASE_TIME_MS));
 
     assert.equal(playlist, "", "no variant -> empty playlist string");
   });
@@ -355,7 +358,7 @@ describe("generatePrerollPlaylist", () => {
 
     // Companion to the previous test: locks the contract that both codec branches share the same early-return semantics. A regression that hard-coded
     // "h264" in the readiness check would still pass the test above but fail here.
-    const playlist = generatePrerollPlaylist("http://example.test:5589", "hevc", 100, new Date(1_700_000_000_000));
+    const playlist = generatePrerollPlaylist("http://example.test:5589", "hevc", 100, new Date(BASE_TIME_MS));
 
     assert.equal(playlist, "", "hevc without a variant also returns the empty string");
   });

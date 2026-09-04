@@ -122,7 +122,7 @@ describe("parseMoovTrackInfo", () => {
     const trak = makeTrak(
       makeTkhd({ trackId: 7, version: 0 }),
       makeMdia(
-        makeMdhd({ timescale: 90_000, version: 0 }),
+        makeMdhd({ timescale: 90000, version: 0 }),
         makeHdlr("vide")
       )
     );
@@ -134,7 +134,7 @@ describe("parseMoovTrackInfo", () => {
     const track = result.get(7);
 
     assert.ok(track, "result map keyed by track_ID 7");
-    assert.equal(track.timescale, 90_000, "timescale read from mdhd v0 at the documented offset");
+    assert.equal(track.timescale, 90000, "timescale read from mdhd v0 at the documented offset");
     assert.equal(track.handlerType, "vide", "handler_type read from hdlr at the documented offset");
   });
 
@@ -147,7 +147,7 @@ describe("parseMoovTrackInfo", () => {
     const trak = makeTrak(
       makeTkhd({ trackId: 42, version: 1 }),
       makeMdia(
-        makeMdhd({ timescale: 48_000, version: 1 }),
+        makeMdhd({ timescale: 48000, version: 1 }),
         makeHdlr("soun")
       )
     );
@@ -157,7 +157,7 @@ describe("parseMoovTrackInfo", () => {
     const track = result.get(42);
 
     assert.ok(track, "v1 boxes still keyed by their track_ID");
-    assert.equal(track.timescale, 48_000, "timescale read from mdhd v1 at byte-28 offset");
+    assert.equal(track.timescale, 48000, "timescale read from mdhd v1 at byte-28 offset");
     assert.equal(track.handlerType, "soun");
   });
 
@@ -167,19 +167,19 @@ describe("parseMoovTrackInfo", () => {
     // results across trak iterations would collapse to a single entry.
     const audioTrak = makeTrak(
       makeTkhd({ trackId: 1, version: 0 }),
-      makeMdia(makeMdhd({ timescale: 48_000, version: 0 }), makeHdlr("soun"))
+      makeMdia(makeMdhd({ timescale: 48000, version: 0 }), makeHdlr("soun"))
     );
     const videoTrak = makeTrak(
       makeTkhd({ trackId: 2, version: 0 }),
-      makeMdia(makeMdhd({ timescale: 90_000, version: 0 }), makeHdlr("vide"))
+      makeMdia(makeMdhd({ timescale: 90000, version: 0 }), makeHdlr("vide"))
     );
     const moov = makeBox("moov", Buffer.concat([ audioTrak, videoTrak ]));
     const result = parseMoovTrackInfo(moov);
 
     assert.equal(result.size, 2, "two tracks surfaced");
-    assert.equal(result.get(1)?.timescale, 48_000);
+    assert.equal(result.get(1)?.timescale, 48000);
     assert.equal(result.get(1)?.handlerType, "soun");
-    assert.equal(result.get(2)?.timescale, 90_000);
+    assert.equal(result.get(2)?.timescale, 90000);
     assert.equal(result.get(2)?.handlerType, "vide");
   });
 
@@ -204,7 +204,7 @@ describe("parseMoovTrackInfo", () => {
     const mvhd = makeBox("mvhd", Buffer.alloc(96));
     const trak = makeTrak(
       makeTkhd({ trackId: 3, version: 0 }),
-      makeMdia(makeMdhd({ timescale: 1_000, version: 0 }), makeHdlr("vide"))
+      makeMdia(makeMdhd({ timescale: 1000, version: 0 }), makeHdlr("vide"))
     );
     const moov = makeBox("moov", Buffer.concat([ mvhd, trak ]));
     const result = parseMoovTrackInfo(moov);
@@ -221,7 +221,7 @@ describe("parseMoovTrackInfo", () => {
     const truncatedHdlr = makeBox("hdlr", Buffer.alloc(8));
     const trak = makeTrak(
       makeTkhd({ trackId: 9, version: 0 }),
-      makeMdia(makeMdhd({ timescale: 1_000, version: 0 }), truncatedHdlr)
+      makeMdia(makeMdhd({ timescale: 1000, version: 0 }), truncatedHdlr)
     );
     const moov = makeBox("moov", trak);
     const result = parseMoovTrackInfo(moov);
