@@ -335,7 +335,7 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
  * Serializes an asynchronous log-file mutation against every other such mutation. The supplied operation is appended to the module-scoped write chain so that
  * flushes and trims execute one at a time, never interleaving their read/append/rename steps. The returned promise resolves when this specific operation has
  * settled. The chain itself is advanced with the settled (caught) result so a rejecting operation cannot poison subsequent writes - each operation is responsible
- * for its own error handling, exactly as the inline try/catch blocks did before serialization.
+ * for its own error handling.
  * @param operation - The async mutation to run after all previously enqueued mutations have completed.
  */
 async function serializeWrite(operation: () => Promise<void>): Promise<void> {

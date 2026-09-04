@@ -23,6 +23,13 @@ import { isDeepStrictEqual } from "node:util";
  * use the config file via the web UI at /config, and operators can always override any setting with a CLI flag.
  */
 
+/* The millisecond spans this file states more than once: the upper bounds several bounded settings share, and the rolling windows DEFAULTS opens. Each is named
+ * for the duration it expresses, so a bound and a window that happen to agree on a number still read as the separate durations they are.
+ */
+const FIVE_MINUTES_MS = 300000;
+const TEN_MINUTES_MS = 600000;
+const ONE_HOUR_MS = 3600000;
+
 /* Each configurable setting has metadata describing its type, valid range, environment variable name, and human-readable description. This metadata is used by the
  * /config web UI to render appropriate form fields and validation, and by the validation system to check values before saving.
  */
@@ -217,7 +224,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "seconds",
       envVar: "HLS_IDLE_TIMEOUT",
       label: "Idle Timeout",
-      max: 300000,
+      max: FIVE_MINUTES_MS,
       min: 10000,
       path: "hls.idleTimeout",
       type: "integer",
@@ -355,7 +362,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "minutes",
       envVar: "PAGE_RELOAD_WINDOW",
       label: "Page Reload Window",
-      max: 3600000,
+      max: ONE_HOUR_MS,
       min: 60000,
       path: "playback.pageReloadWindow",
       type: "integer",
@@ -402,7 +409,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "seconds",
       envVar: "SUSTAINED_PLAYBACK_REQUIRED",
       label: "Sustained Playback Required",
-      max: 300000,
+      max: FIVE_MINUTES_MS,
       min: 10000,
       path: "playback.sustainedPlaybackRequired",
       type: "integer",
@@ -441,7 +448,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "minutes",
       envVar: "CIRCUIT_BREAKER_WINDOW",
       label: "Circuit Breaker Window",
-      max: 3600000,
+      max: ONE_HOUR_MS,
       min: 60000,
       path: "recovery.circuitBreakerWindow",
       type: "integer",
@@ -477,7 +484,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "minutes",
       envVar: "RELAUNCH_FAILURE_WINDOW",
       label: "Relaunch Failure Window",
-      max: 3600000,
+      max: ONE_HOUR_MS,
       min: 60000,
       path: "recovery.relaunchFailureWindow",
       type: "integer",
@@ -490,7 +497,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "minutes",
       envVar: "RELAUNCH_HEALTH_HOLD",
       label: "Relaunch Health Hold",
-      max: 600000,
+      max: TEN_MINUTES_MS,
       min: 60000,
       path: "recovery.relaunchHealthHold",
       type: "integer",
@@ -503,7 +510,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "seconds",
       envVar: "STALE_PAGE_CLEANUP_INTERVAL",
       label: "Stale Page Cleanup Interval",
-      max: 600000,
+      max: TEN_MINUTES_MS,
       min: 10000,
       path: "recovery.stalePageCleanupInterval",
       type: "integer",
@@ -628,7 +635,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "seconds",
       envVar: "NAV_TIMEOUT",
       label: "Navigation Timeout",
-      max: 600000,
+      max: TEN_MINUTES_MS,
       min: 1000,
       path: "streaming.navigationTimeout",
       type: "integer",
@@ -654,7 +661,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       displayUnit: "seconds",
       envVar: "VIDEO_TIMEOUT",
       label: "Video Timeout",
-      max: 600000,
+      max: TEN_MINUTES_MS,
       min: 1000,
       path: "streaming.videoTimeout",
       type: "integer",
@@ -1196,10 +1203,10 @@ export const DEFAULTS: Config = {
 
     backoffJitter: 1000,
     circuitBreakerThreshold: 10,
-    circuitBreakerWindow: 300000,
+    circuitBreakerWindow: FIVE_MINUTES_MS,
     maxBackoffDelay: 3000,
     relaunchFailureThreshold: 3,
-    relaunchFailureWindow: 300000,
+    relaunchFailureWindow: FIVE_MINUTES_MS,
     relaunchHealthHold: 120000,
     stalePageCleanupInterval: 60000,
     stalePageGracePeriod: 30000

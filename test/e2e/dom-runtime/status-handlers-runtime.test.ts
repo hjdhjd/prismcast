@@ -39,6 +39,9 @@ import assert from "node:assert/strict";
 import { clientEscapeHtml } from "../../../src/routes/root/scripts/clientEscape.ts";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
 
+// The bits-per-second a native stream reports in the rows that assert how the codec detail line renders a native bitrate.
+const NATIVE_BANDWIDTH = 5000000;
+
 /**
  * Recorded invocation log for the stubbed externals. Tests inspect this to assert that handlers delegated to the right window.* surface with the right arguments.
  * Numeric counters track call counts for shapeless surfaces (close, updateRestartDialogStatus); arrays track argument tuples for surfaces whose shape matters.
@@ -704,7 +707,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
      */
     const html = handlers.renderDetailCodec(makeStream({
 
-      nativeBandwidth: 5000000,
+      nativeBandwidth: NATIVE_BANDWIDTH,
       nativeResolution: "1920x1080",
       streamingMode: "native"
     }));
@@ -719,7 +722,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
      */
     const html = handlers.renderDetailCodec(makeStream({
 
-      nativeBandwidth: 5000000,
+      nativeBandwidth: NATIVE_BANDWIDTH,
       nativeResolution: "1234x999",
       streamingMode: "native"
     }));
@@ -766,7 +769,7 @@ describe("status.handlers: renderDetailCodec (pure)", () => {
      */
     const html = handlers.renderDetailCodec(makeStream({
 
-      nativeBandwidth: 5000000,
+      nativeBandwidth: NATIVE_BANDWIDTH,
       nativeResolution: "1920x1080",
       sourceResolution: "1280x720",
       streamingMode: "native"
@@ -2209,7 +2212,7 @@ describe("status.handlers: status-field render-boundary escaping", () => {
 
   test("renderDetailCodec entity-encodes the nativeResolution fallback when the height is not a known label", () => {
 
-    const out = handlers.renderDetailCodec(makeStream({ nativeBandwidth: 5000000, nativeResolution: "<script>evil</script>", streamingMode: "native" }));
+    const out = handlers.renderDetailCodec(makeStream({ nativeBandwidth: NATIVE_BANDWIDTH, nativeResolution: "<script>evil</script>", streamingMode: "native" }));
 
     assert.match(out, /&lt;script&gt;evil&lt;\/script&gt;/, "the unmapped resolution must fall back to the entity-encoded raw value");
     assert.doesNotMatch(out, /<script>/, "no raw tag may survive in the codec line");

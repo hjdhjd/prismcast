@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * fileLogger.lifecycle.test.ts: Unit tests for the file logger's lifecycle and error-recovery paths - flushLogBuffer's error-path retry-disable, writeLogEntry's
- * retry-window re-enable, initializeFileLogger's mkdir-failure recovery, and shutdownFileLogger. Basic writes/buffers live in fileLogger.test.ts; trim-path
+ * fileLogger.lifecycle.test.ts: Unit tests for the file logger's lifecycle and error-recovery paths - flushLogBuffer's write-failure pause, writeLogEntry's
+ * re-open after the retry window, initializeFileLogger's mkdir-failure recovery, and shutdownFileLogger. Basic writes/buffers live in fileLogger.test.ts; trim-path
  * tests live in fileLogger.trim.test.ts.
  */
 import { afterEach, describe, mock, test } from "node:test";
@@ -18,11 +18,11 @@ const MAX_LOG_SIZE = 1000000;
 // The bound the module's shutdown waits under for its write chain to drain, restated here so the row that lapses it reads against a name rather than a number.
 const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
-describe("flushLogBuffer - error-path retry-disable", () => {
+describe("flushLogBuffer - a failed flush pauses the file", () => {
 
-  /* When fsPromises.appendFile throws (e.g., because the log file's directory was removed mid-flight), flushLogBuffer disables logging for ERROR_RETRY_DELAY_MS
-   * milliseconds and emits a console.error. Subsequent writeLogEntry calls during the retry window are silently dropped. This guards against tight-loop error
-   * cascades when the underlying filesystem is in a degraded state.
+  /* When fsPromises.appendFile throws (e.g., because the log file's directory was removed mid-flight), flushLogBuffer pauses the file for ERROR_RETRY_DELAY_MS
+   * milliseconds and emits a console.error. Writes that arrive inside the pause are silently dropped. This guards against tight-loop error cascades when the
+   * underlying filesystem is in a degraded state.
    */
 
   afterEach(async () => {
@@ -30,7 +30,7 @@ describe("flushLogBuffer - error-path retry-disable", () => {
     await shutdownFileLogger();
   });
 
-  test("disables logging temporarily when appendFile throws and drops subsequent writes within the retry window", async () => {
+  test("pauses the file when appendFile throws and drops subsequent writes within the retry window", async () => {
 
     await withTempDir(async (dir) => {
 
@@ -56,15 +56,15 @@ describe("flushLogBuffer - error-path retry-disable", () => {
 
         await rm(dir, { force: true, recursive: true });
 
-        // The next write will be appended to the buffer; flushing it should fail and disable the logger.
+        // The next write will be appended to the buffer; flushing it should fail and pause the file.
         writeLogEntry("info", "Will fail.", null);
         await flushLogBuffer();
 
-        // Subsequent writes should be silently dropped since the logger is now in the disabled state. We can't directly observe the state, but a follow-up flush
-        // should be a no-op (no throw, no recovery).
+        // Subsequent writes should be silently dropped since the file is paused. We can't directly observe the state, but a follow-up flush should be a no-op
+        // (no throw, no recovery).
         writeLogEntry("info", "Dropped.", null);
 
-        await assert.doesNotReject(() => flushLogBuffer(), "subsequent flush is a no-op while disabled");
+        await assert.doesNotReject(() => flushLogBuffer(), "subsequent flush is a no-op while the file is paused");
       } finally {
 
         // eslint-disable-next-line no-console
@@ -74,7 +74,7 @@ describe("flushLogBuffer - error-path retry-disable", () => {
   });
 });
 
-describe("writeLogEntry - retry-window re-enable after disabled state", () => {
+describe("writeLogEntry - the first write after the retry window re-opens the file", () => {
 
   /* When flushLogBuffer fails (e.g., directory removed mid-flight), its catch pauses the file the logger is open on. Subsequent writes are silently dropped
    * during the retry window (ERROR_RETRY_DELAY_MS = 60s). Once Date.now() advances past the threshold, the next writeLogEntry call re-opens the file and
@@ -87,7 +87,7 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
     mock.reset();
   });
 
-  test("re-enables logging when Date.now() has advanced past ERROR_RETRY_DELAY_MS since the disable", async () => {
+  test("re-opens the file when Date.now() has advanced past ERROR_RETRY_DELAY_MS since the pause", async () => {
 
     await withTempDir(async (dir) => {
 
@@ -104,13 +104,13 @@ describe("writeLogEntry - retry-window re-enable after disabled state", () => {
 
       try {
 
-        // Force a write failure to enter the disabled state. Removing the parent directory makes the next appendFile reject with ENOENT.
+        // Force a write failure to pause the file. Removing the parent directory makes the next appendFile reject with ENOENT.
         await rm(dir, { force: true, recursive: true });
 
         writeLogEntry("info", "Will-fail entry.", null);
         await flushLogBuffer();
 
-        // The logger is now in the disabled state. Recreate the directory and the file so subsequent writes have a valid target after the re-enable.
+        // The file is paused. Recreate the directory and the file so subsequent writes have a valid target after the re-open.
         const { mkdir } = await import("node:fs/promises");
 
         await mkdir(dir, { recursive: true });
@@ -173,7 +173,7 @@ describe("initializeFileLogger - mkdir failure recovery", () => {
 
       try {
 
-        // Must not throw - the implementation absorbs the error and disables file logging.
+        // Must not throw - the implementation absorbs the error and leaves the logger off.
         await assert.doesNotReject(() => initializeFileLogger(logPath, MAX_LOG_SIZE),
           "initializeFileLogger absorbs the mkdir failure");
 

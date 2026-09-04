@@ -44,9 +44,9 @@ export interface StreamStatus {
   nativeResolution: Nullable<string>;
   networkState: number;
   pageReloadsInWindow: number;
-  serviceName: string;
   readyState: number;
   recoveryAttempts: number;
+  serviceName: string;
   showName: string;
 
   // The intrinsic size of the page's video element as the monitor last read it, as "WIDTHxHEIGHT". Null until the first reading with non-zero dimensions, and

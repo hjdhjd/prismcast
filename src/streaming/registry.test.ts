@@ -17,6 +17,9 @@ import type { StreamRegistryEntry } from "./registry.ts";
 import assert from "node:assert/strict";
 import { createCaptureSession } from "./captureSession.ts";
 
+// The bits-per-second the native quality-refresh rows hand the registry and then read back off the entry's identity.
+const REFRESHED_BANDWIDTH = 6000000;
+
 /* entryWithSegmenter builds a registry entry whose capture session exposes the given (partial) segmenter, so the getLastSegment* getters can be exercised through
  * the production read path (the registry's own segmenter reader). A no-op pipe is supplied because attachSegmenter pipes the segmenter to the session's capture
  * output; the test doubles only implement the one getter under assertion.
@@ -567,12 +570,12 @@ describe("applyNativeQualityRefresh", () => {
     const entry = makeRegistryEntry({ identity: makeNativeIdentity({ nativeContainer: "fmp4" }) });
     const before = entry.identity;
 
-    applyNativeQualityRefresh(entry, { bandwidth: 6000000, codec: "HEVC", resolution: "1920x1080" });
+    applyNativeQualityRefresh(entry, { bandwidth: REFRESHED_BANDWIDTH, codec: "HEVC", resolution: "1920x1080" });
 
     assert.notEqual(entry.identity, before, "the identity is replaced rather than mutated in place");
     assert.equal(entry.identity.mode, "native", "and stays native");
     assert.equal(entry.identity.captureCodec, "HEVC");
-    assert.equal((entry.identity as { nativeBandwidth: number }).nativeBandwidth, 6000000);
+    assert.equal((entry.identity as { nativeBandwidth: number }).nativeBandwidth, REFRESHED_BANDWIDTH);
     assert.equal((entry.identity as { nativeResolution: Nullable<string> }).nativeResolution, "1920x1080");
     assert.equal((entry.identity as { nativeContainer: unknown }).nativeContainer, "fmp4", "members the refresh does not name are carried across untouched");
   });
@@ -587,7 +590,7 @@ describe("applyNativeQualityRefresh", () => {
     const entry = makeRegistryEntry();
     const before = entry.identity;
 
-    applyNativeQualityRefresh(entry, { bandwidth: 6000000, codec: "HEVC", resolution: "1920x1080" });
+    applyNativeQualityRefresh(entry, { bandwidth: REFRESHED_BANDWIDTH, codec: "HEVC", resolution: "1920x1080" });
 
     assert.equal(entry.identity, before, "the capture identity is the same object it was");
     assert.equal(entry.identity.captureCodec, null, "and carries none of the refresh");

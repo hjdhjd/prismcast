@@ -9,6 +9,10 @@ import { TOKEN_EXPIRY_STRATEGIES, parseTokenExpiry } from "./tokenExpiry.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
+// The epoch-seconds instant every strategy row's token expires at. The URL fixtures keep their digits, because that is the text a real token carries; the
+// assertions read the constant so the expected value and the fixture cannot drift apart.
+const EXPIRY_SECONDS = 1730000000;
+
 /* Encodes a JSON object as a base64url-encoded JWT segment so individual tests can synthesize a JWT payload without depending on a third-party library. The base64url
  * alphabet replaces "+" with "-", "/" with "_", and strips "=" padding; the encoder must produce that exact form because the JWT parser strategy decodes from it.
  */
@@ -39,7 +43,7 @@ describe("parseTokenExpiry: plain ?exp= query parameter", () => {
     // Happy path: the most common HLS CDN token shape. The strategy must recognize the parameter and multiply 10-digit values by 1000 since they are seconds.
     const url = "https://cdn.test/hls/master.m3u8?exp=1730000000";
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 
   test("parses a 13-digit milliseconds-since-epoch value verbatim", () => {
@@ -56,7 +60,7 @@ describe("parseTokenExpiry: plain ?exp= query parameter", () => {
     // silently miss.
     const url = "https://cdn.test/master.m3u8?token=abc&exp=1730000000";
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 
   test("returns null when the timestamp is fewer than 10 digits", () => {
@@ -84,7 +88,7 @@ describe("parseTokenExpiry: Akamai-style query token (~exp=N~)", () => {
     // extract the inner exp= value without being confused by the surrounding parameters.
     const url = "https://cdn.test/master.m3u8?hdnea=acl=/*~hmac=abc123~exp=1730000000~auth=xyz";
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 });
 
@@ -96,7 +100,7 @@ describe("parseTokenExpiry: Akamai-style path token (/exp=N~)", () => {
     // parameter that happens to share the same numeric format.
     const url = "https://cdn.test/exp=1730000000~acl=/*/master.m3u8";
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 });
 
@@ -108,7 +112,7 @@ describe("parseTokenExpiry: URL-encoded hdnts (exp%3DN)", () => {
     // form and extract the timestamp.
     const url = "https://cdn.test/master.m3u8?hdnts=exp%3D1730000000~hmac%3Dabc";
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 });
 
@@ -118,30 +122,30 @@ describe("parseTokenExpiry: JWT in query parameter (Angelcam-style)", () => {
 
     // Happy path: the issue exemplar. Angelcam embeds a signed JWT in ?token=, and the strategy must split on dots, base64url-decode the payload, and read the
     // exp claim. The expiry comes back in seconds per RFC 7519, normalized to milliseconds by the dispatcher.
-    const jwt = buildJwt({ did: "127256", exp: 1730000000, iat: 1729999500 });
+    const jwt = buildJwt({ did: "127256", exp: EXPIRY_SECONDS, iat: 1729999500 });
     const url = "https://cdn.test/path/playlist.m3u8?token=" + encodeURIComponent(jwt);
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 
   test("works for parameter names other than 'token'", () => {
 
     // Boundary: services use varying parameter names for JWTs ("token", "auth", "jwt", "ticket", etc.). The strategy iterates every search-param value and should
     // not be hard-coded to a specific name. We use a synthetic name to verify the iteration covers all parameters.
-    const jwt = buildJwt({ exp: 1730000000 });
+    const jwt = buildJwt({ exp: EXPIRY_SECONDS });
     const url = "https://cdn.test/master.m3u8?credential=" + encodeURIComponent(jwt);
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 
   test("ignores non-JWT query values and finds the JWT among other parameters", () => {
 
     // Boundary: a URL may carry multiple parameters where only one is a JWT. The strategy must skip non-JWT-shaped values without throwing and proceed to the
     // next parameter.
-    const jwt = buildJwt({ exp: 1730000000 });
+    const jwt = buildJwt({ exp: EXPIRY_SECONDS });
     const url = "https://cdn.test/master.m3u8?session=plain-string&counter=42&auth=" + encodeURIComponent(jwt);
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000);
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000);
   });
 
   test("returns null when the JWT payload has no exp claim", () => {
@@ -245,7 +249,7 @@ describe("parseTokenExpiry: strategy ordering", () => {
     const jwt = buildJwt({ exp: 9999999999 });
     const url = "https://cdn.test/master.m3u8?exp=1730000000&token=" + encodeURIComponent(jwt);
 
-    assert.equal(parseTokenExpiry(url), 1730000000 * 1000, "plain ?exp= wins because it is registered first");
+    assert.equal(parseTokenExpiry(url), EXPIRY_SECONDS * 1000, "plain ?exp= wins because it is registered first");
   });
 });
 
