@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, mock, test } from "node:test";
 import { flushLogBuffer, flushLogBufferSync, initializeFileLogger, shutdownFileLogger, writeLogEntry } from "./fileLogger.ts";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { initDebugFilter } from "./debugFilter.ts";
@@ -172,16 +172,42 @@ describe("initializeFileLogger and writeLogEntry", () => {
     });
   });
 
-  test("writeLogEntry is a no-op once the startup window has closed and the logger is uninitialized", async () => {
+  test("reports a post-shutdown write to an unreachable file once and drops the writes that follow", async () => {
 
-    /* Negative test: a write with no file open must not crash. The rows above have already spent this process's startup window, and shutdownFileLogger()
-     * returns to the uninitialized state without reopening it, so the entry below has nowhere to wait and is dropped.
+    /* The file a shutdown closed can go away before the last lines reach it - a temp directory the harness removed, a volume unmounted under a running
+     * server. The first failure reports itself and abandons the file, so a process that keeps logging on its way out prints one console error rather than
+     * one per line, and the write that follows is dropped in silence.
      */
-    await shutdownFileLogger();
+    await withTempDir(async (dir) => {
 
-    assert.doesNotThrow(() => {
+      const logPath = path.join(dir, "test.log");
 
-      writeLogEntry("info", "ignored", null);
+      await initializeFileLogger(logPath, 1_000_000);
+      await shutdownFileLogger();
+      await rm(dir, { force: true, recursive: true });
+
+      const errorCalls: unknown[][] = [];
+
+      // eslint-disable-next-line no-console
+      const originalError = console.error;
+
+      // eslint-disable-next-line no-console
+      console.error = (...args: unknown[]): void => { errorCalls.push(args); };
+
+      try {
+
+        assert.doesNotThrow(() => {
+
+          writeLogEntry("info", "First line after the file went away.", null);
+          writeLogEntry("info", "Second line after the file went away.", null);
+        });
+      } finally {
+
+        // eslint-disable-next-line no-console
+        console.error = originalError;
+      }
+
+      assert.equal(errorCalls.length, 1, "the failure is reported once and the closed file is abandoned, not reported again for the second line");
     });
   });
 });

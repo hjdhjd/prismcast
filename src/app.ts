@@ -5,8 +5,8 @@
 import { CONFIG, displayConfiguration, initializeConfiguration, persistCoercedConfig, validateConfiguration } from "./config/index.ts";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { IncomingMessage, Server } from "node:http";
-import { LOG, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release, resolveFFmpegPath,
-  setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
+import { LOG, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release,
+  resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
@@ -50,6 +50,10 @@ let usingConsoleLogging = false;
  */
 
 let server: Nullable<Server> = null;
+
+// How long shutdown waits for the HTTP server to finish closing. The bound keeps a socket the close cannot reach from holding the process open through its own
+// shutdown, exactly as the file logger's drain bound does for a wedged filesystem operation.
+const SERVER_CLOSE_BOUND_MS = 5000;
 
 /* The background-service teardown stack. Each long-lived background service (stale-page sweep, browser-restart watchdog, idle cleanup, show-info/pretune polling,
  * update check) registers its stop here at the moment it starts in startServer(); graceful shutdown disposes the stack wholesale, so a future service cannot be
@@ -166,15 +170,36 @@ function setupGracefulShutdown(): void {
     // Release the server instance slot so the next startup does not see a stale identity file.
     releaseInstanceSlot();
 
-    // Close the HTTP server.
+    /* Close the HTTP server. The close is awaited so its own line lands while the file logger is still open, which the shutdown below ends. Connections are
+     * destroyed first because the status and log SSE streams (routes/streams.ts and routes/logs.ts) hold their sockets open with a heartbeat, and the close
+     * waits on every one of them; the CDP proxy's WebSocket clients have already closed themselves with 1001 in response to the browser disconnect above. An
+     * in-flight request ends with the process either way, because the exit follows immediately.
+     */
     try {
 
       if(server) {
 
-        server.close((): void => {
+        const { promise: closed, resolve } = Promise.withResolvers<boolean>();
 
-          LOG.info("HTTP server closed successfully.");
+        server.close((error?: Error): void => {
+
+          if(error) {
+
+            LOG.error("Error closing server during shutdown: %s.", formatError(error));
+          } else {
+
+            LOG.info("HTTP server closed successfully.");
+          }
+
+          resolve(true);
         });
+
+        server.closeAllConnections();
+
+        if((await boundedWait(closed, SERVER_CLOSE_BOUND_MS)) === null) {
+
+          LOG.warn("The HTTP server did not close within %sms. Continuing the shutdown.", SERVER_CLOSE_BOUND_MS);
+        }
       }
     } catch(error) {
 

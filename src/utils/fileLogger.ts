@@ -43,6 +43,11 @@ export type LogColor = "cyan" | "red" | "yellow" | null;
 // Path to the log file, set during initialization.
 let logFilePath: Nullable<string> = null;
 
+/* The file the logger shut down, kept so a line logged after that shutdown - the exit handler's Chrome cleanup, a late process-level handler - is written to
+ * the run's own file rather than dropped. A new initialization supersedes it, and a single failed append abandons it.
+ */
+let closedFilePath: Nullable<string> = null;
+
 // Buffer for collecting log entries before flushing to disk.
 let writeBuffer: string[] = [];
 
@@ -60,8 +65,9 @@ let isInitialized = false;
 
 /* Whether the startup window is open. The window is the interval between process start and the logger's one initialization, and entries logged inside it are
  * held in writeBuffer for the first flush after that initialization to append. The first initializeFileLogger call closes the window - success or failure -
- * and nothing reopens it, so an entry logged once the logger has shut down is dropped rather than held for a later initialization that only the test suite
- * performs, which would leak the entry into a different run's file.
+ * and nothing reopens it, and what happens to a later entry follows from that: once the logger has shut down the entry goes straight to the file that shutdown
+ * closed, and after an initialization that failed there is no file to take it, so it is dropped. Holding it for a later initialization instead - something only
+ * the test suite performs - would leak the entry into a different run's file.
  */
 let startupWindowOpen = true;
 
@@ -111,6 +117,8 @@ const STARTUP_BUFFER_LIMIT = 1000;
  */
 export async function initializeFileLogger(logPath: string, maxSize: number): Promise<void> {
 
+  // A new initialization supersedes the file the last shutdown closed, so every line from here on belongs to this run's file.
+  closedFilePath = null;
   logFilePath = logPath;
   maxLogSize = maxSize;
 
@@ -170,6 +178,27 @@ export async function initializeFileLogger(logPath: string, maxSize: number): Pr
 // Log Entry Writing.
 
 /**
+ * Formats one log entry as it appears in the file: the timestamp, the level tag (carrying the debug category when one is supplied), and the message, colored
+ * and newline-terminated. The buffered path and the post-shutdown append both call it, so the shape of a line is stated in one place. See the file's design
+ * block for the rationale behind baking SGR codes into the file output.
+ * @param level - Log level ("info", "warn", "error", "debug").
+ * @param message - The formatted log message.
+ * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
+ * @param categoryTag - Optional debug category tag (e.g., "recovery:tab"). Appended to the level prefix as [DEBUG:category].
+ * @returns The entry text, terminated by a newline.
+ */
+function formatLogEntry(level: string, message: string, color: LogColor, categoryTag?: string): string {
+
+  const timestamp = formatTimestamp();
+  const levelTag = categoryTag ? level.toUpperCase() + ":" + categoryTag : level.toUpperCase();
+  const levelPrefix = (level === "info") ? "" : "[" + levelTag + "] ";
+  const body = levelPrefix + message;
+  const coloredBody = color ? styleText(color, body, { validateStream: false }) : body;
+
+  return "[" + timestamp + "] " + coloredBody + "\n";
+}
+
+/**
  * Writes a log entry to the buffer. Entries are flushed to disk periodically.
  * @param level - Log level ("info", "warn", "error", "debug").
  * @param message - The formatted log message.
@@ -193,19 +222,31 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
       // Re-enable logging and try again.
       isDisabled = false;
     }
+  } else if(closedFilePath !== null) {
+
+    /* The logger has shut down and this line still belongs to the run that just ended, so it goes to that run's file. The append is synchronous because
+     * nothing asynchronous is left to carry it: the flush timer is stopped, the write chain has drained, and the process may exit on the next tick.
+     */
+    try {
+
+      fs.appendFileSync(closedFilePath, formatLogEntry(level, message, color, categoryTag), "utf-8");
+    } catch(error) {
+
+      // eslint-disable-next-line no-console
+      console.error("Failed to write a log entry after shutdown: %s.", (error instanceof Error) ? error.message : String(error));
+
+      // Abandon the closed file so a path that cannot be written is reported once rather than once per line.
+      closedFilePath = null;
+    }
+
+    return;
   } else if(!startupWindowOpen) {
 
-    // Nothing holds the entry: no file is open and the startup window has closed for good.
+    // Nothing holds the entry: no file is open, no closed file is waiting for it, and the startup window has closed for good.
     return;
   }
 
-  // Format the log entry with timestamp and level. See the file's design block for the rationale behind baking SGR codes into the file output.
-  const timestamp = formatTimestamp();
-  const levelTag = categoryTag ? level.toUpperCase() + ":" + categoryTag : level.toUpperCase();
-  const levelPrefix = (level === "info") ? "" : "[" + levelTag + "] ";
-  const body = levelPrefix + message;
-  const coloredBody = color ? styleText(color, body, { validateStream: false }) : body;
-  const entry = "[" + timestamp + "] " + coloredBody + "\n";
+  const entry = formatLogEntry(level, message, color, categoryTag);
 
   // Add to buffer.
   writeBuffer.push(entry);
@@ -476,6 +517,9 @@ async function trimLogFile(): Promise<void> {
  *
  * The wait is bounded because a wedged filesystem operation must not hold the process open through its own shutdown. When the bound lapses the flush and the state
  * reset proceed anyway, which is the same outcome an unbounded wait would eventually reach minus the hang.
+ *
+ * The reset keeps the path of the file it closed, so a line logged after this point - the exit handler's Chrome cleanup, a late process-level handler - is
+ * appended to that file synchronously instead of falling into the gap between the reset and the process exit.
  */
 export async function shutdownFileLogger(): Promise<void> {
 
@@ -506,6 +550,9 @@ export async function shutdownFileLogger(): Promise<void> {
   writeBuffer = [];
   approximateSize = 0;
   writeCount = 0;
+
+  // Keep the file this run wrote to, so a line logged from here on still reaches it rather than falling into the gap between the reset and the process exit.
+  closedFilePath = logFilePath;
   logFilePath = null;
 
   // Reset the write-ordering chain so the next run starts from a fresh, already-resolved tail rather than chaining onto the previous run's last operation.

@@ -222,10 +222,11 @@ describe("shutdownFileLogger", () => {
     });
   });
 
-  test("further writes after shutdown become no-ops", async () => {
+  test("writes a line logged after shutdown straight to the file the logger closed", async () => {
 
-    // Negative test: once shut down, the logger must reject subsequent writes silently. Shutdown does not reopen the startup window, so a write here is
-    // dropped rather than held for a later initialization.
+    /* Once the logger has shut down there is no buffer left to hold an entry and no flush left to carry it, so the entry goes to the run's own file at once.
+     * The exit handler's Chrome cleanup logs from exactly this position.
+     */
     await withTempDir(async (dir) => {
 
       const logPath = path.join(dir, "test.log");
@@ -235,10 +236,79 @@ describe("shutdownFileLogger", () => {
 
       writeLogEntry("info", "After shutdown.", null);
 
-      // No flush will run; the file should remain whatever was persisted at shutdown time (empty).
       const content = await readFile(logPath, "utf-8");
 
-      assert.doesNotMatch(content, /After shutdown\./);
+      assert.match(content, /After shutdown\./, "the closed file takes the entry without a flush");
+    });
+  });
+
+  test("a later initialization takes the writes, and the file the previous run closed receives nothing further", async () => {
+
+    /* The closed file belongs to one run. A new initialization supersedes it, so an entry logged under the second run must land in the second file and
+     * nowhere else - otherwise a suite that initializes twice would leak its lines into the first run's file.
+     */
+    await withTempDir(async (dir) => {
+
+      const firstPath = path.join(dir, "first.log");
+      const secondPath = path.join(dir, "second.log");
+
+      await initializeFileLogger(firstPath, 1_000_000);
+      await shutdownFileLogger();
+
+      writeLogEntry("info", "Belongs to the first run.", null);
+
+      await initializeFileLogger(secondPath, 1_000_000);
+
+      writeLogEntry("info", "Belongs to the second run.", null);
+      await flushLogBuffer();
+
+      const firstContent = await readFile(firstPath, "utf-8");
+      const secondContent = await readFile(secondPath, "utf-8");
+
+      assert.match(firstContent, /Belongs to the first run\./, "the entry logged after the first shutdown stays in the first run's file");
+      assert.doesNotMatch(firstContent, /Belongs to the second run\./, "a new initialization redirects writes away from the closed file");
+      assert.match(secondContent, /Belongs to the second run\./, "the second run's file takes the entries logged under it");
+      assert.doesNotMatch(secondContent, /Belongs to the first run\./, "the first run's tail does not follow into the second run's file");
+    });
+  });
+
+  test("drops a line logged after an initialization that failed, rather than sending it to the file the previous run closed", async () => {
+
+    /* An initialization leaves the log path set even when it fails, so the open-file gate is false and the closed-file branch is the next one in line. The
+     * clear at the start of every initialization is what keeps that branch from writing a failed run's lines into the run before it.
+     */
+    await withTempDir(async (dir) => {
+
+      const firstPath = path.join(dir, "first.log");
+      const collidingFile = path.join(dir, "not-a-directory");
+
+      await initializeFileLogger(firstPath, 1_000_000);
+      await shutdownFileLogger();
+
+      // A regular file where a parent directory should go: mkdir(parent, { recursive: true }) fails with ENOTDIR or similar.
+      await writeFile(collidingFile, "", "utf-8");
+
+      // Stub console.error so the initialization-failure message isn't printed during the test.
+      // eslint-disable-next-line no-console
+      const originalConsoleError = console.error;
+
+      // eslint-disable-next-line no-console
+      console.error = (): void => { /* swallow */ };
+
+      try {
+
+        await initializeFileLogger(path.join(collidingFile, "subdir", "second.log"), 1_000_000);
+
+        writeLogEntry("info", "Logged after the failed initialization.", null);
+      } finally {
+
+        // eslint-disable-next-line no-console
+        console.error = originalConsoleError;
+      }
+
+      const firstContent = await readFile(firstPath, "utf-8");
+
+      assert.doesNotMatch(firstContent, /Logged after the failed initialization\./, "the closed file must not take a line from a later, failed run");
     });
   });
 });

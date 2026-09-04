@@ -63,7 +63,7 @@ describe("the startup window", () => {
     });
   });
 
-  test("drops a write after the first initialization and its shutdown, because the window does not reopen", async () => {
+  test("writes a line logged after shutdown straight to the closed file, so a later initialization into the same path finds it already there", async () => {
 
     await withTempDir(async (dir) => {
 
@@ -74,13 +74,13 @@ describe("the startup window", () => {
 
       writeLogEntry("info", "After the window closed.", null);
 
-      // Re-initializing is something only a test suite does, and the entry above must not surface in the file it opens.
+      // The entry is written the moment it is logged rather than held for an initialization, so the file already carries it when one opens the same path.
       await initializeFileLogger(logPath, MAX_LOG_SIZE);
       await flushLogBuffer();
 
       const content = await readFile(logPath, "utf-8");
 
-      assert.doesNotMatch(content, /After the window closed\./);
+      assert.match(content, /After the window closed\./);
     });
   });
 });
