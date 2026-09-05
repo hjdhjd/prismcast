@@ -36,7 +36,6 @@ describe("empty-state rendering across tabs", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const html = generateChannelsPanel();
@@ -56,7 +55,6 @@ describe("empty-state rendering across tabs", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const html = generateCustomProfilesPanel();
@@ -81,7 +79,6 @@ describe("empty-state rendering across tabs", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const filterContent = generateTagFilterContent();
@@ -129,7 +126,6 @@ describe("empty-state rendering across tabs", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannelDisplayPrefs({ visibleColumns: [] });
@@ -154,7 +150,6 @@ describe("empty-state rendering across tabs", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices(["nonexistent-service-tag"]);

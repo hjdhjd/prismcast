@@ -232,9 +232,6 @@ interface _PartitionError {
 
 const _partitionCompleteness: [_ChannelKeyExhaustiveness] extends [never] ? true : _PartitionError = true;
 
-/* Mark the assertion as intentionally unused - its only purpose is the compile-time check above. */
-void _partitionCompleteness;
-
 /**
  * Identity fields that participate in the user-facing delta surface (form input, JSON import, channels.json hand edit). Subset of CHANNEL_IDENTITY_KEYS that
  * excludes catalog-driven structural fields like pacificStationId, which trigger Pacific auto-generation in the flattener and are not user-overridable through
@@ -283,9 +280,6 @@ interface _DeltaShapeError {
 }
 
 const _deltaCompleteness: [_DeltaExtraKeys, _DeltaMissingKeys] extends [never, never] ? true : _DeltaShapeError = true;
-
-/* Mark the assertion as intentionally unused - its only purpose is the compile-time check above. */
-void _deltaCompleteness;
 
 /**
  * Nested channel definition - the AUTHORING shape for predefined channels in channels/index.ts. Already correctly partitioned: identity at the top level,

@@ -40,7 +40,6 @@ describe("HTML escaping guarantees - table renderer", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -72,7 +71,6 @@ describe("HTML escaping guarantees - table renderer", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const dangerousUrl = "https://example.test/path?a=1&b=2&c=\"3\"";
@@ -106,7 +104,6 @@ describe("HTML escaping guarantees - table renderer", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const dangerousTag = "news <important> & \"hot\"";

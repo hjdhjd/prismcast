@@ -44,9 +44,6 @@ describe("buildChannelTablePatch - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
-    // We hold ctx only so the await-using disposal runs at scope exit; the void satisfies the unused-binding lint without detaching that disposal. This idiom
-    // recurs at the head of every test in this file.
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -73,7 +70,6 @@ describe("buildChannelTablePatch - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Customize the predefined channel so the row carries the channel-override class, exercising a non-default rendering path.
@@ -99,7 +95,6 @@ describe("buildChannelTablePatch - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Verify the baseline: the row is NOT marked disabled before we disable it. This is the matched-pair check.
@@ -133,7 +128,6 @@ describe("buildChannelTablePatch - composition against real channel state", () =
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const tag = getServiceTagForChannel(FILTERABLE_KEY);
@@ -165,7 +159,6 @@ describe("buildChannelTableState - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const before = buildChannelTableState();
@@ -190,7 +183,6 @@ describe("buildChannelTableState - composition against real channel state", () =
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const state = buildChannelTableState();
@@ -213,7 +205,6 @@ describe("tag vocabulary renderers", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -236,7 +227,6 @@ describe("tag vocabulary renderers", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {

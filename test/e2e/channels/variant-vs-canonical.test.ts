@@ -24,7 +24,6 @@ describe("variant resolution guarantees", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Capture the canonical resolution for the identity baseline.
@@ -53,7 +52,6 @@ describe("variant resolution guarantees", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Set channelNumber=7 on the canonical entry.
@@ -78,7 +76,6 @@ describe("variant resolution guarantees", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // First set a non-canonical selection.
@@ -116,7 +113,6 @@ describe("default canonical resolution for multi-service predefined channels", (
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const abc = PREDEFINED_CHANNELS["abc"];
@@ -134,7 +130,6 @@ describe("default canonical resolution for multi-service predefined channels", (
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const abcnews = PREDEFINED_CHANNELS["abcnews"];
@@ -156,7 +151,6 @@ describe("default canonical resolution for multi-service predefined channels", (
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const amcThrillers = PREDEFINED_CHANNELS["amcthrillers"];
@@ -184,7 +178,6 @@ describe("setServiceSelection: persistence and delete branch", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -201,7 +194,6 @@ describe("setServiceSelection: persistence and delete branch", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -229,7 +221,6 @@ describe("setServiceSelection: persistence and delete branch", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -247,7 +238,6 @@ describe("mutateServiceSelections: bulk variant", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateServiceSelections({ abc: "abc-hulu", nbc: "nbc-yttv" });
@@ -264,7 +254,6 @@ describe("mutateServiceSelections: bulk variant", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateServiceSelections({ abc: "abc-hulu", nbc: "nbc-yttv" });
@@ -289,7 +278,6 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -326,7 +314,6 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -352,7 +339,6 @@ describe("clearChannelOverrides: dual-delete with canonical-precedence return", 
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     let returned: unknown = "unset";

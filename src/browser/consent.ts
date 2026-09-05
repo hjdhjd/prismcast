@@ -139,12 +139,10 @@ const PHASE_POLICY = {
 type EmbedGatePhase = { [P in OverlayPhase]: (typeof PHASE_POLICY)[P]["embedGate"] extends true ? P : never }[OverlayPhase];
 
 /* Compile-time assertion: the video wait is the only phase whose policy may accept an embed gate. If a policy edit ever flips a second phase's embedGate to true,
- * EmbedGatePhase widens past "videoWait", the conditional below collapses to `never`, and the assignment of `true` fails to compile - a build error rather than a
- * silent widening of the privacy-sensitive auto-accept surface. The binding is read once at module scope purely so the assertion is live code, not a dead type alias.
+ * EmbedGatePhase widens past "videoWait", the conditional below collapses to `never`, and the assignment of `true` fails to compile - a build error rather than a silent
+ * widening of the privacy-sensitive auto-accept surface. The constant's underscore prefix marks it as intentionally unused: its only job is to be type-checked.
  */
-const embedGatePhaseIsVideoWaitOnly: EmbedGatePhase extends "videoWait" ? true : never = true;
-
-void embedGatePhaseIsVideoWaitOnly;
+const _embedGatePhaseIsVideoWaitOnly: EmbedGatePhase extends "videoWait" ? true : never = true;
 
 /**
  * Resolves a phase policy's window into the millisecond budget the poll's deadline is built from. Kept beside PHASE_POLICY because it is the policy's reader: every

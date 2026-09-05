@@ -24,9 +24,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    // We void the binding to satisfy the no-unused-variable lint rule: ctx is still live through its `await using` disposal hook and the helper calls below.
-    void ctx;
-
     const now = Date.now();
 
     await writePersistedJson(ctx, "health.json", {
@@ -52,7 +49,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "health.json", {
 
       channels: {},
@@ -71,7 +67,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "health.json", {
 
       channels: {},
@@ -90,7 +85,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "health.json", {
 
       channels: {},
@@ -109,7 +103,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "health.json", {
 
       channels: {},
@@ -127,7 +120,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "health.json", { schemaVersion: 1 });
 
     await loadHealthState();
@@ -147,8 +139,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
      * stale entry (timestamp - 30 days) and a fresh entry, load, then assert the stale entry is absent and the fresh entry is present.
      */
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     const now = Date.now();
     const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
@@ -182,8 +172,6 @@ describe("loadHealthState - parser branches over hand-edited / corrupt content",
     try {
 
       await using ctx = await createIntegrationContext();
-
-      void ctx;
 
       const now = Date.now();
 
@@ -219,8 +207,6 @@ describe("flushHealthState - debounced write contract", () => {
   test("a burst of mark calls coalesces into a single on-disk write after the debounce window", async () => {
 
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     // Hydrate the health store first - persistence is gated on the initial load.
     await loadHealthState();
@@ -258,8 +244,6 @@ describe("flushHealthState - debounced write contract", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
-
     // Hydrate the health store first - persistence is gated on the initial load.
     await loadHealthState();
 
@@ -280,8 +264,6 @@ describe("flushHealthState - debounced write contract", () => {
      * would observe a file missing the just-marked channel (this asserts the lost-pending-write-on-shutdown regression).
      */
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     // Hydrate the health store first - persistence is gated on the initial load.
     await loadHealthState();
@@ -315,8 +297,6 @@ describe("health schema v1 to v2 migration matrix", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
-
     const now = Date.now();
     const seeded: Record<string, number> = { "one.test": now - 1000, "three.test": now - 3000, "two.test": now - 2000 };
 
@@ -336,8 +316,6 @@ describe("health schema v1 to v2 migration matrix", () => {
      * entry-shaped, schemaVersion must be stamped 2, and migrationsApplied must carry the migration description (the beforeWrite hook emits it once non-empty).
      */
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     const now = Date.now();
 
@@ -365,8 +343,6 @@ describe("health schema v1 to v2 migration matrix", () => {
      * entry too.
      */
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     const now = Date.now();
     const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
@@ -398,8 +374,6 @@ describe("health schema v1 to v2 migration matrix", () => {
      * the runtime map unconverted and the entry-shaped deepEqual below would fail.
      */
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     const now = Date.now();
 
@@ -441,8 +415,6 @@ describe("loadHealthState - the recovery an operator sees", () => {
   test("the store's read reports the recovery once when main is corrupt and .bak supplies a usable read", async () => {
 
     await using ctx = await createIntegrationContext();
-
-    void ctx;
 
     // Hydrate the health store first - persistence is gated on the initial load.
     await loadHealthState();

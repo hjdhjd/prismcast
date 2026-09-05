@@ -20,7 +20,6 @@ describe("HLS resume state round-trip", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     saveResumeState([
@@ -46,7 +45,6 @@ describe("HLS resume state round-trip", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     saveResumeState([{ channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }]);
@@ -70,7 +68,6 @@ describe("HLS resume state round-trip", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     saveResumeState([{ channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }]);
@@ -98,7 +95,6 @@ describe("HLS resume state round-trip", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     assert.equal(getResumeSegmentIndex("never-saved"), null, "no resume data -> null");
@@ -111,7 +107,6 @@ describe("HLS resume state round-trip", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     saveResumeState([]);

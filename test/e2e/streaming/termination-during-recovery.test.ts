@@ -38,10 +38,9 @@
 import type { MonitorHandle, RecoveryMetrics } from "../../../src/streaming/recovery.ts";
 import { RECOVERY_METHODS, createRecoveryMetrics, getRecoveryMethod, recordRecoveryAttempt } from "../../../src/streaming/recovery.ts";
 import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
-import { deleteChannelStreamId, getChannelStreamId, isTerminationInitiated, setChannelStreamId,
-  terminateStream } from "../../../src/streaming/lifecycle.ts";
 import { describe, test } from "node:test";
-import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
+import { getChannelStreamId, isTerminationInitiated, setChannelStreamId, terminateStream } from "../../../src/streaming/lifecycle.ts";
+import { getStream, registerStream } from "../../../src/streaming/registry.ts";
 import assert from "node:assert/strict";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 
@@ -96,7 +95,6 @@ describe("terminateStream during active recovery - cleanup contract", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const { invocations, monitor } = makeMidRecoveryMonitor();
@@ -152,7 +150,6 @@ describe("terminateStream during active recovery - cleanup contract", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const { invocations, monitor } = makeMidRecoveryMonitor();
@@ -185,7 +182,6 @@ describe("terminateStream during active recovery - cleanup contract", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const monitorA = makeMidRecoveryMonitor();
@@ -224,10 +220,5 @@ describe("terminateStream during active recovery - cleanup contract", () => {
     // Belt-and-suspenders: after both terminations, neither id remains in the registry or the channel index.
     assert.equal(getStream(entryB.id), undefined, "stream B is gone after explicit cleanup");
     assert.equal(getChannelStreamId("nbc"), undefined, "stream B's channel index is gone after explicit cleanup");
-
-    // Use the imports that get linted as unused if no other branch references them. void prevents the linter from flagging deleteChannelStreamId / unregisterStream
-    // as unused while keeping them imported for readers who want to know what the test surface depends on.
-    void deleteChannelStreamId;
-    void unregisterStream;
   });
 });

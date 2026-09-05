@@ -77,7 +77,6 @@ describe("variant dropdown rendering under the service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([ "hulu", "sling" ]);
@@ -112,7 +111,6 @@ describe("variant dropdown rendering under the service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -140,7 +138,6 @@ describe("variant dropdown rendering under the service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices(["hulu"]);
@@ -173,7 +170,6 @@ describe("variant dropdown rendering under the service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Seed: user selected the yttv variant, then filtered services to hulu only. The yttv selection is now stale relative to the filter.
@@ -233,7 +229,6 @@ describe("variant fallback contract under service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abcnews", "abcnews-yttv");
@@ -283,7 +278,6 @@ describe("variant fallback contract under service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abcnews", "abcnews-hulu");
@@ -314,7 +308,6 @@ describe("variant fallback contract under service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices(["hulu"]);
@@ -342,7 +335,6 @@ describe("variant fallback contract under service filter", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-yttv");

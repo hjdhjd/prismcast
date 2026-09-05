@@ -110,7 +110,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: BASE_TIME_MS });
@@ -138,7 +137,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: BASE_TIME_MS });
@@ -197,7 +195,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: BASE_TIME_MS });
@@ -244,7 +241,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     mock.timers.enable({ apis: [ "Date", "setInterval", "setTimeout" ], now: BASE_TIME_MS });
@@ -318,7 +314,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Reset CONFIG state. The temp-dir-per-test pattern does not roll back module-level singletons; we explicitly clear the filter and re-enable any historically
@@ -366,7 +361,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await enablePredefinedChannels([ "abcnews", "cnn", "nbc" ]);
@@ -416,7 +410,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -464,7 +457,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -516,7 +508,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -579,7 +570,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -645,7 +635,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -706,7 +695,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -766,7 +754,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -839,7 +826,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -886,7 +872,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -957,7 +942,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -1017,7 +1001,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -1075,7 +1058,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -1136,7 +1118,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);
@@ -1198,7 +1179,6 @@ describe("pretune scheduling state machine", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateEnabledServices([]);

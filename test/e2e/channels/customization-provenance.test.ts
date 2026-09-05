@@ -22,9 +22,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    // The context is consumed entirely through await using's Symbol.asyncDispose at scope exit, so the binding must survive to end-of-scope. The void discards
-    // the otherwise-unused local to satisfy the no-unused-vars lint without defeating that disposal. The same idiom recurs throughout this suite.
-    void ctx;
     await initializePersistence(ctx);
 
     const customizations = getChannelCustomizations("abc");
@@ -40,7 +37,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -62,7 +58,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -89,7 +84,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const customizations = getChannelCustomizations("definitely-not-a-channel-x9z2");
@@ -106,7 +100,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* Set a service selection to switch active variant from canonical (abc) to abc-hulu, then write a stored binding override on abc-hulu.
@@ -135,7 +128,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");
@@ -161,7 +153,6 @@ describe("getChannelCustomizations - provenance reporting", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-hulu");

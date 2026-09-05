@@ -24,7 +24,6 @@ describe("findMatchingVariant - iteration body and positive match", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* Confirm the variant exists in the predefined catalog before we build the test fixture against it. If a refactor renamed or removed abc-cox, this
@@ -64,7 +63,6 @@ describe("findMatchingVariant - iteration body and positive match", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const form = makeForm({ name: "Truly Custom ABC", url: "https://this-is-not-a-real-abc-variant.example.test/" });
@@ -87,7 +85,6 @@ describe("findMatchingVariant - iteration body and positive match", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const canonical = getResolvedChannel("abc");

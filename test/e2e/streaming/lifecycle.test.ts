@@ -22,7 +22,6 @@ describe("stream registry lifecycle", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const entry = makeRegistryEntry({ channelName: "abc" });
@@ -46,7 +45,6 @@ describe("stream registry lifecycle", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const entry = makeRegistryEntry({ channelName: "abc" });
@@ -67,7 +65,6 @@ describe("stream registry lifecycle", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const entry = makeRegistryEntry({ channelName: "abc" });
@@ -85,7 +82,6 @@ describe("stream registry lifecycle", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const a = makeRegistryEntry({ channelName: "abc" });

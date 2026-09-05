@@ -25,7 +25,6 @@ describe("getStoredUserChannels: defensive copy", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -53,7 +52,6 @@ describe("isChannelAvailable", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* abc is a predefined canonical; with no service filter active and no disable, it appears in getAllChannels.
@@ -74,7 +72,6 @@ describe("isChannelAvailable", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await disablePredefinedChannels(["abc"]);
@@ -93,7 +90,6 @@ describe("getPredefinedScopeCounts", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const counts = getPredefinedScopeCounts();
@@ -115,7 +111,6 @@ describe("getPredefinedScopeCounts", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const before = getPredefinedScopeCounts();
@@ -144,7 +139,6 @@ describe("mutateChannelDisplayPrefs: partial update + runtime CONFIG sync", () =
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* Snapshot pre-call CONFIG values; the function's "absent fields copied from CONFIG" rule means these survive into the post-call state.
@@ -179,7 +173,6 @@ describe("markSetupCompleted: one-shot transition", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* Module-level CONFIG state is shared across tests in the same process. We only assert the post-call state is true - the pre-call state may be either
@@ -205,7 +198,6 @@ describe("setupCompleted re-inference at startup (cross-store: services -> setup
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     /* Force the precondition: a configured enabledServices list (the cross-store signal the inference reads) and an explicitly false runtime flag. CONFIG is
@@ -229,7 +221,6 @@ describe("disablePredefinedChannels/enablePredefinedChannels: empty-keys early r
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const before = await readPersistedJson(ctx, "config.json").catch(() => ({}));
@@ -302,7 +293,6 @@ describe("transformChannelTags", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const result = await transformChannelTags(

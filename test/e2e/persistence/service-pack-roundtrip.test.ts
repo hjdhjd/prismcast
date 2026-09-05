@@ -85,7 +85,7 @@ describe("service pack round-trip - export then import recovers state byte-ident
 
     await initializePersistence(ctx);
 
-    const { channelKey, domainKey, profileKey } = await seedFixture();
+    const { channelKey, profileKey } = await seedFixture();
 
     // Snapshot the on-disk bytes after seeding.
     const profilesBefore = await readFile(pathInDataDir(ctx, "profiles.json"), "utf-8");
@@ -145,10 +145,6 @@ describe("service pack round-trip - export then import recovers state byte-ident
 
     assert.equal(profilesAfter, profilesBefore, "profiles.json must be byte-identical pre-export and post-import-after-wipe");
     assert.equal(channelsAfter, channelsBefore, "channels.json must be byte-identical pre-export and post-import-after-wipe");
-
-    // The byte-equality assertions above are the full correctness check; domainKey is destructured for documentation symmetry with the other seeded keys but is
-    // not referenced again in this test, so we void it to suppress the unused-variable lint warning.
-    void domainKey;
   });
 });
 

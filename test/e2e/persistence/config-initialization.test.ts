@@ -56,9 +56,6 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    // The await-using binding owns the data dir for the test's lifetime; "void ctx;" marks it as intentionally held so the disposable is not flagged as unused
-    // before the writePersistedJson call below consumes it.
-    void ctx;
     await writePersistedJson(ctx, "config.json", { logging: { debugFilter: "tuning:hulu, recovery" } });
 
     await initializeConfiguration();
@@ -77,7 +74,6 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "config.json", { logging: { debugFilter: "tuning:hulu" } });
 
     initDebugFilter("recovery");
@@ -105,7 +101,6 @@ describe("readConfig adapter shape", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "config.json", { server: { port: 9999 } });
 
     const result = await readConfig();
@@ -140,7 +135,6 @@ describe("initializeConfiguration: invalid quality preset reset", () => {
 
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await writePersistedJson(ctx, "config.json", { streaming: { qualityPreset: "nonexistent-preset-xyz" } });
 
     await initializeConfiguration();

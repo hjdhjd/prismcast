@@ -28,7 +28,6 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const { displayRow } = generateChannelRowHtml("abc", getProfiles());
@@ -45,7 +44,6 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -65,7 +63,6 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -87,7 +84,6 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -110,7 +106,6 @@ describe("generateChannelRowHtml - canonical / variant / override visual classes
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const result = generateChannelRowHtml("definitely-not-a-channel-x9z2", getProfiles());
@@ -141,7 +136,6 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
     // with the predefined values (including the empty string for fields that have no predefined default but are still customized).
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateChannels((data) => {
@@ -187,7 +181,6 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
     // helpers skip the data-default attribute entirely (the defaultAttr ternary in generateTextField: `(options.defaultValue !== undefined) ? ... : ""`).
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const { editRow } = generateChannelRowHtml("abc", getProfiles());
@@ -206,7 +199,6 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
     // &amp; in the rendered value attribute (the assertion below matches value="...&amp;...").
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Set a customization so the field renders with the operator's value. We inspect the value attribute carrying the customized URL with its escaped & marker.
@@ -234,7 +226,6 @@ describe("generateChannelRowHtml - Profile column explicit vs auto-resolved bran
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Seed a user channel that names a REAL builtin profile explicitly. "fullscreenApi" is an existing SITE_PROFILES entry, so this resolves to a real profile
@@ -271,7 +262,6 @@ describe("generateChannelsPanel - validation errors block", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     // Put HTML markup in BOTH the field name and the message so a regression dropping escaping on either position is caught. A second plain entry asserts the
@@ -315,8 +305,6 @@ describe("generateChannelsPanel - channels file parse error block", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
-
     // Write malformed content directly (bypassing the JSON-only writePersistedJson helper) so the loader hits a genuine parse failure. The embedded markup forces
     // the parse-error message to contain <, >, and & - see the escaping assertions below.
     await writeFile(pathInDataDir(ctx, "channels.json"), "{ \"channels\": <>& }", "utf8");
@@ -356,7 +344,6 @@ describe("generateChannelsPanel - custom (user-defined) profile groups", () => {
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     await mutateProfiles((data) => {
@@ -395,7 +382,6 @@ describe("generateChannelsPanel - prose elements render as single lines", () => 
      */
     await using ctx = await createIntegrationContext();
 
-    void ctx;
     await initializePersistence(ctx);
 
     const panel = generateChannelsPanel();
