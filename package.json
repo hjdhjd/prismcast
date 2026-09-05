@@ -1,7 +1,7 @@
 {
   "name": "prismcast",
   "displayName": "PrismCast",
-  "version": "1.12.0",
+  "version": "1.12.1",
   "description": "Browser-based live TV capture server for Channels DVR, Plex, and other streaming clients.",
   "author": {
     "name": "HJD",
@@ -76,7 +76,7 @@
     "express": "5.2.1",
     "ffmpeg-for-homebridge": "2.2.2",
     "homebridge-plugin-utils": "2.3.2",
-    "morgan": "1.11.0",
+    "morgan": "1.12.0",
     "puppeteer-core": "24.43.1",
     "puppeteer-stream": "3.0.23",
     "ws": "8.21.3"
@@ -86,13 +86,13 @@
     "@types/compression": "1.8.1",
     "@types/express": "5.0.6",
     "@types/morgan": "1.9.10",
-    "@types/node": "26.2.0",
+    "@types/node": "26.4.1",
     "@types/ws": "8.18.1",
     "eslint": "9.39.2",
-    "happy-dom": "20.11.6",
+    "happy-dom": "20.14.0",
     "nodemon": "3.1.14",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.67.0"
+    "typescript-eslint": "8.69.0"
   },
   "allowScripts": {
     "ffmpeg-for-homebridge": true
