@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.13.0 (2026-09-25)
+  * New feature: a hide selector for site profiles - name a page element in a profile and PrismCast hides it before capture, so a banner or offer bar a site paints over its player stays out of your recording. The builtin CNN.com profile uses it to keep CNN's subscription offer bar out of the picture.
+  * Fix: a tune that meets a Chrome that can no longer start captures now heals itself instead of failing - the tune waits for PrismCast's capture check to confirm the problem, Chrome is relaunched as soon as nothing else is recording, and the tune retries once on the fresh browser. The blind second attempt 1.12.1 made before giving up is gone, since it never rescued a tune.
+  * Fix: when a tune fails during setup, Channels DVR now sees the real reason - a stream that could not be set up answers the player's request with its actual failure status instead of a generic not-found, and a tune refused for capacity tells the player when to try again, whichever way it connected.
+  * Fix: Hulu channels discover and tune again when Hulu's live guide refuses to load directly - PrismCast now enters the guide through Hulu's home page when the direct route fails.
+  * Housekeeping.
+
 ## 1.12.1 (2026-09-04)
   * Improvement: PrismCast stays out of your way while it captures - capture tabs open in the background of one shared Chrome window, your own tab stays selected and is handed back whenever a tune has to bring a capture tab forward for a moment, a capture tab you click on snaps back to its capture view within about a second, and channel discovery renders its guide in a window of its own so the shared window can stay minimized. The window also keeps whatever size and placement you last gave it.
   * Improvement: replacing a hung tab no longer puts the recording at risk - the replacement is built and tuned first while the old capture keeps running, so a replacement that fails leaves your recording exactly where it was.
