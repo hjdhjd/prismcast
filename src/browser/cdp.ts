@@ -16,9 +16,6 @@ import { systemClock } from "homebridge-plugin-utils";
  *   minimized window's output is not composed for capture to read. Which state the window should be in is decided in one place, by decideWindowVisibility in
  *   windowSync.ts; these primitives only carry it out and report back what Chrome says came of it.
  *
- * - Capture surface re-affirmation: re-issuing a capture page's own declared device metrics, which is what moves that capture's composition target back to the
- *   emulated surface.
- *
  * - Browser-level operations: Operations that affect the browser rather than a specific page, like getting the window ID for a page's target.
  *
  * CDP sessions are created per-page and must be managed carefully:
@@ -276,56 +273,4 @@ export async function unminimizeWindow(page: Page, clock: Clock = systemClock): 
       LOG.debug("browser:lifecycle", "The window reported its restore complete after %dms (%d reads).", clock.now() - startedAt, outcome.reads);
     }
   });
-}
-
-/**
- * Re-issues a capture page's own declared device metrics. Chrome composes the capture of a selected tab from the window's fitted presentation rather than from the
- * emulated surface, and the override event is what re-selects the composition target: a capture composing the window's view of the page returns to the full
- * emulated surface, and a capture already composing that surface is left exactly as it was. Callable at any time, from anywhere, at any frequency, because the
- * values sent are the ones Puppeteer has already declared on this page - nothing about the page's emulation changes.
- *
- * The command is issued raw rather than through page.setViewport, which drops an override whose values match the standing one. It is the event, not a change of
- * values, that does the work here.
- * @param page - The page to re-affirm. A page carrying no explicitly declared density is left alone.
- * @throws Whatever the CDP send rejects with. Each trigger site decides whether that matters to it.
- */
-export async function reaffirmCaptureSurface(page: Page): Promise<void> {
-
-  /* An explicitly declared, positive density is precisely the mark of a capture page, which is what makes this function safe to fire at any page from any trigger.
-   * A page PrismCast has not emulated carries no viewport at all and falls out on the first test; a page emulated for layout declares the display's own density
-   * through Chrome's disable value of 0, which the positive test excludes. The narrowing runs in two steps because the send forwards the page's own dimensions as
-   * well: the record is nullable, and its density is optional where CDP's field is required.
-   */
-  const viewport = page.viewport();
-
-  if(!viewport) {
-
-    return;
-  }
-
-  const deviceScaleFactor = viewport.deviceScaleFactor;
-
-  if((typeof deviceScaleFactor !== "number") || !(deviceScaleFactor > 0)) {
-
-    return;
-  }
-
-  const session = await page.createCDPSession();
-
-  try {
-
-    await session.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor, height: viewport.height, mobile: false, width: viewport.width });
-  } finally {
-
-    /* The detach carries a catch of its own. A page that dies mid-send takes its session with it, and a throw raised out of this finally would replace the send's
-     * rejection with a detach failure the caller can do nothing about - the send's own reason has to reach the caller unaltered.
-     */
-    try {
-
-      await session.detach();
-    } catch {
-
-      // The session is already gone, which is the state the detach was asking for.
-    }
-  }
 }

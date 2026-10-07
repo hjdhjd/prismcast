@@ -77,7 +77,7 @@ function makeStubPage(): Page {
  * acquireCaptureStream yields a real PassThrough so the real createCaptureSession has a stream to own (no extension protocol), startOverlayHandling records each
  * poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the
  * density step and answers with a fixed surface so the capture constraints it feeds stay total, and installActivationHeal and reaffirmCaptureSurface record the
- * two surface-re-affirmation steps in place of page injection and raw CDP. createPageWithCapture defaults every one of these to the real functions; substituting
+ * activation heal and the surface re-affirmation rather than performing them. createPageWithCapture defaults every one of these to the real functions; substituting
  * them here is what keeps the call off a live browser, and recording the acquisition alongside the rest is what makes their order observable.
  */
 const deps: CreatePageWithCaptureDeps = {

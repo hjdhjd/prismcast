@@ -12,7 +12,7 @@ import { getCachedTabId, installStrayOpenTabReaper, onTabActivation } from "./ta
 import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
-import { minimizeWindow, readWindowPlacement, reaffirmCaptureSurface, unminimizeWindow, withCDPSession } from "./cdp.ts";
+import { minimizeWindow, readWindowPlacement, unminimizeWindow, withCDPSession } from "./cdp.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
@@ -1290,6 +1290,40 @@ export async function emulateCaptureSurface(page: Page): Promise<{ height: numbe
 export async function emulateLayoutSurface(page: Page): Promise<{ height: number; width: number }> {
 
   return declareSurface(page, NATIVE_DENSITY);
+}
+
+/**
+ * Re-issues a capture page's own standing device-metrics override. Chrome composes the capture of a selected tab from the window's fitted presentation rather than
+ * from the emulated surface, and re-sending the page's standing override is what moves the composition back to the emulated surface, while a capture already
+ * composing that surface is left exactly as it was. Callable at any time, from anywhere, at any frequency, because the values sent are the ones Puppeteer has
+ * already declared on this page - nothing about the page's emulation changes.
+ *
+ * The re-issue goes through the page's own emulation session, the one Puppeteer keeps on the page's primary target, because the override is only as durable as
+ * the session that holds it and Chrome restores the window's view size when a session that declared one detaches.
+ * @param page - The page to re-affirm. A page carrying no explicitly declared density is left alone.
+ * @throws Whatever the viewport setter rejects with. Each trigger site decides whether that matters to it.
+ */
+export async function reaffirmCaptureSurface(page: Page): Promise<void> {
+
+  /* An explicitly declared, positive density is precisely the mark of a capture page, which is what makes this function safe to fire at any page from any trigger.
+   * A page PrismCast has not emulated carries no viewport at all and falls out on the first test; a page emulated for layout declares the display's own density
+   * through Chrome's disable value of 0, which the positive test excludes.
+   */
+  const viewport = page.viewport();
+
+  if(!viewport) {
+
+    return;
+  }
+
+  const deviceScaleFactor = viewport.deviceScaleFactor;
+
+  if((typeof deviceScaleFactor !== "number") || !(deviceScaleFactor > 0)) {
+
+    return;
+  }
+
+  await page.setViewport(viewport);
 }
 
 /**

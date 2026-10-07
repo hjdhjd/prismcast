@@ -13,6 +13,7 @@
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
+ *   - reaffirmCaptureSurface (the re-issue of a capture page's standing surface declaration, driven through a recording double that reports the standing record)
  *   - pickCarrierPage / isCarrierPage (the one rule for a page whose session may carry a command aimed at the shared window)
  *   - noteSharedWindow / resolveSharedWindowCarrier / confirmSharedWindowPlacement (the shared window's recorded identity, and the two topology answers the
  *     tab-selection executor is given so an opener-anchored tab can be placed and confirmed)
@@ -35,7 +36,7 @@ import { afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildLaunchOptions, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface,
   ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab,
   installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement,
-  noteSharedWindow, pickCarrierPage,
+  noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface,
   registerManagedPage, resolveSharedWindowCarrier, seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking, startStalePageCleanup,
   stopBrowserRestartChecking, stopStalePageCleanup, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -652,6 +653,84 @@ describe("emulateLayoutSurface", () => {
 
       CONFIG.streaming.qualityPreset = originalPreset;
     }
+  });
+});
+
+/* The page double the re-affirmation rows run against, in makeCapturePage's shape with a viewport reader beside the recording setter: viewport answers with the
+ * standing record a row hands it, and setViewport records each declaration in call order, or rejects with the failure a row hands it. The page answers nothing
+ * else, because the re-issue reads the standing record and declares it back, and that is all it does.
+ * @param options - The standing record the page reports and the setter failure to simulate.
+ * @param options.setViewportError - The error setViewport rejects with, when the row wants a failing declaration.
+ * @param options.viewport - The record page.viewport() answers with. Null models a page carrying no emulation at all.
+ * @returns The recorded declarations and the page to hand to reaffirmCaptureSurface.
+ */
+function makeReaffirmPage(options: { setViewportError?: Error; viewport: Nullable<DeclaredSurface> }): { declared: DeclaredSurface[]; page: Page } {
+
+  const declared: DeclaredSurface[] = [];
+
+  return {
+
+    declared,
+    page: {
+
+      setViewport: async (viewport: DeclaredSurface): Promise<void> => {
+
+        if(options.setViewportError) {
+
+          throw options.setViewportError;
+        }
+
+        declared.push(viewport);
+      },
+      viewport: (): Nullable<DeclaredSurface> => options.viewport
+    } as unknown as Page
+  };
+}
+
+describe("reaffirmCaptureSurface", () => {
+
+  test("re-issues the page's standing viewport once through the viewport setter", async () => {
+
+    /* Deliberately not a preset size. No quality preset is 1400x788, so this declaration can only come from an implementation that re-declares the page's own
+     * standing record - one that reached for the configured preset would declare a preset's dimensions and fail here.
+     */
+    const { declared, page } = makeReaffirmPage({ viewport: { deviceScaleFactor: 2, height: 788, width: 1400 } });
+
+    await reaffirmCaptureSurface(page);
+
+    assert.deepEqual(declared, [{ deviceScaleFactor: 2, height: 788, width: 1400 }], "one declaration, carrying exactly the standing record the page reports");
+  });
+
+  test("declares nothing for a page whose standing density is zero", async () => {
+
+    // A layout page declares a density of 0, Chrome's disable value, which marks it as a page nobody captures, and the guard is what makes the re-issue safe to
+    // fire at any page from any trigger.
+    const { declared, page } = makeReaffirmPage({ viewport: { deviceScaleFactor: 0, height: 1080, width: 1920 } });
+
+    await reaffirmCaptureSurface(page);
+
+    assert.deepEqual(declared, [], "nothing is declared on a page carrying no explicit density");
+  });
+
+  test("declares nothing for a page carrying no viewport at all", async () => {
+
+    // The launch declares no default viewport, so a page PrismCast never declares a surface on reports a null record. The record itself has to be tested, not only
+    // the density it would carry.
+    const { declared, page } = makeReaffirmPage({ viewport: null });
+
+    await reaffirmCaptureSurface(page);
+
+    assert.deepEqual(declared, [], "nothing is declared on an un-emulated page");
+  });
+
+  test("rejects with the viewport setter's own rejection", async () => {
+
+    // Establishment's own re-affirmation runs on a resource stack that unwinds on any throw, so the failure has to reach the caller unaltered rather than being
+    // swallowed here.
+    const failure = new Error("synthetic viewport rejection");
+    const { page } = makeReaffirmPage({ setViewportError: failure, viewport: { deviceScaleFactor: 2, height: 788, width: 1400 } });
+
+    await assert.rejects(reaffirmCaptureSurface(page), (error: Error): boolean => error === failure, "the setter's own rejection reaches the caller");
   });
 });
 

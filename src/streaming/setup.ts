@@ -3,10 +3,9 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, confirmSharedWindowPlacement,
-  emulateCaptureSurface, emulateLayoutSurface, getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal,
-  noteBrowserCaptureImpaired, registerManagedPage, resolveSharedWindowCarrier, setCaptureProbe, syncWindowVisibility,
-  unregisterManagedPage } from "../browser/index.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, confirmSharedWindowPlacement, emulateCaptureSurface,
+  emulateLayoutSurface, getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal, noteBrowserCaptureImpaired, reaffirmCaptureSurface,
+  registerManagedPage, resolveSharedWindowCarrier, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, isChannelSelectionProfile } from "../types/index.ts";
 import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
@@ -39,7 +38,6 @@ import { monitorPlaybackHealth } from "./monitor.ts";
 import { mutateChannels } from "../config/userChannels.ts";
 import { openSharedWindowTab } from "../browser/tabSelection.ts";
 import { pipeline } from "node:stream/promises";
-import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { startOverlayHandling } from "../browser/consent.ts";
 import { systemClock } from "homebridge-plugin-utils";
 

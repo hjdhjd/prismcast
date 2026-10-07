@@ -17,7 +17,7 @@ import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, 
   isHardwareAccelerated, makePendingCaptureIdentity } from "./registry.ts";
 import { applyVideoStyles, buildVideoSelectorType, checkVideoPresence, enforceVideoVolume, ensurePlayback, findVideoContext, getVideoState, tuneToChannel,
   validateVideoElement, verifyFullscreen } from "../browser/video.ts";
-import { getCaptureImpairment, syncWindowVisibility } from "../browser/index.ts";
+import { getCaptureImpairment, reaffirmCaptureSurface, syncWindowVisibility } from "../browser/index.ts";
 import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
@@ -29,7 +29,6 @@ import { getClientSummary } from "./clients.ts";
 import { getPresetViewport } from "../config/presets.ts";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { getShowName } from "./showInfo.ts";
-import { reaffirmCaptureSurface } from "../browser/cdp.ts";
 import { refreshNativeManifest } from "../native/index.ts";
 import { systemClock } from "homebridge-plugin-utils";
 
