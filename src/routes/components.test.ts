@@ -5,9 +5,9 @@
  * user-provided text, and the optional-flag fork in each generator. The wizard modal generator lives in components.wizard.test.ts to keep both files under
  * the per-file LOC cap.
  */
+import { BADGE_VARIANTS, generateAlert, generateBadge, generateButton, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert,
+  generateStatusIndicator, generateTextInput } from "./components.ts";
 import { describe, test } from "node:test";
-import { generateAlert, generateBadge, generateButton, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert, generateStatusIndicator,
-  generateTextInput } from "./components.ts";
 import assert from "node:assert/strict";
 
 describe("generateAlert", () => {
@@ -174,18 +174,41 @@ describe("generateButton", () => {
 
 describe("generateBadge", () => {
 
-  test("emits a span with badge-<variant> class and escaped label", () => {
+  test("emits a span with the badge-<variant> class for every variant", () => {
 
-    const html = generateBadge("Custom", "custom");
+    for(const variant of BADGE_VARIANTS) {
 
-    assert.equal(html, "<span class=\"badge badge-custom\">Custom</span>");
+      assert.equal(generateBadge("Label", { variant }), "<span class=\"badge badge-" + variant + "\">Label</span>");
+    }
   });
 
   test("escapes the label", () => {
 
-    const html = generateBadge("<b>", "builtin");
+    const html = generateBadge("<b>", { variant: "tag" });
 
-    assert.match(html, /&lt;b&gt;/);
+    assert.equal(html, "<span class=\"badge badge-tag\">&lt;b&gt;</span>");
+  });
+
+  test("emits the title through the attribute serializer, escaped, and no title attribute without one", () => {
+
+    assert.equal(generateBadge("Restart", { title: "Takes \"effect\" <soon>", variant: "restart" }),
+      "<span class=\"badge badge-restart\" title=\"Takes &quot;effect&quot; &lt;soon&gt;\">Restart</span>");
+    assert.doesNotMatch(generateBadge("Restart", { variant: "restart" }), /title=/, "a badge without a title carries no title attribute");
+  });
+
+  test("emits the class, the click action, the title, then each data attribute in its own order, a data value escaped", () => {
+
+    const html = generateBadge("news", {
+
+      action: "start-tag-rename",
+      className: "tag-editable",
+      dataAttributes: { "tag-name": "say \"hi\"", zeta: "z" },
+      title: "Click to rename",
+      variant: "tag"
+    });
+
+    assert.equal(html, "<span class=\"badge badge-tag tag-editable\" data-click-action=\"start-tag-rename\" title=\"Click to rename\" " +
+      "data-tag-name=\"say &quot;hi&quot;\" data-zeta=\"z\">news</span>");
   });
 });
 

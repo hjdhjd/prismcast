@@ -41,6 +41,22 @@ describe("generateBaseStyles", () => {
     assert.match(css, /\.badge \{/);
   });
 
+  test("declares the flag and tag badge shapes after the base badge rule, so they win at equal specificity", () => {
+
+    // The shape rules and the base rule are single-class selectors, so the cascade settles their shared properties by order: each shape rule must start later
+    // in the stylesheet than the base rule it overrides.
+    const css = generateBaseStyles();
+    const base = css.indexOf(".badge {");
+    const flag = css.indexOf(".badge-flag { font-size: 10px; letter-spacing: 0.5px; padding: 1px 5px; text-transform: uppercase; }");
+    const tag = css.indexOf(".badge-tag { border: 1px solid var(--border-default); border-radius: 10px; font-weight: 500; margin: 1px 2px; padding: 1px 7px; }");
+
+    assert.notEqual(base, -1, "the base badge rule is declared");
+    assert.notEqual(flag, -1, "the flag shape rule is declared");
+    assert.notEqual(tag, -1, "the tag shape rule is declared");
+    assert.ok(flag > base, "the flag shape rule follows the base rule");
+    assert.ok(tag > base, "the tag shape rule follows the base rule");
+  });
+
   test("declares button variant classes", () => {
 
     const css = generateBaseStyles();

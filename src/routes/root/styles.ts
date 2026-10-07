@@ -222,8 +222,7 @@ export function generateLandingPageStyles(): string {
     ".streams-table .details-recovery { white-space: nowrap; flex-shrink: 0; }",
     ".streams-table .details-memory { white-space: nowrap; flex-shrink: 0; }",
     ".streams-table .client-count { font-size: 0.85em; color: var(--text-muted); margin-right: 8px; white-space: nowrap; }",
-    ".streams-table .native-badge { font-size: 10px; font-weight: 600; color: var(--badge-flag-text); background: var(--badge-flag-bg); padding: 1px 5px; ",
-    "  border-radius: var(--radius-sm); vertical-align: middle; letter-spacing: 0.5px; text-transform: uppercase; }",
+    ".streams-table .badge { vertical-align: middle; }",
 
     // Log viewer styles.
     ".log-viewer { background: var(--dark-surface-bg); color: var(--dark-text-secondary); padding: 15px; border-radius: var(--radius-lg); ",
@@ -309,16 +308,15 @@ export function generateLandingPageStyles(): string {
     ".channel-table tr.channel-unavailable td { color: var(--text-tertiary); }",
     ".channel-table tr.channel-unavailable.channel-disabled { opacity: 0.5; }",
     ".channel-table.hide-disabled tr.channel-unavailable { display: none; }",
-    // Tag pills - rounded labels for tag display in the channel table, tag manager modal, and edit form. The pill shape provides clear visual identity and
-    // scannability across all surfaces where tags appear.
-    ".tag-badge { display: inline-block; padding: 1px 7px; margin: 1px 2px; font-size: 11px; border-radius: 10px; " +
-      "background: var(--surface-elevated); border: 1px solid var(--border-default); color: var(--text-secondary); font-weight: 500; }",
-    ".tag-badge-deleted { opacity: 0.5; text-decoration: line-through; }",
+    // Tag pills - rounded labels for tag display in the channel table, tag manager modal, and edit form. Each pill draws through the badge component's tag
+    // variant, which carries its color and its pill shape across every surface where tags appear, so the rules here add only what one surface needs: a deleted
+    // tag in the tag manager reads struck through.
+    ".tag-deleted .badge { opacity: 0.5; text-decoration: line-through; }",
     // Tag checkbox grid in the channel edit form. Each tag is a pill-styled checkbox label.
     ".tag-checkbox-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }",
     ".tag-checkbox-label { cursor: pointer; }",
     ".tag-checkbox-label input { margin: 0; }",
-    ".tag-checkbox-label .tag-badge { cursor: pointer; }",
+    ".tag-checkbox-label .badge { cursor: pointer; }",
 
     // Inline tag edit portal - shared dropdown portaled to <body> via JS. The td has the dropdown class so the document click handler recognizes it as a dropdown
     // context. The display override preserves table-cell layout (the .dropdown class defaults to display: inline-block for div-based dropdowns).
@@ -672,10 +670,9 @@ export function generateLandingPageStyles(): string {
     // State label showing the current provider or source for existing channels.
     ".browse-state-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }",
 
-    // Tier badge for subscription tier labeling (e.g., free channels on Sling). Positioned in the metadata area on the far right.
-    ".browse-tier-badge { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: var(--radius-sm); flex-shrink: 0; ",
-    "text-transform: uppercase; letter-spacing: 0.5px; }",
-    ".browse-tier-badge.tier-free { color: var(--badge-flag-text); background: var(--badge-flag-bg); }",
+    // Tier badge for subscription tier labeling (e.g., free channels on Sling), drawn through the badge component's flag variant. Positioned in the metadata area
+    // on the far right, where it never shrinks as the channel name truncates.
+    ".browse-channel-meta .badge { flex-shrink: 0; }",
 
     // Affiliate subtitle shown inline after the channel name.
     ".browse-affiliate { font-size: 11px; color: var(--text-muted); font-weight: 400; }",

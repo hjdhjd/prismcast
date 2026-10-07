@@ -38,6 +38,7 @@ import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
 import assert from "node:assert/strict";
 import { clientEscapeHtml } from "../../../src/routes/root/scripts/clientEscape.ts";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
+import { generateBadge } from "../../../src/routes/components.ts";
 
 // The bits-per-second a native stream reports in the rows that assert how the codec detail line renders a native bitrate.
 const NATIVE_BANDWIDTH = 5000000;
@@ -1228,7 +1229,7 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
     })();
   });
 
-  test("native streams render the 'Native' badge", () => {
+  test("native streams render the 'Native' badge through the badge builder", () => {
 
     return (async (): Promise<void> => {
 
@@ -1240,9 +1241,29 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
 
       handlers.renderStreamsTable(harness.ctx);
 
-      const tbody = ctx.document.getElementById("streams-tbody");
+      const badge = ctx.document.querySelector(".stream-row[data-id=\"n\"] .stream-info .badge-flag");
 
-      assert.match(tbody?.innerHTML ?? "", /class="native-badge" title="Native HLS"/);
+      assert.ok(badge, "the native badge must render in the stream-info cell");
+      assert.equal(badge.outerHTML, generateBadge("Native", { title: "Native HLS", variant: "flag" }), "the badge is the builder's native badge");
+    })();
+  });
+
+  test("hardware-accelerated capture streams render the codec badge through the badge builder", () => {
+
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const harness = makeHandlerContext(asDomDocument(ctx), {
+
+        state: { streamData: { "h": makeStream({ captureCodec: "H264", hardwareAccelerated: true, id: "h", streamingMode: "capture" }) } }
+      });
+
+      handlers.renderStreamsTable(harness.ctx);
+
+      const badge = ctx.document.querySelector(".stream-row[data-id=\"h\"] .stream-info .badge-flag");
+
+      assert.ok(badge, "the hardware badge must render in the stream-info cell");
+      assert.equal(badge.outerHTML, generateBadge("⚡ H264", { title: "Hardware accelerated", variant: "flag" }), "the badge is the builder's hardware badge");
     })();
   });
 
@@ -1779,9 +1800,9 @@ describe("status.handlers: handleStreamHealthChanged (SSE handler)", () => {
       // streamingMode change is structural - triggers full re-render.
       handlers.handleStreamHealthChanged({ ...original, streamingMode: "native" }, harness.ctx);
 
-      const rowAfter = ctx.document.querySelector(".stream-row[data-id=\"x\"]");
+      const badgeAfter = ctx.document.querySelector(".stream-row[data-id=\"x\"] .badge-flag");
 
-      assert.match(rowAfter?.innerHTML ?? "", /class="native-badge" title="Native HLS"/,
+      assert.equal(badgeAfter?.outerHTML, generateBadge("Native", { title: "Native HLS", variant: "flag" }),
         "structural change must surface via full table render");
     })();
   });
@@ -2236,8 +2257,8 @@ describe("status.handlers: status-field render-boundary escaping", () => {
 
   test("renderStreamsTable entity-encodes the captureCodec in the hardware-accelerated badge", () => {
 
-    /* The native badge in the table concatenates captureCodec into innerHTML. We render a crafted hardware-accelerated stream and assert the badge markup carries
-     * the codec as entities with no live element parsed out of the table.
+    /* The hardware badge carries captureCodec into the table's innerHTML through the badge builder. We render a crafted hardware-accelerated stream, read its
+     * badge through the flag variant's class, and assert the badge markup carries the codec as entities with no live element parsed out of the table.
      */
     return (async (): Promise<void> => {
 
@@ -2249,7 +2270,7 @@ describe("status.handlers: status-field render-boundary escaping", () => {
 
       handlers.renderStreamsTable(harness.ctx);
 
-      const badge = ctx.document.querySelector(".stream-row[data-id=\"x\"] .native-badge");
+      const badge = ctx.document.querySelector(".stream-row[data-id=\"x\"] .badge-flag");
 
       assert.ok(badge, "the hardware-accelerated badge must render");
       assert.match(badge.innerHTML, /&lt;svg/, "the codec must be entity-encoded in the badge markup");

@@ -34,6 +34,7 @@
  */
 import type { DisposableDomTestContext, DomTestContextOptions } from "../../helpers/dom.helpers.ts";
 import { describe, test } from "node:test";
+import type { SettingsSaveData } from "../../../src/routes/config/settings.ts";
 import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
 
@@ -122,6 +123,182 @@ function appendFormField(ctx: DisposableDomTestContext, html: string): void {
     "const f = document.getElementById('settings-form');" +
     "if(f) f.insertAdjacentHTML('beforeend', " + JSON.stringify(html) + ");"
   );
+}
+
+/**
+ * Builds the body a settings save or import answers on success: every member the client reads, at the value a save that changed nothing carries, with the
+ * row's own members laid over them. A member a row sets to undefined is dropped by JSON, which is how a row answers a body without a message.
+ * @param members - The members the row answers with.
+ * @returns The complete response body.
+ */
+function saveResponse(members: Partial<SettingsSaveData & { message: string }> = {}): Record<string, unknown> {
+
+  const complete: SettingsSaveData & { message: string; success: boolean } = {
+
+    activeStreams: 0,
+    changes: { applied: [], deferred: [], nextStream: [], rejected: [] },
+    deferred: false,
+    message: "Configuration saved.",
+    pending: [],
+    success: true,
+    willRestart: false
+  };
+
+  return { ...complete, ...members };
+}
+
+/**
+ * One URL's answer in a routed fetch stub.
+ */
+interface FetchRoute {
+
+  // The JSON body the answer carries.
+  readonly body?: unknown;
+
+  // False for a refused answer.
+  readonly ok?: boolean;
+
+  // True for a request that fails rather than answers.
+  readonly throws?: boolean;
+}
+
+/**
+ * What a row's page left behind once an outcome settled.
+ */
+interface SettledPage {
+
+  // The number of page reloads the row requested.
+  readonly reloads: number;
+
+  // The toast stored for the page after a reload, or null when none was stored.
+  readonly stored: { readonly message: string; readonly type: string } | null;
+
+  // Every toast showing in place, as its message text, read apart from its buttons, and its type.
+  readonly toasts: readonly { readonly text: string; readonly type: string }[];
+}
+
+/**
+ * Installs a fetch stub that answers by URL. Each route answers its body, a refused answer when ok is false, or a failed request when throws is set; a URL no
+ * route names fails the request, so a row sees every request it did not plan for.
+ * @param ctx - The DOM context.
+ * @param routes - The answers keyed by URL.
+ */
+function routeFetch(ctx: DisposableDomTestContext, routes: Readonly<Record<string, FetchRoute>>): void {
+
+  ctx.evaluate(
+    "window.harnessRoutes = " + JSON.stringify(routes) + ";" +
+    "window.fetch = (url) => {" +
+    "  const route = window.harnessRoutes[url];" +
+    "  if(!route || route.throws) return Promise.reject(new Error('The request failed.'));" +
+    "  return Promise.resolve({ ok: route.ok !== false, json: () => Promise.resolve(route.body || {}) });" +
+    "};"
+  );
+}
+
+/**
+ * Replaces location.reload with a counter and setInterval with a stub that keeps the poll callback, so a row observes a requested reload without leaving the
+ * page and drives the restart wait one poll at a time.
+ * @param ctx - The DOM context.
+ */
+function stubReloadAndPoll(ctx: DisposableDomTestContext): void {
+
+  ctx.evaluate(
+    "window.harnessReloads = 0;" +
+    "Object.defineProperty(window.location, 'reload', { configurable: true, value: () => { window.harnessReloads++; } });" +
+    "window.harnessPoll = null;" +
+    "window.setInterval = (callback) => { window.harnessPoll = callback; return 1; };" +
+    "window.clearInterval = () => {};"
+  );
+}
+
+/**
+ * Runs the restart wait's poll callback a number of times, letting each run settle before the next.
+ * @param ctx - The DOM context.
+ * @param times - How many polls to drive.
+ */
+async function drivePolls(ctx: DisposableDomTestContext, times: number): Promise<void> {
+
+  for(let poll = 0; poll < times; poll++) {
+
+    ctx.evaluate("window.harnessPoll()");
+
+    // eslint-disable-next-line no-await-in-loop -- each poll settles before the next one runs, as the browser's one-second interval would have it.
+    await ctx.flushAsync();
+  }
+}
+
+/**
+ * Reads what a row's page left behind: the toast stored for after a reload, the reloads requested, and every toast showing, as text and type.
+ * @param ctx - The DOM context.
+ * @returns The stored toast or null, the reload count, and the toasts in place.
+ */
+function settled(ctx: DisposableDomTestContext): SettledPage {
+
+  return {
+
+    reloads: ctx.evaluate("window.harnessReloads") as number,
+    stored: JSON.parse((ctx.evaluate("sessionStorage.getItem('pendingToast')") as string | null) ?? "null") as SettledPage["stored"],
+    toasts: ctx.evaluateJson("Array.from(document.querySelectorAll('#toast-container .toast')).map((toast) => ({ text: toast.firstChild.textContent, " +
+      "type: ['error', 'info', 'success', 'warning'].find((type) => toast.classList.contains(type)) || '' }))") as SettledPage["toasts"]
+  };
+}
+
+/**
+ * Sends a settings save or a settings import through the page's own handler, the response answered by the routes the row installed.
+ * @param ctx - The DOM context.
+ * @param flow - Which flow to drive.
+ */
+async function sendThrough(ctx: DisposableDomTestContext, flow: "import" | "save"): Promise<void> {
+
+  if(flow === "save") {
+
+    ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
+    appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
+    ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
+  } else {
+
+    ctx.evaluate("window.confirm = () => true;");
+    ctx.evaluate("window.importConfig({ files: [ new File(['{}'], 'cfg.json', { type: 'application/json' }) ], value: 'unset' });");
+  }
+
+  await ctx.flushAsync();
+}
+
+/**
+ * Renders the page with the service flag set to a value, or unset, then runs resetAllToDefaults with a confirm stub that records its question and agrees. The
+ * caller's flag is restored once the page is disposed, so no later row inherits it.
+ * @param service - The PRISMCAST_SERVICE value to render with, or undefined to render with the flag unset.
+ * @returns The questions the reset asked and the toasts it left showing.
+ */
+async function resetAllWithService(service: string | undefined): Promise<{ asked: readonly string[]; toasts: SettledPage["toasts"] }> {
+
+  const original = process.env["PRISMCAST_SERVICE"];
+  const assign = (value: string | undefined): void => {
+
+    if(value === undefined) {
+
+      Reflect.deleteProperty(process.env, "PRISMCAST_SERVICE");
+
+      return;
+    }
+
+    process.env["PRISMCAST_SERVICE"] = value;
+  };
+
+  assign(service);
+
+  try {
+
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate("window.harnessAsked = []; window.confirm = (question) => { window.harnessAsked.push(question); return true; };");
+    ctx.evaluate("window.resetAllToDefaults()");
+
+    return { asked: ctx.evaluateJson("window.harnessAsked") as string[], toasts: settled(ctx).toasts };
+  } finally {
+
+    assign(original);
+  }
 }
 
 describe("config.ts: subtab initialization", () => {
@@ -305,6 +482,21 @@ describe("config.ts: window.resetAllToDefaults / resetTabToDefaults", () => {
     assert.equal(ctx.evaluate("document.getElementById('in-panel').value"), "def", "in-panel input must reset");
     assert.equal(ctx.evaluate("document.getElementById('out-of-panel').value"), "y", "out-of-panel input must NOT reset");
   });
+
+  test("resetAllToDefaults names the Save Settings button in its question and its toast with the service flag set and unset", async () => {
+
+    /* The question and the toast each name the Save button through the label constant, composed when the handler runs. The page renders once with the
+     * service flag set and once with it unset, and each render asks and toasts the same sentences, read verbatim.
+     */
+    const expected = {
+
+      asked: ["Reset ALL settings to defaults? Click Save Settings after to apply."],
+      toasts: [{ text: "All settings reset to defaults. Click Save Settings to apply changes.", type: "info" }]
+    };
+
+    assert.deepEqual(await resetAllWithService("1"), expected, "with PRISMCAST_SERVICE set to 1");
+    assert.deepEqual(await resetAllWithService(undefined), expected, "with PRISMCAST_SERVICE unset");
+  });
 });
 
 describe("config.ts: preset application (onPresetChange via streaming-qualityPreset change event)", () => {
@@ -398,7 +590,7 @@ describe("config.ts: window.submitSettingsForm", () => {
     appendFormField(ctx, "<input name=\"bar.c\" type=\"text\" value=\"3\">");
     appendFormField(ctx, "<button id=\"save-btn\" type=\"submit\">Save</button>");
 
-    installFetchSpy(ctx);
+    installFetchSpy(ctx, saveResponse());
 
     /* Submit through the public surface: dispatch a synthetic 'submit' event on the form; the inline onsubmit calls submitSettingsForm. We invoke the function
      * directly with a synthetic event whose preventDefault is a no-op.
@@ -433,7 +625,7 @@ describe("config.ts: window.submitSettingsForm", () => {
     ctx.evaluate("document.getElementById('settings-form').innerHTML = '';");
     appendFormField(ctx, "<div class=\"form-group\"><input name=\"x\" type=\"text\" class=\"form-input error\"><div class=\"form-error dynamic\">Old</div></div>");
 
-    installFetchSpy(ctx);
+    installFetchSpy(ctx, saveResponse());
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
 
@@ -514,7 +706,7 @@ describe("config.ts: window.submitSettingsForm", () => {
     assert.match(toast.textContent, /Failed to save configuration: Network down\./);
   });
 
-  test("success without willRestart shows the data.message as an info toast (no restart polling)", async () => {
+  test("success without willRestart shows the data.message as a success toast (no restart polling)", async () => {
 
     /* The simple success path: response.ok && data.success && !willRestart -> toast with data.message. We confirm the message lands.
      */
@@ -524,7 +716,8 @@ describe("config.ts: window.submitSettingsForm", () => {
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, message: 'Configuration saved.', willRestart: false }) });"
+      "window.harnessSave = " + JSON.stringify(saveResponse({ message: "Configuration saved." })) + ";" +
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(window.harnessSave) });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -550,9 +743,9 @@ describe("config.ts: window.submitSettingsForm", () => {
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
-      "  success: true, willRestart: true, deferred: true, activeStreams: 3" +
-      "}) });"
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
+      JSON.stringify(saveResponse({ activeStreams: 3, deferred: true, willRestart: true })) +
+      ") });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -659,7 +852,7 @@ describe("config.ts: window.importConfig", () => {
      */
     await using ctx = await setupConfigRuntime();
 
-    installFetchSpy(ctx);
+    installFetchSpy(ctx, saveResponse());
     ctx.evaluate("window.confirm = () => false;");
 
     /* FileReader is happy-dom-provided. We construct a synthetic File-like with text content, hand it to importConfig as the input.files[0]. The cleanest way is
@@ -680,7 +873,8 @@ describe("config.ts: window.importConfig", () => {
 
     await using ctx = await setupConfigRuntime();
 
-    installFetchSpy(ctx, { message: "Imported.", success: true });
+    stubReloadAndPoll(ctx);
+    installFetchSpy(ctx, saveResponse({ message: "Imported." }));
     ctx.evaluate("window.confirm = () => true;");
     ctx.evaluate(
       "const input = { files: [ new File(['{\\\"foo\\\":\\\"bar\\\"}'], 'cfg.json', { type: 'application/json' }) ], value: 'unset' };" +
@@ -706,7 +900,8 @@ describe("config.ts: window.importConfig", () => {
      */
     await using ctx = await setupConfigRuntime();
 
-    installFetchSpy(ctx);
+    stubReloadAndPoll(ctx);
+    installFetchSpy(ctx, saveResponse());
     ctx.evaluate("window.confirm = () => true;");
     ctx.evaluate(
       "window.harnessFileInput = { files: [ new File(['{\\\"x\\\":1}'], 'a.json', { type: 'application/json' }) ], value: 'unset' };" +
@@ -1722,9 +1917,9 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
     appendFormField(ctx, "<input name=\"x\" type=\"text\" value=\"1\">");
 
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
-      "  success: true, willRestart: true, deferred: true, activeStreams: 2" +
-      "}) });"
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
+      JSON.stringify(saveResponse({ activeStreams: 2, deferred: true, willRestart: true })) +
+      ") });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -1751,9 +1946,9 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
     /* Open the dialog via the deferred-submit response. With one seeded stream the count stays > 0 so the dialog persists past updateRestartDialogStatus.
      */
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
-      "  success: true, willRestart: true, deferred: true, activeStreams: 1" +
-      "}) });"
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
+      JSON.stringify(saveResponse({ activeStreams: 1, deferred: true, willRestart: true })) +
+      ") });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -1787,9 +1982,9 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
 
     ctx.evaluate("window.activeStreamCount = 1;");
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
-      "  success: true, willRestart: true, deferred: true, activeStreams: 1" +
-      "}) });"
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
+      JSON.stringify(saveResponse({ activeStreams: 1, deferred: true, willRestart: true })) +
+      ") });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -1822,9 +2017,9 @@ describe("config.ts: restart-dialog cancel and force flows", () => {
 
     ctx.evaluate("window.activeStreamCount = 1;");
     ctx.evaluate(
-      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({" +
-      "  success: true, willRestart: true, deferred: true, activeStreams: 1" +
-      "}) });"
+      "window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
+      JSON.stringify(saveResponse({ activeStreams: 1, deferred: true, willRestart: true })) +
+      ") });"
     );
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -2300,5 +2495,199 @@ describe("config.ts: the outside-click closer decides by containment", () => {
 
     assert.equal(ctx.document.getElementById("oc-menu")?.classList.contains("show"), false,
       "a click outside every dropdown and menu must close the open menu");
+  });
+});
+
+describe("config.ts: a save or import outcome placed from the server's response", () => {
+
+  test("a save rewrites every pending slot from the response: an entry fills and shows its slot, and a slot with no entry is emptied and hidden", async () => {
+
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate("document.body.insertAdjacentHTML('beforeend', '<div class=\"form-pending\" data-pending-path=\"a.one\">Earlier marker.</div>" +
+      "<div class=\"form-pending\" data-pending-path=\"b.two\" hidden></div>');");
+    routeFetch(ctx, { "/config": { body: saveResponse({ pending: [{ kind: "restart", path: "b.two", text: "<b>x</b>" }] }) } });
+    await sendThrough(ctx, "save");
+
+    const slots = ctx.evaluateJson("Array.from(document.querySelectorAll('[data-pending-path]')).map((slot) => ({ hidden: slot.hidden, " +
+      "path: slot.getAttribute('data-pending-path'), text: slot.textContent, elements: slot.children.length }))");
+
+    assert.deepEqual(slots, [ { elements: 0, hidden: true, path: "a.one", text: "" }, { elements: 0, hidden: false, path: "b.two", text: "<b>x</b>" } ],
+      "the earlier marker is cleared, and the new one lands as text with no element created");
+  });
+
+  for(const [ title, members, type ] of [
+    [ "a clean save", {}, "success" ],
+    [ "a save answering a refusal", { changes: { applied: [], deferred: [], nextStream: [], rejected: [{ path: "hdhr.enabled", reason: "Refused." }] } }, "info" ],
+    [ "a save leaving a setting pending with nothing refused", { pending: [{ kind: "restart", path: "server.port", text: "Waiting." }] }, "info" ]
+  ] as const) {
+
+    test(title + " shows its message as a " + type + " toast", async () => {
+
+      await using ctx = await setupConfigRuntime();
+
+      stubReloadAndPoll(ctx);
+      routeFetch(ctx, { "/config": { body: saveResponse({ ...members, message: "Saved here." }) } });
+      await sendThrough(ctx, "save");
+
+      assert.deepEqual(settled(ctx).toasts, [{ text: "Saved here.", type }]);
+    });
+  }
+
+  test("a save scheduling an immediate restart starts the wait and shows no message toast, and one deferring it opens the dialog whose cancel toasts in place",
+    async () => {
+
+      await using ctx = await setupConfigRuntime();
+
+      stubReloadAndPoll(ctx);
+      routeFetch(ctx, { "/config": { body: saveResponse({ message: "Not shown.", willRestart: true }) } });
+      await sendThrough(ctx, "save");
+
+      assert.deepEqual(settled(ctx).toasts, [{ text: "Restarting server...", type: "info" }], "the wait began and the response's message is not toasted");
+
+      ctx.evaluate("document.getElementById('toast-container').innerHTML = '';");
+      ctx.evaluate("window.activeStreamCount = 2;");
+      routeFetch(ctx, { "/config": { body: saveResponse({ activeStreams: 2, deferred: true, message: "Not shown.", willRestart: true }) } });
+      await sendThrough(ctx, "save");
+
+      assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "the dialog opens");
+      assert.deepEqual(settled(ctx).toasts, [], "the response's message is not toasted");
+
+      ctx.evaluate("window.cancelPendingRestart()");
+
+      assert.deepEqual(settled(ctx), { reloads: 0, stored: null,
+        toasts: [{ text: "Restart cancelled. Settings marked Restart take effect after PrismCast restarts.", type: "info" }] }, "the cancel toasts in place");
+    });
+
+  for(const [ title, members, stored ] of [
+    [ "a clean import", { message: "Imported here." }, { message: "Imported here.", type: "success" } ],
+    [ "an import whose body omits its message", { message: undefined }, { message: "Configuration imported.", type: "success" } ],
+    [ "an import answering a refusal", { changes: { applied: [], deferred: [], nextStream: [], rejected: [{ path: "hdhr.enabled", reason: "Refused." }] },
+      message: "Refused here." }, { message: "Refused here.", type: "info" } ],
+    [ "an import leaving a setting pending with nothing refused", { message: "Pending here.", pending: [{ kind: "restart", path: "server.port",
+      text: "Waiting." }] }, { message: "Pending here.", type: "info" } ]
+  ] as const) {
+
+    test(title + " stores its toast and reloads the page", async () => {
+
+      await using ctx = await setupConfigRuntime();
+
+      stubReloadAndPoll(ctx);
+      routeFetch(ctx, { "/config/import": { body: saveResponse(members) } });
+      await sendThrough(ctx, "import");
+
+      assert.deepEqual(settled(ctx), { reloads: 1, stored, toasts: [] });
+    });
+  }
+
+  test("an import opening the restart dialog stores nothing and reloads nothing until its cancel, which stores the cancel sentence and reloads", async () => {
+
+    await using ctx = await setupConfigRuntime();
+
+    stubReloadAndPoll(ctx);
+    ctx.evaluate("window.activeStreamCount = 2;");
+    routeFetch(ctx, { "/config/import": { body: saveResponse({ activeStreams: 2, deferred: true, willRestart: true }) } });
+    await sendThrough(ctx, "import");
+
+    assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "the dialog opens");
+    assert.deepEqual(settled(ctx), { reloads: 0, stored: null, toasts: [] }, "nothing is stored and no reload is requested while the dialog is open");
+
+    ctx.evaluate("window.cancelPendingRestart()");
+
+    assert.deepEqual(settled(ctx), { reloads: 1, stored: { message: "Restart cancelled. Settings marked Restart take effect after PrismCast restarts.",
+      type: "info" }, toasts: [] }, "the cancel stores its sentence and reloads");
+  });
+
+  test("an import scheduling an immediate restart starts the wait with nothing stored and no reload", async () => {
+
+    await using ctx = await setupConfigRuntime();
+
+    stubReloadAndPoll(ctx);
+    routeFetch(ctx, { "/config/import": { body: saveResponse({ willRestart: true }) } });
+    await sendThrough(ctx, "import");
+
+    assert.deepEqual(settled(ctx), { reloads: 0, stored: null, toasts: [{ text: "Restarting server...", type: "info" }] });
+  });
+});
+
+describe("config.ts: every restart path settles the way its opener would", () => {
+
+  const failures = [
+    { act: "window.forceRestart()", route: { ok: false }, sentence: "Failed to restart: Restart failed", title: "a forced restart meeting a refused answer" },
+    { act: "window.forceRestart()", route: { throws: true }, sentence: "Failed to restart: The request failed.", title: "a forced restart meeting a throw" },
+    { act: "window.activeStreamCount = 0; window.updateRestartDialogStatus()", route: { throws: true },
+      sentence: "Failed to trigger restart. Please restart manually.", title: "the auto-restart at zero streams meeting a throw" },
+    { act: "window.activeStreamCount = 0; window.updateRestartDialogStatus()", route: { ok: false },
+      sentence: "Failed to trigger restart. Please restart manually.", title: "the auto-restart at zero streams meeting a refused answer" }
+  ] as const;
+
+  for(const flow of [ "import", "save" ] as const) {
+
+    for(const failure of failures) {
+
+      test(failure.title + " after " + (flow === "import" ? "an import" : "a save") + " settles as that flow does", async () => {
+
+        await using ctx = await setupConfigRuntime();
+
+        stubReloadAndPoll(ctx);
+        ctx.evaluate("window.activeStreamCount = 2;");
+        routeFetch(ctx, { ["/config" + (flow === "import" ? "/import" : "")]: { body: saveResponse({ activeStreams: 2, deferred: true, willRestart: true }) },
+          "/config/restart-now": failure.route });
+        await sendThrough(ctx, flow);
+
+        assert.equal(getDisplay(ctx, "restart-dialog"), "flex", "precondition: the dialog is open");
+
+        ctx.evaluate(failure.act);
+        await ctx.flushAsync();
+
+        assert.deepEqual(settled(ctx), (flow === "import") ? { reloads: 1, stored: { message: failure.sentence, type: "error" }, toasts: [] } :
+          { reloads: 0, stored: null, toasts: [{ text: failure.sentence, type: "error" }] });
+      });
+    }
+
+    test("a restart wait that times out after " + (flow === "import" ? "an import" : "a save") + " settles on the thirtieth failed poll", async () => {
+
+      await using ctx = await setupConfigRuntime();
+
+      stubReloadAndPoll(ctx);
+      routeFetch(ctx, { ["/config" + (flow === "import" ? "/import" : "")]: { body: saveResponse({ willRestart: true }) }, "/health": { throws: true } });
+      await sendThrough(ctx, flow);
+      await drivePolls(ctx, 29);
+
+      const restarting = { text: "Restarting server...", type: "info" };
+
+      assert.deepEqual(settled(ctx), { reloads: 0, stored: null, toasts: [restarting] }, "nothing settles before the thirtieth poll");
+
+      await drivePolls(ctx, 1);
+
+      const sentence = "Server did not restart within 30 seconds. Please check the server manually.";
+
+      assert.deepEqual(settled(ctx), (flow === "import") ? { reloads: 1, stored: { message: sentence, type: "error" }, toasts: [restarting] } :
+        { reloads: 0, stored: null, toasts: [ restarting, { text: sentence, type: "error" } ] });
+    });
+  }
+
+  test("an upgrade's restart wait that times out toasts in place on the thirtieth failed poll", async () => {
+
+    await using ctx = await setupConfigRuntime();
+
+    stubReloadAndPoll(ctx);
+    ctx.evaluate("window.activeStreamCount = 0;");
+    routeFetch(ctx, { "/health": { throws: true }, "/upgrade": { body: { success: true, willRestart: true } }, "/upgrade/info": { body: { upgradeable: true } } });
+    ctx.evaluate("window.startUpgrade()");
+    await ctx.flushAsync();
+    await drivePolls(ctx, 29);
+
+    const sentence = "Server did not restart within 30 seconds. Please check the server manually.";
+
+    assert.equal(settled(ctx).toasts.some((toast) => toast.type === "error"), false, "no error toast before the thirtieth poll");
+
+    await drivePolls(ctx, 1);
+
+    const after = settled(ctx);
+
+    assert.equal(after.toasts.filter((toast) => (toast.text === sentence) && (toast.type === "error")).length, 1, "the timeout toasts once, in place");
+    assert.equal(after.stored, null, "nothing is stored");
+    assert.equal(after.reloads, 0, "no reload is requested");
   });
 });

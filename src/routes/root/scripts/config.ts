@@ -2,9 +2,9 @@
  *
  * config.ts: Client-side JavaScript generator for the PrismCast configuration subtab.
  */
+import { PENDING_PATH_ATTRIBUTE, RESTART_SETTINGS_SENTENCE, SAVE_SETTINGS_LABEL } from "../../config/vocabulary.ts";
 import { ACTIONS } from "../../clientActions.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
-import { isRunningAsService } from "../../../utils/index.ts";
 
 /**
  * Generates the configuration subtab script block containing the form handling, preset auto-fill, and import/export client-side logic. Functions are exposed on
@@ -33,15 +33,14 @@ export function generateConfigSubtabScript(): string {
     presetBlocks.push(block);
   }
 
-  // Pass service status to JavaScript for conditional messaging.
-  const isService = isRunningAsService();
-
   return [
     "<script>",
     "(function() {",
 
-    // Service mode flag for conditional UI behavior.
-    "  const isServiceMode = " + String(isService) + ";",
+    // The words this script shares with the page, each emitted once through JSON.stringify so no constant carries a quoting rule of its own.
+    "  const PENDING_PATH_ATTRIBUTE = " + JSON.stringify(PENDING_PATH_ATTRIBUTE) + ";",
+    "  const RESTART_SETTINGS_SENTENCE = " + JSON.stringify(RESTART_SETTINGS_SENTENCE) + ";",
+    "  const SAVE_SETTINGS_LABEL = " + JSON.stringify(SAVE_SETTINGS_LABEL) + ";",
 
     // Preset values for auto-filling bitrate and frame rate.
     "  const presetValues = {",
@@ -88,12 +87,15 @@ export function generateConfigSubtabScript(): string {
     // Interval handle for restart polling.
     "  let restartPollInterval = null;",
 
-    // Track whether a restart is pending (deferred due to active streams).
-    "  let pendingRestart = false;",
+    /* The restart dialog's one piece of state: null while no dialog is open, otherwise the settle step of the save or import that opened it. The dialog's
+     * cancel, its forced restart and the automatic restart at zero streams each read the step and clear the state before acting, so every way the dialog ends
+     * settles as its opener would: a save's in place, an import's by a reload.
+     */
+    "  let pendingRestart = null;",
 
-    // Show the pending restart dialog when streams are active.
-    "  function showPendingRestartDialog(streamCount) {",
-    "    pendingRestart = true;",
+    // Show the pending restart dialog when streams are active, holding the opener's settle step for whichever way the dialog ends.
+    "  function showPendingRestartDialog(streamCount, settle) {",
+    "    pendingRestart = { settle: settle };",
     "    document.getElementById('restart-stream-count').textContent = streamCount;",
     "    document.getElementById('restart-dialog').style.display = 'flex';",
     "    updateRestartDialogStatus();",
@@ -111,51 +113,58 @@ export function generateConfigSubtabScript(): string {
     "    const count = activeStreamCount;",
     "    document.getElementById('restart-stream-count').textContent = count;",
     "    if((count === 0) && pendingRestart) {",
-    "      pendingRestart = false;",
+    "      const settle = pendingRestart.settle;",
+    "      pendingRestart = null;",
     "      document.getElementById('restart-dialog').style.display = 'none';",
-    "      triggerRestart();",
+    "      triggerRestart(settle);",
     "    }",
     "  }",
     "  window.updateRestartDialogStatus = updateRestartDialogStatus;",
 
-    // Cancel the pending restart.
+    // Cancel the pending restart. The settings marked Restart wait for the next restart, and the opener's settle step carries the sentence that says so.
     "  window.cancelPendingRestart = () => {",
-    "    pendingRestart = false;",
+    "    if(!pendingRestart) return;",
+    "    const settle = pendingRestart.settle;",
+    "    pendingRestart = null;",
     "    document.getElementById('restart-dialog').style.display = 'none';",
-    "    showToast('Restart cancelled. Changes will apply on next restart.', 'info');",
+    "    settle('Restart cancelled. ' + RESTART_SETTINGS_SENTENCE, 'info');",
     "  };",
 
     // Force immediate restart despite active streams.
     "  window.forceRestart = async () => {",
-    "    pendingRestart = false;",
+    "    if(!pendingRestart) return;",
+    "    const settle = pendingRestart.settle;",
+    "    pendingRestart = null;",
     "    document.getElementById('restart-dialog').style.display = 'none';",
     "    try {",
     "      const res = await fetch('/config/restart-now', { method: 'POST' });",
     "      if(res.ok) {",
-    "        waitForServerRestart();",
+    "        waitForServerRestart(settle);",
     "      } else {",
     "        const data = await res.json();",
     "        throw new Error(data.message || 'Restart failed');",
     "      }",
     "    } catch(err) {",
-    "      showToast('Failed to restart: ' + err.message, 'error');",
+    "      settle('Failed to restart: ' + err.message, 'error');",
     "    }",
     "  };",
 
-    // Trigger restart (called when streams reach 0).
-    "  async function triggerRestart() {",
+    // Trigger restart (called when streams reach 0). A refused request settles as a failed one does, so the user learns the restart did not happen.
+    "  async function triggerRestart(settle) {",
     "    try {",
     "      const res = await fetch('/config/restart-now', { method: 'POST' });",
-    "      if(res.ok) {",
-    "        waitForServerRestart();",
+    "      if(!res.ok) {",
+    "        throw new Error('The restart request was refused.');",
     "      }",
+    "      waitForServerRestart(settle);",
     "    } catch(err) {",
-    "      showToast('Failed to trigger restart. Please restart manually.', 'error');",
+    "      settle('Failed to trigger restart. Please restart manually.', 'error');",
     "    }",
     "  }",
 
-    // Wait for server restart by polling /health, then reload.
-    "  function waitForServerRestart() {",
+    // Wait for server restart by polling /health, then reload. A wait that times out settles through its caller's step, and a wait started while another polls
+    // replaces the earlier interval and its step.
+    "  function waitForServerRestart(settle) {",
     "    let attempts = 0;",
     "    const maxAttempts = 30;",
     "    showToast('Restarting server...', 'info', 0);",
@@ -173,10 +182,37 @@ export function generateConfigSubtabScript(): string {
     "        if(attempts >= maxAttempts) {",
     "          clearInterval(restartPollInterval);",
     "          restartPollInterval = null;",
-    "          showToast('Server did not restart within 30 seconds. Please check the server manually.', 'error');",
+    "          settle('Server did not restart within 30 seconds. Please check the server manually.', 'error');",
     "        }",
     "      }",
     "    }, 1000);",
+    "  }",
+
+    /* The server composes every pending-marker sentence and the client only places it. A response carries the whole pending view after the save, so every slot
+     * is rewritten from it: a marker the save cleared is emptied and hidden, and nothing the page showed before survives. A save settles in place, because the
+     * form already holds what it posted; an import settles by a reload carrying its toast, because it can change every field, the grey-outs and the channel
+     * table at once, and a form left showing the pre-import values would post them back on the next save. Green is kept for a save that refused nothing and
+     * left nothing waiting, so a blue toast tells the user to look at the markers.
+     */
+    "  function renderPendingSettings(pending) {",
+    "    const texts = new Map(pending.map((entry) => [ entry.path, entry.text ]));",
+    "    for(const slot of document.querySelectorAll('[' + PENDING_PATH_ATTRIBUTE + ']')) {",
+    "      const text = texts.get(slot.getAttribute(PENDING_PATH_ATTRIBUTE)) ?? '';",
+    "      slot.textContent = text;",
+    "      slot.hidden = (text === '');",
+    "    }",
+    "  }",
+    "  function applyConfigurationOutcome(data, options) {",
+    "    if(data.willRestart) {",
+    "      if(data.deferred) {",
+    "        showPendingRestartDialog(data.activeStreams, options.settle);",
+    "      } else {",
+    "        waitForServerRestart(options.settle);",
+    "      }",
+    "      return;",
+    "    }",
+    "    const type = ((data.changes.rejected.length === 0) && (data.pending.length === 0)) ? 'success' : 'info';",
+    "    options.settle(data.message || options.fallbackMessage, type);",
     "  }",
 
     // Open the changelog modal and fetch content dynamically. Also checks whether an upgrade button should be shown. Changelog items are escaped through the shared
@@ -250,7 +286,7 @@ export function generateConfigSubtabScript(): string {
     "      const upgradeRes = await fetch('/upgrade', { method: 'POST' });",
     "      const result = await upgradeRes.json();",
     "      if(result.success && result.willRestart) {",
-    "        waitForServerRestart();",
+    "        waitForServerRestart(showToast);",
     // A success that did not ask us to poll can still mean the upgrade is unfinished, and the server's message is what tells those outcomes apart. An upgrade
     // handed to a detached helper is still running when the response lands, and it names the helper's log file so the user can follow it; an upgrade that ran
     // here is done. We render whatever the server said, keep a fallback sentence for a response that carries no message, and show the still-running case as an
@@ -439,7 +475,7 @@ export function generateConfigSubtabScript(): string {
     "        updateDependentFields(cbInput.id);",
     "      }",
     "    }",
-    "    showToast('Settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
+    "    showToast('Settings reset to defaults. Click ' + SAVE_SETTINGS_LABEL + ' to apply changes.', 'info');",
     "  };",
 
     // Read the advanced section expansion state from localStorage. Returns the parsed object or {} if missing or corrupted. Single source of truth for
@@ -488,7 +524,7 @@ export function generateConfigSubtabScript(): string {
 
     // Reset all settings to defaults (client-side only).
     "  window.resetAllToDefaults = () => {",
-    "    if(!confirm('Reset ALL settings to defaults? Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' after to apply.')) return;",
+    "    if(!confirm('Reset ALL settings to defaults? Click ' + SAVE_SETTINGS_LABEL + ' after to apply.')) return;",
     "    const form = document.getElementById('settings-form');",
     "    if(!form) return;",
     "    const inputs = form.querySelectorAll('input[data-default], select[data-default]');",
@@ -504,7 +540,7 @@ export function generateConfigSubtabScript(): string {
     "        updateDependentFields(cbInput.id);",
     "      }",
     "    }",
-    "    showToast('All settings reset to defaults. Click ' + (isServiceMode ? 'Save & Restart' : 'Save Settings') + ' to apply changes.', 'info');",
+    "    showToast('All settings reset to defaults. Click ' + SAVE_SETTINGS_LABEL + ' to apply changes.', 'info');",
     "  };",
 
     // Submit settings form via AJAX.
@@ -537,15 +573,8 @@ export function generateConfigSubtabScript(): string {
     "      const data = await res.json();",
     "      if(saveBtn) saveBtn.classList.remove('loading');",
     "      if(res.ok && data.success) {",
-    "        if(data.willRestart) {",
-    "          if(data.deferred) {",
-    "            showPendingRestartDialog(data.activeStreams);",
-    "          } else {",
-    "            waitForServerRestart();",
-    "          }",
-    "        } else {",
-    "          showToast(data.message || 'Configuration saved.', 'info');",
-    "        }",
+    "        renderPendingSettings(data.pending);",
+    "        applyConfigurationOutcome(data, { fallbackMessage: 'Configuration saved.', settle: showToast });",
     "      } else if(data.errors) {",
     "        displayFieldErrors(data.errors);",
     "        showToast('Please correct the errors below.', 'error');",
@@ -585,7 +614,7 @@ export function generateConfigSubtabScript(): string {
     "    reader.onload = async (e) => {",
     "      try {",
     "        const config = JSON.parse(e.target.result);",
-    "        if(confirm('Import this configuration? The server may restart to apply changes.')) {",
+    "        if(confirm('Import this configuration? ' + RESTART_SETTINGS_SENTENCE)) {",
     "          const res = await fetch('/config/import', {",
     "            body: JSON.stringify(config),",
     "            headers: { 'Content-Type': 'application/json' },",
@@ -593,16 +622,7 @@ export function generateConfigSubtabScript(): string {
     "          });",
     "          const data = await res.json();",
     "          if(res.ok && data.success) {",
-    // A rejected change means the import was written to disk but a handler refused to apply it live, so the message carries a rejection notice. Demote the toast
-    // from green success to an informational notice in that case - reserving green for a clean import keeps the positive signal accurate.
-    "            showToast(data.message || 'Configuration imported.', (data.rejectedCount > 0) ? 'info' : 'success');",
-    "            if(data.willRestart) {",
-    "              if(data.deferred) {",
-    "                showPendingRestartDialog(data.activeStreams);",
-    "              } else {",
-    "                waitForServerRestart();",
-    "              }",
-    "            }",
+    "            applyConfigurationOutcome(data, { fallbackMessage: 'Configuration imported.', settle: showToastAfterReload });",
     "          } else {",
     "            throw new Error(extractErrorMessage(data, 'Import failed'));",
     "          }",

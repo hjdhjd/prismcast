@@ -117,7 +117,7 @@ describe("HTML escaping guarantees - table renderer", () => {
 
     // The visible label inside the badge must be escaped. We anchor on the badge class and the entity-encoded form so a regression that drops escaping on the
     // label specifically (but keeps it on the data attribute) surfaces here.
-    assert.match(body, /class="tag-badge tag-editable"[^>]*>news &lt;important&gt; &amp; &quot;hot&quot;</,
+    assert.match(body, /class="badge badge-tag tag-editable"[^>]*>news &lt;important&gt; &amp; &quot;hot&quot;</,
       "the visible badge label must contain entity-encoded special characters");
 
     // Negative: the literal unescaped tag must not appear anywhere - that would mean at least one of the four positions skipped escaping.

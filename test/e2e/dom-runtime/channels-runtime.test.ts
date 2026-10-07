@@ -32,6 +32,7 @@ import type { DisposableDomTestContext, DomTestContextOptions } from "../../help
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
+import { generateBadge } from "../../../src/routes/components.ts";
 
 /**
  * Shared bootstrap for the suite. Boots a DOM context, flips the setup-modal's data-setup-completed attribute to 'true' so the channels.ts IIFE does not auto-open
@@ -175,18 +176,20 @@ function clickWizardNext(ctx: DisposableDomTestContext, modalId: string): void {
 
 /**
  * Opens the Browse Channels wizard and ensures browseWizard.state.slug is set, so subsequent submitBrowseChannels calls have the service context they need.
- * Replaces window.fetch with a stub that returns an empty channel list for /services/* discovery (so the step-2 spinner resolves cleanly without a real
- * upstream), then opens the modal. The first available service is selected: either by openBrowseModal's single-service short-circuit, or by clicking the
- * first .wizard-provider-card in the rendered step-1 grid (which invokes the closure-scoped selectBrowseService).
+ * Replaces window.fetch with a stub that answers /services/* discovery with the channels the caller supplies, an empty list by default (so the step-2 spinner
+ * resolves cleanly without a real upstream), then opens the modal. The first available service is selected: either by openBrowseModal's single-service
+ * short-circuit, or by clicking the first .wizard-provider-card in the rendered step-1 grid (which invokes the closure-scoped selectBrowseService).
  *
  * Side effect: assigns window.__harnessClickedSlug to the slug that was clicked (or empty string if openBrowseModal short-circuited). Tests that need to
  * predict the entry's serviceSlug field can read this value via ctx.evaluate("window.__harnessClickedSlug").
+ * @param ctx - The DOM context.
+ * @param discovered - The channels the discovery stub answers with.
  */
-async function openBrowseAndSelectFirstService(ctx: DisposableDomTestContext): Promise<void> {
+async function openBrowseAndSelectFirstService(ctx: DisposableDomTestContext, discovered: readonly Readonly<Record<string, unknown>>[] = []): Promise<void> {
 
   ctx.evaluate(
     "window.fetch = (url) => Promise.resolve({ ok: true, json: () => Promise.resolve(" +
-    "  url.indexOf('/services/') === 0 ? [] : { success: true }" +
+    "  url.indexOf('/services/') === 0 ? " + JSON.stringify(discovered) + " : { success: true }" +
     ") });"
   );
 
@@ -990,6 +993,28 @@ describe("channels.ts: openBrowseModal", () => {
     assert.equal(getDisplay(ctx, "browse-modal"), "flex");
     assert.notEqual(ctx.evaluate("(document.getElementById('browse-content').innerHTML || '').length"), 0,
       "browse-content must be populated by the open call (either picker grid or step-2 spinner)");
+  });
+
+  test("draws the server builder's free badge once, on the free channel's metadata, and none on a channel without a tier", async () => {
+
+    /* The browse view renders in the browser from the provider's discovery, so the free badge the server's builder drew reaches it as a constant in the script.
+     * The discovery stub answers one free channel and one with no tier, and the rendered list must carry the builder's badge exactly once, inside the free
+     * channel's metadata span.
+     */
+    await using ctx = await setupChannelsRuntime();
+
+    await openBrowseAndSelectFirstService(ctx, [ { channelSelector: "FREE1", name: "Free One", tier: "free" }, { channelSelector: "PAID1", name: "Paid One" } ]);
+
+    const badge = generateBadge("Free", { variant: "flag" });
+    const content = ctx.document.getElementById("browse-content")?.innerHTML ?? "";
+    const freeMeta = ctx.evaluate("document.querySelector('.browse-channel-cb[data-selector=\"FREE1\"]').closest('label')" +
+      ".querySelector('.browse-channel-meta').innerHTML") as string;
+    const paidMeta = ctx.evaluate("document.querySelector('.browse-channel-cb[data-selector=\"PAID1\"]').closest('label')" +
+      ".querySelector('.browse-channel-meta').innerHTML") as string;
+
+    assert.equal(content.split(badge).length - 1, 1, "the browse list carries the builder's free badge exactly once");
+    assert.ok(freeMeta.includes(badge), "the badge sits in the free channel's metadata");
+    assert.equal(paidMeta.includes("badge"), false, "a channel without a tier carries no badge");
   });
 });
 

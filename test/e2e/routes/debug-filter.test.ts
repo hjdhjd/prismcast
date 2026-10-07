@@ -93,7 +93,8 @@ describe("POST /debug - the filter applies at once and persists through the vali
 
     const info = t.mock.method(LOG, "info", () => undefined);
     const response = await postToggle(app, "tuning:hulu");
-    const restartOutcome = info.mock.calls.filter((call) => call.arguments[0] === "Configuration saved. Please restart PrismCast for changes to take effect.");
+    const restartOutcome = info.mock.calls.filter((call) => call.arguments[0] ===
+      "Configuration saved. Restart PrismCast for the settings marked Restart to take effect.");
 
     assert.equal(response.status, 303, "the redirect answers");
     assert.equal(restartOutcome.length, 1, "the save earned the restart the hand edit calls for, and the page logged it");

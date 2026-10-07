@@ -93,16 +93,16 @@ export function generateThemeStyles(): string {
     "  --stream-tint-error: rgba(192, 57, 43, 0.1);",
 
     // Badge colors.
-    "  --badge-builtin-bg: #e9ecef;",
-    "  --badge-builtin-text: #6c757d;",
-    "  --badge-custom-bg: #d4edda;",
-    "  --badge-custom-text: #155724;",
-    "  --badge-override-bg: #fff3cd;",
-    "  --badge-override-text: #856404;",
     "  --badge-env-bg: #ffc107;",
     "  --badge-env-text: #856404;",
     "  --badge-flag-bg: #3498db;",
     "  --badge-flag-text: #ffffff;",
+    "  --badge-next-stream-bg: #d6eaf8;",
+    "  --badge-next-stream-text: #1b4f72;",
+    "  --badge-restart-bg: #fdebd0;",
+    "  --badge-restart-text: #7e5109;",
+    "  --badge-tag-bg: var(--surface-elevated);",
+    "  --badge-tag-text: var(--text-secondary);",
 
     // User channel row tint - subtle highlight for custom/override channels.
     "  --user-channel-tint: rgba(52, 152, 219, 0.06);",
@@ -235,16 +235,16 @@ export function generateThemeStyles(): string {
     "    --stream-tint-error: rgba(192, 57, 43, 0.2);",
 
     // Badge colors - adjusted for dark backgrounds.
-    "    --badge-builtin-bg: #3d3d3d;",
-    "    --badge-builtin-text: #b0b0b0;",
-    "    --badge-custom-bg: #1e3a2f;",
-    "    --badge-custom-text: #75d99c;",
-    "    --badge-override-bg: #3d3520;",
-    "    --badge-override-text: #f5d67b;",
     "    --badge-env-bg: #5a4d2a;",
     "    --badge-env-text: #f5d67b;",
     "    --badge-flag-bg: #2980b9;",
     "    --badge-flag-text: #ffffff;",
+    "    --badge-next-stream-bg: #1f3a4d;",
+    "    --badge-next-stream-text: #85c1e9;",
+    "    --badge-restart-bg: #4a3520;",
+    "    --badge-restart-text: #f0b27a;",
+    "    --badge-tag-bg: var(--surface-elevated);",
+    "    --badge-tag-text: var(--text-secondary);",
 
     // User channel row tint - slightly stronger for dark backgrounds.
     "    --user-channel-tint: rgba(93, 173, 226, 0.12);",

@@ -2,6 +2,7 @@
  *
  * ui.ts: Shared UI components and utilities for PrismCast web pages.
  */
+import { BADGE_VARIANTS } from "./components.ts";
 import { generateThemeStyles } from "./theme.ts";
 
 /* This module provides reusable UI components used across PrismCast's server-rendered pages, including the landing page and the debug page. It ensures
@@ -12,7 +13,7 @@ import { generateThemeStyles } from "./theme.ts";
 // Re-export components for convenience.
 export { generateAlert, generateBadge, generateButton, generatePanelHeader, generateSection, generateSelect, generateSimpleAlert,
   generateStatusIndicator, generateTextInput } from "./components.ts";
-export type { AlertType, BadgeVariant, ButtonOptions, ButtonSize, ButtonVariant, SelectOption, SelectOptions, TextInputOptions } from "./components.ts";
+export type { AlertType, BadgeOptions, BadgeVariant, ButtonOptions, ButtonSize, ButtonVariant, SelectOption, SelectOptions, TextInputOptions } from "./components.ts";
 
 /**
  * Options for configuring the tab script behavior.
@@ -98,13 +99,18 @@ export function generateBaseStyles(): string {
     ".btn-sm { padding: 6px 12px; font-size: 12px; white-space: nowrap; }",
     ".btn:disabled { opacity: 0.6; cursor: not-allowed; }",
 
-    // Badge styles.
+    // Badge styles. Each variant's colors come from one rule mapped over BADGE_VARIANTS, so a variant added to the tuple gets its rule here and owes its
+    // background and text tokens in both theme blocks.
     ".badge { display: inline-block; padding: 3px 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; }",
-    ".badge-builtin { background: var(--badge-builtin-bg); color: var(--badge-builtin-text); }",
-    ".badge-custom { background: var(--badge-custom-bg); color: var(--badge-custom-text); }",
-    ".badge-override { background: var(--badge-override-bg); color: var(--badge-override-text); }",
-    ".badge-env { background: var(--badge-env-bg); color: var(--badge-env-text); }",
-    ".badge-flag { background: var(--badge-flag-bg); color: var(--badge-flag-text); }",
+    ...BADGE_VARIANTS.map((variant) => ".badge-" + variant + " { background: var(--badge-" + variant + "-bg); color: var(--badge-" + variant + "-text); }"),
+
+    // The flag and tag variants keep a shape of their own: the flag is the compact uppercase label the stream table and the browse view draw, and the tag is the outlined
+    // pill every tag surface draws. Each rule follows the base rule above, whose properties it overrides at equal specificity.
+    ".badge-flag { font-size: 10px; letter-spacing: 0.5px; padding: 1px 5px; text-transform: uppercase; }",
+    ".badge-tag { border: 1px solid var(--border-default); border-radius: 10px; font-weight: 500; margin: 1px 2px; padding: 1px 7px; }",
+
+    // A badge inside a settings field's label sits apart from the label text.
+    ".form-label .badge { margin-left: 10px; }",
 
     // Status indicator styles.
     ".status-indicator { white-space: nowrap; }",
@@ -155,17 +161,14 @@ export function generateBaseStyles(): string {
     ".form-unit { color: var(--text-secondary); font-size: 13px; min-width: 40px; }",
     ".form-description { color: var(--text-secondary); font-size: 13px; margin-top: 5px; }",
     ".form-default { color: var(--text-muted); font-size: 12px; margin-top: 3px; }",
-    ".form-env { color: var(--status-warning-text); font-size: 12px; margin-top: 3px; font-style: italic; }",
+    ".form-env, .form-pending { color: var(--status-warning-text); font-size: 12px; margin-top: 3px; }",
+    ".form-env { font-style: italic; }",
     ".form-error { color: var(--status-error-text); font-size: 12px; margin-top: 3px; }",
     ".form-warning { color: var(--status-warning-text); font-size: 12px; margin-top: 5px; padding: 6px 10px; background: var(--status-warning-bg); ",
     "border-radius: var(--radius-sm); }",
     ".hint { color: var(--text-secondary); font-size: 12px; margin-top: 1px; margin-bottom: 15px; }",
     ".predefined-hint { padding: 8px 12px; background: var(--surface-elevated); border-radius: var(--radius-sm); border-left: 3px solid var(--interactive-primary); }",
     ".predefined-hint a { color: var(--interactive-primary); }",
-
-    // Env badge in form labels.
-    ".env-badge { display: inline-block; background: var(--badge-env-bg); color: var(--badge-env-text); padding: 2px 8px; ",
-    "border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; margin-left: 10px; }",
 
     // Button row.
     ".button-row { margin-top: 30px; padding: 20px 0; border-top: 1px solid var(--border-default); display: flex; gap: 15px; }",

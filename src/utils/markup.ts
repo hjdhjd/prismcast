@@ -65,6 +65,10 @@ export function escapeXml(value: string): string {
   return escapeMarkup(value, XML_ENTITIES);
 }
 
+/* The status script's HANDLER_FUNCTIONS ships this function to the browser by its source, beside the badge builder that calls it, so its body references only its
+ * parameter, Object.entries and escapeHtml, each of which the browser holds by the same name. A call to any other helper leaves the shipped stream table throwing
+ * in the browser while every Node row passes, because the helper's binding exists only here.
+ */
 /**
  * Serializes a record of HTML attribute names to values into the inline fragment suitable for embedding in an opening tag. Value semantics keep this tied
  * to the way HTML actually shapes attributes: undefined and boolean false are omitted entirely; boolean true emits the attribute name alone (HTML5 boolean

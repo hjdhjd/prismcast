@@ -34,12 +34,14 @@ describe("generateConfigSubtabScript", () => {
     assert.doesNotMatch(script, /\[object Object\]/);
   });
 
-  test("interpolates the service mode flag from isRunningAsService at generation time", () => {
+  test("names the Save button through the one label constant, emitted once", () => {
 
-    // The generator stamps `const isServiceMode = true|false;` based on the service detection. Either literal must appear; the test is robust to both states.
+    // Every message that names the Save button reads the label the page renders, so the script carries the constant once, through JSON.stringify, and no
+    // mode-dependent copy of a label.
     const script = generateConfigSubtabScript();
 
-    assert.match(script, /const isServiceMode\s*=\s*(true|false);/);
+    assert.doesNotMatch(script, /Save & Restart/);
+    assert.equal(script.split("const SAVE_SETTINGS_LABEL = \"Save Settings\";").length - 1, 1, "the label constant is emitted exactly once");
   });
 
   test("interpolates VIDEO_QUALITY_PRESETS into the presetValues map", () => {
@@ -203,8 +205,8 @@ describe("generateConfigSubtabScript", () => {
 
   test("returns identical output across calls (pure derivation)", () => {
 
-    // The generator depends on VIDEO_QUALITY_PRESETS and isRunningAsService. Both are deterministic for a given runtime, so two calls produce byte-identical
-    // output.
+    // The generator depends on VIDEO_QUALITY_PRESETS and the settings vocabulary's constants. Each is fixed for a given runtime, so repeated calls produce
+    // byte-identical output.
     assert.equal(generateConfigSubtabScript(), generateConfigSubtabScript());
   });
 

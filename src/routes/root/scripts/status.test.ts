@@ -5,9 +5,13 @@
  * structural properties - presence of expected SSE event handlers, render functions, and helpers - without executing the script in any DOM runtime.
  */
 import { describe, test } from "node:test";
+import { HANDLER_FUNCTIONS } from "./status.handlers.ts";
 import assert from "node:assert/strict";
+import { clientEscapeHtml } from "./clientEscape.ts";
 import { closePuppeteerStreamWssOnIdle } from "../../../testing.helpers.ts";
+import { generateBadge } from "../../components.ts";
 import { generateStatusScript } from "./status.ts";
+import vm from "node:vm";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -168,6 +172,34 @@ describe("generateStatusScript", () => {
     const script = generateStatusScript();
 
     assert.match(script, /setInterval\(\(\) => updateDurations\(ctx\),\s*1000\)/);
+  });
+
+  test("ships the badge builder and its serializer, which run in the browser with the client escaper alone", () => {
+
+    /* The stream table draws its badges through the server's own builder, which the registry ships with the serializer it calls. Their sources run here in a bare
+     * context holding the client escaper as escapeHtml and nothing else - the one binding the browser lends them - so a builder that reached for any other
+     * helper would throw here as it would in the browser, while a Node row calling the imported builder would pass.
+     */
+    const sourceOf = (name: string): string => {
+
+      const fn = HANDLER_FUNCTIONS.find((candidate) => candidate.name === name);
+
+      assert.ok(fn, "the registry ships " + name);
+
+      return fn.toString();
+    };
+    const run = (call: string): unknown => vm.runInNewContext(sourceOf("serializeAttrs") + "\n" + sourceOf("generateBadge") + "\n" + call,
+      { escapeHtml: clientEscapeHtml });
+
+    assert.equal(run("generateBadge('Native', { title: 'Native HLS', variant: 'flag' })"), generateBadge("Native", { title: "Native HLS", variant: "flag" }),
+      "the shipped builder draws the native badge the server's builder draws");
+    assert.equal(run("generateBadge('⚡ <h264>', { title: 'Hardware accelerated', variant: 'flag' })"),
+      generateBadge("⚡ <h264>", { title: "Hardware accelerated", variant: "flag" }), "the shipped builder draws and escapes the hardware badge as the server does");
+
+    const script = generateStatusScript();
+
+    assert.match(script, /function generateBadge\(/, "the emitted script declares the badge builder");
+    assert.match(script, /function serializeAttrs\(/, "the emitted script declares the attribute serializer");
   });
 
   test("returns identical output across calls (pure derivation)", () => {

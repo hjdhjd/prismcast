@@ -7,6 +7,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../../testing.helpers.ts";
+import { generateBadge } from "../../components.ts";
 import { generateChannelsSubtabScript } from "./channels.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -89,6 +90,17 @@ describe("generateChannelsSubtabScript", () => {
 
     assert.match(script, /window\.openBrowseModal\s*=/);
     assert.match(script, /window\.submitBrowseChannels\s*=/);
+  });
+
+  test("carries the browse view's free badge as the server builder's markup and draws it on a free channel", () => {
+
+    // The browse view renders in the browser from a provider's discovery, so the server hands the script the builder's free badge once as a constant, and the
+    // tier line appends that constant rather than markup of its own.
+    const script = generateChannelsSubtabScript();
+
+    assert.ok(script.includes("const FREE_TIER_BADGE = " + JSON.stringify(generateBadge("Free", { variant: "flag" })) + ";"),
+      "the script declares the builder's free badge as one constant");
+    assert.ok(script.includes("if(ch.tier === 'free') html += FREE_TIER_BADGE;"), "the tier line appends the constant");
   });
 
   test("exposes the Setup Wizard handlers (openSetupWizard, skipSetup, finishSetup)", () => {

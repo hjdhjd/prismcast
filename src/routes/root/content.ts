@@ -2,11 +2,12 @@
  *
  * content.ts: Tab content HTML generators for the PrismCast landing page.
  */
-import { escapeHtml, isRunningAsService } from "../../utils/index.ts";
-import { generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal, generateSettingsFormFooter,
-  generateSettingsTabContent } from "../config/index.ts";
+import { REACTIVITY_BADGES, RESTART_TIMING, SAVE_SETTINGS_LABEL } from "../config/vocabulary.ts";
+import { collectPendingSettings, generateAdvancedTabContent, generateChannelsPanel, generateCustomProfilesPanel, generateProfileWizardModal,
+  generateSettingsFormFooter, generateSettingsTabContent } from "../config/index.ts";
 import { getEnvOverrides, getUITabs } from "../../config/userConfig.ts";
 import { ACTIONS } from "../clientActions.ts";
+import { escapeHtml } from "../../utils/index.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
 
 /**
@@ -32,10 +33,10 @@ function generateActiveStreamsSection(): string {
  */
 function generateBackupPanel(): string {
 
-  // Description text varies based on whether running as a managed service.
-  const restartDescription = isRunningAsService() ?
-    "The server will restart automatically to apply the imported settings." :
-    "After importing, you will need to restart PrismCast for changes to take effect.";
+  // The import note reads the same in every mode: an import applies each setting as a save would, so it names the settings that wait for a restart by the
+  // restart badge's label and timing phrase, the words every other restart promise on the page composes from.
+  const importNote = "Imported settings apply when the import completes, except those marked " + REACTIVITY_BADGES.restart.label + ", which take effect " +
+    RESTART_TIMING + ".";
 
   return [
 
@@ -55,7 +56,7 @@ function generateBackupPanel(): string {
     "</div>",
     "<div class=\"backup-section\">",
     "<h3>Import Settings</h3>",
-    "<p>Import a previously saved settings file. " + restartDescription + "</p>",
+    "<p>Import a previously saved settings file. " + escapeHtml(importNote) + "</p>",
     "<button type=\"button\" class=\"btn btn-import\" data-click-action=\"" + ACTIONS.triggerSettingsImport + "\">Import Settings</button>",
     "<input type=\"file\" id=\"import-settings-file\" accept=\".json\" data-change-action=\"" + ACTIONS.importConfig + "\">",
     "</div>",
@@ -751,7 +752,9 @@ export function generateApiReferenceContent(): string {
     "<tr><th style=\"width: 35%;\">Endpoint</th><th>Description</th></tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config</code></td>",
-    "<td>Save configuration settings. Returns <code>{ success, message, willRestart, deferred, activeStreams }</code></td>",
+    "<td>Save configuration settings. Returns <code>{ success, message, willRestart, deferred, activeStreams, changes, pending }</code>: <code>changes</code> lists ",
+    "the settings this save's reconcile applied live and applied to new streams, a retried value included, and the settings this save held for a restart or that ",
+    "were refused; <code>pending</code> lists every saved setting the running server has not taken.</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><a href=\"/config/export\"><code>GET /config/export</code></a></td>",
@@ -759,7 +762,8 @@ export function generateApiReferenceContent(): string {
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/import</code></td>",
-    "<td>Import configuration from JSON. Server restarts to apply changes (if running as service).</td>",
+    "<td>Import configuration from JSON. Returns the same fields as POST /config. When running as a service, the server restarts only for settings marked " +
+      escapeHtml(REACTIVITY_BADGES.restart.label) + ".</td>",
     "</tr>",
     "<tr>",
     "<td class=\"endpoint\"><code>POST /config/restart-now</code></td>",
@@ -1056,15 +1060,16 @@ export function generateConfigContent(): string {
 
   const tabs = getUITabs();
 
-  /* The environment overrides are read once here and handed to every generator below. Each of them renders a disabled field and a badge for the settings the
-   * environment owns, so resolving the map per generator - or per advanced section, as the pass-through would do - would walk CONFIG_METADATA and process.env
-   * once per section for an answer that cannot change inside one render.
+  /* The environment overrides and the pending view are each resolved once here and handed to every generator below in one context. The generators render a
+   * disabled field and a badge for each setting the environment owns, and a marker for each saved setting the running process has not taken, so resolving
+   * either per generator - or per advanced section, as the pass-through would do - would walk CONFIG_METADATA, process.env and the configuration gap once per
+   * section for answers that cannot change inside one render.
    */
-  const envOverrides = getEnvOverrides();
+  const context = { envOverrides: getEnvOverrides(), pending: collectPendingSettings() };
   const lines: string[] = [];
 
   // Environment variable warning if applicable.
-  if(envOverrides.size > 0) {
+  if(context.envOverrides.size > 0) {
 
     lines.push("<div class=\"warning\">");
     lines.push("<div class=\"warning-title\">Environment Variable Overrides</div>");
@@ -1096,19 +1101,17 @@ export function generateConfigContent(): string {
 
   // Settings subtab panel with non-collapsible section headers (default active subtab).
   lines.push("<div id=\"subtab-settings\" class=\"subtab-panel active\" role=\"tabpanel\">");
-  lines.push(generateSettingsTabContent(envOverrides));
+  lines.push(generateSettingsTabContent(context));
   lines.push("</div>");
 
   // Advanced subtab panel with collapsible sections.
   lines.push("<div id=\"subtab-advanced\" class=\"subtab-panel\" role=\"tabpanel\">");
-  lines.push(generateAdvancedTabContent(envOverrides));
+  lines.push(generateAdvancedTabContent(context));
   lines.push("</div>");
 
-  // Settings buttons (hidden on Backup subtab). Button text varies based on whether running as a managed service.
-  const saveButtonText = isRunningAsService() ? "Save &amp; Restart" : "Save Settings";
-
+  // Settings buttons (hidden on Backup subtab). The Save label is the same in every mode, because each field's badge carries when a save of it takes effect.
   lines.push("<div id=\"settings-buttons\" class=\"button-row\" style=\"display: flex;\">");
-  lines.push("<button type=\"submit\" class=\"btn btn-primary\" id=\"save-btn\">" + saveButtonText + "</button>");
+  lines.push("<button type=\"submit\" class=\"btn btn-primary\" id=\"save-btn\">" + escapeHtml(SAVE_SETTINGS_LABEL) + "</button>");
   lines.push("<button type=\"button\" class=\"btn btn-danger\" data-click-action=\"" + ACTIONS.resetAllToDefaults + "\">Reset All to Defaults</button>");
   lines.push("</div>");
 

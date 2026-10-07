@@ -35,6 +35,38 @@ after(() => {
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
+/**
+ * Renders the Configuration tab with the service flag set to a value, or unset, and restores the caller's value after, so a row can read the page each mode
+ * renders without leaving the flag behind for the next row.
+ * @param service - The PRISMCAST_SERVICE value to render with, or undefined to render with the flag unset.
+ * @returns The rendered HTML.
+ */
+function renderConfigContentWithService(service: string | undefined): string {
+
+  const original = process.env["PRISMCAST_SERVICE"];
+  const assign = (value: string | undefined): void => {
+
+    if(value === undefined) {
+
+      Reflect.deleteProperty(process.env, "PRISMCAST_SERVICE");
+
+      return;
+    }
+
+    process.env["PRISMCAST_SERVICE"] = value;
+  };
+
+  assign(service);
+
+  try {
+
+    return generateConfigContent();
+  } finally {
+
+    assign(original);
+  }
+}
+
 describe("generateOverviewContent", () => {
 
   test("returns a non-empty HTML string with multiple section blocks", () => {
@@ -314,13 +346,37 @@ describe("generateConfigContent", () => {
 
   test("includes the settings form with the save and reset buttons", () => {
 
-    // The settings form wraps the settings + advanced subtabs. Save and Reset All to Defaults are the two action buttons. The button text differs based on
-    // service mode but both should be present.
+    // The settings form wraps the settings + advanced subtabs, and this row checks that the form renders with its Save and Reset All to Defaults buttons. The
+    // Save button's label in each mode is the next row's.
     const html = generateConfigContent();
 
     assert.match(html, /id="settings-form"/);
     assert.match(html, /id="save-btn"/);
     assert.match(html, /data-click-action="reset-all-to-defaults"/);
+  });
+
+  test("labels the Save button Save Settings with the service flag set and unset", () => {
+
+    // The label promises no restart, because each field's badge says when a save of it takes effect, so the service flag must not change it. Rendering with
+    // the flag set and with it unset, restoring it after, holds the one label whatever the flag says.
+    for(const service of [ "1", undefined ]) {
+
+      assert.match(renderConfigContentWithService(service), /<button type="submit" class="btn btn-primary" id="save-btn">Save Settings<\/button>/,
+        "the Save button reads Save Settings with PRISMCAST_SERVICE " + (service ?? "unset"));
+    }
+  });
+
+  test("renders the one import note on the Backup panel with the service flag set and unset", () => {
+
+    // An import applies each setting as a save would, so the note names only the settings that wait for a restart, in the restart badge's words, whatever
+    // the mode.
+    const note = "<p>Import a previously saved settings file. Imported settings apply when the import completes, except those marked Restart, which take " +
+      "effect after PrismCast restarts.</p>";
+
+    for(const service of [ "1", undefined ]) {
+
+      assert.ok(renderConfigContentWithService(service).includes(note), "the import note reads the one string with PRISMCAST_SERVICE " + (service ?? "unset"));
+    }
   });
 
   test("includes the Backup subtab panel with download/import controls", () => {

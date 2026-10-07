@@ -7,6 +7,7 @@
  */
 import { describe, test } from "node:test";
 import { generateThemeStyles, getLogLevelColorVars, getStreamHealthColorVars } from "./theme.ts";
+import { BADGE_VARIANTS } from "./components.ts";
 import assert from "node:assert/strict";
 
 /**
@@ -221,6 +222,30 @@ describe("generateThemeStyles", () => {
         assert.ok(indicator, "the " + blockName + " block should declare a --stream-" + state + " indicator for its tint to shade");
         assert.deepEqual(tint, indicator, "--stream-tint-" + state + " in the " + blockName + " block should carry the --stream-" + state + " triple");
       }
+    }
+  });
+
+  test("declares each badge variant's background and text token in both theme blocks, the tag pair reading the colors the tag pills use", () => {
+
+    /* The stylesheet maps one rule over BADGE_VARIANTS that reads each variant's background and text tokens, so a variant missing a token in either block
+     * would render with no color in that theme. The tag pair is asserted verbatim because it carries the surface and text colors the tag pills read, rather
+     * than a hue of its own.
+     */
+    const css = generateThemeStyles();
+    const darkStart = css.indexOf("@media (prefers-color-scheme: dark)");
+
+    assert.notEqual(darkStart, -1, "dark mode media query should be present");
+
+    for(const [ blockName, block ] of Object.entries({ dark: css.slice(darkStart), light: css.slice(0, darkStart) })) {
+
+      for(const variant of BADGE_VARIANTS) {
+
+        assert.match(block, new RegExp("--badge-" + variant + "-bg:"), "the " + blockName + " block declares --badge-" + variant + "-bg");
+        assert.match(block, new RegExp("--badge-" + variant + "-text:"), "the " + blockName + " block declares --badge-" + variant + "-text");
+      }
+
+      assert.match(block, /--badge-tag-bg: var\(--surface-elevated\);/, "the " + blockName + " block's tag background is the elevated surface");
+      assert.match(block, /--badge-tag-text: var\(--text-secondary\);/, "the " + blockName + " block's tag text is the secondary text color");
     }
   });
 

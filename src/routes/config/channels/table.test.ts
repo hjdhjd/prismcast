@@ -5,16 +5,19 @@
  * generateChannelsPanel, generateServiceFilterToolbar, generateTagFilterContent, generateTagManagerBody) emit large strings that are exercised end-to-end by
  * the panel route handlers; we test only that they return non-empty strings and include the expected key fragments rather than diffing the full markup.
  */
-import { OPTIONAL_COLUMNS, VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateServiceFilterToolbar, generateTagFilterContent,
-  generateTagManagerBody } from "./table.ts";
+import { OPTIONAL_COLUMNS, VALID_OPTIONAL_COLUMNS, buildChannelTablePatch, buildChannelTableState, generateChannelRowHtml, generateServiceFilterToolbar,
+  generateTagFilterContent, generateTagManagerBody } from "./table.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, initializeUserChannels } from "../../../config/userChannels.ts";
+import { getActiveTagVocabulary, getChannelEffectiveTags, getChannelListing, initializeUserChannels, setTagRegistry,
+  transformChannelTags } from "../../../config/userChannels.ts";
 import { loadHealthState, markDomainAuth, markDomainAuthRequired } from "../../../config/health.ts";
 import { mkdtemp, rm } from "node:fs/promises";
+import { ACTIONS } from "../../clientActions.ts";
 import { CONFIG } from "../../../config/index.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import assert from "node:assert/strict";
 import { firstOf } from "../../../testing.helpers.ts";
+import { generateBadge } from "../../components.ts";
 import { initializeDataDir } from "../../../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
@@ -346,6 +349,54 @@ describe("generateTagManagerBody", () => {
     assert.match(html, /tag-manager/, "contains the manager root class");
     assert.match(html, /tag-manager-input/, "contains the new-tag input id");
     assert.match(html, /data-click-action="create-tag"/, "contains the create-tag action reference");
+  });
+});
+
+describe("tag pills draw through the badge builder", () => {
+
+  /* Every tag pill is the builder's tag badge, so each surface keeps its text and its escaping and takes its shape and colors from the shared variant. The
+   * registry and one predefined channel's tags are seeded with tags holding markup characters through the public mutators, so each row reads the escaped form.
+   */
+  const MARKUP_TAG = "news <b> & \"hot\"";
+  const DELETED_TAG = "gone <i>";
+  let dir: string;
+
+  beforeEach(async () => {
+
+    dir = await mkdtemp(path.join(os.tmpdir(), "prismcast-tagbadge-test-"));
+    initializeDataDir(dir);
+    await initializeUserChannels();
+    await setTagRegistry({ deletedTags: [DELETED_TAG], tags: [MARKUP_TAG] });
+    await transformChannelTags((entry) => entry.key === "abc", (tags) => [ ...tags, MARKUP_TAG ]);
+  });
+
+  afterEach(async () => {
+
+    await rm(dir, { force: true, recursive: true });
+  });
+
+  test("a row's tags column and the edit form's checkbox labels carry the builder's tag badge, escaped", () => {
+
+    const { displayRow, editRow } = generateChannelRowHtml("abc", []);
+    const badge = generateBadge(MARKUP_TAG, { variant: "tag" });
+
+    assert.ok(badge.includes(">news &lt;b&gt; &amp; &quot;hot&quot;<"), "precondition: the builder escapes the tag");
+    assert.ok(displayRow.includes(badge), "the tags column carries the builder's badge");
+    assert.ok(editRow.includes(badge + "</label>"), "the edit form's checkbox label carries the builder's badge");
+    assert.equal((displayRow + editRow).includes(MARKUP_TAG), false, "the raw tag appears nowhere in the row");
+  });
+
+  test("the tag manager's editable item carries the builder's rename badge, and its deleted item the plain tag badge", () => {
+
+    const html = generateTagManagerBody();
+    const editable = generateBadge(MARKUP_TAG, { action: ACTIONS.startTagRename, className: "tag-editable", dataAttributes: { "tag-name": MARKUP_TAG },
+      title: "Click to rename", variant: "tag" });
+
+    assert.ok(editable.includes(" data-tag-name=\"news &lt;b&gt; &amp; &quot;hot&quot;\""), "precondition: the builder carries the rename payload, escaped");
+    assert.ok(html.includes(editable), "the editable item carries the builder's rename badge");
+    assert.ok(html.includes("<div class=\"tag-manager-item tag-deleted\" data-tag=\"gone &lt;i&gt;\">" + generateBadge(DELETED_TAG, { variant: "tag" })),
+      "the deleted item carries the builder's tag badge");
+    assert.equal(html.includes(MARKUP_TAG), false, "the raw tag appears nowhere in the tag manager");
   });
 });
 

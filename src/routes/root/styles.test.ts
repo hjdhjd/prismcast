@@ -182,7 +182,25 @@ describe("generateLandingPageStyles", () => {
 
     assert.match(css, /\.browse-channel-list\s*\{/);
     assert.match(css, /\.browse-toolbar\s*\{/);
-    assert.match(css, /\.browse-tier-badge/);
+  });
+
+  test("adds only each place's own rule to the shared badge, and names no hand-drawn badge class", () => {
+
+    // The stream table's badge, the browse view's tier badge and the tag pills draw through the shared badge component, whose variants carry their colors and
+    // shapes, so this stylesheet adds only what each place needs and keeps no rule for a badge class drawn by hand.
+    const css = generateLandingPageStyles();
+
+    assert.match(css, /\.streams-table \.badge \{ vertical-align: middle; \}/);
+    assert.match(css, /\.browse-channel-meta \.badge \{ flex-shrink: 0; \}/);
+    assert.match(css, /\.tag-checkbox-label \.badge \{ cursor: pointer; \}/);
+    assert.match(css, /\.tag-deleted \.badge \{ opacity: 0\.5; text-decoration: line-through; \}/);
+    assert.doesNotMatch(css, /--badge-flag/, "no rule reads the flag tokens itself");
+
+    // The hand-drawn family classes are composed from their family names, so the repository sweep that holds those classes absent from the source stays clean.
+    for(const family of [ "browse-tier", "native", "tag" ]) {
+
+      assert.equal(css.includes("." + family + "-badge"), false, "no rule names the " + family + " family's hand-drawn badge class");
+    }
   });
 
   test("returns identical output across calls", () => {

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { getEnabledServices, isServiceTagEnabled, setEnabledServices } from "../../../src/config/services.ts";
 import type { LogEntry } from "../../../src/utils/logEmitter.ts";
+import type { SettingsSaveChanges } from "../../../src/routes/config/settings.ts";
 import assert from "node:assert/strict";
 import { getNestedValue } from "../../../src/config/userConfig.ts";
 import { readFile } from "node:fs/promises";
@@ -113,8 +114,8 @@ describe("the running service filter is the saved list restricted to the known t
     const { body, status } = await post(app, "/config", { playback: { stallThreshold: 0.2 } });
 
     assert.equal(status, 200);
-    assert.equal(body["appliedCount"], 1, "precondition: the unrelated live value is applied");
-    assert.equal(body["deferredCount"], 0, "nothing is held for a restart");
+    assert.deepEqual((body["changes"] as SettingsSaveChanges).applied, ["playback.stallThreshold"], "precondition: the unrelated live value is applied");
+    assert.deepEqual((body["changes"] as SettingsSaveChanges).deferred, [], "nothing is held for a restart");
     assert.equal(body["willRestart"], false, "no restart is scheduled");
     assert.deepEqual(getEnabledServices(), [ "hulu", "sling", "spectrum" ], "the running filter is unchanged by the unrelated save");
     assert.deepEqual(await persistedServices(ctx), saved, "the file still keeps the user's list");

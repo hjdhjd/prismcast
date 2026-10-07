@@ -24,10 +24,13 @@
  * Math, URL, Object, Number, requestAnimationFrame, setInterval, EventSource, window, CustomEvent, and escapeHtml - the shared client-escape SSOT installed on
  * window by shared.ts, treated here as a platform-like global), sibling functions that are also emitted, or a registered constant by its TS-side identifier, since
  * the constants are emitted via JSON.stringify ahead of the function bodies. What a body may never reference is an import binding, any other module-scope variable,
- * or a Node-only API: only the function bodies ship to the browser, so a binding they close over here simply does not exist there. A registered constant's VALUE, by
- * contrast, may be assembled from an import - it crosses as JSON rather than as a binding, which is why the module imports the shared resolution labels.
+ * or a Node-only API: only the function bodies ship to the browser, so a binding they close over here simply does not exist there. The one exception is an imported
+ * function the registry ships under its own name, which a body may call because the browser holds it by that name; its own body is bound by the same rule. A
+ * registered constant's VALUE, by contrast, may be assembled from an import - it crosses as JSON rather than as a binding, which is why the module imports the
+ * shared resolution labels.
  */
-import { RESOLUTION_LABELS } from "../../../utils/index.ts";
+import { RESOLUTION_LABELS, serializeAttrs } from "../../../utils/index.ts";
+import { generateBadge } from "../../components.ts";
 
 /**
  * The shape of a single stream as carried over the SSE wire and stored in the client state. This is the script-side projection - only the fields the renderers
@@ -677,10 +680,10 @@ function renderStreamsTable(ctx: HandlerContext): void {
 
     if(s.streamingMode === "native") {
 
-      nativeBadge = " <span class=\"native-badge\" title=\"Native HLS\">Native</span>";
+      nativeBadge = " " + generateBadge("Native", { title: "Native HLS", variant: "flag" });
     } else if(s.hardwareAccelerated) {
 
-      nativeBadge = " <span class=\"native-badge\" title=\"Hardware accelerated\">" + hwIcon + escapeHtml(s.captureCodec ?? "") + "</span>";
+      nativeBadge = " " + generateBadge(hwIcon + (s.captureCodec ?? ""), { title: "Hardware accelerated", variant: "flag" });
     }
 
     const durationSpan = "<span class=\"stream-duration\" id=\"duration-" + id + "\">· " + formatDuration(s.duration) + "</span>";
@@ -1096,7 +1099,11 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
   toggleStreamPopover,
   copyOverviewPlaylistUrl,
   handleVisibilityChange,
-  initIPadTooltips
+  initIPadTooltips,
+
+  // The badge builder and the attribute serializer it calls ship from the modules that define them, so the browser runs the server's own builder.
+  serializeAttrs,
+  generateBadge
 ];
 
 // Test surface. Each function is exported so the DOM-runtime suite at test/e2e/dom-runtime/status-handlers-runtime.test.ts can import and call them directly.

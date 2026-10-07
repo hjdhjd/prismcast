@@ -24,6 +24,7 @@ import { describe, test } from "node:test";
 import type { DisposableDomTestContext } from "../../helpers/dom.helpers.ts";
 import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
+import { generateBadge } from "../../../src/routes/components.ts";
 
 /**
  * Boot a DOM context, stub EventSource, run the shared utilities script, then run the status script. Returns the context with window.toggleStreamPopover,
@@ -72,9 +73,10 @@ async function setupStatusIifeRuntime(): Promise<DisposableDomTestContext> {
  * Builds a StreamSummary payload as a JSON literal for embedding in an evaluate() expression. Only the fields the render path reads are populated; the count
  * assertions care about how many entries reach the state map, not what those entries hold.
  * @param id - The stream id, which is the key the handlers file the entry under.
+ * @param overrides - Fields a row sets beyond the defaults, such as the streaming mode a badge reads.
  * @returns The payload serialized as a JSON literal.
  */
-function streamPayload(id: string): string {
+function streamPayload(id: string, overrides: Readonly<Record<string, unknown>> = {}): string {
 
   return JSON.stringify({
 
@@ -87,7 +89,8 @@ function streamPayload(id: string): string {
     pageReloadsInWindow: 0,
     recoveryAttempts: 0,
     startTime: new Date().toISOString(),
-    url: "https://example.test/watch"
+    url: "https://example.test/watch",
+    ...overrides
   });
 }
 
@@ -259,5 +262,43 @@ describe("status.ts: the active stream count channel (script-tag runtime)", () =
 
     // Reaching zero is the reading that authorizes a deferred restart in config.ts, so it is worth asserting outright rather than inferring from the decrements.
     assert.equal(ctx.evaluate("window.activeStreamCount"), 0, "the count returns to zero once the last stream is gone");
+  });
+});
+
+describe("status.ts: the shipped badge builder (script-tag runtime)", () => {
+
+  test("a native stream added over the status stream renders the builder's native badge in its stream-info cell", async () => {
+
+    /* The registry ships the badge builder and its serializer as top-level declarations beside every handler, so the stream table draws its badge through the
+     * server's own builder. Running the whole emitted script as a classic script and delivering a native stream through the IIFE's own listener exercises that
+     * path end to end: a builder or serializer the script failed to declare, or one reaching for a binding the browser lacks, throws inside the render.
+     */
+    await using ctx = await createDomTestContext();
+
+    ctx.evaluate([
+
+      "window.harnessSseListeners = {};",
+      "window.EventSource = function() {",
+      "  this.addEventListener = function(type, handler) {",
+      "    (window.harnessSseListeners[type] = window.harnessSseListeners[type] || []).push(handler);",
+      "  };",
+      "  this.close = function() {};",
+      "  this.onerror = null;",
+      "};",
+      "window.harnessDispatch = function(type, payload) {",
+      "  var handlers = window.harnessSseListeners[type] || [];",
+      "  for(var i = 0; i < handlers.length; i++) { handlers[i]({ data: JSON.stringify(payload) }); }",
+      "};"
+    ].join("\n"));
+
+    assert.equal(ctx.runScripts((s) => s.content.includes("window.channelTable")).length, 1, "exactly one shared utilities script should run");
+    assert.equal(ctx.runScripts((s) => s.content.includes("window.toggleStreamPopover")).length, 1, "exactly one status script should run");
+
+    ctx.evaluate("window.harnessDispatch('streamAdded', " + streamPayload("n1", { streamingMode: "native" }) + ")");
+
+    const cell = ctx.document.querySelector(".stream-row[data-id=\"n1\"] .stream-info");
+
+    assert.ok(cell, "the native stream's row renders");
+    assert.ok(cell.innerHTML.includes(generateBadge("Native", { title: "Native HLS", variant: "flag" })), "the stream-info cell carries the builder's native badge");
   });
 });

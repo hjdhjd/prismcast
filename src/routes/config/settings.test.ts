@@ -2,22 +2,23 @@
  *
  * settings.test.ts: Unit tests for the settings UI generators and the route-aggregator wiring in settings.ts. The HTML generators (Settings tab,
  * Advanced tab, collapsible section, footer) are pure functions of the loaded snapshot (the saved configuration), CONFIG_METADATA, getSettingsTabSections,
- * getAdvancedSections, and the environment-override map their caller passes in - the page render resolves that map once and every generator draws the
- * disabled fields and badges from the copy it was handed. Internal helpers (formatValueForDisplay, parseFormValue, validateSettingValue, etc.) are not
- * exported and are exercised through the public surface. The route-aggregator setupSettingsRoutes has its pre-I/O validation short-circuit branches
- * exercised directly through the Express stub's invoke helper. The rows that save or import go through the real file store in a data directory of their own;
- * the restart-scheduling continuation stays untested here because it requires a live Express runtime.
+ * getAdvancedSections, and the render context their caller passes in - the page render resolves the environment-override map and the pending view once,
+ * and every generator draws the disabled fields, the badges and the pending markers from the copy it was handed. Internal helpers (formatValueForDisplay,
+ * parseFormValue, validateSettingValue, etc.) are not exported and are exercised through the public surface. The route-aggregator setupSettingsRoutes has
+ * its pre-I/O validation short-circuit branches exercised directly through the Express stub's invoke helper. The rows that save or import go through the
+ * real file store in a data directory of their own; the restart-scheduling continuation stays untested here because it requires a live Express runtime.
  */
-import { CONFIG, getLoadedConfiguration, initializeConfiguration } from "../../config/index.ts";
+import type { AdvancedSection, SettingMetadata } from "../../config/userConfig.ts";
+import { CONFIG, getConfigurationGap, getLoadedConfiguration, initializeConfiguration, saveConfiguration } from "../../config/index.ts";
+import type { ChangeRejection, ConfigChange } from "../../config/reactivity.ts";
+import type { PendingSetting, SettingsFormContext } from "./settings.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { buildSaveResponseData, collectPendingSettings, generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter,
+  generateSettingsTabContent, setupSettingsRoutes } from "./settings.ts";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "../../testing.helpers.ts";
-import { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
-  setupSettingsRoutes } from "./settings.ts";
 import { getAdvancedSections, getSettingByPath, readConfig } from "../../config/userConfig.ts";
 import { getConfigFilePath, initializeDataDir } from "../../config/paths.ts";
 import { registerConfigChangeHandler, resetConfigChangeHandlers } from "../../config/reactivity.ts";
-import type { AdvancedSection } from "../../config/userConfig.ts";
-import type { ChangeRejection } from "../../config/reactivity.ts";
 import type { ConfigStore } from "../../config/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import assert from "node:assert/strict";
@@ -37,11 +38,56 @@ closePuppeteerStreamWssOnIdle();
 /* The Express stub helper (makeExpressStub) is shared across route tests; it lives in ../express.helpers.ts.
  */
 
+// The render context of a page with no environment override and nothing pending.
+const NO_CONTEXT: SettingsFormContext = { envOverrides: new Map(), pending: new Map() };
+
+/**
+ * Builds the render context of a page where one setting is owned by the environment and nothing is pending.
+ * @param path - The overridden setting's path.
+ * @param value - The value the environment supplies.
+ * @returns The render context.
+ */
+function overriding(path: string, value: string): SettingsFormContext {
+
+  return { envOverrides: new Map([[ path, value ]]), pending: new Map() };
+}
+
+/**
+ * Reads one field's label out of a rendered fragment, from its opening tag to its closing tag, so a row asserts what that field's own label carries rather than
+ * what some other field on the page does.
+ * @param html - The rendered fragment.
+ * @param inputId - The id of the field's input, which the label names in its for attribute.
+ * @returns The label's markup.
+ */
+function labelOf(html: string, inputId: string): string {
+
+  const open = "<label class=\"form-label\" for=\"" + inputId + "\">";
+  const start = html.indexOf(open);
+
+  assert.notEqual(start, -1, "the " + inputId + " label renders");
+
+  return html.slice(start, html.indexOf("</label>", start) + "</label>".length);
+}
+
+/**
+ * Reads a setting's metadata by path, failing the row when the path names no setting.
+ * @param path - The setting's path.
+ * @returns The setting's metadata.
+ */
+function settingAt(path: string): SettingMetadata {
+
+  const setting = getSettingByPath(path);
+
+  assert.ok(setting !== undefined, "precondition: " + path + " is a setting");
+
+  return setting;
+}
+
 describe("generateSettingsTabContent", () => {
 
   test("returns a non-empty HTML string for a fresh process with default config", () => {
 
-    const html = generateSettingsTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT);
 
     assert.ok(html.length > 0, "Settings tab content renders");
     assert.ok(typeof html === "string", "returns a string");
@@ -53,7 +99,7 @@ describe("generateSettingsTabContent", () => {
      * preset is offered unconditionally: capture renders at whichever one is chosen, because the surface is emulated rather than taken from the display. The
      * negative halves are the point - a qualifier on a label, or a warning under the field, would be telling the operator their choice will not be honoured.
      */
-    const html = generateSettingsTabContent(new Map()) + generateAdvancedTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT) + generateAdvancedTabContent(NO_CONTEXT);
 
     for(const preset of VIDEO_QUALITY_PRESETS) {
 
@@ -67,7 +113,7 @@ describe("generateSettingsTabContent", () => {
 
   test("renders the panel header with the reset-to-defaults link", () => {
 
-    const html = generateSettingsTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT);
 
     assert.match(html, /class="panel-header"/, "panel-header div is present");
     assert.match(html, /class="panel-reset"/, "reset link is present");
@@ -79,7 +125,7 @@ describe("generateSettingsTabContent", () => {
     // The Settings tab is composed of ordered sections (Server, Browser, Startup, Capture, etc.) each emitted as a settings-section div with a
     // header. We count the section divs to ensure none are dropped silently. The exact count depends on SETTINGS_TAB_SECTIONS but must always be
     // at least 1.
-    const html = generateSettingsTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT);
     const sectionMatches = html.match(/class="settings-section"/g) ?? [];
 
     assert.ok(sectionMatches.length >= 1, "at least one settings-section is rendered");
@@ -87,7 +133,7 @@ describe("generateSettingsTabContent", () => {
 
   test("includes section header divs for each settings-section", () => {
 
-    const html = generateSettingsTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT);
     const headerMatches = html.match(/class="settings-section-header"/g) ?? [];
 
     assert.ok(headerMatches.length >= 1, "section-header markup is present");
@@ -97,7 +143,7 @@ describe("generateSettingsTabContent", () => {
 
     // Each setting in the Settings tab emits a form-group wrapper. With at least one section containing settings, at least one form-group must be
     // present.
-    const html = generateSettingsTabContent(new Map());
+    const html = generateSettingsTabContent(NO_CONTEXT);
 
     assert.match(html, /class="form-group/, "at least one form-group is rendered");
   });
@@ -105,8 +151,8 @@ describe("generateSettingsTabContent", () => {
   test("returns a deterministic string across two calls with no overrides (repeat-safe renderer)", () => {
 
     // Locks renderer determinism: callers comparing rendered HTML across edits should see diffs only from data changes, not renderer flakiness.
-    const a = generateSettingsTabContent(new Map());
-    const b = generateSettingsTabContent(new Map());
+    const a = generateSettingsTabContent(NO_CONTEXT);
+    const b = generateSettingsTabContent(NO_CONTEXT);
 
     assert.equal(a, b, "two calls produce identical HTML");
   });
@@ -116,14 +162,14 @@ describe("generateAdvancedTabContent", () => {
 
   test("returns a non-empty HTML string", () => {
 
-    const html = generateAdvancedTabContent(new Map());
+    const html = generateAdvancedTabContent(NO_CONTEXT);
 
     assert.ok(html.length > 0, "Advanced tab renders");
   });
 
   test("renders the panel header with the reset-all-to-defaults link", () => {
 
-    const html = generateAdvancedTabContent(new Map());
+    const html = generateAdvancedTabContent(NO_CONTEXT);
 
     assert.match(html, /class="panel-header"/, "panel-header div is present");
     assert.match(html, /data-click-action="reset-tab-to-defaults" data-tab="advanced"/, "reset link targets the advanced tab");
@@ -133,14 +179,14 @@ describe("generateAdvancedTabContent", () => {
   test("emits one advanced-section per Advanced section", () => {
 
     // The Advanced tab uses collapsible sections (advanced-section class). Verify at least one is rendered.
-    const html = generateAdvancedTabContent(new Map());
+    const html = generateAdvancedTabContent(NO_CONTEXT);
 
     assert.match(html, /class="advanced-section"/, "advanced-section divs are present");
   });
 
   test("each advanced-section has a clickable header to toggle collapse", () => {
 
-    const html = generateAdvancedTabContent(new Map());
+    const html = generateAdvancedTabContent(NO_CONTEXT);
 
     assert.match(html, /data-click-action="toggle-section"/, "section headers wire up the toggle-section action");
     assert.match(html, /class="section-chevron"/, "chevron indicator is rendered");
@@ -149,7 +195,7 @@ describe("generateAdvancedTabContent", () => {
   test("renders the section count suffix in the header (singular for 1, plural otherwise)", () => {
 
     // The renderer emits "(N setting)" for 1 and "(N settings)" for N != 1. Verify that one of these patterns appears.
-    const html = generateAdvancedTabContent(new Map());
+    const html = generateAdvancedTabContent(NO_CONTEXT);
 
     // Either " setting)" (with no trailing 's') or " settings)" must appear at least once.
     const hasSingular = html.includes(" setting)");
@@ -160,8 +206,8 @@ describe("generateAdvancedTabContent", () => {
 
   test("returns a deterministic string across two calls", () => {
 
-    const a = generateAdvancedTabContent(new Map());
-    const b = generateAdvancedTabContent(new Map());
+    const a = generateAdvancedTabContent(NO_CONTEXT);
+    const b = generateAdvancedTabContent(NO_CONTEXT);
 
     assert.equal(a, b, "two calls produce identical HTML");
   });
@@ -174,7 +220,7 @@ describe("generateCollapsibleSection", () => {
     // Boundary: an empty settings array should still render the section frame. The count text must read "(0 settings)" because 0 is plural in this
     // implementation (only the value 1 takes the singular form).
     const empty: AdvancedSection = { displayName: "Empty Section", id: "empty", settings: [] };
-    const html = generateCollapsibleSection(empty, new Map());
+    const html = generateCollapsibleSection(empty, NO_CONTEXT);
 
     assert.match(html, /class="advanced-section"/, "section wrapper rendered");
     assert.match(html, /Empty Section/, "displayName rendered");
@@ -185,7 +231,7 @@ describe("generateCollapsibleSection", () => {
 
     // Guard against XSS in any future user-provided section name. The renderer pipes displayName through escapeHtml.
     const evil: AdvancedSection = { displayName: "<script>alert(1)</script>", id: "evil", settings: [] };
-    const html = generateCollapsibleSection(evil, new Map());
+    const html = generateCollapsibleSection(evil, NO_CONTEXT);
 
     assert.match(html, /&lt;script&gt;/, "script tag is HTML-escaped");
     assert.doesNotMatch(html, /<script>alert/, "raw script tag must not appear");
@@ -195,7 +241,7 @@ describe("generateCollapsibleSection", () => {
 
     // Boundary: the id is interpolated into both the outer data-section= wrapper attribute and the inner data-section-id= header attribute - both must escape.
     const tricky: AdvancedSection = { displayName: "Tricky", id: "id\"with-quote", settings: [] };
-    const html = generateCollapsibleSection(tricky, new Map());
+    const html = generateCollapsibleSection(tricky, NO_CONTEXT);
 
     assert.match(html, /data-section="id&quot;with-quote"/, "id is escaped in data-section attribute");
   });
@@ -203,7 +249,7 @@ describe("generateCollapsibleSection", () => {
   test("renders the section-header data-click-action wired to toggle-section with the section id", () => {
 
     const section: AdvancedSection = { displayName: "Foo", id: "foo", settings: [] };
-    const html = generateCollapsibleSection(section, new Map());
+    const html = generateCollapsibleSection(section, NO_CONTEXT);
 
     assert.match(html, /data-click-action="toggle-section" data-section-id="foo"/, "toggle-section action is wired");
   });
@@ -227,10 +273,35 @@ describe("generateCollapsibleSection", () => {
       settings: [firstWithSetting.settings[0]!]
     };
 
-    const html = generateCollapsibleSection(synthetic, new Map());
+    const html = generateCollapsibleSection(synthetic, NO_CONTEXT);
 
     assert.match(html, /\(1 setting\)/, "exactly 1 uses singular form");
     assert.doesNotMatch(html, /\(1 settings\)/, "must not use plural for 1");
+  });
+});
+
+describe("the class badge on a settings field", () => {
+
+  test("a restart and a next-stream setting carry their class badge with its title, and a live setting carries none", () => {
+
+    /* The classes are set on the rendered settings themselves rather than read from the metadata, so the row holds the badge rule for each class whatever class a
+     * later build gives these paths.
+     */
+    const section: AdvancedSection = {
+
+      displayName: "Classes",
+      id: "classes",
+      settings: [ { ...settingAt("server.port"), reactivity: "restart" }, { ...settingAt("playback.stallThreshold"), reactivity: "next-stream" },
+        { ...settingAt("hls.maxSegments"), reactivity: "live" } ]
+    };
+    const html = generateCollapsibleSection(section, NO_CONTEXT);
+
+    assert.match(labelOf(html, "server-port"), /<span class="badge badge-restart" title="Takes effect after PrismCast restarts\.">Restart<\/span>/,
+      "the restart setting's label carries the restart badge and its title");
+    assert.match(labelOf(html, "playback-stallThreshold"),
+      /<span class="badge badge-next-stream" title="Takes effect for streams that start after the save\.">Next stream<\/span>/,
+      "the next-stream setting's label carries the next-stream badge and its title");
+    assert.doesNotMatch(labelOf(html, "hls-maxSegments"), /class="badge/, "the live setting's label carries no badge");
   });
 });
 
@@ -282,22 +353,24 @@ describe("the environment-override map the render passes down", () => {
 
   test("disables the fields the passed map names and renders their badges, with the environment holding neither variable", () => {
 
-    const settingsHtml = generateSettingsTabContent(new Map([[ OVERRIDDEN_SETTINGS_PATH, "8080" ]]));
-    const sectionHtml = generateCollapsibleSection(hlsSection(), new Map([[ OVERRIDDEN_ADVANCED_PATH, "42" ]]));
+    const settingsHtml = generateSettingsTabContent(overriding(OVERRIDDEN_SETTINGS_PATH, "8080"));
+    const sectionHtml = generateCollapsibleSection(hlsSection(), overriding(OVERRIDDEN_ADVANCED_PATH, "42"));
 
     assert.match(settingsHtml, /id="server-port"[^>]*disabled/, "the settings-tab field the map names renders disabled");
     assert.match(settingsHtml, /<code>PORT=8080<\/code>/, "the settings-tab field carries the badge the map's value produced");
+    assert.match(labelOf(settingsHtml, "server-port"), /class="badge badge-restart"[^>]*>Restart<\/span>\n<span class="badge badge-env">ENV<\/span>/,
+      "the overridden field's own label carries its class badge and the ENV badge together");
     assert.match(sectionHtml, /id="hls-maxSegments"[^>]*disabled/, "the collapsible-section field the map names renders disabled");
     assert.match(sectionHtml, /<code>HLS_MAX_SEGMENTS=42<\/code>/, "the collapsible-section field carries the badge the map's value produced");
   });
 
-  test("leaves the fields an empty map omits editable and unbadged, with the environment holding both variables", () => {
+  test("leaves the fields an empty map omits editable and without the ENV badge, with the environment holding both variables", () => {
 
     process.env[OVERRIDDEN_SETTINGS_VAR] = "9090";
     process.env[OVERRIDDEN_ADVANCED_VAR] = "77";
 
-    const settingsHtml = generateSettingsTabContent(new Map());
-    const sectionHtml = generateCollapsibleSection(hlsSection(), new Map());
+    const settingsHtml = generateSettingsTabContent(NO_CONTEXT);
+    const sectionHtml = generateCollapsibleSection(hlsSection(), NO_CONTEXT);
 
     assert.doesNotMatch(settingsHtml, /id="server-port"[^>]*disabled/, "the settings tab renders from the map it was handed, not the environment");
     assert.doesNotMatch(settingsHtml, /PORT=9090/, "no badge is drawn for an override the passed map does not carry");
@@ -393,11 +466,11 @@ describe("the form renders the saved configuration", () => {
 
     await withTempDir(async (dir) => {
 
-      assert.equal(isEnabledChecked(generateSettingsTabContent(new Map())), true, "precondition: the field renders checked while the saved and running values agree");
+      assert.equal(isEnabledChecked(generateSettingsTabContent(NO_CONTEXT)), true, "precondition: the field renders checked while the saved and running values agree");
 
       await saveRefusedDisable(dir);
 
-      assert.equal(isEnabledChecked(generateSettingsTabContent(new Map())), false, "the field shows the saved value");
+      assert.equal(isEnabledChecked(generateSettingsTabContent(NO_CONTEXT)), false, "the field shows the saved value");
     });
   });
 
@@ -411,12 +484,12 @@ describe("the form renders the saved configuration", () => {
 
     await withTempDir(async (dir) => {
 
-      assert.equal(isEnabledChecked(generateCollapsibleSection(section, new Map())), true,
+      assert.equal(isEnabledChecked(generateCollapsibleSection(section, NO_CONTEXT)), true,
         "precondition: the field renders checked while the saved and running values agree");
 
       await saveRefusedDisable(dir);
 
-      assert.equal(isEnabledChecked(generateCollapsibleSection(section, new Map())), false, "the field shows the saved value");
+      assert.equal(isEnabledChecked(generateCollapsibleSection(section, NO_CONTEXT)), false, "the field shows the saved value");
     });
   });
 
@@ -424,14 +497,14 @@ describe("the form renders the saved configuration", () => {
 
     await withTempDir(async (dir) => {
 
-      const before = groupClassesOf(generateSettingsTabContent(new Map()), "hdhr-port");
+      const before = groupClassesOf(generateSettingsTabContent(NO_CONTEXT), "hdhr-port");
 
       assert.ok(before.includes("form-group"), "precondition: the port's group renders");
       assert.equal(before.includes("depends-disabled"), false, "precondition: the port is not greyed while the saved and running values agree");
 
       await saveRefusedDisable(dir);
 
-      assert.ok(groupClassesOf(generateSettingsTabContent(new Map()), "hdhr-port").includes("depends-disabled"), "the port greys out from the saved toggle");
+      assert.ok(groupClassesOf(generateSettingsTabContent(NO_CONTEXT), "hdhr-port").includes("depends-disabled"), "the port greys out from the saved toggle");
     });
   });
 });
@@ -536,6 +609,199 @@ describe("a setting whose declared minimum is zero accepts zero", () => {
       assert.equal((await readConfig()).config.recovery?.backoffJitter, 0, "the file holds zero");
       assert.equal(CONFIG.recovery.backoffJitter, 0, "the live setting is committed to the running configuration");
     });
+  });
+});
+
+/* The pending view and the response by setting read the gap between the running configuration and the loaded snapshot, so every row here starts from the
+ * defaults and leaves them behind it: the afterEach re-initializes the configuration through the empty store and clears every change handler, so no row inherits
+ * a gap or a handler from the row before it. A row that saves takes a data directory of its own and saves through the real file store.
+ */
+describe("the pending view of the gap", () => {
+
+  // The text the form's Default: line reads for a field in a rendered fragment.
+  const defaultLineOf = (html: string): string => (/<div class="form-default">([^<]*)<\/div>/).exec(html)?.[1] ?? "";
+
+  // Renders one setting alone in a collapsible section with no override and nothing pending.
+  const renderAlone = (setting: SettingMetadata): string => generateCollapsibleSection({ displayName: "One", id: "one", settings: [setting] },
+    { envOverrides: new Map(), pending: new Map() });
+
+  // The slot a rendered fragment carries for a path, as its whole element.
+  const slotOf = (html: string, path: string): string => (new RegExp("<div class=\"form-pending\" data-pending-path=\"" + path.replaceAll(".", "\\.") +
+    "\"[^>]*>[^<]*</div>")).exec(html)?.[0] ?? "";
+
+  beforeEach(async () => {
+
+    resetConfigChangeHandlers();
+    await initializeConfiguration(undefined, emptyStore);
+  });
+
+  afterEach(async () => {
+
+    resetConfigChangeHandlers();
+    await initializeConfiguration(undefined, emptyStore);
+    initializeDataDir(os.tmpdir());
+  });
+
+  test("the Default: line reads each kind of value exactly as the form has always written it", () => {
+
+    const cases: readonly (readonly [ SettingMetadata, string ])[] = [
+      [ settingAt("streaming.captureCodecs"), "Default: h264, hevc" ],
+      [ settingAt("channels.precacheServices"), "Default: none" ],
+      [ settingAt("browser.executablePath"), "Default: autodetect" ],
+      [ settingAt("browser.initTimeout"), "Default: 3 seconds" ],
+      [ settingAt("recovery.backoffJitter"), "Default: 1 second" ],
+      [ settingAt("server.port"), "Default: 5589" ],
+      [ { ...settingAt("server.port"), type: "integer" }, "Default: " + (5589).toLocaleString() ],
+      [ settingAt("hdhr.enabled"), "Default: true" ],
+      [ { ...settingAt("hdhr.enabled"), path: "channels.setupCompleted" }, "Default: false" ],
+      [ { ...settingAt("hdhr.friendlyName"), displayUnit: "seconds" }, "Default: PrismCast seconds" ],
+      [ settingAt("logging.httpLogLevel"), "Default: errors" ]
+    ];
+
+    assert.notEqual((5589).toLocaleString(), "5589", "precondition: the runtime groups a number at or above 1000");
+
+    for(const [ setting, expected ] of cases) {
+
+      assert.equal(defaultLineOf(renderAlone(setting)), expected, setting.path + " as " + setting.type + " reads its default verbatim");
+    }
+  });
+
+  test("a restart-class save leaves one restart entry naming the running value in seconds, and the Settings tab shows it in that field's slot alone", async () => {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(CONFIG.browser.initTimeout, 3000, "precondition: the running value is the default");
+
+      await saveConfiguration((config) => {
+
+        config.browser ??= {};
+        config.browser.initTimeout = 5000;
+      });
+
+      const pending = collectPendingSettings();
+      const entry = pending.get("browser.initTimeout");
+
+      assert.deepEqual([...pending.keys()], ["browser.initTimeout"], "the save leaves one setting pending");
+      assert.deepEqual(entry, { kind: "restart", path: "browser.initTimeout", text: "Takes effect after PrismCast restarts. Running value: 3 seconds." },
+        "the marker names the running value in the units the form displays, not the saved one");
+
+      const html = generateSettingsTabContent({ envOverrides: new Map(), pending });
+
+      assert.equal(slotOf(html, "browser.initTimeout"), "<div class=\"form-pending\" data-pending-path=\"browser.initTimeout\">" +
+        "Takes effect after PrismCast restarts. Running value: 3 seconds.</div>", "the pending field's slot is visible and holds the marker");
+      assert.equal(slotOf(html, "server.port"), "<div class=\"form-pending\" data-pending-path=\"server.port\" hidden></div>",
+        "a field with nothing pending carries an empty hidden slot");
+    });
+  });
+
+  test("a value a handler refused leaves an unrealized entry naming the running value", async () => {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      registerConfigChangeHandler("hdhr.enabled", async (changes): Promise<readonly ChangeRejection[]> => changes.map((change) => ({
+
+        path: change.path,
+        reason: "The HDHomeRun surface refused the change."
+      })));
+
+      await saveConfiguration((config) => {
+
+        config.hdhr ??= {};
+        config.hdhr.enabled = false;
+      });
+
+      assert.deepEqual(collectPendingSettings().get("hdhr.enabled"), { kind: "unrealized", path: "hdhr.enabled",
+        text: "Saved, but not applied yet. Running value: true. The next save retries it." });
+    });
+  });
+
+  test("a synthetic gap files its held change as restart and its live and next-stream changes as unrealized, in the settings' declared order", () => {
+
+    const pending = collectPendingSettings({
+
+      held: [{ current: 6000, path: "server.port", previous: 5589 }],
+      live: [{ current: 20, path: "hls.maxSegments", previous: 10 }],
+      nextStream: [{ current: 30, path: "streaming.frameRate", previous: 60 }]
+    });
+
+    assert.deepEqual([...pending.values()], [
+      { kind: "unrealized", path: "hls.maxSegments", text: "Saved, but not applied yet. Running value: 10. The next save retries it." },
+      { kind: "restart", path: "server.port", text: "Takes effect after PrismCast restarts. Running value: 5589." },
+      { kind: "unrealized", path: "streaming.frameRate", text: "Saved, but not applied yet. Running value: 60 fps. The next save retries it." }
+    ]);
+  });
+
+  test("both tabs together carry exactly one slot for every field and none for anything else", () => {
+
+    const context = { envOverrides: new Map<string, string>(), pending: new Map<string, PendingSetting>() };
+    const html = generateSettingsTabContent(context) + generateAdvancedTabContent(context);
+    const inputs = new Set([...html.matchAll(/ name="([a-zA-Z]+\.[a-zA-Z]+)"/g)].map((match) => match[1]));
+    const slots = [...html.matchAll(/data-pending-path="([^"]+)"/g)].map((match) => match[1]);
+
+    assert.ok(inputs.size > 0, "precondition: the tabs render fields");
+    assert.deepEqual(slots.toSorted(), [...inputs].toSorted(), "every field's path carries exactly one slot, and no other path carries one");
+  });
+
+  test("a hand-built context renders its entry in the Settings tab and in a collapsible section, escaped, with no gap behind it", () => {
+
+    const advanced = settingAt("hls.maxSegments");
+    const pending = new Map<string, PendingSetting>([
+      [ "server.port", { kind: "restart", path: "server.port", text: "Waiting <b>& more" } ],
+      [ advanced.path, { kind: "unrealized", path: advanced.path, text: "Held <b>& retried" } ]
+    ]);
+    const context = { envOverrides: new Map<string, string>(), pending };
+
+    assert.deepEqual(getConfigurationGap(), { held: [], live: [], nextStream: [] }, "precondition: nothing is pending in the running process");
+    assert.ok(generateSettingsTabContent(context).includes("data-pending-path=\"server.port\">Waiting &lt;b&gt;&amp; more</div>"),
+      "the Settings tab renders the context's entry, escaped");
+    assert.ok(generateCollapsibleSection({ displayName: "HLS", id: "hls", settings: [advanced] }, context)
+      .includes("data-pending-path=\"hls.maxSegments\">Held &lt;b&gt;&amp; retried</div>"), "the collapsible section renders the context's entry, escaped");
+  });
+
+  test("a collapsible section holding a pending setting renders open, and one whose settings hold none renders collapsed", () => {
+
+    const section: AdvancedSection = { displayName: "HLS", id: "hls", settings: [settingAt("hls.maxSegments")] };
+    const entry = (path: string): PendingSetting => ({ kind: "unrealized", path, text: "Held." });
+    const inside = generateCollapsibleSection(section, { envOverrides: new Map(), pending: new Map([[ "hls.maxSegments", entry("hls.maxSegments") ]]) });
+    const outside = generateCollapsibleSection(section, { envOverrides: new Map(), pending: new Map([[ "server.port", entry("server.port") ]]) });
+
+    assert.ok(inside.includes("class=\"section-header expanded\""), "the section's header renders open");
+    assert.ok(inside.includes("class=\"section-content expanded\""), "the section's content renders open");
+    assert.equal(outside.includes("expanded"), false, "a section whose own settings hold nothing pending renders collapsed");
+  });
+
+  test("the response builder maps every bucket by path, each refusal with its reason, and the restart members", () => {
+
+    const change = (path: string): ConfigChange => ({ current: 1, path, previous: 0 });
+    const data = buildSaveResponseData({
+
+      apply: { applied: [change("hls.maxSegments")], deferred: [change("server.port")], nextStream: [change("streaming.frameRate")],
+        rejected: [{ change: change("hdhr.enabled"), reason: "The surface refused it." }] },
+      restart: { activeStreams: 3, deferred: true, message: "Configuration saved. 3 stream(s) are active.", willRestart: true }
+    });
+
+    assert.deepEqual(data.changes, { applied: ["hls.maxSegments"], deferred: ["server.port"], nextStream: ["streaming.frameRate"],
+      rejected: [{ path: "hdhr.enabled", reason: "The surface refused it." }] });
+    assert.equal(data.willRestart, true);
+    assert.equal(data.deferred, true);
+    assert.equal(data.activeStreams, 3);
+  });
+
+  test("an import refusing a value composes the refusal as a sentence under the setting's label", async () => {
+
+    const setting = settingAt("browser.initTimeout");
+    const { app, invoke } = makeExpressStub();
+
+    setupSettingsRoutes(app as never);
+
+    const result = await invoke("post", "/config/import", { body: { browser: { initTimeout: "x" } } });
+
+    assert.equal(result.statusCode, 400);
+    assert.ok((result.body as { error: string }).error.split("\n").includes(setting.label + ": " + setting.label + " must be a number."),
+      "the refusal reads as a complete sentence");
   });
 });
 

@@ -3,6 +3,7 @@
  * index.ts: Configuration endpoint coordinator for PrismCast.
  */
 import { LOG, isRunningAsService } from "../../utils/index.ts";
+import { NEXT_STREAM_SCOPE, REACTIVITY_BADGES, formatSettingCount } from "./vocabulary.ts";
 import type { Nullable, ProfileCategory } from "../../types/index.ts";
 import type { ApplyResult } from "../../config/reactivity.ts";
 import type { Express } from "express";
@@ -49,9 +50,10 @@ export interface ApplyConfigurationResult {
 }
 
 /**
- * Schedules a server restart after a brief delay to allow the response to be sent. This is used after configuration changes that require a restart to take effect.
- * Returns information about whether the server will auto-restart (depends on whether running as a service). If streams are active and running as a service, the restart
- * is deferred until streams end, allowing the client to show a dialog and let the user choose to wait or force restart.
+ * Schedules a server restart for a save that holds a restart-class change, after a brief delay so the response is sent first. Not running as a service, nothing
+ * can restart the process, so the result asks the user to restart PrismCast for the settings marked Restart. Running as a service with active streams, the
+ * restart is deferred until the streams end, so the client can show a dialog and let the user choose to wait or force it. Otherwise the browser closes and the
+ * process exits for the service manager to start it again.
  * @param reason - A description of why the server is restarting, used in the log message.
  * @returns Information about the restart including the message to display and whether auto-restart will occur.
  */
@@ -59,16 +61,16 @@ export function scheduleServerRestart(reason: string): RestartResult {
 
   const willRestart = isRunningAsService();
 
-  // When not running as a service, we can't auto-restart. Notify the user that a manual restart is required.
+  // When not running as a service, nothing can restart the process for the user, so the message asks for a manual restart of the settings marked Restart.
   if(!willRestart) {
 
-    LOG.info("Configuration saved %s. Manual restart required for changes to take effect.", reason);
+    LOG.info("Configuration saved %s. The settings marked %s take effect after a manual restart.", reason, REACTIVITY_BADGES.restart.label);
 
     return {
 
       activeStreams: 0,
       deferred: false,
-      message: "Configuration saved. Please restart PrismCast for changes to take effect.",
+      message: "Configuration saved. Restart PrismCast for the settings marked " + REACTIVITY_BADGES.restart.label + " to take effect.",
       willRestart: false
     };
   }
@@ -135,41 +137,46 @@ export async function applyConfigurationChange(reason: string, mutator: (current
 }
 
 /**
- * Builds the user-facing message for a save response based on the apply and restart outcome. Picks the strongest signal: a restart message when a restart
- * was scheduled (operators rely on this exact wording to recognize a pending restart), a live-applied summary when the change took effect immediately, or a
- * rejected summary when handlers refused the change. The message is plain prose - the structured counts go alongside in the data envelope for clients that
- * want them.
+ * Builds the user-facing message for a save response from the apply and restart outcome, picking the strongest signal: a scheduled restart's own message;
+ * otherwise, when a handler refused a change, the count of refusals with the first reason; otherwise the saved sentence, followed by one sentence for the
+ * settings applied live and one for the settings that apply to streams started after the save, each present only when its list is non-empty. Every surface
+ * that reports a save reads this one composer, so they all say the same thing.
  * @param result - The combined apply and restart result.
- * @returns Single-sentence message describing the outcome.
+ * @returns The message describing the outcome.
  */
 export function describeConfigurationOutcome(result: ApplyConfigurationResult): string {
 
-  // A scheduled restart subsumes the live counts - the restart message already conveys what the operator needs to know, and its wording stays stable so
-  // operators can recognize a pending restart at a glance.
+  // A scheduled restart's message already tells the user what this save needs from them, so it stands alone.
   if(result.restart) {
 
     return result.restart.message;
   }
 
-  const appliedCount = result.apply.applied.length;
-  const rejectedCount = result.apply.rejected.length;
+  const { applied, nextStream, rejected } = result.apply;
 
-  if((appliedCount === 0) && (rejectedCount === 0)) {
-
-    return "Configuration saved.";
-  }
-
-  if(rejectedCount === 0) {
-
-    // Singular vs plural handled inline so the message reads naturally for a one-change save.
-    return "Configuration saved. " + String(appliedCount) + " setting" + ((appliedCount === 1) ? "" : "s") + " applied live.";
-  }
-
-  // Surface the first rejection reason so operators get a directly actionable hint without scanning the structured payload. Every reason is a complete
+  // Surface the first rejection reason so the user gets a directly actionable hint without scanning the structured payload. Every reason is a complete
   // sentence ending in its own punctuation, so the message carries it verbatim.
-  const firstReason = result.apply.rejected[0]?.reason ?? "The reason was not reported.";
+  if(rejected.length > 0) {
 
-  return "Configuration saved, but " + String(rejectedCount) + " change" + ((rejectedCount === 1) ? " was" : "s were") + " rejected: " + firstReason;
+    const firstReason = rejected[0]?.reason ?? "The reason was not reported.";
+
+    return "Configuration saved, but " + String(rejected.length) + " change" + ((rejected.length === 1) ? " was" : "s were") + " rejected: " + firstReason;
+  }
+
+  const sentences = ["Configuration saved."];
+
+  if(applied.length > 0) {
+
+    sentences.push(formatSettingCount(applied.length) + " applied live.");
+  }
+
+  // The next-stream sentence agrees its verb with the count, since its subject is the count phrase itself.
+  if(nextStream.length > 0) {
+
+    sentences.push(formatSettingCount(nextStream.length) + " " + ((nextStream.length === 1) ? "applies" : "apply") + " to " + NEXT_STREAM_SCOPE + ".");
+  }
+
+  return sentences.join(" ");
 }
 
 /**
@@ -207,5 +214,5 @@ export function setupConfigEndpoint(app: Express): void {
 
 export type { ChannelRowHtml } from "./channels/index.ts";
 export { OPTIONAL_COLUMNS, generateChannelRowHtml, generateChannelsPanel, generateServiceFilterToolbar } from "./channels/index.ts";
-export { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent } from "./settings.ts";
+export { collectPendingSettings, generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent } from "./settings.ts";
 export { generateCustomProfilesPanel, generateProfileWizardModal } from "./services.ts";

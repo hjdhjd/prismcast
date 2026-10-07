@@ -2,7 +2,8 @@
  *
  * index.test.ts: Unit tests for the configuration endpoint coordinator. The module exports three pieces of real logic - categorizeProfiles (a pure
  * grouping helper), scheduleServerRestart (which branches on PRISMCAST_SERVICE and the active stream count and may schedule a delayed exit), and
- * describeConfigurationOutcome (which branches on applied/deferred/rejected counts and restart precedence to build the user-facing message).
+ * describeConfigurationOutcome (which lets a scheduled restart's message stand alone, reports a refusal with its first reason, and otherwise composes the
+ * saved sentence with one sentence for the settings applied live and one for the settings that apply to new streams).
  * setupConfigEndpoint is exercised at the synchronous wiring level against an Express stub that records route registrations. The remaining exports are
  * barrel re-exports verified only as identity-typed function references. The actual route handlers require a live Express app; we flag their per-handler
  * behavior as integration-level rather than exercise it here.
@@ -189,7 +190,8 @@ describe("scheduleServerRestart", () => {
     assert.equal(result.willRestart, false, "manual-restart path");
     assert.equal(result.deferred, false, "no deferral when not a service");
     assert.equal(result.activeStreams, 0, "no active stream tracking on manual path");
-    assert.match(result.message, /Please restart PrismCast/, "message instructs the user to restart");
+    assert.equal(result.message, "Configuration saved. Restart PrismCast for the settings marked Restart to take effect.",
+      "the message asks for a restart of the settings marked Restart");
   });
 
   test("returns the immediate-restart result when running as a service with no active streams", () => {
@@ -376,6 +378,42 @@ describe("describeConfigurationOutcome", () => {
     };
 
     assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 1 change was rejected: FFmpeg is unavailable.");
+  });
+  test("reports next-stream changes alone, agreeing the verb with the count", () => {
+
+    const outcome = (nextStream: readonly ConfigChange[]): ApplyConfigurationResult => ({
+
+      apply: { applied: [], deferred: [], nextStream, rejected: [] },
+      restart: null
+    });
+
+    assert.equal(describeConfigurationOutcome(outcome([makeChange("streaming.frameRate")])),
+      "Configuration saved. 1 setting applies to streams that start after the save.");
+    assert.equal(describeConfigurationOutcome(outcome([ makeChange("streaming.frameRate"), makeChange("streaming.videoBitsPerSecond") ])),
+      "Configuration saved. 2 settings apply to streams that start after the save.");
+  });
+
+  test("reports live and next-stream changes together, the live sentence first", () => {
+
+    const outcome: ApplyConfigurationResult = {
+
+      apply: { applied: [makeChange("hdhr.enabled")], deferred: [], nextStream: [ makeChange("streaming.frameRate"), makeChange("streaming.videoBitsPerSecond") ],
+        rejected: [] },
+      restart: null
+    };
+
+    assert.equal(describeConfigurationOutcome(outcome),
+      "Configuration saved. 1 setting applied live. 2 settings apply to streams that start after the save.");
+  });
+
+  test("a rejection outranks a next-stream change, and a scheduled restart outranks both", () => {
+
+    const rejection = { change: makeChange("hdhr.enabled"), reason: "FFmpeg is unavailable." };
+
+    assert.equal(describeConfigurationOutcome({ apply: { applied: [], deferred: [], nextStream: [makeChange("streaming.frameRate")], rejected: [rejection] },
+      restart: null }), "Configuration saved, but 1 change was rejected: FFmpeg is unavailable.");
+    assert.equal(describeConfigurationOutcome({ apply: { applied: [], deferred: [makeChange("server.port")], nextStream: [makeChange("streaming.frameRate")],
+      rejected: [] }, restart: makeRestart("Configuration saved. Server is restarting...") }), "Configuration saved. Server is restarting...");
   });
 });
 

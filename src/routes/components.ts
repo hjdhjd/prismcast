@@ -117,19 +117,64 @@ export function generateButton(label: string, options: ButtonOptions): string {
 }
 
 /**
- * Badge variant for styling.
+ * The badge styles. Every badge the page draws takes one of these styles, and each variant's stylesheet rule and its color tokens derive from this tuple, so a
+ * variant added here is styled by the rule the stylesheet maps from it and owes its tokens in both theme blocks.
  */
-export type BadgeVariant = "builtin" | "custom" | "env" | "flag" | "override";
+export const BADGE_VARIANTS = [ "env", "flag", "next-stream", "restart", "tag" ] as const;
 
 /**
- * Generates a badge HTML element.
+ * Badge variant for styling, derived from BADGE_VARIANTS.
+ */
+export type BadgeVariant = typeof BADGE_VARIANTS[number];
+
+/**
+ * Options for badge generation.
+ */
+export interface BadgeOptions {
+
+  // The click action dispatched via the project-wide action dispatcher, emitted as a data-click-action attribute as ButtonOptions.action is. Omit when the badge
+  // has no click behavior.
+  action?: string;
+
+  // Additional CSS classes, emitted after the badge's own classes.
+  className?: string;
+
+  // Per-badge data-* attributes, keyed by attribute names without the "data-" prefix and emitted as given, as WizardModalOptions.dataAttributes is. A click
+  // handler reads them through the element's dataset.
+  dataAttributes?: Readonly<Record<string, string>>;
+
+  // The tooltip text.
+  title?: string;
+
+  // The badge style.
+  variant: BadgeVariant;
+}
+
+/**
+ * Generates a badge HTML element. The attribute set is serialized through serializeAttrs, as generateButton's is, so escaping and the omission of an absent
+ * attribute live in one place. The status script ships this function and serializeAttrs to the browser by their source, so the stream table draws its badge
+ * through this same builder: its body references only its parameters, serializeAttrs, escapeHtml and browser built-ins, and calls no other helper, because any
+ * other binding does not exist where the shipped copy runs.
  * @param label - The badge label text.
- * @param variant - The badge style variant.
+ * @param options - Badge configuration options.
  * @returns HTML string for the badge.
  */
-export function generateBadge(label: string, variant: BadgeVariant): string {
+export function generateBadge(label: string, options: BadgeOptions): string {
 
-  return "<span class=\"badge badge-" + variant + "\">" + escapeHtml(label) + "</span>";
+  const { action, className, dataAttributes = {}, title, variant } = options;
+  const attributes: Record<string, string | undefined> = {
+
+    "class": "badge badge-" + variant + (className ? (" " + className) : ""),
+    "data-click-action": action,
+    title: title
+  };
+
+  for(const [ name, value ] of Object.entries(dataAttributes)) {
+
+    attributes["data-" + name] = value;
+  }
+
+  return "<span" + serializeAttrs(attributes) + ">" + escapeHtml(label) + "</span>";
 }
 
 /**

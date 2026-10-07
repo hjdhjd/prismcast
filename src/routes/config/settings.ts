@@ -3,17 +3,20 @@
  * settings.ts: Settings UI and route handlers for the PrismCast configuration interface.
  */
 import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.ts";
+import type { ApplyConfigurationResult, RestartResult } from "./index.ts";
+import type { ApplyResult, ChangeRejection, ConfigChange, ConfigChangePartition } from "../../config/reactivity.ts";
 import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, readConfig,
   setNestedValue } from "../../config/userConfig.ts";
-import { ConfigurationRejectedError, getDefaults, getLoadedConfiguration, validateInteger, validateNumber } from "../../config/index.ts";
+import { ConfigurationRejectedError, getConfigurationGap, getDefaults, getLoadedConfiguration, validateInteger, validateNumber } from "../../config/index.ts";
 import type { Express, Request, Response } from "express";
-import { LOG, escapeHtml, isRunningAsService, sanitizeString, stringifySorted } from "../../utils/index.ts";
+import { LOG, escapeHtml, isRunningAsService, sanitizeString, serializeAttrs, stringifySorted } from "../../utils/index.ts";
+import { PENDING_PATH_ATTRIBUTE, REACTIVITY_BADGES, formatSettingCount } from "./vocabulary.ts";
 import { applyConfigurationChange, describeConfigurationOutcome } from "./index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
-import type { ApplyConfigurationResult } from "./index.ts";
 import type { Nullable } from "../../types/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
+import { generateBadge } from "../components.ts";
 import { getConfigFilePath } from "../../config/paths.ts";
 import { getGpuCapabilities } from "../../browser/display.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
@@ -297,15 +300,177 @@ function getFieldWidthClass(setting: SettingMetadata): string {
   return "field-wide";
 }
 
+export interface PendingSetting {
+
+  // Why the running value differs from the saved one: a restart-class value waits for the restart, and a live or next-stream value a handler could not
+  // realize waits for a later save to retry it.
+  readonly kind: "restart" | "unrealized";
+
+  // The dot-separated path of the setting.
+  readonly path: string;
+
+  // The marker sentence, naming the running value in the units the form displays. The server composes it once, so the page and a save response carry the
+  // same words and the client places them as text.
+  readonly text: string;
+}
+
+export interface SettingsFormContext {
+
+  // The settings an environment variable owns, each with the value it supplies.
+  readonly envOverrides: ReadonlyMap<string, string>;
+
+  // The saved settings the running process has not taken, keyed by path.
+  readonly pending: ReadonlyMap<string, PendingSetting>;
+}
+
+// One gap bucket's changes and the marker kind each of them carries.
+interface PendingBucket {
+
+  // The bucket's changes, in the gap's order.
+  readonly changes: readonly ConfigChange[];
+
+  // The marker kind of every change in the bucket.
+  readonly kind: PendingSetting["kind"];
+}
+
+// The marker sentence of each kind, given the running value as the form displays it. Keyed by the kind union, so a kind added later cannot compile until
+// it decides its sentence.
+const PENDING_SENTENCES: Readonly<Record<PendingSetting["kind"], (running: string) => string>> = {
+
+  restart: (running: string): string => REACTIVITY_BADGES.restart.title + " Running value: " + running + ".",
+  unrealized: (running: string): string => "Saved, but not applied yet. Running value: " + running + ". The next save retries it."
+};
+
+// The outcome of one save by setting, mapped over ApplyResult's buckets, so a bucket added there cannot compile until the response builder fills it.
+export type SettingsSaveChanges = Readonly<Record<Exclude<keyof ApplyResult, "rejected">, readonly string[]>> & {
+
+  // The changes this save asked for that a handler refused, each with its reason.
+  readonly rejected: readonly ChangeRejection[];
+};
+
+// The data a settings save or import answers with. An object type rather than an interface, because the envelope types data as a string-keyed record.
+export type SettingsSaveData = Readonly<Pick<RestartResult, "activeStreams" | "deferred" | "willRestart">> & {
+
+  // What this save's reconcile did: every value it realized, a retried one included, and this save's own restart-held and refused changes.
+  readonly changes: SettingsSaveChanges;
+
+  // Every saved setting the running server has not taken, read once the save resolved. The client replaces its markers from it.
+  readonly pending: readonly PendingSetting[];
+};
+
+/**
+ * Reads a setting's value for a person: the one reading the default line and the pending markers both use, so a value reads the same wherever the form names
+ * it. A checkbox list reads as its members joined, or none when it has no member; a missing value reads as autodetect; a number reads in display units, grouped
+ * unless the setting is a port, with its unit pluralized by the number; any other value reads as its display text with its unit appended as declared.
+ * @param value - The value, in storage units.
+ * @param setting - The setting metadata.
+ * @returns The value's text with its display unit.
+ */
+function formatSettingValue(value: unknown, setting: SettingMetadata): string {
+
+  const displayUnit = getDisplayUnit(setting);
+  const displayValue = toDisplayValue(value, setting);
+  let text: string;
+
+  if(setting.type === "checkboxList") {
+
+    const members = Array.isArray(value) ? value as string[] : [];
+
+    text = (members.length > 0) ? members.join(", ") : "none";
+  } else if(displayValue === null) {
+
+    text = "autodetect";
+  } else if(typeof displayValue === "number") {
+
+    text = formatValueForDisplay(displayValue, setting.type);
+  } else {
+
+    text = displayValue;
+  }
+
+  if(!displayUnit) {
+
+    return text;
+  }
+
+  return text + " " + ((typeof displayValue === "number") ? formatUnitForValue(displayValue, displayUnit) : displayUnit);
+}
+
+/**
+ * Derives the pending view of a configuration gap: one entry for each saved setting the running process has not taken, keyed by path in the settings' declared
+ * order, each carrying the marker sentence the form shows. The view is derived from the gap on every call and stored nowhere, which is why a save's response
+ * carries all of it rather than a change against an earlier view.
+ * @param gap - The gap to project, the live gap between the running configuration and the loaded snapshot by default.
+ * @returns The pending settings, keyed by path.
+ */
+export function collectPendingSettings(gap: ConfigChangePartition = getConfigurationGap()): ReadonlyMap<string, PendingSetting> {
+
+  const buckets: { readonly [Bucket in keyof ConfigChangePartition]: PendingBucket } = {
+
+    held: { changes: gap.held, kind: "restart" },
+    live: { changes: gap.live, kind: "unrealized" },
+    nextStream: { changes: gap.nextStream, kind: "unrealized" }
+  };
+  const filed = new Map<string, { readonly change: ConfigChange; readonly kind: PendingSetting["kind"] }>();
+
+  for(const bucket of Object.values(buckets)) {
+
+    for(const change of bucket.changes) {
+
+      filed.set(change.path, { change, kind: bucket.kind });
+    }
+  }
+
+  // Walking the metadata settings rather than looking each gap path up means no lookup can miss, and the view comes out in the order the form renders.
+  const pending = new Map<string, PendingSetting>();
+
+  for(const setting of Object.values(CONFIG_METADATA).flat()) {
+
+    const entry = filed.get(setting.path);
+
+    if(!entry) {
+
+      continue;
+    }
+
+    // The gap accessor diffs the running configuration against the loaded snapshot, so a change's previous value is the running one the marker names.
+    const running = entry.change.previous;
+
+    pending.set(setting.path, { kind: entry.kind, path: setting.path, text: PENDING_SENTENCES[entry.kind](formatSettingValue(running, setting)) });
+  }
+
+  return pending;
+}
+
+/**
+ * What one settings field renders from.
+ */
+interface SettingFieldOptions {
+
+  // The saved value the form shows, in storage units.
+  readonly currentValue: unknown;
+
+  // The default value, in storage units.
+  readonly defaultValue: unknown;
+
+  // The value an environment variable supplies when it owns the setting, undefined otherwise.
+  readonly envOverride: string | undefined;
+
+  // The setting's pending entry when the running process has not taken its saved value, undefined otherwise.
+  readonly pending: PendingSetting | undefined;
+
+  // The setting's metadata.
+  readonly setting: SettingMetadata;
+}
+
 /**
  * Generates HTML for a single setting form field. Supports text inputs, number inputs, and select dropdowns based on the setting type and validValues.
- * @param setting - The setting metadata.
- * @param currentValue - The saved value the form shows (in storage units).
- * @param defaultValue - The default value (in storage units).
- * @param envOverride - The environment variable value if overridden, undefined otherwise.
+ * @param options - The setting, the saved value the form shows, its default, its environment override, and its pending entry.
  * @returns HTML string for the form field.
  */
-function generateSettingField(setting: SettingMetadata, currentValue: unknown, defaultValue: unknown, envOverride: string | undefined): string {
+function generateSettingField(options: SettingFieldOptions): string {
+
+  const { currentValue, defaultValue, envOverride, pending, setting } = options;
 
   const isDisabled = (envOverride !== undefined) || (setting.disabledReason !== undefined);
   const inputId = setting.path.replaceAll(".", "-");
@@ -362,9 +527,17 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
 
   lines.push(escapeHtml(setting.label));
 
+  // The class badge tells the user when a save of the setting takes effect, before the click. A class whose promise a save already makes carries none.
+  const classBadge = REACTIVITY_BADGES[setting.reactivity];
+
+  if(classBadge) {
+
+    lines.push(generateBadge(classBadge.label, { title: classBadge.title, variant: classBadge.variant }));
+  }
+
   if(envOverride !== undefined) {
 
-    lines.push("<span class=\"env-badge\">ENV</span>");
+    lines.push(generateBadge("ENV", { variant: "env" }));
   }
 
   lines.push("</label>");
@@ -586,44 +759,19 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
     lines.push(content);
   }
 
+  // Every field carries one marker slot, holding the server's sentence when the saved value is not the running one and hidden otherwise, so a save's response
+  // fills or clears it as text without creating markup.
+  lines.push("<div" + serializeAttrs({ "class": "form-pending" }) + serializeAttrs({ [PENDING_PATH_ATTRIBUTE]: setting.path, hidden: pending === undefined }) +
+    ">" + escapeHtml(pending?.text ?? "") + "</div>");
+
   // Add disabled reason warning when a setting is locked out due to an upstream issue.
   if(setting.disabledReason) {
 
     lines.push("<div class=\"form-warning\">" + escapeHtml(setting.disabledReason) + "</div>");
   }
 
-  // Add default value hint with properly pluralized unit.
-  let defaultDisplay: string;
-
-  if(setting.type === "checkboxList") {
-
-    // For checkbox lists, show the default items as a comma-separated list, or "none" for empty arrays.
-    const defaultArr = Array.isArray(defaultValue) ? defaultValue as string[] : [];
-
-    defaultDisplay = defaultArr.length > 0 ? defaultArr.join(", ") : "none";
-  } else if(displayDefault === null) {
-
-    defaultDisplay = "autodetect";
-  } else if(typeof displayDefault === "number") {
-
-    defaultDisplay = formatValueForDisplay(displayDefault, setting.type);
-  } else {
-
-    defaultDisplay = displayDefault;
-  }
-
-  // Format the unit with correct pluralization based on the default value.
-  let formattedUnit = "";
-
-  if(displayUnit && (typeof displayDefault === "number")) {
-
-    formattedUnit = " " + formatUnitForValue(displayDefault, displayUnit);
-  } else if(displayUnit) {
-
-    formattedUnit = " " + displayUnit;
-  }
-
-  lines.push("<div class=\"form-default\">Default: " + escapeHtml(defaultDisplay) + formattedUnit + "</div>");
+  // Add the default value hint, read as the pending markers read a value.
+  lines.push("<div class=\"form-default\">Default: " + escapeHtml(formatSettingValue(defaultValue, setting)) + "</div>");
 
   // Add env var override notice if applicable.
   if(isDisabled && setting.envVar && envOverride) {
@@ -661,7 +809,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
     if(!setting.validValues.includes(value as string)) {
 
-      return setting.label + " must be one of: " + setting.validValues.join(", ");
+      return setting.label + " must be one of: " + setting.validValues.join(", ") + ".";
     }
 
     return undefined;
@@ -674,7 +822,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
       if(typeof value !== "boolean") {
 
-        return setting.label + " must be true or false";
+        return setting.label + " must be true or false.";
       }
 
       return undefined;
@@ -707,7 +855,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
       if(typeof value !== "number") {
 
-        return setting.label + " must be a number";
+        return setting.label + " must be a number.";
       }
 
       const error = validateInteger(setting.label, value, setting.min, setting.max);
@@ -719,7 +867,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
       if(typeof value !== "number") {
 
-        return setting.label + " must be a number";
+        return setting.label + " must be a number.";
       }
 
       const error = validateNumber(setting.label, value, setting.min, setting.max);
@@ -731,7 +879,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
 
       if((typeof value !== "string") || (value.trim() === "")) {
 
-        return setting.label + " must be a non-empty string";
+        return setting.label + " must be a non-empty string.";
       }
 
       return undefined;
@@ -742,7 +890,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
       // A path is any string. The empty and null forms mean autodetect and were already accepted by the guard at the top.
       if(typeof value !== "string") {
 
-        return setting.label + " must be a string";
+        return setting.label + " must be a string.";
       }
 
       return undefined;
@@ -753,7 +901,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
       // A free-form string carries no value constraint beyond being one. Settings that restrict their values declare validValues and were handled above.
       if(typeof value !== "string") {
 
-        return setting.label + " must be a string";
+        return setting.label + " must be a string.";
       }
 
       return undefined;
@@ -843,20 +991,39 @@ function parseFormValue(setting: SettingMetadata, value: string): Nullable<boole
 }
 
 /**
- * Generates the content for the Settings tab with non-collapsible section headers.
- * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
- * @returns HTML string for the Settings tab content.
+ * Generates the fields of a run of settings, the one per-field loop the Settings tab and every collapsible section share.
+ * @param settings - The settings to render, in order.
+ * @param context - The environment overrides and the pending view the page render resolved once.
+ * @returns One HTML string per field.
  */
-export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, string>): string {
+function generateSettingFields(settings: readonly SettingMetadata[], context: SettingsFormContext): string[] {
 
-  const sections = getSettingsTabSections();
-  const tabs = getUITabs();
-  const settingsTab = tabs.find((t) => t.id === "settings");
   const defaults = getDefaults();
 
   // The form shows the saved configuration, the loaded snapshot, rather than the running one. After a save that holds a change for a restart, a page load shows
   // that change, so submitting the page cannot post the running value back over it.
   const saved = getLoadedConfiguration();
+
+  return settings.map((setting) => generateSettingField({
+
+    currentValue: getNestedValue(saved, setting.path),
+    defaultValue: getNestedValue(defaults, setting.path),
+    envOverride: context.envOverrides.get(setting.path),
+    pending: context.pending.get(setting.path),
+    setting
+  }));
+}
+
+/**
+ * Generates the content for the Settings tab with non-collapsible section headers.
+ * @param context - The environment overrides and the pending view the page render resolved once and shares with every section it draws.
+ * @returns HTML string for the Settings tab content.
+ */
+export function generateSettingsTabContent(context: SettingsFormContext): string {
+
+  const sections = getSettingsTabSections();
+  const tabs = getUITabs();
+  const settingsTab = tabs.find((t) => t.id === "settings");
   const lines: string[] = [];
 
   // Panel header with description and reset button.
@@ -873,15 +1040,7 @@ export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, str
     lines.push("<div class=\"settings-section-header\">" + escapeHtml(section.displayName) + "</div>");
 
     // Generate setting fields for this section.
-    for(const setting of section.settings) {
-
-      const currentValue = getNestedValue(saved, setting.path);
-      const defaultValue = getNestedValue(defaults, setting.path);
-      const envOverride = envOverrides.get(setting.path);
-
-      lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride));
-    }
-
+    lines.push(...generateSettingFields(section.settings, context));
     lines.push("</div>");
   }
 
@@ -891,41 +1050,34 @@ export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, str
 /**
  * Generates the content for a collapsible section within the Advanced tab.
  * @param section - The section definition.
- * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
+ * @param context - The environment overrides and the pending view the page render resolved once and shares with every section it draws.
  * @returns HTML string for the section.
  */
-export function generateCollapsibleSection(section: AdvancedSection, envOverrides: ReadonlyMap<string, string>): string {
+export function generateCollapsibleSection(section: AdvancedSection, context: SettingsFormContext): string {
 
-  const defaults = getDefaults();
-
-  // The section shows the saved configuration rather than the running one, as the Settings tab does, so a page load after a save that holds a change for a
-  // restart cannot post the running value back over it.
-  const saved = getLoadedConfiguration();
   const lines: string[] = [];
-  const settingCount = section.settings.length;
+
+  /* A section holding a pending setting is opened on the server, so a pending marker is never hidden behind a collapsed header, and nothing on the client has
+   * to remember it. The client's stored section state only ever adds the expanded class, so a section opened here stays open on load.
+   */
+  const expanded = section.settings.some((setting) => context.pending.has(setting.path)) ? " expanded" : "";
 
   // Section container.
   lines.push("<div class=\"advanced-section\" data-section=\"" + escapeHtml(section.id) + "\">");
 
   // Section header with chevron, title, and count.
-  lines.push("<div class=\"section-header\" data-click-action=\"" + ACTIONS.toggleSection + "\" data-section-id=\"" + escapeHtml(section.id) + "\">");
+  lines.push("<div class=\"section-header" + expanded + "\" data-click-action=\"" + ACTIONS.toggleSection + "\" data-section-id=\"" + escapeHtml(section.id) +
+    "\">");
   lines.push("<span class=\"section-chevron\">&#9654;</span>");
   lines.push("<span class=\"section-title\">" + escapeHtml(section.displayName) + "</span>");
-  lines.push("<span class=\"section-count\">(" + String(settingCount) + " setting" + (settingCount === 1 ? "" : "s") + ")</span>");
+  lines.push("<span class=\"section-count\">(" + formatSettingCount(section.settings.length) + ")</span>");
   lines.push("</div>");
 
-  // Section content (collapsed by default).
-  lines.push("<div class=\"section-content\">");
+  // Section content, collapsed unless the section holds a pending setting.
+  lines.push("<div class=\"section-content" + expanded + "\">");
 
   // Generate setting fields for this section.
-  for(const setting of section.settings) {
-
-    const currentValue = getNestedValue(saved, setting.path);
-    const defaultValue = getNestedValue(defaults, setting.path);
-    const envOverride = envOverrides.get(setting.path);
-
-    lines.push(generateSettingField(setting, currentValue, defaultValue, envOverride));
-  }
+  lines.push(...generateSettingFields(section.settings, context));
 
   // Close section-content, then advanced-section, in reverse order of the opens above.
   lines.push("</div>");
@@ -936,10 +1088,10 @@ export function generateCollapsibleSection(section: AdvancedSection, envOverride
 
 /**
  * Generates the content for the Advanced tab with collapsible sections.
- * @param envOverrides - The environment overrides the page render resolved once and shares with every section it draws.
+ * @param context - The environment overrides and the pending view the page render resolved once and shares with every section it draws.
  * @returns HTML string for the Advanced tab content.
  */
-export function generateAdvancedTabContent(envOverrides: ReadonlyMap<string, string>): string {
+export function generateAdvancedTabContent(context: SettingsFormContext): string {
 
   const sections = getAdvancedSections();
   const tabs = getUITabs();
@@ -956,7 +1108,7 @@ export function generateAdvancedTabContent(envOverrides: ReadonlyMap<string, str
   // Generate each collapsible section.
   for(const section of sections) {
 
-    lines.push(generateCollapsibleSection(section, envOverrides));
+    lines.push(generateCollapsibleSection(section, context));
   }
 
   return lines.join("\n");
@@ -1023,20 +1175,31 @@ function mergeConfigValues(target: UserConfig, source: UserConfig): void {
 }
 
 /**
- * Builds the data envelope of a save response from the save's outcome. The settings save and the import share it, so each answers with the same fields.
+ * Builds the data envelope of a save response from the save's outcome. The settings save and the import share it, so each answers with the same fields: the
+ * restart members the API reference documents, the outcome by setting under changes, and the pending view under pending. changes.applied and
+ * changes.nextStream are everything this save's reconcile realized, a value an earlier save introduced and this save's retry realized included, while
+ * changes.deferred and changes.rejected are this save's own. pending is the whole view after the save, read here once the save has resolved, and the client
+ * replaces its markers from it rather than merging them. Exported so a unit row holds the mapping of every bucket, the next-stream bucket included, which a
+ * route reaches only through a setting of that class.
  * @param outcome - The save's apply and restart result.
- * @returns The response data: the active stream count and restart flags of a scheduled restart, and the count of each bucket the save reported.
+ * @returns The response data.
  */
-function buildSaveResponseData(outcome: ApplyConfigurationResult): Record<string, unknown> {
+export function buildSaveResponseData(outcome: ApplyConfigurationResult): SettingsSaveData {
+
+  const paths = (changes: readonly ConfigChange[]): string[] => changes.map((change) => change.path);
 
   return {
 
     activeStreams: outcome.restart?.activeStreams ?? 0,
-    appliedCount: outcome.apply.applied.length,
+    changes: {
+
+      applied: paths(outcome.apply.applied),
+      deferred: paths(outcome.apply.deferred),
+      nextStream: paths(outcome.apply.nextStream),
+      rejected: outcome.apply.rejected.map(({ change, reason }) => ({ path: change.path, reason }))
+    },
     deferred: outcome.restart?.deferred ?? false,
-    deferredCount: outcome.apply.deferred.length,
-    nextStreamCount: outcome.apply.nextStream.length,
-    rejectedCount: outcome.apply.rejected.length,
+    pending: Array.from(collectPendingSettings().values()),
     willRestart: outcome.restart?.willRestart ?? false
   };
 }

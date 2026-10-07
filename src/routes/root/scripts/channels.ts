@@ -3,6 +3,7 @@
  * channels.ts: Client-side JavaScript generator for the PrismCast channels subtab.
  */
 import { ACTIONS } from "../../clientActions.ts";
+import { generateBadge } from "../../components.ts";
 
 /**
  * Generates the channels subtab script block containing the service profile wizard, the browse channels wizard, the tag manager, and the setup wizard, plus the
@@ -14,6 +15,10 @@ export function generateChannelsSubtabScript(): string {
   return [
     "<script>",
     "(function() {",
+
+    // The free-tier badge the browse view draws, rendered by the server's own badge builder and carried here as markup, so it is the same badge every other
+    // surface draws.
+    "  const FREE_TIER_BADGE = " + JSON.stringify(generateBadge("Free", { variant: "flag" })) + ";",
 
     // Channels subtab switching via the shared factory.
     "  const switchChannelsSubtab = createSubtabSwitcher({",
@@ -896,7 +901,7 @@ export function generateChannelsSubtabScript(): string {
     // Right side: state label and tier badge.
     "      html += '<span class=\"browse-channel-meta\">';",
     "      if(stateLabel) html += '<span class=\"browse-state-label\">' + escapeHtml(stateLabel) + '</span>';",
-    "      if(ch.tier === 'free') html += '<span class=\"browse-tier-badge tier-free\">Free</span>';",
+    "      if(ch.tier === 'free') html += FREE_TIER_BADGE;",
     "      html += '</span>';",
 
     "      html += '</label>';",

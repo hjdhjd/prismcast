@@ -7,6 +7,7 @@ import { ICON_BOLT, ICON_COPY, ICON_DELETE, ICON_DISABLE, ICON_EDIT, ICON_ENABLE
   ICON_REVERT, ICON_TRANSFER } from "../../icons.ts";
 import { compareChannelSort, getChannelSortKey } from "../../../config/channelSort.ts";
 import { escapeHtml, formatTimeAgo } from "../../../utils/index.ts";
+import { generateBadge, generateWizardModal } from "../../components.ts";
 import { getActiveTagVocabulary, getChannelCustomizations, getChannelEffectiveTags, getChannelListing, getChannelLogo, getChannelsParseErrorMessage,
   getEffectiveHdhrEnabled, getPredefinedScopeCounts, getTagRegistry, getUserChannelsFilePath, hasChannelsParseError, isPredefinedChannel,
   isPredefinedChannelDisabled, isUserChannel, isVisibleChannel, tagsMatch } from "../../../config/userChannels.ts";
@@ -22,7 +23,6 @@ import { PREDEFINED_CHANNELS } from "../../../channels/index.ts";
 import { PROFILE_CATEGORIES } from "../../../types/index.ts";
 import type { ProfileInfo } from "../../../config/profiles.ts";
 import { categorizeProfiles } from "../index.ts";
-import { generateWizardModal } from "../../components.ts";
 
 /**
  * Generates an annotated service display span. The client-side page-load script processes these elements via serviceIconHtml, rendering the appropriate
@@ -452,8 +452,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 
       lines.push("<label class=\"tag-checkbox-label\">" +
         "<input type=\"checkbox\" class=\"tag-checkbox\" data-tag=\"" + escapeHtml(tag) + "\"" + checked +
-        " data-change-action=\"" + ACTIONS.updateTagsHidden + "\">" +
-        "<span class=\"tag-badge\">" + escapeHtml(tag) + "</span></label>");
+        " data-change-action=\"" + ACTIONS.updateTagsHidden + "\">" + generateBadge(tag, { variant: "tag" }) + "</label>");
     }
 
     lines.push("</div>");
@@ -641,8 +640,7 @@ export function generateTagManagerBody(): string {
   for(const tag of vocabulary) {
 
     tagListItems.push("<div class=\"tag-manager-item\" data-tag=\"" + escapeHtml(tag) + "\">" +
-      "<span class=\"tag-badge tag-editable\" title=\"Click to rename\" data-click-action=\"" + ACTIONS.startTagRename +
-      "\" data-tag-name=\"" + escapeHtml(tag) + "\">" + escapeHtml(tag) + "</span>" +
+      generateBadge(tag, { action: ACTIONS.startTagRename, className: "tag-editable", dataAttributes: { "tag-name": tag }, title: "Click to rename", variant: "tag" }) +
       "<button type=\"button\" class=\"btn-icon btn-icon-delete\" title=\"Delete tag\" data-click-action=\"" +
       ACTIONS.deleteTag + "\" data-tag-name=\"" + escapeHtml(tag) +
       "\">" + ICON_DELETE + "</button></div>");
@@ -654,7 +652,7 @@ export function generateTagManagerBody(): string {
   for(const tag of registry.deletedTags) {
 
     deletedItems.push("<div class=\"tag-manager-item tag-deleted\" data-tag=\"" + escapeHtml(tag) + "\">" +
-      "<span class=\"tag-badge tag-badge-deleted\">" + escapeHtml(tag) + "</span> <span class=\"tag-annotation\">(deleted)</span>" +
+      generateBadge(tag, { variant: "tag" }) + " <span class=\"tag-annotation\">(deleted)</span>" +
       "<button type=\"button\" class=\"btn-icon\" title=\"Restore tag\" data-click-action=\"" + ACTIONS.restoreTag + "\" data-tag-name=\"" + escapeHtml(tag) +
       "\">" + ICON_REVERT + "</button></div>");
   }
@@ -939,7 +937,7 @@ export function generateChannelRowHtml(key: string, profiles: readonly ProfileIn
   // Tags column: render effective tags as pills. Clicking the cell opens a shared portal dropdown (rendered in <body>, positioned via getBoundingClientRect)
   // for inline tag editing. The cell carries data-key and data-tags so the dropdown can populate the correct checked state.
   const tagsHtml = (effectiveTags.length > 0) ?
-    effectiveTags.map((tag) => "<span class=\"tag-badge\">" + escapeHtml(tag) + "</span>").join(" ") :
+    effectiveTags.map((tag) => generateBadge(tag, { variant: "tag" })).join(" ") :
     "<span class=\"text-muted\">&ndash;</span>";
 
   displayLines.push("<td class=\"col-tags editable-cell dropdown\" data-sort-value=\"" + escapeHtml(getChannelSortKey(channel, key, "tags")) +
