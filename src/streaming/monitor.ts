@@ -444,6 +444,10 @@ export function monitorPlaybackHealth(
     recoveryAttempt: 0
   };
 
+  // How long the current degradation has lasted, in seconds: the consecutive degraded readings times this stream's own monitor interval. The figure is a lower
+  // bound when a tick is skipped while a read is still outstanding, because a skipped tick takes no reading.
+  const degradedSeconds = (): number => Math.round((resolutionState.consecutiveDegradedReadings * streamInfo.settings.monitorInterval) / 1000);
+
   /**
    * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
    * Recovery escalates through these levels:
@@ -1822,12 +1826,8 @@ export function monitorPlaybackHealth(
     // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
 
-      // The logged duration counts one reading per tick at the default two-second monitor interval, so it is approximate for a stream whose interval differs.
-      const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
-
-      LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s against a %s\u00d7%s peak). Attempting recovery via %s.",
-        String(degradedDuration), String(state.videoWidth), String(state.videoHeight),
-        String(peak.width), String(peak.height), RECOVERY_METHODS.pageNavigation);
+      LOG.warn("Video resolution has been degraded, so recovery will be attempted.", { degradedSeconds: degradedSeconds(), method: RECOVERY_METHODS.pageNavigation,
+        peak: formatResolution(peak.width, peak.height), resolution: formatResolution(state.videoWidth, state.videoHeight) });
 
       recoveryState.inProgress = true;
 
@@ -1895,11 +1895,8 @@ export function monitorPlaybackHealth(
 
       if(canReplaceTab()) {
 
-        // The same per-tick duration as the first warning, approximate for a stream whose monitor interval differs from the default.
-        const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
-
-        LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
-          String(degradedDuration), String(state.videoWidth), String(state.videoHeight), RECOVERY_METHODS.tabReplacement);
+        LOG.warn("Video resolution is still degraded, so recovery will be attempted again.", { degradedSeconds: degradedSeconds(),
+          method: RECOVERY_METHODS.tabReplacement, resolution: formatResolution(state.videoWidth, state.videoHeight) });
 
         await executeTabReplacement("resolution degraded");
 

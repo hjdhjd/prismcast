@@ -30,6 +30,7 @@ import type { CaptureImpairment } from "../browser/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { MonitorDeps } from "./monitor.ts";
 import type { Nullable } from "../types/index.ts";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import type { StreamStatus } from "./statusEmitter.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import type { TestContext } from "node:test";
@@ -160,14 +161,16 @@ function makeHealthyDeps(clock: TestClock): MonitorDeps {
  * @param streamId - The stream id string for log context and abort lookup.
  * @param numericStreamId - The numeric stream id the status and registry lookups use.
  * @param clock - The clock this row drives. The monitor arms its tick on it and reads every instant from it, so the row's advances are the whole timeline.
- * @param options - The collaborators an assertion substitutes: a tab-replacement handler, a circuit-break stub, and the browser-boundary deps. Each defaults to what the
- *                  monitor sees in the assertions written before they existed - no handler, a no-op break, and the unmarked-browser reads over the row's clock.
+ * @param options - The collaborators an assertion substitutes: a tab-replacement handler, a circuit-break stub, the browser-boundary deps, and the stream's
+ *                  settings. Each defaults to what the monitor sees in the assertions written before they existed - no handler, a no-op break, the unmarked-browser
+ *                  reads over the row's clock, and the default settings.
  * @returns The monitor handle.
  */
 function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: string, numericStreamId: number, clock: TestClock, options: {
   deps?: MonitorDeps;
   onCircuitBreak?: () => void;
   onTabReplacement?: () => Promise<Nullable<TabReplacementResult>>;
+  settings?: StreamSettings;
 } = {}): MonitorHandle {
 
   return monitorPlaybackHealth(page, page, makeProfile(), "https://monitor.test/watch", streamId, {
@@ -175,7 +178,7 @@ function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: s
     channelName: "Monitor Test",
     numericStreamId,
     serviceName: "monitor-test",
-    settings: makeStreamSettings(),
+    settings: options.settings ?? makeStreamSettings(),
     startTime: clock.now()
   }, options.onCircuitBreak ?? ((): void => { /* The circuit-break callback is not what these assertions exercise. */ }), options.onTabReplacement,
   options.deps ?? makeHealthyDeps(clock));
@@ -397,7 +400,7 @@ describe("monitorPlaybackHealth", () => {
 
     handle.dispose();
 
-    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 0, "a source at its own best is never judged degraded");
+    assert.equal(countMessages(messages, "Video resolution has been degraded,"), 0, "a source at its own best is never judged degraded");
     assert.equal(fake.navigations.length, 0, "and no recovery navigation was issued");
   });
 
@@ -427,7 +430,7 @@ describe("monitorPlaybackHealth", () => {
 
     handle.dispose();
 
-    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 0, "a one-rung downshift is not a degradation");
+    assert.equal(countMessages(messages, "Video resolution has been degraded,"), 0, "a one-rung downshift is not a degradation");
     assert.equal(fake.navigations.length, 0, "and no recovery navigation was issued");
   });
 
@@ -455,7 +458,7 @@ describe("monitorPlaybackHealth", () => {
       // eslint-disable-next-line no-await-in-loop
       await flushMicrotasks();
 
-      if(countMessages(messages, "Video resolution has been degraded for") > 0) {
+      if(countMessages(messages, "Video resolution has been degraded,") > 0) {
 
         warnTick = tick;
 
@@ -463,12 +466,53 @@ describe("monitorPlaybackHealth", () => {
       }
     }
 
-    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 1, "the ladder warned exactly once");
+    assert.equal(countMessages(messages, "Video resolution has been degraded,"), 1, "the ladder warned exactly once");
     assert.equal(warnTick, 30, "the warn landed on the reading that crossed the count threshold");
 
     await flushMicrotasks();
 
     assert.equal(fake.navigations.length, 1, "the warn was followed by exactly one page navigation");
+
+    // The navigation is left pending by the double, so it is failed here and allowed to settle before the monitor is disposed.
+    fake.navigations[0]?.reject(new Error("net::ERR_ABORTED"));
+
+    await flushMicrotasks();
+
+    handle.dispose();
+  });
+
+  test("reports the degraded time from the stream's own monitor interval", async (t) => {
+
+    /* The same drop on a stream that reads every second rather than at the default interval. The warning fires once the degraded readings reach the count
+     * threshold, so the time it reports is that count of readings at this stream's interval - half what the same count reads at the default. A duration taken
+     * from the default interval would report twice the time that passed.
+     */
+    const clock = new TestClock();
+    const intervalMs = 1000;
+    const degradedThreshold = 15;
+    const warnings: { context: unknown; message: string }[] = [];
+
+    t.mock.method(LOG, "warn", (message: string, context?: unknown): void => { warnings.push({ context, message }); });
+
+    const fake = makeFakePage({ clock });
+    const handle = startMonitor(fake.page, "resolution-interval-1", 9014, clock, { settings: makeStreamSettings({ monitorInterval: intervalMs }) });
+    const isDegradedWarning = (warning: { message: string }): boolean => warning.message.startsWith("Video resolution has been degraded,");
+
+    for(let tick = 0; (tick < 80) && !warnings.some(isDegradedWarning); tick++) {
+
+      // Sequential by definition: each tick's read must settle before the next firing.
+      // eslint-disable-next-line no-await-in-loop
+      await advance(clock, intervalMs);
+      fake.evaluations[tick]?.resolve((tick < 16) ? resolutionReadableState(tick + 1) : { ...readableState(tick + 1), videoHeight: 270, videoWidth: 480 });
+
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    assert.deepEqual(warnings.find(isDegradedWarning)?.context, { degradedSeconds: (degradedThreshold * intervalMs) / 1000, method: "page navigation", peak: "1280x720",
+      resolution: "480x270" }, "the warning carries the degraded time at this stream's interval beside the resolutions and the recovery it attempts");
+
+    await flushMicrotasks();
 
     // The navigation is left pending by the double, so it is failed here and allowed to settle before the monitor is disposed.
     fake.navigations[0]?.reject(new Error("net::ERR_ABORTED"));
@@ -782,7 +826,7 @@ describe("monitorPlaybackHealth: resolution escalation on a browser that can no 
       // eslint-disable-next-line no-await-in-loop
       await flushMicrotasks();
 
-      if(countMessages(messages, "Video resolution is still degraded after") > 0) {
+      if(countMessages(messages, "Video resolution is still degraded,") > 0) {
 
         return tick;
       }
@@ -817,7 +861,7 @@ describe("monitorPlaybackHealth: resolution escalation on a browser that can no 
     const reached = await runUntilSecondStep(clock, messages);
 
     assert.equal(reached, -1, "the ladder never announced its second step");
-    assert.equal(countMessages(messages, "Video resolution has been degraded for"), 1, "though its first step ran, so the drive did reach the ladder");
+    assert.equal(countMessages(messages, "Video resolution has been degraded,"), 1, "though its first step ran, so the drive did reach the ladder");
     assert.equal(countMessages(messages, "Video resolution remains degraded"), 1, "and it skipped to acceptance, which is what proves the decision point was reached");
     assert.equal(replacements, 0, "and the replacement handler was never called");
 
@@ -848,7 +892,7 @@ describe("monitorPlaybackHealth: resolution escalation on a browser that can no 
     const reached = await runUntilSecondStep(clock, messages);
 
     assert.notEqual(reached, -1, "the ladder announced its second step");
-    assert.equal(countMessages(messages, "Video resolution is still degraded after"), 1, "exactly once");
+    assert.equal(countMessages(messages, "Video resolution is still degraded,"), 1, "exactly once");
     assert.ok(replacements >= 1, "and the replacement handler was called");
 
     handle.dispose();
