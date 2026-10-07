@@ -2,9 +2,9 @@
  *
  * userChannels.integrity.test.ts: Direct unit tests for the pre-write integrity validators - detectIdentityFieldLoss and validateChannelsIntegrity.
  *
- * These validators are the silent-corruption guard: every write through mutateChannels passes through them, and any suspicious transition (an identity field
- * dropped without canonical fallback, or a wholesale-clear of a top-level metadata collection) surfaces as a warning. Coverage at this level is critical because
- * a regression in the validator silently corrupts the operator's user-feedback signal - false positives spam the log, false negatives let real data loss ship.
+ * These validators are the silent-corruption guard: every write through mutateChannels passes through them, and an identity field dropped without canonical
+ * fallback surfaces as a warning. Coverage at this level matters because a regression in the validator silently corrupts the operator's user-feedback signal -
+ * false positives spam the log, false negatives let real data loss ship.
  *
  * The detectIdentityFieldLoss function compares array-valued identity fields structurally via isDeepStrictEqual. The array-equality branch matrix is an easy place
  * for a subtle regression, so the equal-array and unequal-array cases are exercised here directly.
@@ -174,10 +174,8 @@ describe("detectIdentityFieldLoss", () => {
 
 describe("validateChannelsIntegrity", () => {
 
-  /* The validator returns a list of ValidationIssue records. Two categories:
-   *
-   *   - "identity-field-loss": one entry per detectIdentityFieldLoss return.
-   *   - "metadata-wholesale-clear": one entry per top-level collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) that went non-empty -> empty.
+  /* The validator returns a list of ValidationIssue records, one "identity-field-loss" entry per detectIdentityFieldLoss return. It reads the channel entries
+   * alone: the selection map and the tag registry lists empty through ordinary keyed edits, so an emptied collection is no issue.
    */
 
   /* Thin positional wrapper around the shared makeChannelsData helper. Local because the integrity tests favor a (channels, selections, tagRegistry) triple
@@ -211,87 +209,35 @@ describe("validateChannelsIntegrity", () => {
     assert.match(first.description, /mychannel\.stationId/);
   });
 
-  test("flags serviceSelections wholesale-clear (non-empty -> empty)", () => {
+  test("does not flag a metadata collection a keyed edit empties", () => {
 
-    const before = makeData({}, { abc: "abc-hulu", nbc: "nbc-yttv" }, { deletedTags: [], tags: [] });
-    const after = makeData({}, {}, { deletedTags: [], tags: [] });
-
-    const issues = validateChannelsIntegrity(before, after);
-
-    const first = firstOf(issues, "validation issue");
-
-    assert.equal(first.category, "metadata-wholesale-clear");
-    assert.match(first.description, /serviceSelections.*2 entries to empty/);
-  });
-
-  test("flags tagRegistry.tags wholesale-clear (non-empty -> empty)", () => {
-
-    const before = makeData({}, {}, { deletedTags: [], tags: [ "Sports", "News" ] });
-    const after = makeData({}, {}, { deletedTags: [], tags: [] });
-
-    const issues = validateChannelsIntegrity(before, after);
-
-    assert.equal(issues.length, 1);
-
-    const first = firstOf(issues, "validation issue");
-
-    assert.equal(first.category, "metadata-wholesale-clear");
-    assert.match(first.description, /tagRegistry\.tags.*2 entries to empty/);
-  });
-
-  test("flags tagRegistry.deletedTags wholesale-clear (non-empty -> empty)", () => {
-
-    const before = makeData({}, {}, { deletedTags: ["Sports"], tags: [] });
-    const after = makeData({}, {}, { deletedTags: [], tags: [] });
-
-    const issues = validateChannelsIntegrity(before, after);
-
-    assert.equal(issues.length, 1);
-
-    const first = firstOf(issues, "validation issue");
-
-    assert.equal(first.category, "metadata-wholesale-clear");
-    assert.match(first.description, /tagRegistry\.deletedTags.*1 entries to empty/);
-  });
-
-  test("does NOT flag empty -> empty (a no-op on a wholesale collection)", () => {
-
-    /* The validator's three wholesale-clear checks all guard with "prev > 0 && next === 0" - empty -> empty must not fire. Asserts the negative branch.
+    /* Reverting the last service selection, deleting the last user tag and restoring the last deleted predefined tag each empty a collection in one write, and
+     * each is an ordinary edit, so the validator reads none of the collections.
      */
-    const before = makeData({}, {}, { deletedTags: [], tags: [] });
+    const before = makeData({}, { abc: "abc-hulu" }, { deletedTags: ["Sports"], tags: ["Custom"] });
     const after = makeData({}, {}, { deletedTags: [], tags: [] });
 
     assert.deepEqual(validateChannelsIntegrity(before, after), []);
   });
 
-  test("does NOT flag non-empty -> non-empty even when the count drops (legitimate per-entry deletion)", () => {
+  test("reports one identity-field-loss issue per loss in one pass, whatever the metadata collections do in the same write", () => {
 
-    /* A drop from 5 -> 1 selections is normal usage (operator removed a few selections via the UI). Only a complete clear is suspicious enough to surface.
-     */
-    const before = makeData({}, { abc: "abc-hulu", cbs: "cbs-hulu", nbc: "nbc-yttv" }, { deletedTags: [], tags: [] });
-    const after = makeData({}, { abc: "abc-hulu" }, { deletedTags: [], tags: [] });
-
-    assert.deepEqual(validateChannelsIntegrity(before, after), []);
-  });
-
-  test("collects multiple issues across categories in one pass", () => {
-
-    /* A write that both drops an identity field AND wholesale-clears two metadata collections produces three issues. Asserts the validator's accumulation behavior.
-     */
     const before = makeData(
-      { mychannel: { name: "My", stationId: "99999", url: "https://example.com" } },
+      { first: { name: "First", stationId: "11111", url: "https://example.com/1" }, second: { name: "Second", stationId: "22222", url: "https://example.com/2" } },
       { abc: "abc-hulu" },
       { deletedTags: ["Sports"], tags: [] }
     );
     const after = makeData(
-      { mychannel: { name: "My", url: "https://example.com" } },
+      { first: { name: "First", url: "https://example.com/1" }, second: { name: "Second", url: "https://example.com/2" } },
       {},
       { deletedTags: [], tags: [] }
     );
 
-    const issues = validateChannelsIntegrity(before, after);
-    const categories = issues.map((i) => i.category).toSorted();
+    assert.deepEqual(validateChannelsIntegrity(before, after).map((issue) => issue.description).toSorted(), [
 
-    assert.deepEqual(categories, [ "identity-field-loss", "metadata-wholesale-clear", "metadata-wholesale-clear" ]);
+      "first.stationId would be silently cleared without canonical fallback",
+      "second.stationId would be silently cleared without canonical fallback"
+    ]);
+    assert.deepEqual(validateChannelsIntegrity(before, after).map((issue) => issue.category), [ "identity-field-loss", "identity-field-loss" ]);
   });
 });

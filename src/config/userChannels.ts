@@ -1029,68 +1029,24 @@ const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
 };
 
 /**
- * Pre-write integrity validator for the channels store. Detects these classes of suspicious mutation:
+ * Pre-write integrity validator for the channels store. It flags identity-field loss: a stored channel's identity field went from set to undefined without
+ * canonical fallback, which catches code that accidentally drops user-authored channel data while normalizing or transforming entries.
  *
- *   1. Identity-field loss: a stored channel's identity field went from set to undefined without canonical fallback. Catches code that
- *      accidentally drops user-authored channel data while normalizing or transforming entries.
- *   2. Metadata wholesale clear: a top-level metadata collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) went from non-empty to empty
- *      in a single mutation. Catches code that accidentally drops the entire collection - the guard logs loudly even though the change is structurally
- *      allowed.
- *
- * Every check is log-only - issues surface as warnings without blocking the write. The check compares the snapshots before and after the mutation, so any
- * single mutation that empties a non-empty collection is flagged, including one that removes its last entry: reverting the only service selection logs this
- * warning.
+ * The check is log-only - each issue surfaces as a warning without blocking the write. It reads channel entries alone: the selection map and the tag registry
+ * lists empty through ordinary keyed edits (reverting the last service selection, undoing a bulk assign, deleting or restoring the last tag), and no writer
+ * clears them wholesale, so an emptied collection says nothing suspicious about the mutation that emptied it.
  * @param prev - Pre-mutation snapshot of the file data.
  * @param next - Post-mutation, post-normalize file data.
  * @returns Issues found, or empty array.
  */
 function validateChannelsIntegrity(prev: ChannelsFileData, next: ChannelsFileData): ValidationIssue[] {
 
-  const issues: ValidationIssue[] = [];
+  return detectIdentityFieldLoss(prev.channels, next.channels).map((loss): ValidationIssue => ({
 
-  for(const loss of detectIdentityFieldLoss(prev.channels, next.channels)) {
-
-    issues.push({
-
-      category: "identity-field-loss",
-      description: loss + " would be silently cleared without canonical fallback",
-      severity: "warning"
-    });
-  }
-
-  // Metadata wholesale-clear detection. Checks each top-level collection independently. Empty -> empty is a no-op (no issue); non-empty -> non-empty (any
-  // size) is a normal mutation; only non-empty -> empty is flagged.
-  if((Object.keys(prev.serviceSelections).length > 0) && (Object.keys(next.serviceSelections).length === 0)) {
-
-    issues.push({
-
-      category: "metadata-wholesale-clear",
-      description: "serviceSelections went from " + String(Object.keys(prev.serviceSelections).length) + " entries to empty in a single mutation",
-      severity: "warning"
-    });
-  }
-
-  if((prev.tagRegistry.tags.length > 0) && (next.tagRegistry.tags.length === 0)) {
-
-    issues.push({
-
-      category: "metadata-wholesale-clear",
-      description: "tagRegistry.tags went from " + String(prev.tagRegistry.tags.length) + " entries to empty in a single mutation",
-      severity: "warning"
-    });
-  }
-
-  if((prev.tagRegistry.deletedTags.length > 0) && (next.tagRegistry.deletedTags.length === 0)) {
-
-    issues.push({
-
-      category: "metadata-wholesale-clear",
-      description: "tagRegistry.deletedTags went from " + String(prev.tagRegistry.deletedTags.length) + " entries to empty in a single mutation",
-      severity: "warning"
-    });
-  }
-
-  return issues;
+    category: "identity-field-loss",
+    description: loss + " would be silently cleared without canonical fallback",
+    severity: "warning"
+  }));
 }
 
 // Transactional store instance for channels.json.
