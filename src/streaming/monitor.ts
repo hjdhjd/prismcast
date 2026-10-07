@@ -8,10 +8,10 @@ import { EvaluateTimeoutError, LOG, capitalize, formatError, formatResolution, g
 import type { Frame, Page } from "puppeteer-core";
 import type { NativeStreamIdentity, StreamRegistryEntry } from "./registry.ts";
 import type { Nullable, ResolvedSiteProfile, VideoState } from "../types/index.ts";
-import { RECOVERY_METHODS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics, deriveStreamHealth,
-  describeResolutionOutcome, formatIssueType, formatRecoveryDuration, getIssueCategory, getIssueDescription, getRecoveryMethod, isResolutionDegraded,
-  nextNativeIssueRecord, recordRecoveryAttempt, recordRecoverySuccess, resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery,
-  updateResolutionPeak } from "./recovery.ts";
+import { RECOVERY_METHODS, TINY_SEGMENT_EVIDENCE_SECONDS, checkCircuitBreaker, classifyNativeSegmentHealth, computeNextRecoveryLevel, createRecoveryMetrics,
+  deriveStreamHealth, deriveTinySegmentCountTrigger, deriveTinySegmentThresholdBytes, describeResolutionOutcome, formatIssueType, formatRecoveryDuration,
+  getIssueCategory, getIssueDescription, getRecoveryMethod, isResolutionDegraded, nextNativeIssueRecord, recordRecoveryAttempt, recordRecoverySuccess,
+  resetCircuitBreaker, resolutionAreaRatio, shouldTriggerRecovery, updateResolutionPeak } from "./recovery.ts";
 import type { StreamHealthStatus, StreamStatus } from "./statusEmitter.ts";
 import { applyNativeQualityRefresh, getLastSegmentHasVideo, getLastSegmentSize, getStream, getStreamMemoryUsage, getStreamSegmenter, isCaptureIdentity,
   isHardwareAccelerated, makePendingCaptureIdentity } from "./registry.ts";
@@ -313,19 +313,27 @@ export function monitorPlaybackHealth(
   // dead and we escalate directly to tab replacement. This catches the case where recovery reports success but the MediaRecorder/FFmpeg pipeline has silently died.
   const SEGMENT_STALL_TIMEOUT = 10000;
 
-  // Tiny segment detection thresholds. Used for continuous segment size monitoring to detect dead capture pipelines. When video capture dies but audio continues,
-  // segments contain only audio data. Audio is transcoded at a controlled bitrate (max 512Kbps), so audio-only segments are at most ~128KB for 2-second segments (the
-  // default hls.segmentDuration). The 500KB threshold catches both dead captures (18 bytes) and audio-only captures while staying well below the smallest video preset
-  // (480p/3Mbps ~ 750KB/segment, also a 2-second basis).
-  // The default count trigger (10) requires roughly 20 seconds of consecutive tiny segments before action is taken, balancing responsiveness against false positives.
-  const TINY_SEGMENT_THRESHOLD = 512000;
-  const TINY_SEGMENT_COUNT_TRIGGER = 10;
+  /* Tiny segment detection. A dead capture pipeline keeps emitting segments while the video element looks healthy - a few bytes each when capture has died
+   * outright, audio alone when only video has - so each new segment is measured against a floor stated as a rate and scaled to the configured segment duration.
+   * The rate derives from the configured video and audio bitrates, and the recovery module's floor constants state what that floor guarantees. A tab replacement
+   * is earned by TINY_SEGMENT_EVIDENCE_SECONDS of consecutive undersized segments, counted in whole segments of the configured duration. The duration and the
+   * bitrates are read once at monitor start, so a run of undersized segments is judged against one floor and one trigger for its whole length.
+   */
+  const segmentDurationSeconds = CONFIG.hls.segmentDuration;
+  const audioBitsPerSecond = CONFIG.streaming.audioBitsPerSecond;
+  const videoBitsPerSecond = CONFIG.streaming.videoBitsPerSecond;
+  const tinySegmentByteThreshold = deriveTinySegmentThresholdBytes({ audioBitsPerSecond, segmentDurationSeconds, videoBitsPerSecond });
+  const tinySegmentCountTrigger = deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds });
 
-  // Resolve the service-specific tiny segment count threshold once at monitor startup. Services with extended static content (e.g., Xfinity commercial
-  // placeholders) set a higher value to tolerate longer periods of small segments without false positive tab replacements. Dead capture pipelines (segments with
-  // no video trafs) always use TINY_SEGMENT_COUNT_TRIGGER regardless of this setting.
+  // Resolve the service-specific evidence window once at monitor startup. Services with extended static content (e.g., Xfinity commercial placeholders) state a
+  // longer window to tolerate small segments without false positive tab replacements. Dead capture pipelines (undersized segments with no video track) always
+  // use the default window regardless of this setting.
   const providerModule = streamInfo.serviceTag ? getProviderBySlug(streamInfo.serviceTag) : undefined;
-  const providerTinySegmentThreshold = providerModule?.tinySegmentThreshold ?? TINY_SEGMENT_COUNT_TRIGGER;
+  const providerTinySegmentCountTrigger = deriveTinySegmentCountTrigger({
+
+    evidenceSeconds: providerModule?.tinySegmentEvidenceSeconds ?? TINY_SEGMENT_EVIDENCE_SECONDS,
+    segmentDurationSeconds
+  });
 
   // Segment staleness timeout. When no new segments have been produced for this duration, the capture pipeline is considered dead even though the video element may
   // appear healthy. This catches the case where Chrome's MediaRecorder silently stops emitting data without raising an error - the input stream stays "open" but no
@@ -1657,7 +1665,7 @@ export function monitorPlaybackHealth(
 
       const segmentSize = getLastSegmentSize(sizeCheckEntry) ?? 0;
 
-      if(segmentSize < TINY_SEGMENT_THRESHOLD) {
+      if(segmentSize < tinySegmentByteThreshold) {
 
         segmentState.consecutiveTinySegments++;
         segmentState.wasInTinyState = true;
@@ -1666,7 +1674,7 @@ export function monitorPlaybackHealth(
         // default count for fast detection. Segments with video trafs present use the service-specific threshold, which may be higher for services with extended
         // static content (e.g., Xfinity commercial placeholders lasting several minutes).
         const hasVideo = getLastSegmentHasVideo(sizeCheckEntry);
-        const effectiveThreshold = (hasVideo === false) ? TINY_SEGMENT_COUNT_TRIGGER : providerTinySegmentThreshold;
+        const effectiveThreshold = (hasVideo === false) ? tinySegmentCountTrigger : providerTinySegmentCountTrigger;
 
         LOG.debug("recovery:tracks", "Below-threshold segment: %d bytes, hasVideo=%s, consecutive=%d, threshold=%d.",
           segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);

@@ -7,6 +7,9 @@
  * re-firing looks identical to one that fired once unless the count is read, and a fallback that leaks its relay looks identical to one that released it unless
  * the stop calls are counted. So every row here counts, and every throttle row carries its own positive control - a later pass, outside the window, that shows the
  * trigger was still satisfied all along and the throttle is what held it.
+ *
+ * The file also holds the monitor's reading of the configured bitrates into the undersized-segment floor, which the derivation's own rows cannot reach: they
+ * measure the formula, and only a running monitor shows the configured rates are what it is handed.
  */
 import type { MonitorDeps, MonitorStreamInfo } from "./monitor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
@@ -23,6 +26,7 @@ import { LOG } from "../utils/index.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Nullable } from "../types/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
+import { TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND } from "./recovery.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -742,6 +746,111 @@ describe("monitorPlaybackHealth: a dead pipeline on a browser that can start no 
     assert.equal(countMessages(subjectMessages, TERMINATION_LINE), 0, "and terminated nothing, because the stream it would terminate has already ended");
     assert.equal(breaks, 0, "so the breaker was never reached");
     assert.equal(replacements, 0, "and no replacement was attempted");
+  });
+});
+
+describe("monitorPlaybackHealth: the undersized-segment floor follows the configured bitrates", () => {
+
+  /**
+   * Starts a monitor over a capture whose every segment carries video at the supplied size, drives a few healthy ticks, and reports what the monitor made of
+   * those segments. A row shapes the configured bitrates before calling this, because the monitor reads its floor's inputs at its start. The segment must sit
+   * under the cap's floor at the configured duration, so that only a floor following the configured rates can clear it.
+   * @param options - The size every segment reports, the id the monitor and registry agree on, and the row's test context, which restores its mocks at row end.
+   * @returns How many segment sizes the monitor read, and how many segments it counted undersized.
+   */
+  async function judgeSteadySegments(options: { segmentBytes: number; streamId: number; t: TestContext }): Promise<{ sizeReads: number; undersized: number }> {
+
+    assert.ok(options.segmentBytes < (TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND * CONFIG.hls.segmentDuration),
+      "the segment sits under the cap's floor at the configured duration, so only the configured rates can clear it");
+
+    const clock = new TestClock();
+
+    let index = 0;
+    let sizeReads = 0;
+
+    const segmenter = {
+
+      getLastSegmentHasVideo: (): boolean => true,
+      getLastSegmentSize: (): number => {
+
+        sizeReads++;
+
+        return options.segmentBytes;
+      },
+      getSegmentIndex: (): number => ++index,
+      pipe: (): void => { /* Nothing consumes this double. */ },
+      stop: (): void => { /* Nothing to stop. */ }
+    } as unknown as FMP4SegmenterResult;
+
+    const session = { attachSegmenter: (): void => undefined, dispose: (): void => undefined, disposed: false, segmenter,
+      [Symbol.dispose]: (): void => undefined } as unknown as CaptureSession;
+
+    entry = { ...makeEntry(options.streamId), identity: { ...makePendingCaptureIdentity(), captureSession: session } };
+    registerStream(entry);
+
+    const breadcrumbs: string[] = [];
+
+    options.t.mock.method(LOG, "debug", (_category: string, message: string) => { breadcrumbs.push(message); });
+
+    const fake = makeFakePage({ clock });
+
+    handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "floor-rate-" + String(options.streamId),
+      streamInfo(options.streamId, clock), (): void => { /* The breaker is not what these rows read. */ },
+      async (): Promise<Nullable<TabReplacementResult>> => null, makeDivergentDeps(clock));
+
+    // A few healthy ticks, each producing another segment of the same size.
+    await driveHealthyTicks(clock, fake, 5);
+
+    return { sizeReads, undersized: countMessages(breadcrumbs, "Below-threshold segment") };
+  }
+
+  test("a 300000-byte segment at a 1000000 bit-per-second video rate is not counted undersized", async (t) => {
+
+    /* The floor read through a running monitor rather than through the derivation, because the configured bitrates reach the floor only when the monitor reads
+     * them at its start and passes them on. The segment sits under the cap's floor at the configured duration and well above half the shaped configuration's
+     * rate, so only a floor that follows the configured rates clears it...a floor held at its cap would count every such segment undersized and replace a
+     * healthy low-bitrate capture once per evidence window. The size reads are the control: they show the monitor measured the segments it was fed, so the
+     * absence of an undersized judgment is a verdict rather than a check that never ran.
+     */
+    const configuredVideoRate = CONFIG.streaming.videoBitsPerSecond;
+
+    CONFIG.streaming.videoBitsPerSecond = 1000000;
+
+    try {
+
+      const judged = await judgeSteadySegments({ segmentBytes: 300000, streamId: 9330, t });
+
+      assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
+      assert.equal(judged.undersized, 0, "and counted none of them undersized");
+    } finally {
+
+      CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
+    }
+  });
+
+  test("a 140000-byte segment at a 1000000 video and 32000 audio bit-per-second rate is not counted undersized", async (t) => {
+
+    /* The audio half of the same wiring. The video rate is shaped as in the row above, so the audio rate is what separates this floor from one read at the
+     * default audio rate: at the configured duration the segment sits above half the shaped configuration's rate and below half of the same video rate beside
+     * the default audio rate, so a monitor that passed the default audio rate in place of the configured one would count every such segment undersized.
+     */
+    const configuredAudioRate = CONFIG.streaming.audioBitsPerSecond;
+    const configuredVideoRate = CONFIG.streaming.videoBitsPerSecond;
+
+    CONFIG.streaming.audioBitsPerSecond = 32000;
+    CONFIG.streaming.videoBitsPerSecond = 1000000;
+
+    try {
+
+      const judged = await judgeSteadySegments({ segmentBytes: 140000, streamId: 9331, t });
+
+      assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
+      assert.equal(judged.undersized, 0, "and counted none of them undersized");
+    } finally {
+
+      CONFIG.streaming.audioBitsPerSecond = configuredAudioRate;
+      CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
+    }
   });
 });
 

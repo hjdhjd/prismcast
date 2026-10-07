@@ -5,9 +5,9 @@
  * recovery.circuitBreaker.test.ts.
  */
 import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./setup.ts";
-import { RECOVERY_METHODS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, describeResolutionOutcome, formatIssueType,
-  getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError, isResolutionDegraded, nextNativeIssueRecord, resolutionAreaRatio,
-  shouldTriggerRecovery, updateResolutionPeak } from "./recovery.ts";
+import { RECOVERY_METHODS, TINY_SEGMENT_EVIDENCE_SECONDS, classifyNativeSegmentHealth, computeNextRecoveryLevel, deriveStreamHealth, deriveTinySegmentCountTrigger,
+  deriveTinySegmentThresholdBytes, describeResolutionOutcome, formatIssueType, getIssueCategory, getIssueDescription, getRecoveryMethod, isCaptureInfrastructureError,
+  isResolutionDegraded, nextNativeIssueRecord, resolutionAreaRatio, shouldTriggerRecovery, updateResolutionPeak } from "./recovery.ts";
 import { TAB_NOT_FOUND_MESSAGE, TAB_NOT_SELECTED_MESSAGE } from "../browser/tabSelection.ts";
 import { describe, test } from "node:test";
 import { CaptureTurnTimeoutError } from "./captureLock.ts";
@@ -573,5 +573,100 @@ describe("describeResolutionOutcome", () => {
     const outcome = describeResolutionOutcome({ peak: { accepted: true, height: 720, width: 1280 }, reading: { height: 576, width: 1024 } });
 
     assert.equal(outcome, "improved");
+  });
+});
+
+describe("deriveTinySegmentThresholdBytes", () => {
+
+  test("a one-second segment at 12000000 video and 256000 audio bits per second is undersized below 256000 bytes", () => {
+
+    // The short end, and one of the rows a per-segment absolute fails: a figure tuned to two-second segments would demand twice this of a one-second segment
+    // and call healthy static content undersized.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 12000000 }), 256000);
+  });
+
+  test("a two-second segment at 12000000 video and 256000 audio bits per second is undersized below 512000 bytes", () => {
+
+    // Half this configuration's total sits far above the cap, so the cap sets the rate.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 2, videoBitsPerSecond: 12000000 }), 512000);
+  });
+
+  test("a ten-second segment at 12000000 video and 256000 audio bits per second is undersized below 2560000 bytes", () => {
+
+    // The long end, and the other row a per-segment absolute fails: ten seconds of audio-only capture at the 512 kilobit ceiling is 640000 bytes, which a
+    // two-second figure of 512000 would pass as healthy video.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 10, videoBitsPerSecond: 12000000 }), 2560000);
+  });
+
+  test("a one-second segment at 3000000 video and 256000 audio bits per second is undersized below 203500 bytes", () => {
+
+    // The leanest preset at the default audio rate, where half the total sits under the cap and sets the rate.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 3000000 }), 203500);
+  });
+
+  test("a one-second segment at 100000 video and 32000 audio bits per second is undersized below 8250 bytes", () => {
+
+    // The lowest rates the configuration accepts, where the floor still sits above a dead pipeline's few-byte segments.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 32000, segmentDurationSeconds: 1, videoBitsPerSecond: 100000 }), 8250);
+  });
+
+  test("a one-second segment at 3000000 video and 512000 audio bits per second is undersized below 219500 bytes", () => {
+
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 512000, segmentDurationSeconds: 1, videoBitsPerSecond: 3000000 }), 219500);
+  });
+
+  test("a segment at 1000000 video and 256000 audio bits per second is undersized below 78500 bytes per second of its duration", () => {
+
+    // A configured video rate well under the leanest preset, where half the total sets the rate and scales with the segment like the cap does.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 1000000 }), 78500);
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 2, videoBitsPerSecond: 1000000 }), 157000);
+  });
+
+  test("a one-second segment at a 4096000 bit-per-second total is undersized below 256000 bytes", () => {
+
+    // The break-even, where half the configured total meets the cap exactly.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 3840000 }), 256000);
+  });
+
+  test("a one-second segment at 100000 video and 512000 audio bits per second is undersized below 38250 bytes", () => {
+
+    // Half the total sits under the audio rate's 64000 bytes per second here, so a capture whose video has died passes the floor and only a dead pipeline's
+    // few-byte segments are caught.
+    assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 512000, segmentDurationSeconds: 1, videoBitsPerSecond: 100000 }), 38250);
+  });
+});
+
+describe("deriveTinySegmentCountTrigger", () => {
+
+  test("the default window at one-second segments takes 20 segments", () => {
+
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds: 1 }), 20);
+  });
+
+  test("the default window at two-second segments takes 10 segments", () => {
+
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds: 2 }), 10);
+  });
+
+  test("the default window at three-second segments rounds up to 7 segments", () => {
+
+    // Six three-second segments cover only eighteen seconds of the window, so a count that rounded down would act on less evidence than the window states.
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds: 3 }), 7);
+  });
+
+  test("the default window at ten-second segments takes 2 segments", () => {
+
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds: 10 }), 2);
+  });
+
+  test("a 300-second provider window at one-second segments takes 300 segments", () => {
+
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: 300, segmentDurationSeconds: 1 }), 300);
+  });
+
+  test("a 300-second provider window at two-second segments takes 150 segments", () => {
+
+    // The Comcast Polymer providers' window at the default duration.
+    assert.equal(deriveTinySegmentCountTrigger({ evidenceSeconds: 300, segmentDurationSeconds: 2 }), 150);
   });
 });

@@ -155,6 +155,12 @@ export interface ProviderModule {
   // generic probe recognizes the provider's wall on its own - declare indicators only when it cannot.
   authWallIndicators?: AuthWallIndicators;
 
+  // Category resolution configuration. Present when this provider exposes selector values that represent a category of channels needing per-user resolution to a
+  // concrete identifier (e.g., Fox's "FOXD2C", which resolves to a per-market call sign like "WFLD"). Omitted for providers whose selectors are always concrete
+  // (Hulu, Sling, etc.). When present, the type system guarantees the entire feature is configured - selectors, resolver, and strict-resolution flag travel
+  // together; declaring the list without a resolver is structurally impossible. See CategoryResolutionConfig for the per-field semantics.
+  categoryResolution?: CategoryResolutionConfig;
+
   /**
    * Discovers all available channels from the provider's guide. The route handler navigates to guideUrl before calling this function unless handlesOwnNavigation
    * is set. Returns a standardized DiscoveredChannel array.
@@ -204,16 +210,16 @@ export interface ProviderModule {
   // The channel-selection strategy contract this provider implements; generic (non-provider) strategies register the same ChannelStrategyEntry shape directly.
   strategy: ChannelStrategyEntry;
 
-  // Number of consecutive tiny segments (below the size threshold) required before triggering tab replacement recovery. Defaults to 10 (~20 seconds at 2-second
-  // segments) when undefined. Providers whose normal operation includes extended periods of static or low-motion content (e.g., Comcast Polymer SPA commercial
-  // placeholder images) set a higher value to avoid false positive tab replacements while still detecting genuinely frozen video over longer windows.
-  // Dead capture pipelines (segments with no video trafs, hasVideo=false) always use the default count of 10 regardless of this setting, ensuring fast
-  // detection of audio-only failures.
-  tinySegmentThreshold?: number;
-
   // Must equal the channelSelection.strategy value on this provider's registered profile. The coordinator's tune dispatcher uses this field to route tune calls
   // to the correct provider module - if this drifts from the profile, the dispatcher will not find the provider and channels will fall through to generic handling.
   strategyName: ChannelSelectionStrategy;
+
+  // The window, in seconds, of consecutive tiny segments (below the size floor) tolerated before triggering tab replacement recovery. Defaults to the recovery
+  // module's window (TINY_SEGMENT_EVIDENCE_SECONDS) when undefined, and the monitor counts it in whole segments of the configured segment duration. Providers whose
+  // normal operation includes extended periods of static or low-motion content (e.g., Comcast Polymer SPA commercial placeholder images) set a longer window to
+  // avoid false positive tab replacements while still detecting genuinely frozen video. Dead capture pipelines (segments with no video trafs, hasVideo=false)
+  // always use the default window regardless of this setting, ensuring fast detection of audio-only failures.
+  tinySegmentEvidenceSeconds?: number;
 
   // Optional validator called after a successful precache to determine whether the results prove the provider is authenticated. When defined, precaching calls
   // this with the discovered channels and only marks the provider as authenticated if it returns true. When omitted, any non-empty precache result proves auth.
@@ -232,12 +238,6 @@ export interface ProviderModule {
   // CDN-side path change does not break tuning). Returns a human-readable failure reason when the URL clearly belongs to a different channel - which is the
   // signature of a click that did not switch the player. Currently implemented by foxProvider; other providers can opt in if they have similar risk.
   verifyManifestForChannel?: (url: string, channelSelector: string) => Nullable<string>;
-
-  // Category resolution configuration. Present when this provider exposes selector values that represent a category of channels needing per-user resolution to a
-  // concrete identifier (e.g., Fox's "FOXD2C", which resolves to a per-market call sign like "WFLD"). Omitted for providers whose selectors are always concrete
-  // (Hulu, Sling, etc.). When present, the type system guarantees the entire feature is configured - selectors, resolver, and strict-resolution flag travel
-  // together; declaring the list without a resolver is structurally impossible. See CategoryResolutionConfig for the per-field semantics.
-  categoryResolution?: CategoryResolutionConfig;
 }
 
 /**
@@ -285,16 +285,16 @@ export type CategoryResolution = CategoryResolutionSuccess | CategoryResolutionF
  */
 export interface CategoryResolutionConfig {
 
+  // When true (strict), an unresolved category selector aborts the tune with the resolver-authored failure reason. When false or omitted (permissive, the
+  // default), the strategy proceeds with the original category selector and the verifier fails open for that case - appropriate for providers like Fox where the
+  // strategy can still find a reasonable container by best-effort match.
+  requireResolution?: boolean;
+
   // Resolver that converts a category selector to a concrete per-user channel identifier. Receives the page so the resolver can read DOM state or run discovery
   // in-line when needed. Returns CategoryResolutionSuccess on success or CategoryResolutionFailure with a provider-authored, user-facing reason on failure - the
   // framework relays the reason verbatim. Resolvers must always return one of these shapes; throwing is reserved for internal contract violations (i.e., bugs)
   // and propagates through the standard unexpected-error path.
   resolve: (selector: string, page: Page) => Promise<CategoryResolution>;
-
-  // When true (strict), an unresolved category selector aborts the tune with the resolver-authored failure reason. When false or omitted (permissive, the
-  // default), the strategy proceeds with the original category selector and the verifier fails open for that case - appropriate for providers like Fox where the
-  // strategy can still find a reasonable container by best-effort match.
-  requireResolution?: boolean;
 
   // The selector values that this provider treats as categories. Selectors in this list are routed through resolve() before strategy dispatch; selectors outside
   // it bypass the resolution layer entirely. Read by the resolution layer in selectChannel() to decide whether to invoke the resolver, and by provider

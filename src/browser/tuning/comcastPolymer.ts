@@ -976,8 +976,8 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
       resolveDirectUrl
     },
     strategyName: config.strategyName,
-    // Consecutive below-size-threshold ("tiny") segments tolerated before tab-replacement recovery, raised well above the default 10 (~20 seconds) because the
-    // Comcast Polymer SPA serves long static commercial placeholder frames; 150 (~5 minutes at two-second segments) avoids false-positive replacements.
-    tinySegmentThreshold: 150
+    // Seconds of consecutive below-size-threshold ("tiny") segments tolerated before tab-replacement recovery, raised well above the default window because the
+    // Comcast Polymer SPA serves long static commercial placeholder frames; five minutes of them avoids false-positive replacements.
+    tinySegmentEvidenceSeconds: 300
   };
 }

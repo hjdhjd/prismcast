@@ -1510,7 +1510,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       }
     }
 
-    // Monitor stream info for status updates. The serviceTag enables service-specific monitoring flags (e.g., tinySegmentThreshold).
+    // Monitor stream info for status updates. The serviceTag enables service-specific monitoring flags (e.g., tinySegmentEvidenceSeconds).
     const monitorStreamInfo: MonitorStreamInfo = {
 
       channelName: channel?.name ?? null,
