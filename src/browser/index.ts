@@ -798,6 +798,47 @@ function syncSleep(ms: number): void {
 }
 
 /**
+ * Reports whether a process's command line runs Chrome on the given profile directory: the first stage of the kill filter and of the holder test, so they agree
+ * on which processes are on the profile.
+ * @param commandLine - The process's command line as the OS reports it.
+ * @param profileDir - The Chrome user-data-dir to match against.
+ * @returns True when the command line carries the profile flag for exactly that directory.
+ */
+function usesProfile(commandLine: string, profileDir: string): boolean {
+
+  const target = "--user-data-dir=" + profileDir;
+
+  // Chrome puppeteer launches with --user-data-dir=<path> (equals form, no quotes). We also verify the character following the path is whitespace or
+  // end-of-string, otherwise "/x/y" would match "--user-data-dir=/x/yz".
+  const idx = commandLine.indexOf(target);
+
+  if(idx === -1) {
+
+    return false;
+  }
+
+  const after = commandLine.charAt(idx + target.length);
+
+  return (after === "") || (after === " ") || (after === "\t");
+}
+
+/**
+ * Reports whether a Chrome process on our profile is ours to terminate: the ownership stage of the kill filter, and the stage the holder test reads to decide
+ * which Chrome the sweep spares, so the sweep never keeps the files of a Chrome it ends nor removes those of one it spares. The parent-child relationship in the
+ * OS process table is the ownership proof, so no in-memory flag is consulted.
+ * @param entry - The process-table row of a Chrome process on our profile.
+ * @param ownPid - The current process's PID.
+ * @param isProcessAlive - Predicate that returns true when the given PID is currently a live process.
+ * @returns True when we spawned the process or its parent is no longer alive.
+ */
+function isOwnedChrome(entry: ProcessInfo, ownPid: number, isProcessAlive: (pid: number) => boolean): boolean {
+
+  // Ours if we spawned it (ppid is us) or if its parent is no longer alive (orphaned from a previous PrismCast that died). A live unrelated parent owns it, not
+  // us.
+  return (entry.ppid === ownPid) || !isProcessAlive(entry.ppid);
+}
+
+/**
  * Identifies Chrome processes that this PrismCast instance is responsible for terminating. The filter has two stages: command-line discovery (anything using
  * our profile directory) followed by ownership verification (we spawned it, or its parent is no longer alive). The ownership stage is structural - we do not
  * rely on an in-memory flag; the parent-child relationship in the OS process table IS the ownership proof, which means this function is safe to call from any
@@ -814,30 +855,29 @@ function syncSleep(ms: number): void {
 export function findChromeProcessesUsingProfile(processes: readonly ProcessInfo[], profileDir: string, ownPid: number,
   isProcessAlive: (pid: number) => boolean): number[] {
 
-  const target = "--user-data-dir=" + profileDir;
+  return processes.filter((p): boolean => usesProfile(p.commandLine, profileDir) && isOwnedChrome(p, ownPid, isProcessAlive)).map((p) => p.pid);
+}
 
-  return processes.filter((p): boolean => {
+/**
+ * Finds a live Chrome outside this process that holds our profile directory. A Chrome holds the profile when it roots a tree of processes on the profile and the
+ * kill filter's ownership stage spares it, its parent alive and not this process. The test reads the root because Chrome's helpers carry the profile flag with
+ * the Chrome main as their parent, so a helper's parent, the main, is a live process that is not this one, and every helper of this process's own Chrome would
+ * otherwise read as a holder. It reads the ownership stage rather than a liveness test of its own so it stays in step with the kill filter: the sweep never keeps
+ * the files of a Chrome it ends nor removes those of one it spares. A helper whose parent lacks the profile flag reads as a root, so that error keeps the lock files
+ * rather than removing them, and the next sweep with no Chrome alive removes them.
+ * @param processes - The current process table snapshot: the sweep's scan from before its kill loop, or the teardown's scan once its Chrome has exited.
+ * @param profileDir - The Chrome user-data-dir to match against.
+ * @param ownPid - The current process's PID (a Chrome whose parent is us is ours, never a holder).
+ * @param isProcessAlive - Predicate that returns true when the given PID is currently a live process. Injected so tests do not depend on real PIDs.
+ * @returns The PID of the first holder in process-table order, or null when no live Chrome outside this process holds the profile.
+ */
+export function findProfileHolder(processes: readonly ProcessInfo[], profileDir: string, ownPid: number,
+  isProcessAlive: (pid: number) => boolean): Nullable<number> {
 
-    // Stage 1: command-line match. Chrome puppeteer launches with --user-data-dir=<path> (equals form, no quotes). We also verify the character following
-    // the path is whitespace or end-of-string, otherwise "/x/y" would match "--user-data-dir=/x/yz".
-    const idx = p.commandLine.indexOf(target);
+  const onProfile = processes.filter((p): boolean => usesProfile(p.commandLine, profileDir));
+  const profilePids = new Set(onProfile.map((p) => p.pid));
 
-    if(idx === -1) {
-
-      return false;
-    }
-
-    const after = p.commandLine.charAt(idx + target.length);
-
-    if((after !== "") && (after !== " ") && (after !== "\t")) {
-
-      return false;
-    }
-
-    // Stage 2: ownership verification. Kill if we spawned it (ppid is us) or if its parent is no longer alive (orphaned from a previous PrismCast that died).
-    // Skip if its parent is a live unrelated PID - that process owns it, not us.
-    return (p.ppid === ownPid) || !isProcessAlive(p.ppid);
-  }).map((p) => p.pid);
+  return onProfile.find((p): boolean => !profilePids.has(p.ppid) && !isOwnedChrome(p, ownPid, isProcessAlive))?.pid ?? null;
 }
 
 /**
@@ -851,8 +891,9 @@ export function findChromeProcessesUsingProfile(processes: readonly ProcessInfo[
  * process exit handler: Chrome may be running normally (e.g., after a capture probe timeout) and an immediate SIGKILL would corrupt its profile databases,
  * poisoning the Docker volume for subsequent container restarts.
  *
- * The ownership filter makes this function safe to call from any context, including a rejected-duplicate startup's exit handler: a duplicate that never
- * spawned Chrome will find nothing matching its ownership criteria and signal nothing.
+ * The ownership filter and the holder test together make this function safe to call from any context, including a rejected-duplicate startup's exit handler: a
+ * duplicate that never spawned Chrome finds nothing matching its ownership criteria, signals nothing, and leaves the profile's lock files to the live Chrome
+ * that holds them.
  *
  * Called at startup before launching the browser and from the process exit handler as a crash recovery fallback. Safe to call when no stale processes or files
  * exist - the discovery and lock-file cleanup are both no-ops in the empty case.
@@ -861,7 +902,11 @@ export function killStaleChrome(): void {
 
   const profileDir = getChromeDataDir(CONFIG);
   const POLL_INTERVAL_MS = 200;
-  const pidsToKill = findChromeProcessesUsingProfile(listProcesses(), profileDir, process.pid, isProcessRunning);
+
+  // The kill filter and the lock-file removal's holder test read the one scan taken before the kill loop, because a scan after it would read the helpers of each
+  // Chrome the loop ends, adopted by a live process once their main exits, as live holders.
+  const processes = listProcesses();
+  const pidsToKill = findChromeProcessesUsingProfile(processes, profileDir, process.pid, isProcessRunning);
 
   for(const pid of pidsToKill) {
 
@@ -903,8 +948,7 @@ export function killStaleChrome(): void {
     }
   }
 
-  // Remove stale lock and port files left behind by an unclean Chrome exit.
-  cleanStaleProfileFiles(profileDir);
+  cleanStaleProfileFiles(processes, profileDir);
 }
 
 /**
@@ -934,12 +978,27 @@ function waitForChromeExit(pid: number, timeoutMs: number, pollIntervalMs: numbe
 }
 
 /**
- * Removes stale Chrome profile lock files and the DevTools port file. Chrome writes these while running and removes them on clean shutdown, but an unclean exit
- * (container kill, SIGKILL, crash) leaves them behind. Stale lock files prevent Chrome from acquiring the profile, and a stale DevToolsActivePort can confuse the
- * Puppeteer connection.
+ * Removes the profile's lock files and the DevTools port file unless a live Chrome outside this process holds the profile. Chrome writes these while running and
+ * removes them on clean shutdown, but an unclean exit (container kill, SIGKILL, crash) leaves them behind. Stale lock files prevent Chrome from acquiring the
+ * profile, and a stale DevToolsActivePort can confuse the Puppeteer connection. This is the one removal of those files, so each caller, the stale-Chrome sweep and
+ * the teardown primitive, reaches them through the holder test, and none removes them from under a live holder.
+ * @param processes - The process table the holder test reads: the sweep's scan from before its kill loop, or the teardown's scan once its Chrome has exited.
  * @param profileDir - The Chrome user data directory path.
  */
-function cleanStaleProfileFiles(profileDir: string): void {
+export function cleanStaleProfileFiles(processes: readonly ProcessInfo[], profileDir: string): void {
+
+  const holder = findProfileHolder(processes, profileDir, process.pid, isProcessRunning);
+
+  /* The lock and port files belong to whichever Chrome holds the profile, so they are stale only when no live Chrome outside this process holds it. Removing
+   * them from under a live holder, such as the instance a refused second start found, would let the next Chrome launched on the profile start beside the
+   * running one instead of meeting its singleton.
+   */
+  if(holder !== null) {
+
+    LOG.debug("browser:lifecycle", "Kept the profile lock files of live Chrome process %d.", holder);
+
+    return;
+  }
 
   // Chrome's profile lock mechanism uses three symlinks: SingletonLock (hostname-PID pair), SingletonCookie (numeric verification token), and SingletonSocket
   // (path to the IPC socket). All three must be removed for Chrome to acquire a fresh lock. DevToolsActivePort contains the debugging port from the previous
@@ -2191,9 +2250,12 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
     });
   }
 
-  // Remove stale Chrome profile lock files left behind by the disconnected browser. No per-PID state to clear here - killStaleChrome on the next launch will
-  // discover any leftover Chrome via the OS process table.
-  cleanStaleProfileFiles(getChromeDataDir(CONFIG));
+  /* The lock files go through the holder test on a scan taken here, once this process's Chrome has exited, because only a scan after the exit can see a Chrome
+   * another instance launched on a shared profile in its place. This process's own Chrome never reads as that holder: a main still running after the bounded
+   * waits is ours by the ownership test, and its helpers are not roots. A helper still shutting down after its main exited has been adopted by a live process
+   * and reads as a holder, so that teardown keeps the files, the adopted-orphan limit the sweep shares, and the next startup sweep with no Chrome alive removes them.
+   */
+  cleanStaleProfileFiles(listProcesses(), getChromeDataDir(CONFIG));
 }
 
 /**

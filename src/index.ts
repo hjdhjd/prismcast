@@ -417,8 +417,9 @@ if(subcommand === "service") {
 
       releaseInstanceSlot();
 
-      // killStaleChrome is safe to call unconditionally now: the ownership filter inside it (parent-pid match or parent-pid dead) excludes Chrome belonging to
-      // another live PrismCast instance, so a rejected-duplicate startup's exit handler will not signal the legitimate holder's Chrome.
+      // killStaleChrome is safe to call unconditionally: its ownership filter (parent-pid match or parent-pid dead) leaves alone Chrome belonging to another
+      // live PrismCast instance, and its holder test keeps that Chrome's profile lock files, so a rejected-duplicate startup's exit neither signals the
+      // legitimate holder's Chrome nor removes its lock files.
       killStaleChrome();
     } catch {
 

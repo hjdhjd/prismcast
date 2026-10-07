@@ -10,6 +10,8 @@
  *   - getChromeVersion (the cached version string accessor)
  *   - getBrowserInstance / getCaptureImpairment / isBrowserConnected (the synchronous status accessors)
  *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
+ *   - findProfileHolder (the pure holder test killStaleChrome's lock-file removal reads)
+ *   - cleanStaleProfileFiles (the one lock-file removal the sweep and the teardown reach, held to the holder test, driven on a temp profile directory)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
  *   - emulateLayoutSurface (the per-layout-page surface declaration, driven through the same double)
@@ -34,12 +36,12 @@ import type { Browser, Page } from "puppeteer-core";
 import type { Config, Nullable, StreamingMode } from "../types/index.ts";
 import { TestClock, drainClock } from "homebridge-plugin-utils/testing";
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { applyStalePageCleanupChanges, buildLaunchOptions, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface,
-  emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath,
-  healActivatedCaptureTab, installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback,
-  mirrorPlacement, noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface,
-  registerManagedPage, resolveSharedWindowCarrier, seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking, startStalePageCleanup,
-  stopBrowserRestartChecking, stopStalePageCleanup, unregisterManagedPage } from "./index.ts";
+import { applyStalePageCleanupChanges, buildLaunchOptions, cleanStaleProfileFiles, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus,
+  emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile, findProfileHolder, getBrowserInstance, getCaptureImpairment,
+  getChromeVersion, getExecutablePath, healActivatedCaptureTab, installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown,
+  makeFocusReaffirmCallback, mirrorPlacement, noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface, registerManagedPage, resolveSharedWindowCarrier,
+  seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup,
+  unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { firstOf, withTempDir } from "../testing.helpers.ts";
 import { CONFIG } from "../config/index.ts";
@@ -297,10 +299,10 @@ describe("isBrowserConnected", () => {
   });
 });
 
-describe("findChromeProcessesUsingProfile", () => {
+// A live-PID predicate that treats every PID in a set as alive. Tests parameterize the set to drive the ppid liveness branch deterministically.
+const aliveSet = (pids: ReadonlySet<number>) => (pid: number): boolean => pids.has(pid);
 
-  // A live-PID predicate that treats every PID in a set as alive. Tests parameterize the set to drive the ppid liveness branch deterministically.
-  const aliveSet = (pids: ReadonlySet<number>) => (pid: number): boolean => pids.has(pid);
+describe("findChromeProcessesUsingProfile", () => {
 
   test("matches Chrome processes whose command line carries our --user-data-dir flag", () => {
 
@@ -373,6 +375,149 @@ describe("findChromeProcessesUsingProfile", () => {
     ];
 
     assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/data", 50, aliveSet(new Set([50]))), [100]);
+  });
+});
+
+describe("findProfileHolder", () => {
+
+  // Every row's profile, with the command lines of a Chrome main and its helpers on it. The tables list a main before its helpers, each helper carrying the
+  // profile flag with the main as its parent, the shape a live Chrome tree takes on macOS. Our own process is PID 50 throughout.
+  const profile = "/home/x/.prismcast/chromedata";
+  const mainCommand = "/usr/bin/chrome --remote-debugging-pipe --user-data-dir=" + profile;
+  const gpuCommand = "/usr/bin/chrome --type=gpu-process --user-data-dir=" + profile;
+  const rendererCommand = "/usr/bin/chrome --type=renderer --user-data-dir=" + profile;
+
+  test("returns the main of a live holder's Chrome tree", () => {
+
+    // A legitimate PrismCast (PID 999) runs a Chrome tree on our profile. Its main's parent is alive and is not us, so the main holds the profile; its helpers'
+    // parent, the main, is on the profile too, so no helper reads as a root of its own.
+    const processes = [
+
+      { commandLine: "node /app/dist/index.js", pid: 999, ppid: 1 },
+      { commandLine: mainCommand, pid: 100, ppid: 999 },
+      { commandLine: gpuCommand, pid: 101, ppid: 100 },
+      { commandLine: rendererCommand, pid: 102, ppid: 100 }
+    ];
+
+    assert.equal(findProfileHolder(processes, profile, 50, aliveSet(new Set([ 1, 999, 100, 101, 102 ]))), 100);
+  });
+
+  test("returns null for an orphaned Chrome tree whose parent is no longer alive", () => {
+
+    // The PrismCast that launched this tree died, so the kill filter ends the main and nothing holds the profile. A helper's parent, the main, is alive, which
+    // is why the test reads only the tree's root.
+    const processes = [
+
+      { commandLine: mainCommand, pid: 100, ppid: 999 },
+      { commandLine: gpuCommand, pid: 101, ppid: 100 },
+      { commandLine: rendererCommand, pid: 102, ppid: 100 }
+    ];
+
+    assert.equal(findProfileHolder(processes, profile, 50, aliveSet(new Set([ 100, 101, 102 ]))), null);
+  });
+
+  test("returns null for this process's own Chrome tree", () => {
+
+    // We launched this tree, so its main's parent is us and the kill filter ends it. Its helpers' parent is a live process that is not us, which reads as a
+    // holder to a liveness test alone.
+    const processes = [
+
+      { commandLine: mainCommand, pid: 100, ppid: 50 },
+      { commandLine: gpuCommand, pid: 101, ppid: 100 },
+      { commandLine: rendererCommand, pid: 102, ppid: 100 }
+    ];
+
+    assert.equal(findProfileHolder(processes, profile, 50, aliveSet(new Set([ 50, 100, 101, 102 ]))), null);
+  });
+
+  test("returns null when no Chrome runs on the profile", () => {
+
+    const processes = [
+
+      { commandLine: "node /app/dist/index.js", pid: 999, ppid: 1 },
+      { commandLine: "/usr/bin/chrome --user-data-dir=/some/other/path", pid: 200, ppid: 999 }
+    ];
+
+    assert.equal(findProfileHolder(processes, profile, 50, aliveSet(new Set([ 200, 999 ]))), null);
+  });
+
+  test("returns the first helper of a live tree whose main lacks the profile flag", () => {
+
+    // A Chromium app can launch its main without the flag and hand it to its helpers. The first helper's parent is then off the profile, so the helper reads
+    // as the tree's root and holds the profile, which keeps the lock files rather than removing them.
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome", pid: 100, ppid: 1 },
+      { commandLine: gpuCommand, pid: 101, ppid: 100 },
+      { commandLine: rendererCommand, pid: 102, ppid: 100 }
+    ];
+
+    assert.equal(findProfileHolder(processes, profile, 50, aliveSet(new Set([ 1, 100, 101, 102 ]))), 101);
+  });
+});
+
+describe("cleanStaleProfileFiles", () => {
+
+  // Every row seeds the lock files and the DevTools port file in a profile under a fresh temp directory and hands the removal a literal process table. The
+  // removal reads our own PID and the liveness of a root's parent from the host, so the root of a tree on the profile takes our own parent as its parent, a
+  // live process that is not us, and no other PID's liveness is read.
+  const profileFiles = [ "DevToolsActivePort", "SingletonCookie", "SingletonLock", "SingletonSocket" ];
+
+  const seedProfile = (dir: string): string => {
+
+    const profileDir = path.join(dir, "chromedata");
+
+    mkdirSync(profileDir);
+
+    for(const file of profileFiles) {
+
+      writeFileSync(path.join(profileDir, file), "");
+    }
+
+    return profileDir;
+  };
+
+  test("keeps the lock files when a live Chrome outside this process holds the profile", async () => {
+
+    // The scan a teardown reads once its own Chrome has exited, with another instance's Chrome launched on the shared profile in its place. That main's parent
+    // is alive and is not us, so the main holds the profile and the files are its own.
+    await withTempDir(async (dir) => {
+
+      const profileDir = seedProfile(dir);
+      const processes = [
+
+        { commandLine: "/usr/bin/chrome --remote-debugging-pipe --user-data-dir=" + profileDir, pid: 100, ppid: process.ppid },
+        { commandLine: "/usr/bin/chrome --type=gpu-process --user-data-dir=" + profileDir, pid: 101, ppid: 100 },
+        { commandLine: "/usr/bin/chrome --type=renderer --user-data-dir=" + profileDir, pid: 102, ppid: 100 }
+      ];
+
+      cleanStaleProfileFiles(processes, profileDir);
+
+      for(const file of profileFiles) {
+
+        assert.equal(existsSync(path.join(profileDir, file)), true, file + " is kept for the live holder");
+      }
+    });
+  });
+
+  test("removes the lock files when no Chrome runs on the profile", async () => {
+
+    // The scan a teardown reads once its own Chrome has exited and no other Chrome has taken the profile, so nothing holds it and the files are stale.
+    await withTempDir(async (dir) => {
+
+      const profileDir = seedProfile(dir);
+      const processes = [
+
+        { commandLine: "/usr/bin/chrome --user-data-dir=/some/other/path", pid: 200, ppid: process.ppid }
+      ];
+
+      cleanStaleProfileFiles(processes, profileDir);
+
+      for(const file of profileFiles) {
+
+        assert.equal(existsSync(path.join(profileDir, file)), false, file + " is removed");
+      }
+    });
   });
 });
 
