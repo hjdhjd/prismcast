@@ -1375,19 +1375,10 @@ export function generateConfigSubtabScript(): string {
     "    processServiceDisplays();",
     "  };",
 
-    // Update bulk assign options in the Quick Actions select to only show enabled services. Toggles the hidden attribute on option elements based on the filter.
-    // Safari ignores hidden on option elements, and this select gets no rebuild like the one channelTable.filter performs on the row selects, so in Safari the
-    // bulk assign select is not filtered and still lists every service.
+    // Update bulk assign options in the Quick Actions select to only show enabled services, through the option filter the row selects share.
     "  function updateBulkAssignOptions(enabledTags) {",
     "    const select = document.getElementById('bulk-assign-select');",
-    "    if(!select) return;",
-    "    const options = select.querySelectorAll('option[data-provider-tag]');",
-    "    for(const option of options) {",
-    "      const tag = option.getAttribute('data-provider-tag');",
-    "      const show = (enabledTags.length === 0) || (tag === 'direct') || enabledTags.includes(tag);",
-    "      if(show) option.removeAttribute('hidden');",
-    "      else option.setAttribute('hidden', '');",
-    "    }",
+    "    if(select) channelTable.filterSelectOptions(select, enabledTags);",
     "  };",
 
     // Bulk assign all channels to a specific service. The response carries the channel-table patch that re-renders every reassigned row, along with the snapshot
@@ -1627,8 +1618,7 @@ export function generateConfigSubtabScript(): string {
     "    for(const tagToggle of tagToggles) tagToggle.indeterminate = true;",
 
     // Run channelTable.filter() on page load when a service filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
-    // option elements. This initial pass removes those options from the channel rows' selects to enforce the filter; the bulk assign select only has its options
-    // marked hidden, which Safari does not honor.
+    // option elements. This initial pass removes those options from the channel rows' selects and from the bulk assign select to enforce the filter.
     "    const initFilterTags = channelTable.getEnabledFilterTags();",
     "    if(initFilterTags.length > 0) { channelTable.filter(initFilterTags); updateBulkAssignOptions(initFilterTags); }",
     "    const addUrlInput = document.getElementById('add-url');",

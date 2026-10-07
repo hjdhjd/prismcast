@@ -704,15 +704,40 @@ export function generateSharedUtilitiesScript(): string {
     "      document.getElementById('edit-row-' + key)?.remove();",
     "    },",
 
-    /* Apply the service filter to all channel rows. Hides rows whose service tags aren't enabled and filters service dropdown options for multi-service channels.
-     * Uses a persistent _allOptions array on each select to remember all server-rendered options across filter applications - the server marks disabled options
-     * with the hidden attribute, but Safari ignores hidden on option elements, so we rebuild the select with only enabled options each time. Selection restore
-     * priority: (1) saved server choice (HTML selected attribute), (2) previous visual selection, (3) first option.
+    /* Rebuild a service select with only the options whose service the filter enables, the one option filter every service select shares: the row selects of
+     * multi-service channels and the Quick Actions bulk-assign select. Uses a persistent _allOptions array on the select to remember all server-rendered options
+     * across filter applications - the server marks disabled options with the hidden attribute, but Safari ignores hidden on option elements, so we rebuild the
+     * select with only enabled options each time and clear the attribute on each option shown, which a later filter may enable. An option with no provider tag,
+     * such as the bulk select's placeholder, is always shown. Selection restore priority: (1) saved server choice (HTML selected attribute), (2) previous visual
+     * selection, (3) first option.
      *
      * Cache lifecycle: _allOptions is attached to the DOM select element itself, so its lifetime is tied to that element. Row replacement via insertRow() drops
      * the old row (and its select) and inserts fresh server-rendered HTML, which transparently resets the cache with whatever option set the server just sent.
-     * Refactoring insertRow() into an in-place row update would silently keep the stale _allOptions cache - add explicit invalidation if you do.
+     * Refactoring insertRow() into an in-place row update would silently keep the stale _allOptions cache - add explicit invalidation if you do. The bulk select
+     * is rendered once with the page, so its cache lives as long as the page.
      */
+    "    filterSelectOptions(sel, enabledTags) {",
+    "      sel._allOptions ??= [ ...sel.querySelectorAll('option') ];",
+    "      const prevValue = sel.value;",
+    "      sel.innerHTML = '';",
+    "      let serverDefault = null;",
+    "      let prevExists = false;",
+    "      for(const opt of sel._allOptions) {",
+    "        const oTag = opt.getAttribute('data-provider-tag');",
+    "        const show = (oTag === null) || (enabledTags.length === 0) || (oTag === 'direct') || enabledTags.includes(oTag);",
+    "        if(show) {",
+    "          opt.removeAttribute('hidden');",
+    "          sel.appendChild(opt);",
+    "          if(opt.hasAttribute('selected')) serverDefault = opt;",
+    "          if(opt.value === prevValue) prevExists = true;",
+    "        }",
+    "      }",
+    "      if(serverDefault) sel.value = serverDefault.value;",
+    "      else if(prevExists) sel.value = prevValue;",
+    "      else if(sel.options.length > 0) sel.selectedIndex = 0;",
+    "    },",
+
+    // Apply the service filter to all channel rows. Hides rows whose service tags aren't enabled and filters the service select of each multi-service channel.
     "    filter(enabledTags) {",
     "      const rows = document.querySelectorAll('tr[data-provider-tags]');",
     "      for(const row of rows) {",
@@ -726,23 +751,7 @@ export function generateSharedUtilitiesScript(): string {
     "        if(name) name.style.display = available ? '' : 'none';",
     "        if(sel) {",
     "          sel.style.display = available ? '' : 'none';",
-    "          sel._allOptions ??= [ ...sel.querySelectorAll('option') ];",
-    "          const prevValue = sel.value;",
-    "          sel.innerHTML = '';",
-    "          let serverDefault = null;",
-    "          let prevExists = false;",
-    "          for(const opt of sel._allOptions) {",
-    "            const oTag = opt.getAttribute('data-provider-tag');",
-    "            const show = (enabledTags.length === 0) || (oTag === 'direct') || enabledTags.includes(oTag);",
-    "            if(show) {",
-    "              sel.appendChild(opt);",
-    "              if(opt.hasAttribute('selected')) serverDefault = opt;",
-    "              if(opt.value === prevValue) prevExists = true;",
-    "            }",
-    "          }",
-    "          if(serverDefault) sel.value = serverDefault.value;",
-    "          else if(prevExists) sel.value = prevValue;",
-    "          else if(sel.options.length > 0) sel.selectedIndex = 0;",
+    "          this.filterSelectOptions(sel, enabledTags);",
     "        }",
     "      }",
     "    },",
