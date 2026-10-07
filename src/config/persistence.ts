@@ -153,6 +153,10 @@ export interface FileStoreReadResult<T> {
   parseError: boolean;
   parseErrorMessage?: string;
 
+  // True when the main file exists but could not be read for a reason other than its absence (a permission or I/O failure). The data is then the default value,
+  // which says nothing about what the file holds, so mutate() refuses to write over it exactly as it refuses a file that fails to parse.
+  readError: boolean;
+
   // True when the main file failed to parse and a usable copy was successfully recovered from the .bak rotation. Callers can surface this in the UI as a
   // recovery banner; the persistence layer also logs it loudly.
   recoveredFromBackup: boolean;
@@ -302,6 +306,8 @@ export async function ensureAllMigrated(): Promise<void> {
  * - **Atomic writes:** data is written to a `.tmp` file and renamed over the original. `rename()` is atomic on POSIX and NTFS.
  * - **Serialization:** a promise chain ensures only one `mutate()` runs at a time. Concurrent callers queue behind the active operation.
  * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if both the main file and its `.bak` are unparseable, preventing save-over-corrupt cascades.
+ * - **Read-failure guard:** `mutate()` throws when the main file exists but could not be read, because the read then answers with defaults, and writing over
+ *   the file would replace its contents with them. `readError` on the read result marks that outcome for a caller reading on its own.
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
  * - **Auto-recovery:** when the main file fails to parse, `read()` transparently recovers the `.bak` rotation's contents in memory and surfaces
  *   `recoveredFromBackup` on the result so callers can surface the event. The recovery is announced by the read that performed it, once per read; the
@@ -571,6 +577,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
         migrationResult: { applied: [], fromVersion: 0, toVersion: 0 },
         parseError: true,
         parseErrorMessage: parseError?.message,
+        readError: false,
         recoveredFromBackup: false
       };
     }
@@ -578,7 +585,16 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Run migrations in-memory. The data returned is always at currentSchemaVersion (or higher in the forward-compat case).
     const migrationResult = runMigrations(parsed.data);
 
-    return { data: parsed.data, migrationResult, parseError: false, readErrorMessage, recoveredFromBackup: parsed.recoveredFromBackup, recoveredParseMessage };
+    return {
+
+      data: parsed.data,
+      migrationResult,
+      parseError: false,
+      readError: readErrorMessage !== undefined,
+      readErrorMessage,
+      recoveredFromBackup: parsed.recoveredFromBackup,
+      recoveredParseMessage
+    };
   }
 
   /**
@@ -616,6 +632,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
         migrationResult: result.migrationResult,
         parseError: true,
         parseErrorMessage: result.parseErrorMessage,
+        readError: false,
         recoveredFromBackup: false
       };
     }
@@ -636,7 +653,14 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
         result.migrationResult.toVersion, result.migrationResult.applied.length, result.migrationResult.applied.join(", "));
     }
 
-    return { data: result.data, migrationResult: result.migrationResult, parseError: false, recoveredFromBackup: result.recoveredFromBackup };
+    return {
+
+      data: result.data,
+      migrationResult: result.migrationResult,
+      parseError: false,
+      readError: result.readError,
+      recoveredFromBackup: result.recoveredFromBackup
+    };
   }
 
   /**
@@ -774,6 +798,13 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     if(result.parseError) {
 
       throw new FileStoreParseError(options.label, filePath, result.parseErrorMessage ?? "Unknown parse error.");
+    }
+
+    // Read-failure guard: a file that exists but could not be read answered with the default value, and writing the mutation over it would replace whatever the
+    // file holds with defaults the moment a transient permission or I/O failure hid it. Refused for the same reason a file that fails to parse is.
+    if(result.readError) {
+
+      throw new Error("The " + options.label + " file " + filePath + " could not be read, so nothing was written.");
     }
 
     // Capture pre-mutation state for the validator. Skip the clone when no validator is configured to avoid the overhead.

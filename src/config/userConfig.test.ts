@@ -4,10 +4,12 @@
  * drives the UI, and the small primitives (getNestedValue/setNestedValue/isEqualToDefault) plus the UI-tab/section accessors. The merge priority order, env
  * var handling, and filterDefaults are covered in userConfig.merge.test.ts so this file stays under the conventions' 500-line guidance.
  */
-import { CONFIG_METADATA, DEFAULTS, getAdvancedSections, getNestedValue, getSettingByPath, getSettingsTabSections, getUITabs, isEqualToDefault,
-  setNestedValue } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, SYSTEM_STATE_REACTIVITY, getAdvancedSections, getNestedValue, getReactivityClass, getSettingByPath, getSettingsTabSections,
+  getUITabs, isEqualToDefault, setNestedValue } from "./userConfig.ts";
 import { describe, test } from "node:test";
+import type { ReactivityClass } from "../types/index.ts";
 import assert from "node:assert/strict";
+import { listConfigLeafPaths } from "../testing.helpers.ts";
 
 describe("DEFAULTS", () => {
 
@@ -327,5 +329,132 @@ describe("getAdvancedSections", () => {
 
       assert.ok([ "channelsDvr", "hls", "logging", "paths", "playback", "recovery", "streaming" ].includes(id), id + " is one of the documented advanced categories");
     }
+  });
+});
+
+/* The reactivity classification is total: every leaf the defaults define resolves to exactly one class, from its metadata when it is a setting and from the
+ * system-state table otherwise. The known-answer rows restate the classification table setting by setting, grouped as that table groups them, so a class that
+ * drifts from the readers it was read off fails here by name rather than in a save.
+ */
+describe("reactivity classification", () => {
+
+  const KNOWN_SETTING_CLASSES: readonly (readonly [ ReactivityClass, readonly string[] ])[] = [
+
+    // Read at each Chrome launch; a relaunch is unscheduled, so restart is the contract a user can act on.
+    [ "restart", [ "browser.executablePath", "browser.initTimeout" ] ],
+
+    // Read at the launch-scoped precache cycle.
+    [ "restart", ["channels.precacheServices"] ],
+
+    // Read per DVR request.
+    [ "live", ["channelsDvr.port"] ],
+
+    // The HDHomeRun handler reconciles them, and the name is read per request.
+    [ "live", [ "hdhr.discoveryEnabled", "hdhr.enabled", "hdhr.friendlyName", "hdhr.port" ] ],
+
+    // Read per cut, per stored segment, per playlist, and per idle sweep.
+    [ "live", [ "hls.idleTimeout", "hls.maxSegments", "hls.segmentDuration" ] ],
+
+    // The request-log middleware is chosen and the logger sized at boot.
+    [ "restart", [ "logging.httpLogLevel", "logging.maxSize" ] ],
+
+    // Read at launch, teardown, and exit, which must agree, and the logger opens its file at boot.
+    [ "restart", [ "paths.chromeDataDir", "paths.logFile" ] ],
+
+    // Read when a monitor arms, per monitor tick, per recovery decision, or per tune step.
+    [ "live", [ "playback.bufferingGracePeriod", "playback.channelSelectorDelay", "playback.channelSwitchDelay", "playback.iframeInitDelay",
+      "playback.maxPageReloads", "playback.monitorInterval", "playback.pageReloadWindow", "playback.sourceReloadDelay", "playback.stallCountThreshold",
+      "playback.stallThreshold", "playback.sustainedPlaybackRequired" ] ],
+
+    // The stale-page sweep is armed once.
+    [ "restart", ["recovery.stalePageCleanupInterval"] ],
+
+    // Read per failure, per governor decision, per sweep, or per tune.
+    [ "live", [ "recovery.backoffJitter", "recovery.circuitBreakerThreshold", "recovery.circuitBreakerWindow", "recovery.maxBackoffDelay",
+      "recovery.relaunchFailureThreshold", "recovery.relaunchFailureWindow", "recovery.relaunchHealthHold", "recovery.stalePageGracePeriod" ] ],
+
+    // The listener binds once.
+    [ "restart", [ "server.host", "server.port" ] ],
+
+    // Read at each capture establishment and at monitor start.
+    [ "live", [ "streaming.audioBitsPerSecond", "streaming.frameRate", "streaming.videoBitsPerSecond" ] ],
+
+    // The preroll is encoded once at boot from them.
+    [ "restart", [ "streaming.captureCodecs", "streaming.captureMode", "streaming.qualityPreset" ] ],
+
+    // Read per admission or per use.
+    [ "live", [ "streaming.maxConcurrentStreams", "streaming.maxNavigationRetries", "streaming.navigationTimeout", "streaming.videoTimeout" ] ]
+  ];
+
+  const KNOWN_SYSTEM_STATE_CLASSES: readonly (readonly [ string, ReactivityClass ])[] = [
+
+    [ "channels.channelSortDirection", "live" ],
+    [ "channels.channelSortField", "live" ],
+    [ "channels.disabledPredefined", "live" ],
+    [ "channels.enabledServices", "restart" ],
+    [ "channels.setupCompleted", "live" ],
+    [ "channels.visibleColumns", "live" ],
+    [ "channelsDvr.host", "restart" ],
+    [ "hdhr.deviceId", "live" ],
+    [ "logging.debugFilter", "live" ],
+    [ "paths.chromeProfileName", "restart" ],
+    [ "paths.extensionDirName", "restart" ]
+  ];
+
+  const metadataPaths = new Set(Object.values(CONFIG_METADATA).flat().map((setting) => setting.path));
+
+  test("every metadata entry declares a class of the union", () => {
+
+    const classes = new Set<string>([ "live", "next-stream", "restart" ]);
+
+    for(const setting of Object.values(CONFIG_METADATA).flat()) {
+
+      assert.ok(classes.has(setting.reactivity), setting.path + " declares a class of the union");
+    }
+  });
+
+  test("every setting the classification table names carries the class the table states, and the table names every setting", () => {
+
+    const named = KNOWN_SETTING_CLASSES.flatMap(([ , settingPaths ]) => settingPaths);
+
+    assert.deepEqual(named.toSorted(), [...metadataPaths].toSorted(), "the known-answer rows cover the settings metadata exactly");
+
+    for(const [ reactivity, settingPaths ] of KNOWN_SETTING_CLASSES) {
+
+      for(const settingPath of settingPaths) {
+
+        assert.equal(getSettingByPath(settingPath)?.reactivity, reactivity, settingPath + " declares " + reactivity);
+      }
+    }
+  });
+
+  test("the system-state table classes exactly the leaves the defaults define outside the metadata, each with the class the table states", () => {
+
+    const outside = listConfigLeafPaths().filter((leaf) => !metadataPaths.has(leaf));
+
+    assert.ok(outside.length > 0, "precondition: the defaults define leaves outside the metadata");
+    assert.deepEqual([...SYSTEM_STATE_REACTIVITY.keys()], outside, "the table's keys are those leaves, in path order");
+    assert.deepEqual([...SYSTEM_STATE_REACTIVITY.entries()], KNOWN_SYSTEM_STATE_CLASSES);
+  });
+
+  test("every leaf the defaults define resolves through the resolver to the class the known-answer tables state, so a wrong answer fails the row", () => {
+
+    // The expected class comes from the known-answer tables above rather than from the metadata or the system-state table the resolver itself reads, so a
+    // resolver that consults the wrong source or answers a fixed class disagrees with an independent statement of the classification.
+    const settingEntries = KNOWN_SETTING_CLASSES.flatMap(([ reactivity, settingPaths ]) => settingPaths.map((settingPath) => [ settingPath, reactivity ] as const));
+    const known = new Map<string, ReactivityClass>([ ...settingEntries, ...KNOWN_SYSTEM_STATE_CLASSES ]);
+    const leaves = listConfigLeafPaths();
+
+    assert.deepEqual(leaves.toSorted(), [...known.keys()].toSorted(), "precondition: the known-answer tables state a class for every leaf the defaults define");
+
+    for(const leaf of leaves) {
+
+      assert.equal(getReactivityClass(leaf), known.get(leaf), leaf + " resolves to the class the known-answer tables state");
+    }
+  });
+
+  test("a path neither the metadata nor the system-state table carries throws, naming the path", () => {
+
+    assert.throws(() => getReactivityClass("hdhr.friendlyName.nested"), { message: "The configuration path hdhr.friendlyName.nested carries no reactivity class." });
   });
 });

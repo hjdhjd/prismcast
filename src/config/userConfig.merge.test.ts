@@ -387,7 +387,7 @@ describe("getEnvOverrides", () => {
 
     /* Which caller reports is the whole design, so the row asserts both halves against one variable. Rendering the settings page resolves the environment layer
      * once per section, so a reader that reported would turn one operator mistake into a page-load-sized burst of identical lines; the merge runs on a boot and
-     * on each configuration reload, each an operator's own action, so a line per merge arrives when they would look for it. Spying on LOG.warn rather than
+     * on each save to the settings, each an operator's own action, so a line per merge arrives when they would look for it. Spying on LOG.warn rather than
      * swapping the logger keeps the assertion narrow, and reading the substitution arguments rather than a formatted string keeps it independent of the format.
      */
     const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });

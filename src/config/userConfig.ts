@@ -2,7 +2,7 @@
  *
  * userConfig.ts: User configuration file management for PrismCast.
  */
-import type { Config, Nullable } from "../types/index.ts";
+import type { Config, Nullable, ReactivityClass, SystemStateReactivity } from "../types/index.ts";
 import { LOG, assertNever, sanitizeString } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
 import type { Migration } from "./persistence.ts";
@@ -40,12 +40,12 @@ const ONE_HOUR_MS = 3600000;
  */
 export interface SettingMetadata {
 
-  // Human-readable description shown in the UI.
-  description: string;
-
   // Path to a boolean setting that must be enabled for this setting to be active. When the referenced setting is false, this field is visually greyed out in the
   // UI. The field values are still submitted during save to avoid losing custom values when the parent toggle is temporarily disabled.
   dependsOn?: string;
+
+  // Human-readable description shown in the UI.
+  description: string;
 
   // When set, the field is disabled in the UI and this message is shown as a warning explaining why. The setting's value is forced to its default and cannot be
   // changed by the user. Used for temporarily disabling options due to upstream issues (e.g., Chrome bugs).
@@ -67,6 +67,10 @@ export interface SettingMetadata {
   // Human-readable label for form fields.
   label: string;
 
+  // Key identifying which list item provider to use when rendering a checkboxList. The provider is looked up in the LIST_ITEM_PROVIDERS registry in the settings
+  // renderer. This keeps the config layer free of browser/runtime dependencies - the routes layer owns the registry and can safely import browser capabilities.
+  listItemsKey?: string;
+
   // Maximum allowed value for numeric settings.
   max?: number;
 
@@ -76,18 +80,21 @@ export interface SettingMetadata {
   // Dot-separated path to the setting (e.g., "browser.initTimeout").
   path: string;
 
-  // Key identifying which list item provider to use when rendering a checkboxList. The provider is looked up in the LIST_ITEM_PROVIDERS registry in the settings
-  // renderer. This keeps the config layer free of browser/runtime dependencies - the routes layer owns the registry and can safely import browser capabilities.
-  listItemsKey?: string;
+  /* How a saved value reaches the running process. A live setting is read at its point of use or refreshed by a config-change handler, so a save commits it to
+   * the running configuration once its handler realizes it. A next-stream setting is read once when a stream starts, so a save commits it for the streams that
+   * start afterward. A restart setting is read once at boot or at a Chrome launch, so a save writes it to the file and holds it out of the running
+   * configuration until a restart reads it. The class describes the readers as they stand: a setting whose reader changes declares the class that reader earns.
+   */
+  readonly reactivity: ReactivityClass;
 
   // Data type for validation and form field rendering.
   type: "boolean" | "checkboxList" | "float" | "host" | "integer" | "path" | "port" | "string";
 
-  // Valid values for string type settings.
-  validValues?: string[];
-
   // Unit of measurement displayed in the UI (e.g., "ms", "bps").
   unit?: string;
+
+  // Valid values for string type settings.
+  validValues?: string[];
 }
 
 /**
@@ -102,6 +109,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "CHROME_BIN",
       label: "Chrome Executable Path",
       path: "browser.executablePath",
+      reactivity: "restart",
       type: "path"
     },
     {
@@ -115,6 +123,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 100,
       path: "browser.initTimeout",
+      reactivity: "restart",
       type: "integer",
       unit: "ms"
     }
@@ -130,6 +139,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       label: "Channel Lineup Precaching",
       listItemsKey: "providerModules",
       path: "channels.precacheServices",
+      reactivity: "restart",
       type: "checkboxList"
     }
   ],
@@ -144,6 +154,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 65535,
       min: 1,
       path: "channelsDvr.port",
+      reactivity: "live",
       type: "port"
     }
   ],
@@ -157,6 +168,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HDHR_ENABLED",
       label: "Enable HDHomeRun Emulation",
       path: "hdhr.enabled",
+      reactivity: "live",
       type: "boolean"
     },
     {
@@ -169,6 +181,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HDHR_DISCOVERY_ENABLED",
       label: "Enable LAN Discovery",
       path: "hdhr.discoveryEnabled",
+      reactivity: "live",
       type: "boolean"
     },
     {
@@ -182,6 +195,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 65535,
       min: 1,
       path: "hdhr.port",
+      reactivity: "live",
       type: "port"
     },
     {
@@ -191,6 +205,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HDHR_FRIENDLY_NAME",
       label: "Friendly Name",
       path: "hdhr.friendlyName",
+      reactivity: "live",
       type: "string"
     }
   ],
@@ -204,6 +219,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 10,
       min: 1,
       path: "hls.segmentDuration",
+      reactivity: "live",
       type: "integer",
       unit: "seconds"
     },
@@ -215,6 +231,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 60,
       min: 3,
       path: "hls.maxSegments",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -227,6 +244,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: FIVE_MINUTES_MS,
       min: 10000,
       path: "hls.idleTimeout",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     }
@@ -240,6 +258,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HTTP_LOG_LEVEL",
       label: "HTTP Log Level",
       path: "logging.httpLogLevel",
+      reactivity: "restart",
       type: "string",
       validValues: [ "none", "errors", "filtered", "all" ]
     },
@@ -254,6 +273,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 104857600,
       min: 524288,
       path: "logging.maxSize",
+      reactivity: "restart",
       type: "integer",
       unit: "bytes"
     }
@@ -267,6 +287,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "PRISMCAST_CHROME_DATA_DIR",
       label: "Chrome Data Directory",
       path: "paths.chromeDataDir",
+      reactivity: "restart",
       type: "path"
     },
     {
@@ -275,6 +296,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "PRISMCAST_LOG_FILE",
       label: "Log File Path",
       path: "paths.logFile",
+      reactivity: "restart",
       type: "path"
     }
   ],
@@ -290,6 +312,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 60000,
       min: 1000,
       path: "playback.bufferingGracePeriod",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -303,6 +326,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.channelSelectorDelay",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -316,6 +340,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.channelSwitchDelay",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -329,6 +354,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.iframeInitDelay",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -340,6 +366,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 20,
       min: 1,
       path: "playback.maxPageReloads",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -352,6 +379,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.monitorInterval",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -365,6 +393,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: ONE_HOUR_MS,
       min: 60000,
       path: "playback.pageReloadWindow",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -378,6 +407,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.sourceReloadDelay",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -389,6 +419,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 10,
       min: 1,
       path: "playback.stallCountThreshold",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -399,6 +430,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 5,
       min: 0.01,
       path: "playback.stallThreshold",
+      reactivity: "live",
       type: "float",
       unit: "seconds"
     },
@@ -412,6 +444,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: FIVE_MINUTES_MS,
       min: 10000,
       path: "playback.sustainedPlaybackRequired",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     }
@@ -428,6 +461,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 10000,
       min: 0,
       path: "recovery.backoffJitter",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -439,6 +473,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 100,
       min: 1,
       path: "recovery.circuitBreakerThreshold",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -451,6 +486,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: ONE_HOUR_MS,
       min: 60000,
       path: "recovery.circuitBreakerWindow",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -464,6 +500,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 60000,
       min: 1000,
       path: "recovery.maxBackoffDelay",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -475,6 +512,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 20,
       min: 1,
       path: "recovery.relaunchFailureThreshold",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -487,6 +525,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: ONE_HOUR_MS,
       min: 60000,
       path: "recovery.relaunchFailureWindow",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -500,6 +539,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: TEN_MINUTES_MS,
       min: 60000,
       path: "recovery.relaunchHealthHold",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -513,6 +553,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: TEN_MINUTES_MS,
       min: 10000,
       path: "recovery.stalePageCleanupInterval",
+      reactivity: "restart",
       type: "integer",
       unit: "ms"
     },
@@ -526,6 +567,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 120000,
       min: 5000,
       path: "recovery.stalePageGracePeriod",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     }
@@ -538,6 +580,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HOST",
       label: "Host",
       path: "server.host",
+      reactivity: "restart",
       type: "host"
     },
     {
@@ -548,6 +591,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 65535,
       min: 1,
       path: "server.port",
+      reactivity: "restart",
       type: "port"
     }
   ],
@@ -562,6 +606,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "CAPTURE_MODE",
       label: "Capture Mode",
       path: "streaming.captureMode",
+      reactivity: "restart",
       type: "string",
       validValues: [ "ffmpeg", "native" ]
     },
@@ -573,6 +618,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       label: "Capture Codecs",
       listItemsKey: "captureCodecs",
       path: "streaming.captureCodecs",
+      reactivity: "restart",
       type: "checkboxList"
     },
     {
@@ -581,6 +627,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "QUALITY_PRESET",
       label: "Quality Preset",
       path: "streaming.qualityPreset",
+      reactivity: "restart",
       type: "string",
       validValues: getValidPresetIds()
     },
@@ -594,6 +641,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 512000,
       min: 32000,
       path: "streaming.audioBitsPerSecond",
+      reactivity: "live",
       type: "integer",
       unit: "bps"
     },
@@ -605,6 +653,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 60,
       min: 30,
       path: "streaming.frameRate",
+      reactivity: "live",
       type: "integer",
       unit: "fps"
     },
@@ -616,6 +665,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 100,
       min: 1,
       path: "streaming.maxConcurrentStreams",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -626,6 +676,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 50,
       min: 1,
       path: "streaming.maxNavigationRetries",
+      reactivity: "live",
       type: "integer"
     },
     {
@@ -638,6 +689,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: TEN_MINUTES_MS,
       min: 1000,
       path: "streaming.navigationTimeout",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -651,6 +703,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 50000000,
       min: 100000,
       path: "streaming.videoBitsPerSecond",
+      reactivity: "live",
       type: "integer",
       unit: "bps"
     },
@@ -664,6 +717,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: TEN_MINUTES_MS,
       min: 1000,
       path: "streaming.videoTimeout",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     }
@@ -858,6 +912,10 @@ export interface UserConfigLoadResult {
 
   // Error message if parseError is true.
   parseErrorMessage?: string;
+
+  // True if the config file exists but could not be read for a reason other than its absence (a permission or I/O failure). The config is then the defaults,
+  // which describe nothing about the file, so the store refuses to write over it.
+  readError: boolean;
 }
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
@@ -1050,7 +1108,8 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
 
     config: result.data,
     parseError: result.parseError,
-    parseErrorMessage: result.parseErrorMessage
+    parseErrorMessage: result.parseErrorMessage,
+    readError: result.readError
   };
 }
 
@@ -1058,11 +1117,12 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
  * Serialized read-modify-write operation on config.json. The mutation function receives the current config (already migrated to the latest schema version) and
  * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and filterDefaults via the framework.
  *
- * This writes the file and nothing else. A caller whose change must be visible to the running process either mirrors the value into CONFIG itself or routes
- * through reloadConfiguration(), which re-reads the file and dispatches the diff to the live-apply handlers. Keeping the two apart is deliberate: that reload
- * diffs the re-read file against CONFIG, so a mutateConfig that updated CONFIG on its own would hand it an empty diff and no handler would ever fire.
- * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored.
- * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists.
+ * This writes the file and nothing else. It is the write path for the leaves the process owns, the discovered DVR host and the generated DeviceID among them,
+ * and for the boot's capture-coercion write-back, and each of those callers keeps the running configuration in step with its own write. A write to the
+ * settings surface goes through saveConfiguration() in config/index.ts instead, which runs its mutation through this store, refuses an invalid result before
+ * anything reaches disk, and reconciles the running configuration against the file it wrote.
+ * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored. A throw inside it writes nothing.
+ * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and an Error if config.json could not be read.
  */
 export async function mutateConfig(fn: (current: UserConfig) => void): Promise<void> {
 
@@ -1487,7 +1547,7 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
         case "unparseable": {
 
           /* An operator who took the trouble to set the variable deserves to hear that it was discarded. Once per merge is the right cardinality: a merge is a
-           * boot or a configuration reload, each of them an operator's own action, so the line arrives when they would look for it and never on its own.
+           * boot or a save to the settings, each of them an operator's own action, so the line arrives when they would look for it and never on its own.
            */
           LOG.warn("Ignoring the %s environment variable: \"%s\" is not a valid %s value for %s.", setting.envVar, override.text, setting.type, setting.path);
 
@@ -1966,6 +2026,45 @@ export const PERSISTENCE_ONLY_FIELDS: readonly string[] = [
   "migrationsApplied",
   "schemaVersion"
 ];
+
+/* The reactivity classes of the configuration leaves the settings metadata does not carry: the system state a subsystem or a separate endpoint writes, and the
+ * fixed path names nothing writes. Each class follows the same rule a setting's declared class does, read off the leaf's own readers. The drift tests in
+ * userConfig.test.ts hold the keys equal to exactly the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without a class
+ * here, or a class left behind for a leaf that moved into the metadata, fails at test time rather than throwing inside a save. The list is alphabetized by path.
+ */
+export const SYSTEM_STATE_REACTIVITY: ReadonlyMap<string, SystemStateReactivity> = new Map<string, SystemStateReactivity>([
+
+  [ "channels.channelSortDirection", "live" ],
+  [ "channels.channelSortField", "live" ],
+  [ "channels.disabledPredefined", "live" ],
+  [ "channels.enabledServices", "restart" ],
+  [ "channels.setupCompleted", "live" ],
+  [ "channels.visibleColumns", "live" ],
+  [ "channelsDvr.host", "restart" ],
+  [ "hdhr.deviceId", "live" ],
+  [ "logging.debugFilter", "live" ],
+  [ "paths.chromeProfileName", "restart" ],
+  [ "paths.extensionDirName", "restart" ]
+]);
+
+/**
+ * Resolves the reactivity class of any configuration leaf: the class its settings metadata declares, or the class the system-state table gives a leaf outside
+ * the metadata. An unclassified path is a coding error rather than an operator's, so it throws rather than guessing a class.
+ * @param settingPath - The dot-separated configuration path (e.g., "hdhr.port").
+ * @returns The leaf's reactivity class.
+ * @throws When neither the metadata nor the system-state table classes the path.
+ */
+export function getReactivityClass(settingPath: string): ReactivityClass {
+
+  const reactivity = getSettingByPath(settingPath)?.reactivity ?? SYSTEM_STATE_REACTIVITY.get(settingPath);
+
+  if(reactivity === undefined) {
+
+    throw new Error("The configuration path " + settingPath + " carries no reactivity class.");
+  }
+
+  return reactivity;
+}
 
 /**
  * Filters a user configuration object to remove values that match the defaults. This produces a minimal config file containing only the settings the user has actually

@@ -167,8 +167,9 @@ export interface HLSConfig {
   // back a client can seek. With 2-second segments, 10 segments = 20 seconds of buffer. Environment variable: HLS_MAX_SEGMENTS. Default: 10.
   maxSegments: number;
 
-  // Target duration for each HLS segment in seconds. Shorter segments reduce latency but increase overhead. 2 seconds provides good latency for live TV. This
-  // value is passed to FFmpeg's -hls_time parameter. Environment variable: HLS_SEGMENT_DURATION. Default: 2.
+  // Target duration for each HLS segment in seconds. Shorter segments reduce latency but increase overhead. 2 seconds provides good latency for live TV. The
+  // segmenter cuts a segment at the first fragment boundary once this much wall-clock time has elapsed since the segment began, and the playlist advertises it
+  // as the target duration. Environment variable: HLS_SEGMENT_DURATION. Default: 2.
   segmentDuration: number;
 }
 
@@ -319,7 +320,7 @@ export interface StreamingConfig {
 
   // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
-  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Currently force-coerced to "ffmpeg" at startup and rejected on live reload when set to "native",
+  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Currently force-coerced to "ffmpeg" at startup and refused by a settings save when set to "native",
   // per the ConfigCoercions handling in `config/index.ts`, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
   captureMode: CaptureMode;
 
@@ -395,3 +396,16 @@ export interface Config {
   // Media capture quality and timeout settings.
   streaming: StreamingConfig;
 }
+
+/**
+ * How a saved configuration value reaches the running process. Every leaf of the configuration carries exactly one class: a setting declares its own through
+ * SettingMetadata.reactivity, which states the rule each class carries, and a leaf outside the settings metadata is classed in the system-state table beside
+ * the hydration registry.
+ */
+export type ReactivityClass = "live" | "next-stream" | "restart";
+
+/**
+ * The classes a leaf outside the settings metadata can carry. Those leaves are system state a subsystem or a separate endpoint writes, and none is a per-stream
+ * tunable, so next-stream is not among them.
+ */
+export type SystemStateReactivity = Exclude<ReactivityClass, "next-stream">;

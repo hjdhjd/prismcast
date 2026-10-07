@@ -6,19 +6,37 @@
  *
  *   2. registerConfigChangeHandler is single-shot per prefix (duplicate registration throws).
  *
- *   3. applyConfigChanges matches each changed path to its handler by longest-prefix, dispatches the diff to handlers, partitions the result into
- *      applied/deferred/rejected, falls back to the NO_HANDLER_REASON deferral for unhandled paths, and falls back to MISSING_OUTCOME_REASON when a handler
- *      omits a path from its outcome list.
+ *   3. partitionConfigChanges splits a diff by the class an injected classifier gives each path, keeping the diff's order within each list, and its exhaustive
+ *      switch refuses a class outside the union.
+ *
+ *   4. applyConfigChanges hands the live and next-stream changes to the handler of their longest matching prefix together with the candidate running
+ *      configuration, realizes every change no handler refused (a change with no handler among them), rejects each refused change with its reason, rejects a
+ *      throwing handler's bucket and no other, ignores a rejection for a path the handler was not given, and never hands a held change to a handler.
  *
  * Extend this enumeration alongside any new exported behavior the module gains.
  *
- * The tests below cover each contract directly without leaning on integration plumbing - the primitive's correctness is mechanical, so the tests are also.
+ * The tests below cover each contract directly without leaning on integration plumbing - the primitive's correctness is mechanical, so the tests are also. The
+ * candidate configuration the dispatch rows pass is DEFAULTS cloned, because the primitive only forwards it.
  */
-import { MISSING_OUTCOME_REASON, NO_HANDLER_REASON, applyConfigChanges, computeConfigDiff, registerConfigChangeHandler,
-  resetConfigChangeHandlers } from "./reactivity.ts";
+import type { Config, ReactivityClass } from "../types/index.ts";
+import type { ConfigChange, ConfigChangeHandler, ConfigChangePartition, ReactivityClassifier } from "./reactivity.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import type { ChangeOutcome } from "./reactivity.ts";
+import { applyConfigChanges, computeConfigDiff, partitionConfigChanges, registerConfigChangeHandler, resetConfigChangeHandlers } from "./reactivity.ts";
+import { DEFAULTS } from "./userConfig.ts";
 import assert from "node:assert/strict";
+
+// The candidate running configuration the dispatch rows hand the primitive. Its contents are opaque to the primitive, which forwards it to each handler.
+const NEXT: Config = structuredClone(DEFAULTS);
+
+/**
+ * Builds a partition of live changes alone, the shape most dispatch rows need.
+ * @param live - The live changes.
+ * @returns A partition holding only those live changes.
+ */
+function livePartition(live: readonly ConfigChange[]): ConfigChangePartition {
+
+  return { held: [], live, nextStream: [] };
+}
 
 describe("computeConfigDiff", () => {
 
@@ -106,13 +124,46 @@ describe("registerConfigChangeHandler", () => {
 
   test("permits distinct prefixes that overlap as parent and child", () => {
 
-    // Future-proofing: a coarse "server." handler and a finer "server.advanced." handler can both exist if a subsystem ever needs nested routing. Longest-match
-    // semantics in applyConfigChanges ensures children go to the more-specific handler.
+    // A coarse "server." handler and a finer "server.advanced." handler can both exist if a subsystem ever needs nested routing. Longest-match semantics in
+    // applyConfigChanges ensures children go to the more-specific handler.
     assert.doesNotThrow(() => {
 
       registerConfigChangeHandler("server.", async () => []);
       registerConfigChangeHandler("server.advanced.", async () => []);
     });
+  });
+});
+
+describe("partitionConfigChanges", () => {
+
+  // The synthetic classifier: the path's first segment names its class, so a row states each change's class in its path.
+  const classify: ReactivityClassifier = (path) => path.split(".")[0] as ReactivityClass;
+
+  test("splits a diff into held, live, and next-stream changes by the class the classifier gives each path, keeping the diff's order within each", () => {
+
+    const diff = [
+      { current: 1, path: "live.b", previous: 0 },
+      { current: 1, path: "restart.a", previous: 0 },
+      { current: 1, path: "next-stream.a", previous: 0 },
+      { current: 1, path: "live.a", previous: 0 },
+      { current: 1, path: "restart.b", previous: 0 }
+    ];
+
+    const partition = partitionConfigChanges(diff, classify);
+
+    assert.deepEqual(partition.held.map((c) => c.path), [ "restart.a", "restart.b" ]);
+    assert.deepEqual(partition.live.map((c) => c.path), [ "live.b", "live.a" ]);
+    assert.deepEqual(partition.nextStream.map((c) => c.path), ["next-stream.a"]);
+  });
+
+  test("an empty diff partitions into empty lists", () => {
+
+    assert.deepEqual(partitionConfigChanges([], classify), { held: [], live: [], nextStream: [] });
+  });
+
+  test("a class outside the union reaches the exhaustive switch's guard and throws rather than landing in any list", () => {
+
+    assert.throws(() => partitionConfigChanges([{ current: 1, path: "bogus.a", previous: 0 }], classify), /Unhandled value: "bogus"/);
   });
 });
 
@@ -128,41 +179,49 @@ describe("applyConfigChanges", () => {
     resetConfigChangeHandlers();
   });
 
-  test("returns empty buckets for an empty diff", async () => {
+  test("returns empty lists when the partition has nothing to dispatch", async () => {
 
-    const result = await applyConfigChanges([]);
-
-    assert.deepEqual(result, { applied: [], deferred: [], rejected: [] });
+    assert.deepEqual(await applyConfigChanges({ held: [], live: [], nextStream: [] }, NEXT), { realized: [], rejected: [] });
   });
 
-  test("defers paths with no matching handler using NO_HANDLER_REASON", async () => {
+  test("realizes a live change with no handler registered for its path", async () => {
 
-    const change = { current: 5005, path: "browser.port", previous: 5004 };
-    const result = await applyConfigChanges([change]);
+    const change = { current: 0.2, path: "playback.stallThreshold", previous: 0.1 };
 
-    assert.equal(result.applied.length, 0);
-    assert.equal(result.rejected.length, 0);
-    assert.deepEqual(result.deferred, [{ change, reason: NO_HANDLER_REASON }]);
+    assert.deepEqual(await applyConfigChanges(livePartition([change]), NEXT), { realized: [change], rejected: [] });
   });
 
-  test("routes a change to the registered handler and records the reported outcome", async () => {
+  test("hands the handler its changes and the candidate running configuration, and realizes what it does not refuse", async () => {
 
     const change = { current: true, path: "hdhr.enabled", previous: false };
-    let received: readonly { path: string }[] = [];
+    let received: readonly ConfigChange[] = [];
+    let receivedNext: Readonly<Config> | undefined;
 
-    registerConfigChangeHandler("hdhr.", async (changes) => {
+    registerConfigChangeHandler("hdhr.", async (changes, next) => {
 
       received = changes;
+      receivedNext = next;
 
-      return [{ kind: "applied", path: change.path }];
+      return [];
     });
 
-    const result = await applyConfigChanges([change]);
+    const result = await applyConfigChanges(livePartition([change]), NEXT);
 
-    assert.deepEqual(received.map((c) => c.path), ["hdhr.enabled"]);
-    assert.deepEqual(result.applied, [change]);
-    assert.equal(result.deferred.length, 0);
-    assert.equal(result.rejected.length, 0);
+    assert.deepEqual(received, [change]);
+    assert.equal(receivedNext, NEXT, "the handler receives the candidate the caller passed, by reference");
+    assert.deepEqual(result, { realized: [change], rejected: [] });
+  });
+
+  test("a handler refusing one path of its batch rejects that path alone, with the handler's reason", async () => {
+
+    registerConfigChangeHandler("hdhr.", async () => [{ path: "hdhr.port", reason: "HDHomeRun could not bind port 5005, so the change was not applied." }]);
+
+    const enabled = { current: true, path: "hdhr.enabled", previous: false };
+    const port = { current: 5005, path: "hdhr.port", previous: 5004 };
+    const result = await applyConfigChanges(livePartition([ enabled, port ]), NEXT);
+
+    assert.deepEqual(result.realized, [enabled]);
+    assert.deepEqual(result.rejected, [{ change: port, reason: "HDHomeRun could not bind port 5005, so the change was not applied." }]);
   });
 
   test("batches multiple changes that share a prefix into a single handler invocation", async () => {
@@ -175,157 +234,130 @@ describe("applyConfigChanges", () => {
       invocations += 1;
       receivedPaths = changes.map((c) => c.path);
 
-      return changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome));
+      return [];
     });
 
-    const diff = [
+    const result = await applyConfigChanges(livePartition([
       { current: true, path: "hdhr.discoveryEnabled", previous: false },
       { current: true, path: "hdhr.enabled", previous: false },
       { current: 5005, path: "hdhr.port", previous: 5004 }
-    ];
-
-    const result = await applyConfigChanges(diff);
+    ]), NEXT);
 
     assert.equal(invocations, 1, "handler is invoked once for the batch");
     assert.deepEqual(receivedPaths, [ "hdhr.discoveryEnabled", "hdhr.enabled", "hdhr.port" ]);
-    assert.equal(result.applied.length, 3);
+    assert.equal(result.realized.length, 3);
   });
 
-  test("routes to the longest matching prefix when nested handlers are registered", async () => {
+  test("routes to the longest matching prefix, and a sibling prefix's handler receives nothing", async () => {
 
-    let coarseInvocations = 0;
-    let fineInvocations = 0;
+    const received = new Map<string, string[]>();
 
-    registerConfigChangeHandler("a.", async (changes) => {
+    function record(prefix: string): ConfigChangeHandler {
 
-      coarseInvocations += 1;
+      return async (changes) => {
 
-      return changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome));
-    });
-    registerConfigChangeHandler("a.b.", async (changes) => {
+        received.set(prefix, changes.map((c) => c.path));
 
-      fineInvocations += 1;
+        return [];
+      };
+    }
 
-      return changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome));
-    });
+    registerConfigChangeHandler("a.", record("a."));
+    registerConfigChangeHandler("a.b.", record("a.b."));
+    registerConfigChangeHandler("c.", record("c."));
 
-    await applyConfigChanges([
-      { current: 1, path: "a.b.c", previous: 0 },
-      { current: 1, path: "a.x", previous: 0 }
-    ]);
+    await applyConfigChanges(livePartition([ { current: 1, path: "a.b.c", previous: 0 }, { current: 1, path: "a.x", previous: 0 } ]), NEXT);
 
-    assert.equal(fineInvocations, 1, "a.b.c should route to the longer prefix");
-    assert.equal(coarseInvocations, 1, "a.x should route to the shorter prefix");
+    assert.deepEqual(received.get("a.b."), ["a.b.c"], "a.b.c routes to the longer prefix");
+    assert.deepEqual(received.get("a."), ["a.x"], "a.x routes to the shorter prefix");
+    assert.equal(received.has("c."), false, "a handler whose prefix matches no change is never called");
   });
 
-  test("defers paths with MISSING_OUTCOME_REASON when the handler omits them", async () => {
+  test("a thrown handler rejects every change in its bucket, with a sentence naming the prefix and the error, and no other bucket", async () => {
 
-    registerConfigChangeHandler("hdhr.", async () => []);
+    registerConfigChangeHandler("a.", async () => { throw new Error("boom"); });
+    registerConfigChangeHandler("b.", async () => []);
 
-    const change = { current: true, path: "hdhr.enabled", previous: false };
-    const result = await applyConfigChanges([change]);
+    const ax = { current: 1, path: "a.x", previous: 0 };
+    const ay = { current: 1, path: "a.y", previous: 0 };
+    const bz = { current: 1, path: "b.z", previous: 0 };
+    const result = await applyConfigChanges(livePartition([ ax, ay, bz ]), NEXT);
+    const reason = "The configuration handler for \"a.\" failed: boom.";
 
-    assert.deepEqual(result.deferred, [{ change, reason: MISSING_OUTCOME_REASON }]);
+    assert.deepEqual(result.realized, [bz], "the other bucket is realized");
+    assert.deepEqual(result.rejected, [ { change: ax, reason }, { change: ay, reason } ]);
   });
 
-  test("records deferred and rejected outcomes from the handler verbatim", async () => {
+  test("ignores a rejection for a path outside the handler's batch, so it cannot refuse another handler's change", async () => {
 
-    registerConfigChangeHandler("hdhr.", async (changes) => changes.map((c) => {
+    registerConfigChangeHandler("a.", async () => []);
+    registerConfigChangeHandler("b.", async () => [{ path: "a.x", reason: "A foreign rejection that must be ignored." }]);
 
-      // Use the path to choose the outcome shape so the test exercises all three kinds in one dispatch.
-      if(c.path === "hdhr.enabled") {
+    const ax = { current: 1, path: "a.x", previous: 0 };
+    const by = { current: 1, path: "b.y", previous: 0 };
+    const result = await applyConfigChanges(livePartition([ ax, by ]), NEXT);
 
-        return { kind: "applied", path: c.path } satisfies ChangeOutcome;
-      }
-
-      if(c.path === "hdhr.port") {
-
-        return { kind: "deferred", path: c.path, reason: "port change requires HTTP server restart" } satisfies ChangeOutcome;
-      }
-
-      return { kind: "rejected", path: c.path, reason: "FFmpeg unavailable" } satisfies ChangeOutcome;
-    }));
-
-    const enabledChange = { current: true, path: "hdhr.enabled", previous: false };
-    const portChange = { current: 5005, path: "hdhr.port", previous: 5004 };
-    const deviceIdChange = { current: "XXXXXXXX", path: "hdhr.deviceId", previous: "YYYYYYYY" };
-
-    const result = await applyConfigChanges([ enabledChange, portChange, deviceIdChange ]);
-
-    assert.deepEqual(result.applied, [enabledChange]);
-    assert.deepEqual(result.deferred, [{ change: portChange, reason: "port change requires HTTP server restart" }]);
-    assert.deepEqual(result.rejected, [{ change: deviceIdChange, reason: "FFmpeg unavailable" }]);
-  });
-
-  test("preserves input order in applied/deferred/rejected buckets", async () => {
-
-    registerConfigChangeHandler("x.", async (changes) => changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome)));
-
-    const changes = [
-      { current: 1, path: "x.c", previous: 0 },
-      { current: 1, path: "x.a", previous: 0 },
-      { current: 1, path: "x.b", previous: 0 }
-    ];
-
-    const result = await applyConfigChanges(changes);
-
-    // The handler may reorder internally, but the aggregate result must iterate in the order the caller supplied.
-    assert.deepEqual(result.applied.map((c) => c.path), [ "x.c", "x.a", "x.b" ]);
+    assert.deepEqual(result.realized, [ ax, by ]);
+    assert.equal(result.rejected.length, 0, "the foreign rejection for a.x was ignored");
   });
 
   test("dispatches parallel handlers independently", async () => {
 
-    let aResolve: (() => void) | undefined;
-    let bResolve: (() => void) | undefined;
+    const aGate = Promise.withResolvers<null>();
+    const bGate = Promise.withResolvers<null>();
 
-    // Both handlers block until the test releases them. Promise.allSettled in applyConfigChanges should hold open until both resolve.
-    const aGate = new Promise<void>((resolve) => { aResolve = resolve; });
-    const bGate = new Promise<void>((resolve) => { bResolve = resolve; });
+    // Both handlers block until the test releases them. Promise.allSettled in applyConfigChanges holds open until both resolve.
+    registerConfigChangeHandler("a.", async () => {
 
-    registerConfigChangeHandler("a.", async (changes) => {
+      await aGate.promise;
 
-      await aGate;
-
-      return changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome));
+      return [];
     });
-    registerConfigChangeHandler("b.", async (changes) => {
+    registerConfigChangeHandler("b.", async () => {
 
-      await bGate;
+      await bGate.promise;
 
-      return changes.map((c) => ({ kind: "applied", path: c.path } satisfies ChangeOutcome));
+      return [];
     });
 
-    const dispatch = applyConfigChanges([
-      { current: 1, path: "a.x", previous: 0 },
-      { current: 1, path: "b.y", previous: 0 }
-    ]);
+    const dispatch = applyConfigChanges(livePartition([ { current: 1, path: "a.x", previous: 0 }, { current: 1, path: "b.y", previous: 0 } ]), NEXT);
 
     // Release the handlers in reverse registration order to prove independence: nothing serializes their execution.
-    bResolve?.();
-    aResolve?.();
+    bGate.resolve(null);
+    aGate.resolve(null);
 
-    const result = await dispatch;
-
-    assert.equal(result.applied.length, 2);
+    assert.equal((await dispatch).realized.length, 2);
   });
 
-  test("ignores a handler outcome for a path outside its input batch (no cross-handler override)", async () => {
+  test("keeps the partition's order, live changes before next-stream changes, whatever order handlers settle in", async () => {
 
-    // Two handlers run in parallel. The "b." handler misbehaves and also reports an outcome for "a.x" - a path it was never given. The primitive must ignore
-    // that foreign outcome so it cannot override the authoritative classification from the "a." handler via last-write-wins into the outcome map.
-    registerConfigChangeHandler("a.", async () => [{ kind: "applied", path: "a.x" }]);
-    registerConfigChangeHandler("b.", async () => [
-      { kind: "applied", path: "b.y" },
-      { kind: "rejected", path: "a.x", reason: "foreign outcome that must be ignored" }
-    ]);
+    registerConfigChangeHandler("x.", async () => []);
 
-    const ax = { current: 1, path: "a.x", previous: 0 };
-    const by = { current: 1, path: "b.y", previous: 0 };
-    const result = await applyConfigChanges([ ax, by ]);
+    const partition: ConfigChangePartition = {
 
-    // a.x reflects its own handler's "applied", not b.'s foreign "rejected".
-    assert.deepEqual(result.applied.map((c) => c.path), [ "a.x", "b.y" ]);
-    assert.equal(result.rejected.length, 0, "the foreign rejection for a.x was ignored");
-    assert.equal(result.deferred.length, 0);
+      held: [],
+      live: [ { current: 1, path: "x.c", previous: 0 }, { current: 1, path: "x.a", previous: 0 } ],
+      nextStream: [{ current: 1, path: "x.b", previous: 0 }]
+    };
+
+    assert.deepEqual((await applyConfigChanges(partition, NEXT)).realized.map((c) => c.path), [ "x.c", "x.a", "x.b" ]);
+  });
+
+  test("never hands a held change to a handler and never reports it", async () => {
+
+    let received: readonly ConfigChange[] = [];
+
+    registerConfigChangeHandler("server.", async (changes) => {
+
+      received = changes;
+
+      return [];
+    });
+
+    const held = { current: 6000, path: "server.port", previous: 5589 };
+    const result = await applyConfigChanges({ held: [held], live: [], nextStream: [] }, NEXT);
+
+    assert.deepEqual(received, [], "the handler was not called");
+    assert.deepEqual(result, { realized: [], rejected: [] });
   });
 });

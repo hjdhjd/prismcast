@@ -4,14 +4,14 @@
  */
 import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, initDebugFilter, isCategoryEnabled, serializeAttrs } from "../utils/index.ts";
 import type { Express, Request, Response } from "express";
+import { applyConfigurationChange, describeConfigurationOutcome } from "./config/index.ts";
 import { generateBaseStyles, generatePageWrapper } from "./ui.ts";
-import { CONFIG } from "../config/index.ts";
 import type { DebugCategory } from "../utils/index.ts";
 import { getDebugEnv } from "../config/paths.ts";
-import { mutateConfig } from "../config/userConfig.ts";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. Toggling a category enables or disables its
- * debug output immediately; the runtime filter is updated in place and the canonical form is persisted to config.json so the change survives restarts.
+ * debug output immediately; the runtime filter is updated in place and the canonical form is persisted to config.json through the validated save every write to
+ * the settings surface takes, so the change survives restarts.
  *
  * The page is laid out as a vertical stack of cards (".debug-section"), each holding one or more rows (".debug-row"). The row is the only visual primitive on
  * the page, and every variant - group header, grouped leaf, standalone leaf - emits the same DOM shape; the variants differ only in which named tracks of a
@@ -564,36 +564,39 @@ export function setupDebugEndpoint(app: Express): void {
     res.send(html);
   });
 
-  // POST /debug - Applies a new debug filter pattern, persists it to config.json, and redirects back to the page.
+  // POST /debug - Applies a new debug filter pattern, saves it to config.json through the validated save, and redirects back to the page.
   app.post("/debug", async (req: Request, res: Response): Promise<void> => {
 
     const body = req.body as Record<string, unknown>;
     const pattern = typeof body["pattern"] === "string" ? body["pattern"].trim() : "";
     const previousPattern = getCurrentPattern();
 
-    // Apply the filter immediately at runtime.
+    // Apply the filter immediately at runtime. The page is a runtime control, so its primary effect lands first and stands whatever the save below answers.
     initDebugFilter(pattern);
 
     // Use the canonical form after parsing. initDebugFilter normalizes whitespace around commas, so "tuning:hulu, recovery" becomes "tuning:hulu,recovery".
     // Storing the normalized form ensures consistent comparisons at startup.
     const normalizedPattern = getCurrentPattern();
 
-    // Keep the in-memory CONFIG consistent with the persisted value.
-    CONFIG.logging.debugFilter = normalizedPattern;
-
     LOG.info("Debug filter updated: \"%s\" -> \"%s\".", previousPattern, normalizedPattern);
 
-    // Persist to config.json so the filter survives restarts. Wrap in try/catch so persistence failure doesn't break the runtime update.
+    /* Persist through the validated save every writer of the settings surface takes. Its reconcile commits the pattern to CONFIG and re-applies it when no
+     * launch source owns the filter, and a change the save picks up from the file - a hand-edited restart-class value, a live value a handler refuses - earns
+     * the restart and the report a settings save would. The page's redirect has no response body to carry that outcome, so it is logged. A save the validation
+     * or the store refuses leaves the runtime filter applied and unsaved, and the redirect answers whatever the save's outcome.
+     */
     try {
 
-      await mutateConfig((config) => {
+      const outcome = await applyConfigurationChange("after a debug filter change", (config) => {
 
         config.logging ??= {};
         config.logging.debugFilter = normalizedPattern;
       });
+
+      LOG.info(describeConfigurationOutcome(outcome));
     } catch(error) {
 
-      LOG.warn("Failed to persist debug filter to config.json: %s.", formatError(error));
+      LOG.warn("The debug filter is applied but was not persisted: %s.", formatError(error));
     }
 
     res.redirect(303, "/debug");

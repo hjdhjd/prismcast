@@ -219,7 +219,7 @@ export const DEBUG_CATEGORIES: readonly DebugCategory[] = [
   { category: "browser:video", description: "Video context, fullscreen, volume locking, playback." },
   { category: "cdp", description: "Enables the Chrome DevTools Protocol proxy at /cdp. Feature gate, not a log filter - observable via its HTTP/WS surface." },
   { category: "config:general", description: "Service groups, version checking." },
-  { category: "config:reactivity", description: "Config-change reactivity dispatch: outcomes ignored for paths a handler was not given." },
+  { category: "config:reactivity", description: "Config-change reactivity dispatch: a handler's rejection ignored for a path the handler was not given." },
   { category: "hdhr", description: "HDHomeRun UDP responder: per-packet dispatch traces (Discover, Get, Set, malformed drops), reply send failures." },
   { category: "native:codec", description: "Codec inference from the first MPEG-TS segment: the prefix fetch, the inferred codec, misses." },
   { category: "native:coordinator", description: "Native streaming decisions: interception result, probe result, capture teardown, proxy start." },

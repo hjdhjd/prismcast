@@ -7,9 +7,10 @@ import type { Nullable, ProfileCategory } from "../../types/index.ts";
 import type { ApplyResult } from "../../config/reactivity.ts";
 import type { Express } from "express";
 import type { ProfileInfo } from "../../config/profiles.ts";
+import type { UserConfig } from "../../config/userConfig.ts";
 import { closeBrowser } from "../../browser/index.ts";
 import { getStreamCount } from "../../streaming/registry.ts";
-import { reloadConfiguration } from "../../config/index.ts";
+import { saveConfiguration } from "../../config/index.ts";
 import { setupChannelRoutes } from "./channels/index.ts";
 import { setupProfileRoutes } from "./services.ts";
 import { setupSettingsRoutes } from "./settings.ts";
@@ -106,28 +107,30 @@ export function scheduleServerRestart(reason: string): RestartResult {
 }
 
 /**
- * Reloads the in-memory configuration from disk, dispatches the diff to registered subsystem handlers, and schedules a server restart only if there are
- * changes that no handler could apply live. The single entry point both the /config save handler and /config/import handler call after writing to disk. The
- * returned shape lets each handler tailor its response message and pick between the "show toast" and "restart in progress" UI flows.
+ * Saves a change to the settings surface through the one validated save and schedules a server restart only when the save holds a restart-class change of its
+ * own for a restart. Every writer of the settings surface - the /config save, the /config/import handler, and the debug page - calls it with the mutation it
+ * wants applied to the file. The returned shape lets each caller tailor its response message and pick between the "show toast" and "restart in progress" UI
+ * flows, and lets the debug page, whose redirect carries no response body, log the outcome instead.
  *
  * Rejected changes do not trigger a restart on their own - rejection means a handler refused the change after the disk write, so the value is persisted but
  * the live side-effect did not occur (e.g., a handler that refused to start a port-conflicting server). Callers should surface rejected reasons to the user so
  * they can fix the underlying cause and re-save rather than restarting blindly.
  * @param reason - A description of why configuration is changing, used in the restart log message when a restart is scheduled.
+ * @param mutator - Applies the change to the current configuration file in place.
  * @returns Combined apply and restart result.
+ * @throws ConfigurationRejectedError when the saved configuration would fail validation, and the store's error when the file cannot be parsed, read, or written.
  */
-export async function applyConfigurationChange(reason: string): Promise<ApplyConfigurationResult> {
+export async function applyConfigurationChange(reason: string, mutator: (current: UserConfig) => void): Promise<ApplyConfigurationResult> {
 
-  const apply = await reloadConfiguration();
+  const apply = await saveConfiguration(mutator);
 
-  // If every change applied live (or was rejected without needing a restart), there is nothing for the service manager to do; the in-memory CONFIG already
-  // reflects the new values, and any registered handlers have made the live side-effects.
+  // When this save holds nothing for a restart, there is nothing for the service manager to do: what the save asked for is realized or reported refused.
   if(apply.deferred.length === 0) {
 
     return { apply, restart: null };
   }
 
-  // Some change could not be applied live - schedule a restart so the service manager picks up the new state on respawn.
+  // This save introduced a restart-class change - schedule a restart so the service manager picks up the new state on respawn.
   return { apply, restart: scheduleServerRestart(reason) };
 }
 
@@ -162,10 +165,11 @@ export function describeConfigurationOutcome(result: ApplyConfigurationResult): 
     return "Configuration saved. " + String(appliedCount) + " setting" + ((appliedCount === 1) ? "" : "s") + " applied live.";
   }
 
-  // Surface the first rejection reason so operators get a directly actionable hint without scanning the structured payload.
-  const firstReason = result.apply.rejected[0]?.reason ?? "unknown reason";
+  // Surface the first rejection reason so operators get a directly actionable hint without scanning the structured payload. Every reason is a complete
+  // sentence ending in its own punctuation, so the message carries it verbatim.
+  const firstReason = result.apply.rejected[0]?.reason ?? "The reason was not reported.";
 
-  return "Configuration saved, but " + String(rejectedCount) + " change" + ((rejectedCount === 1) ? " was" : "s were") + " rejected: " + firstReason + ".";
+  return "Configuration saved, but " + String(rejectedCount) + " change" + ((rejectedCount === 1) ? " was" : "s were") + " rejected: " + firstReason;
 }
 
 /**

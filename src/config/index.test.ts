@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.merge.test.ts; here we focus on
- * the validation gate (validatePositiveInt, validatePositiveNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
+ * the validation gate (validateInteger, validateNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
  * accessor surface, and the displayConfiguration startup block. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
  * independent of any other suite that touches CONFIG.
  */
-import { CONFIG, STARTUP_BOUNDED_SETTINGS, applyLoggingConfigChanges, configParseError, configParseErrorMessage, displayConfiguration, getDefaults,
-  validateConfiguration, validatePositiveInt, validatePositiveNumber } from "./index.ts";
+import { CONFIG, STARTUP_BOUNDED_SETTINGS, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validateInteger,
+  validateNumber } from "./index.ts";
 import { DEFAULTS, getNestedValue, getSettingByPath } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
@@ -18,121 +18,137 @@ import { initializeDataDir } from "./paths.ts";
 import os from "node:os";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
-describe("validatePositiveInt", () => {
+describe("validateInteger", () => {
 
   test("returns null for a valid integer with no bounds", () => {
 
-    assert.equal(validatePositiveInt("X", 5), null);
+    assert.equal(validateInteger("X", 5), null);
   });
 
-  test("returns an error for zero (must be at least 1)", () => {
+  test("with no declared minimum the floor is 1, so zero is refused by a message naming that floor", () => {
 
-    const err = validatePositiveInt("X", 0);
-
-    assert.match(err ?? "", /must be a positive integer/);
+    assert.equal(validateInteger("X", 0), "X must be at least 1, but it is 0.");
   });
 
   test("returns an error for a negative integer", () => {
 
-    const err = validatePositiveInt("X", -1);
+    const err = validateInteger("X", -1);
 
-    assert.match(err ?? "", /must be a positive integer/);
+    assert.match(err ?? "", /must be at least 1/);
   });
 
   test("returns an error for a non-integer (float)", () => {
 
-    const err = validatePositiveInt("X", 1.5);
+    const err = validateInteger("X", 1.5);
 
-    assert.match(err ?? "", /must be a positive integer/);
+    assert.match(err ?? "", /must be an integer/);
   });
 
   test("returns an error for NaN", () => {
 
-    const err = validatePositiveInt("X", Number.NaN);
+    const err = validateInteger("X", Number.NaN);
 
-    assert.match(err ?? "", /must be a positive integer/);
+    assert.match(err ?? "", /must be an integer/);
+  });
+
+  test("the declared minimum is the floor: zero is accepted under a minimum of zero and refused under a minimum of one", () => {
+
+    assert.equal(validateInteger("X", 0, 0), null, "zero is valid where the metadata declares a floor of zero");
+    assert.equal(validateInteger("X", 0, 0, 10000), null, "zero is valid under a floor of zero with a ceiling, the shape of recovery.backoffJitter");
+    assert.equal(validateInteger("X", 0, 1), "X must be at least 1, but it is 0.", "zero is refused under a floor of one, by a message naming that floor");
+    assert.equal(validateInteger("X", -1, 0), "X must be at least 0, but it is -1.", "a value below a floor of zero is refused by a message naming that floor");
+  });
+
+  test("a non-integer is refused whatever the declared floor", () => {
+
+    assert.equal(validateInteger("X", 0.5, 0), "X must be an integer, but it is 0.5.");
   });
 
   test("enforces the minimum bound (inclusive)", () => {
 
-    assert.equal(validatePositiveInt("X", 5, 5), null, "value equal to min is valid");
-    assert.match(validatePositiveInt("X", 4, 5) ?? "", /at least 5/);
+    assert.equal(validateInteger("X", 5, 5), null, "value equal to min is valid");
+    assert.match(validateInteger("X", 4, 5) ?? "", /at least 5/);
   });
 
   test("enforces the maximum bound (inclusive)", () => {
 
-    assert.equal(validatePositiveInt("X", 100, 1, 100), null, "value equal to max is valid");
-    assert.match(validatePositiveInt("X", 101, 1, 100) ?? "", /at most 100/);
+    assert.equal(validateInteger("X", 100, 1, 100), null, "value equal to max is valid");
+    assert.match(validateInteger("X", 101, 1, 100) ?? "", /at most 100/);
   });
 
   test("max-only bound (min undefined) accepts a value within range and rejects values above max", () => {
 
-    /* Asserts the asymmetric checkBounds path where only the max bound is supplied. The first guard (min === undefined) takes the early-return branch; the second
-     * guard (max defined) is the active gate. validatePositiveInt with explicit undefined min and a numeric max is the canonical way to reach this path through
-     * the public surface, so checkBounds stays private without test-only hooks.
+    /* Asserts that a declared ceiling still bounds a value when no minimum is declared: the floor falls back to 1 and the ceiling is the active gate. A call with
+     * an explicit undefined minimum and a numeric maximum reaches that path through the public surface, so checkBounds stays private without test-only hooks.
      */
-    assert.equal(validatePositiveInt("X", 5, undefined, 10), null, "value below max-only bound is valid");
-    assert.match(validatePositiveInt("X", 11, undefined, 10) ?? "", /at most 10/, "value above max-only bound is rejected");
+    assert.equal(validateInteger("X", 5, undefined, 10), null, "value below max-only bound is valid");
+    assert.match(validateInteger("X", 11, undefined, 10) ?? "", /at most 10/, "value above max-only bound is rejected");
   });
 
-  test("both bounds undefined returns null after the positive-integer gate (no bound check fires)", () => {
+  test("with no declared bounds, any integer at or above the fallback floor is accepted", () => {
 
-    /* Asserts the both-undefined branch of checkBounds: when neither min nor max is supplied, the helper's two guards both fall through and it returns null. The
-     * public-surface call validatePositiveInt("X", value) reaches this branch only after the positive-integer gate accepts the value, so we pass a valid value
-     * to isolate the bound-check behavior from the gate's behavior.
+    /* Asserts the unbounded case through the public surface: with neither bound supplied, the only floor is the fallback of 1 and no ceiling applies, so the
+     * boundary value and a very large value pass.
      */
-    assert.equal(validatePositiveInt("X", 1), null, "valid integer with no bounds returns null (boundary value 1)");
-    assert.equal(validatePositiveInt("X", Number.MAX_SAFE_INTEGER), null, "valid integer with no bounds returns null (large value)");
+    assert.equal(validateInteger("X", 1), null, "valid integer with no bounds returns null (boundary value 1)");
+    assert.equal(validateInteger("X", Number.MAX_SAFE_INTEGER), null, "valid integer with no bounds returns null (large value)");
   });
 
   test("error message includes the invalid value", () => {
 
-    const err = validatePositiveInt("PORT", -7);
+    const err = validateInteger("PORT", -7);
 
     assert.match(err ?? "", /-7/);
   });
 });
 
-describe("validatePositiveNumber", () => {
+describe("validateNumber", () => {
 
   test("accepts a positive float with no bounds", () => {
 
-    assert.equal(validatePositiveNumber("X", 0.5), null);
+    assert.equal(validateNumber("X", 0.5), null);
   });
 
-  test("rejects zero (must be > 0)", () => {
+  test("rejects zero when no minimum is declared (must be > 0)", () => {
 
-    assert.match(validatePositiveNumber("X", 0) ?? "", /must be a positive number/);
+    assert.match(validateNumber("X", 0) ?? "", /must be a positive number/);
   });
 
-  test("rejects negative values", () => {
+  test("rejects negative values when no minimum is declared", () => {
 
-    assert.match(validatePositiveNumber("X", -0.1) ?? "", /must be a positive number/);
+    assert.match(validateNumber("X", -0.1) ?? "", /must be a positive number/);
   });
 
-  test("rejects NaN", () => {
+  test("rejects NaN whatever the declared floor", () => {
 
-    assert.match(validatePositiveNumber("X", Number.NaN) ?? "", /must be a positive number/);
+    assert.match(validateNumber("X", Number.NaN) ?? "", /must be a number/);
+    assert.match(validateNumber("X", Number.NaN, 0, 5) ?? "", /must be a number/, "NaN is refused even though it compares false against every bound");
+  });
+
+  test("the declared minimum is the floor: zero is accepted under a minimum of zero and refused under a minimum of one", () => {
+
+    assert.equal(validateNumber("X", 0, 0), null, "zero is valid where the metadata declares a floor of zero");
+    assert.equal(validateNumber("X", 0, 1), "X must be at least 1, but it is 0.", "zero is refused under a floor of one, by a message naming that floor");
   });
 
   test("enforces minimum bound (inclusive)", () => {
 
-    assert.equal(validatePositiveNumber("X", 0.01, 0.01, 5), null);
-    assert.match(validatePositiveNumber("X", 0.005, 0.01) ?? "", /at least/);
+    assert.equal(validateNumber("X", 0.01, 0.01, 5), null);
+    assert.match(validateNumber("X", 0.005, 0.01) ?? "", /at least/);
   });
 
   test("enforces maximum bound (inclusive)", () => {
 
-    assert.equal(validatePositiveNumber("X", 5, 0.01, 5), null);
-    assert.match(validatePositiveNumber("X", 5.1, 0.01, 5) ?? "", /at most/);
+    assert.equal(validateNumber("X", 5, 0.01, 5), null);
+    assert.match(validateNumber("X", 5.1, 0.01, 5) ?? "", /at most/);
   });
 
   test("max-only bound rejects values above max even when min is undefined", () => {
 
-    /* Mirror of the validatePositiveInt max-only test - same checkBounds path, exercised through the float-tolerant validator instead of the integer one.
+    /* Mirror of the validateInteger max-only test - the same ceiling check, exercised through the float-tolerant validator instead of the integer one.
      */
-    assert.equal(validatePositiveNumber("X", 0.5, undefined, 1), null, "value below max-only bound is valid");
-    assert.match(validatePositiveNumber("X", 1.5, undefined, 1) ?? "", /at most 1/, "value above max-only bound is rejected");
+    assert.equal(validateNumber("X", 0.5, undefined, 1), null, "value below max-only bound is valid");
+    assert.match(validateNumber("X", 1.5, undefined, 1) ?? "", /at most 1/, "value above max-only bound is rejected");
   });
 });
 
@@ -375,23 +391,20 @@ describe("STARTUP_BOUNDED_SETTINGS", () => {
   });
 });
 
-describe("applyLoggingConfigChanges", () => {
+describe("validator messages", () => {
 
-  test("reports debugFilter as applied (live, no restart) and other logging fields as deferred", async () => {
+  test("every refusal the validators produce is a complete sentence ending in a period, so a save can join them into one reason", () => {
 
-    // commitDebugFilter applies the debug filter live during reload, so the handler reports it applied and triggers no restart. httpLogLevel and maxSize
-    // are wired at startup, so they defer to a restart.
-    const outcomes = await applyLoggingConfigChanges([
-      { current: "tuning:hulu", path: "logging.debugFilter", previous: "" },
-      { current: "all", path: "logging.httpLogLevel", previous: "errors" },
-      { current: 2097152, path: "logging.maxSize", previous: 1048576 }
-    ]);
+    const messages = [ validateInteger("PORT", 1.5), validateInteger("PORT", Number.NaN), validateInteger("PORT", 0), validateInteger("PORT", 4, 5),
+      validateInteger("PORT", -1, 0), validateInteger("PORT", 101, 1, 100), validateNumber("X", Number.NaN), validateNumber("X", 0), validateNumber("X", 0.005, 0.01),
+      validateNumber("X", 5.1, 0.01, 5) ];
 
-    assert.deepEqual(outcomes, [
-      { kind: "applied", path: "logging.debugFilter" },
-      { kind: "deferred", path: "logging.httpLogLevel", reason: "this logging setting takes effect on the next restart" },
-      { kind: "deferred", path: "logging.maxSize", reason: "this logging setting takes effect on the next restart" }
-    ]);
+    assert.equal(messages.length, 10, "precondition: every validator branch is represented");
+
+    for(const message of messages) {
+
+      assert.match(message ?? "", /^[A-Z_]+ must be .+, but it is (-?[\d.]+|NaN)\.$/, "each refusal names the value it refused and ends in a period");
+    }
   });
 });
 
@@ -480,7 +493,7 @@ describe("displayConfiguration", () => {
 
 describe("configParseError exported state", () => {
 
-  /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by both initializeConfiguration and reloadConfiguration on every load.
+  /* The two `let` exports (configParseError, configParseErrorMessage) are reassigned by initializeConfiguration on every load and cleared by every save.
    * Tests that reach either function would leak into this assertion, so we only assert the type contract here - the values themselves are produced by the
    * persistence layer and covered through the integration tier where load failures are exercised end-to-end.
    */

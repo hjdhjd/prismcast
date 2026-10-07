@@ -2,16 +2,19 @@
  *
  * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle and its live-apply config-change handler. Coverage spans the observable behaviors
  * of startHdhrServer / stopHdhrServer - the disabled short-circuit, automatic DeviceID generation when missing or invalid, graceful EADDRINUSE handling on
- * port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, including the end-to-end HTTP rebind on a port change
- * and rejection of a change to an already-occupied port.
- * Each test uses an OS-assigned port (port 0) so it never collides with the production HDHR port; data-directory side effects are routed into a per-test
- * temp dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
+ * port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, which realizes the candidate it is handed and returns only
+ * the rejections the surfaces earned, including a save to an already-occupied port driven end to end through saveConfiguration.
+ * Each test uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port; data-directory side effects are routed into a
+ * per-test temp dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
  */
-import type { ChangeOutcome, ConfigChange } from "../config/reactivity.ts";
+import { CONFIG, initializeConfiguration, saveConfiguration } from "../config/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { applyHdhrConfigChanges, startHdhrServer, stopHdhrServer } from "./index.ts";
-import { CONFIG } from "../config/index.ts";
+import type { Config } from "../types/index.ts";
+import type { ConfigChange } from "../config/reactivity.ts";
+import type { ConfigStore } from "../config/index.ts";
 import type { Server } from "node:http";
+import type { UserConfig } from "../config/userConfig.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { generateDeviceId } from "./deviceId.ts";
@@ -101,7 +104,7 @@ describe("startHdhrServer - disabled", () => {
     await assert.doesNotReject(stopHdhrServer);
   });
 
-  test("does not regenerate the DeviceID when disabled (skips the validation branch)", async () => {
+  test("leaves a valid DeviceID untouched while the surface is disabled", async () => {
 
     const validId = generateDeviceId();
 
@@ -291,169 +294,187 @@ describe("stopHdhrServer", () => {
   });
 });
 
+/* The handler rows hold CONFIG.hdhr apart from the candidate they hand the handler, so each one proves the handler realizes the state it is handed rather than
+ * the running configuration, and that it commits nothing itself - the reconcile commits what a handler did not refuse. Each row re-initializes CONFIG from an
+ * in-memory store holding a valid DeviceID with LAN discovery off, because binding UDP 65001 in a test risks colliding with a real HDHomeRun on the network.
+ */
 describe("applyHdhrConfigChanges - live-apply handler", () => {
 
-  let prior: { deviceId: string; discoveryEnabled: boolean; enabled: boolean; port: number };
+  const validDeviceId = generateDeviceId();
 
-  // makeChange constructs a synthetic ConfigChange. The path drives the dispatch; the previous/current values are opaque to the handler (it reads live CONFIG).
+  /**
+   * Builds an in-memory config store whose mutations apply to the file it holds, so a row can drive a real save through it.
+   * @param initial - The file the store starts with.
+   * @returns The store.
+   */
+  function memoryStore(initial: UserConfig): ConfigStore {
+
+    let file = structuredClone(initial);
+
+    return {
+
+      mutateConfig: async (fn): Promise<void> => {
+
+        const working = structuredClone(file);
+
+        fn(working);
+        file = working;
+      },
+      readConfig: async () => ({ config: structuredClone(file), parseError: false, readError: false })
+    };
+  }
+
+  /**
+   * Builds the candidate running configuration a save would hand the handler: CONFIG with the given HDHomeRun fields applied.
+   * @param hdhr - The HDHomeRun fields the candidate changes.
+   * @returns The candidate.
+   */
+  function candidate(hdhr: Partial<Config["hdhr"]>): Config {
+
+    const next = structuredClone(CONFIG);
+
+    Object.assign(next.hdhr, hdhr);
+
+    return next;
+  }
+
+  // makeChange constructs a synthetic ConfigChange. The path drives the dispatch; the handler reads the values it realizes from the candidate it is handed.
   function makeChange(path: string): ConfigChange {
 
     return { current: null, path, previous: null };
   }
 
-  beforeEach(() => {
+  // Reserves a port that is currently free by listening on it and closing the listener, so a row can bind a known number.
+  async function reserveFreePort(host = "127.0.0.1"): Promise<number> {
 
-    prior = snapshotConfig();
-    CONFIG.hdhr.discoveryEnabled = false;
+    const reserved = await listenOnEphemeral(host);
+
+    await closeServer(reserved.server);
+
+    return reserved.port;
+  }
+
+  beforeEach(async () => {
+
+    await initializeConfiguration(undefined, memoryStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: false } }));
   });
 
   afterEach(async () => {
 
     await stopHdhrServer();
-    restoreConfig(prior);
   });
 
-  test("hdhr.enabled false-to-true with valid DeviceID brings the HTTP server up live", async () => {
+  test("enabling brings the HTTP surface up on the candidate's port, returns no rejection, and commits nothing itself", async () => {
 
-    // Start in disabled state, then flip CONFIG and call the handler. The post-condition is that startHdhrServer-equivalent side effects ran.
-    CONFIG.hdhr.enabled = false;
-    CONFIG.hdhr.deviceId = generateDeviceId();
-    CONFIG.hdhr.port = 0;
+    const port = await reserveFreePort();
 
-    // The handler reads the new CONFIG value, so we flip it before invoking.
-    CONFIG.hdhr.enabled = true;
+    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.enabled")], candidate({ enabled: true, port }));
 
-    const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.enabled")]);
-
-    assert.deepEqual(outcomes, [{ kind: "applied", path: "hdhr.enabled" }] satisfies ChangeOutcome[]);
+    assert.deepEqual(rejections, []);
+    assert.equal((await fetch("http://127.0.0.1:" + String(port) + "/discover.json")).status, 200, "the surface answers on the candidate's port");
+    assert.equal(CONFIG.hdhr.enabled, false, "the handler realized the candidate without committing it");
   });
 
-  test("hdhr.enabled true-to-false stops the HTTP server live", async () => {
+  test("disabling brings the HTTP surface down even while CONFIG still says enabled", async () => {
+
+    const port = await reserveFreePort();
 
     CONFIG.hdhr.enabled = true;
-    CONFIG.hdhr.deviceId = generateDeviceId();
-    CONFIG.hdhr.port = 0;
-
+    CONFIG.hdhr.port = port;
     await startHdhrServer();
 
-    // Flip off and run the handler; stopHdhrServer should be invoked.
-    CONFIG.hdhr.enabled = false;
+    assert.equal((await fetch("http://127.0.0.1:" + String(port) + "/discover.json")).status, 200, "precondition: the surface is up");
 
-    const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.enabled")]);
+    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.enabled")], candidate({ enabled: false }));
 
-    assert.deepEqual(outcomes, [{ kind: "applied", path: "hdhr.enabled" }] satisfies ChangeOutcome[]);
+    assert.deepEqual(rejections, []);
+    await assert.rejects(fetch("http://127.0.0.1:" + String(port) + "/discover.json"), "the surface no longer answers");
+    assert.equal(CONFIG.hdhr.enabled, true, "the handler committed nothing");
   });
 
-  test("hdhr.discoveryEnabled toggle while HDHR is disabled is a no-op applied", async () => {
+  test("a port change rebinds the HTTP surface on the candidate's port", async () => {
 
-    CONFIG.hdhr.enabled = false;
-    CONFIG.hdhr.discoveryEnabled = true;
+    const initialPort = await reserveFreePort();
 
-    const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.discoveryEnabled")]);
-
-    assert.deepEqual(outcomes, [{ kind: "applied", path: "hdhr.discoveryEnabled" }] satisfies ChangeOutcome[]);
-  });
-
-  test("hdhr.deviceId and hdhr.friendlyName are no-op applied (consumers read CONFIG live)", async () => {
-
-    const outcomes = await applyHdhrConfigChanges([ makeChange("hdhr.deviceId"), makeChange("hdhr.friendlyName") ]);
-
-    assert.deepEqual(outcomes, [
-      { kind: "applied", path: "hdhr.deviceId" },
-      { kind: "applied", path: "hdhr.friendlyName" }
-    ] satisfies ChangeOutcome[]);
-  });
-
-  test("an unknown hdhr.* path defers with a documented reason so unhandled new fields prompt a restart", async () => {
-
-    const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.someUnknownFutureField")]);
-
-    assert.equal(outcomes.length, 1);
-    assert.equal(outcomes[0]?.kind, "deferred");
-  });
-
-  test("multiple changes in one batch each receive an outcome in input order", async () => {
-
-    CONFIG.hdhr.enabled = false;
-    const outcomes = await applyHdhrConfigChanges([
-      makeChange("hdhr.friendlyName"),
-      makeChange("hdhr.deviceId"),
-      makeChange("hdhr.discoveryEnabled")
-    ]);
-
-    assert.deepEqual(outcomes.map((o: ChangeOutcome) => o.path), [ "hdhr.friendlyName", "hdhr.deviceId", "hdhr.discoveryEnabled" ]);
-  });
-
-  test("hdhr.port live-apply rebinds the HTTP server on the new port end-to-end", async () => {
-
-    // This test verifies that after applyHdhrConfigChanges fires for hdhr.port, /discover.json answers on the new port through the rebuilt server; it does
-    // not check that the old port stops responding. The test exercises the live-rebind close-then-bind sequencing that motivated awaiting the server close
-    // before the rebind inside HttpSurface.ensureBound.
     CONFIG.hdhr.enabled = true;
-    CONFIG.hdhr.deviceId = generateDeviceId();
-    CONFIG.hdhr.port = 0;
-
+    CONFIG.hdhr.port = initialPort;
     await startHdhrServer();
 
-    // We start on OS-assigned port 0; the running server picks a port we cannot predict, so we reserve a second ephemeral port via a sacrificial listener,
-    // close it to free the port, then ask the live-apply handler to switch onto it. The reserved-port-then-released pattern keeps the test deterministic
-    // without making us guess a free port.
-    const reserved = await listenOnEphemeral();
-    const newPort = reserved.port;
+    const newPort = await reserveFreePort();
+    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.port")], candidate({ enabled: true, port: newPort }));
 
-    await closeServer(reserved.server);
+    assert.deepEqual(rejections, []);
 
-    CONFIG.hdhr.port = newPort;
-
-    const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.port")]);
-
-    assert.deepEqual(outcomes, [{ kind: "applied", path: "hdhr.port" }] satisfies ChangeOutcome[]);
-
-    // Fetch /discover.json on the new port. A successful 200 with a DeviceID-bearing payload confirms the rebind landed end-to-end.
     const res = await fetch("http://127.0.0.1:" + String(newPort) + "/discover.json");
-
-    assert.equal(res.status, 200, "live-rebound HTTP server answers on the new port");
-
     const body = await res.json() as Record<string, unknown>;
 
-    assert.equal(typeof body["DeviceID"], "string", "discover.json includes DeviceID after rebind");
+    assert.equal(res.status, 200, "the rebound surface answers on the candidate's port");
     assert.equal(body["DeviceID"], CONFIG.hdhr.deviceId.toUpperCase());
+    assert.equal(CONFIG.hdhr.port, initialPort, "the handler committed nothing");
   });
 
-  test("a port change to an occupied port is rejected and keeps the previous port alive (concession)", async () => {
+  test("the fields read where they are used, and discovery while the surface is disabled, return no rejection", async () => {
 
-    // Reserve a free port for the initial bind (reserve then release so it is a known-free number we can fetch later), and a second port we keep occupied so
-    // the rebind fails. Both blockers bind the SAME host the HDHR server uses (CONFIG.server.host, default "0.0.0.0") so the conflict is a real exact-address
-    // collision - a 0.0.0.0 bind and a 127.0.0.1 listener on the same port coexist under SO_REUSEADDR and would not collide. The handler must report rejected
-    // AND leave HTTP serving on the original port: a typo'd port must not take down a working tuner.
+    const rejections = await applyHdhrConfigChanges([ makeChange("hdhr.discoveryEnabled"), makeChange("hdhr.friendlyName"), makeChange("hdhr.someFutureField") ],
+      candidate({ discoveryEnabled: true, friendlyName: "Den" }));
+
+    assert.deepEqual(rejections, []);
+  });
+
+  test("an enabled surface replaces a DeviceID that failed its checksum with a generated one and refuses the saved id", async () => {
+
+    await withTempDir(async (dir) => {
+
+      // The generated id is persisted through the module's own store, which needs a data directory.
+      initializeDataDir(dir);
+
+      const port = await reserveFreePort();
+      const rejections = await applyHdhrConfigChanges([makeChange("hdhr.deviceId")], candidate({ deviceId: "10000000", enabled: true, port }));
+
+      assert.deepEqual(rejections, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so a newly generated DeviceID replaced it." }]);
+      assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "the invalid id never reached CONFIG");
+      assert.notEqual(CONFIG.hdhr.deviceId, validDeviceId, "a fresh id was generated in its place");
+      assert.match(CONFIG.hdhr.deviceId, /^[0-9a-f]{8}$/);
+    });
+  });
+
+  test("a disabled surface refuses a DeviceID that failed its checksum and keeps the running id", async () => {
+
+    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.deviceId")], candidate({ deviceId: "10000000", enabled: false }));
+
+    assert.deepEqual(rejections, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so the running DeviceID was kept." }]);
+    assert.equal(CONFIG.hdhr.deviceId, validDeviceId);
+  });
+
+  test("a save to an occupied port is rejected, CONFIG keeps the bound port, and the documents advertise it", async () => {
+
+    // Every listener this row opens binds the host the HDHR server uses (CONFIG.server.host, default "0.0.0.0") so the conflict is a real exact-address
+    // collision - a 0.0.0.0 bind and a 127.0.0.1 listener on the same port coexist under SO_REUSEADDR and would not collide.
     const hdhrHost = CONFIG.server.host;
-    const initial = await listenOnEphemeral(hdhrHost);
-    const priorPort = initial.port;
+    const boundPort = await reserveFreePort(hdhrHost);
+    const store = memoryStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: true, port: boundPort } });
 
-    await closeServer(initial.server);
-
-    CONFIG.hdhr.enabled = true;
-    CONFIG.hdhr.deviceId = generateDeviceId();
-    CONFIG.hdhr.port = priorPort;
-
+    await initializeConfiguration(undefined, store);
     await startHdhrServer();
 
-    // Occupy a different port on the same host and keep the blocker open so the rebind to it fails with EADDRINUSE.
     const blocker = await listenOnEphemeral(hdhrHost);
 
     try {
 
-      CONFIG.hdhr.port = blocker.port;
+      const result = await saveConfiguration((current) => {
 
-      const outcomes = await applyHdhrConfigChanges([makeChange("hdhr.port")]);
+        current.hdhr = { ...current.hdhr, port: blocker.port };
+      }, store);
 
-      assert.equal(outcomes.length, 1);
-      assert.equal(outcomes[0]?.kind, "rejected", "an occupied-port change is rejected, not falsely reported applied");
+      assert.deepEqual(result.rejected, [{ change: { current: blocker.port, path: "hdhr.port", previous: boundPort },
+        reason: "HDHomeRun could not bind port " + String(blocker.port) + ", so the change was not applied." }]);
+      assert.equal(CONFIG.hdhr.port, boundPort, "the refused port never reached the running configuration");
 
-      // Concession: the previous port is still serving. /discover.json on the prior port must answer 200 (fetch via loopback, which a 0.0.0.0 bind accepts).
-      const res = await fetch("http://127.0.0.1:" + String(priorPort) + "/discover.json");
+      const res = await fetch("http://127.0.0.1:" + String(boundPort) + "/discover.json");
+      const body = await res.json() as Record<string, unknown>;
 
-      assert.equal(res.status, 200, "the tuner stays alive on its previous port after a rejected port change");
+      assert.equal(res.status, 200, "the tuner answers on the bound port after the refusal");
+      assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(boundPort), "the advertised BaseURL names the bound port");
     } finally {
 
       await closeServer(blocker.server);

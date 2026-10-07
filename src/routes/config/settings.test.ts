@@ -1,22 +1,27 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * settings.test.ts: Unit tests for the settings UI generators and the route-aggregator wiring in settings.ts. The HTML generators (Settings tab,
- * Advanced tab, collapsible section, footer) are pure functions of CONFIG, CONFIG_METADATA, getSettingsTabSections, getAdvancedSections, and the
- * environment-override map their caller passes in - the page render resolves that map once and every generator draws the disabled fields and badges from
- * the copy it was handed. Internal helpers (formatValueForDisplay, parseFormValue, validateSettingValue, etc.) are not exported and are exercised through
- * the public surface. The route-aggregator setupSettingsRoutes has its pre-I/O validation short-circuit branches exercised directly through the
- * Express stub's invoke helper; only the disk-mutating and restart-scheduling continuations remain untested here because they require a live
- * Express runtime and the user-config filesystem layer.
+ * Advanced tab, collapsible section, footer) are pure functions of the loaded snapshot (the saved configuration), CONFIG_METADATA, getSettingsTabSections,
+ * getAdvancedSections, and the environment-override map their caller passes in - the page render resolves that map once and every generator draws the
+ * disabled fields and badges from the copy it was handed. Internal helpers (formatValueForDisplay, parseFormValue, validateSettingValue, etc.) are not
+ * exported and are exercised through the public surface. The route-aggregator setupSettingsRoutes has its pre-I/O validation short-circuit branches
+ * exercised directly through the Express stub's invoke helper. The rows that save or import go through the real file store in a data directory of their own;
+ * the restart-scheduling continuation stays untested here because it requires a live Express runtime.
  */
+import { CONFIG, getLoadedConfiguration, initializeConfiguration } from "../../config/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { closePuppeteerStreamWssOnIdle, withTempDir } from "../../testing.helpers.ts";
 import { generateAdvancedTabContent, generateCollapsibleSection, generateSettingsFormFooter, generateSettingsTabContent,
   setupSettingsRoutes } from "./settings.ts";
+import { getAdvancedSections, getSettingByPath, readConfig } from "../../config/userConfig.ts";
+import { getConfigFilePath, initializeDataDir } from "../../config/paths.ts";
+import { registerConfigChangeHandler, resetConfigChangeHandlers } from "../../config/reactivity.ts";
 import type { AdvancedSection } from "../../config/userConfig.ts";
+import type { ChangeRejection } from "../../config/reactivity.ts";
+import type { ConfigStore } from "../../config/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import assert from "node:assert/strict";
-import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
-import { getAdvancedSections } from "../../config/userConfig.ts";
-import { initializeDataDir } from "../../config/paths.ts";
+import { existsSync } from "node:fs";
 import { makeExpressStub } from "../express.helpers.ts";
 import os from "node:os";
 
@@ -301,6 +306,239 @@ describe("the environment-override map the render passes down", () => {
   });
 });
 
+// A store that reads an empty file, which re-initializes CONFIG and the loaded snapshot to the defaults. Only the boot reads through it.
+const emptyStore: ConfigStore = {
+
+  mutateConfig: async (): Promise<void> => {
+
+    throw new Error("The empty store takes no writes.");
+  },
+  readConfig: async () => ({ config: {}, parseError: false, readError: false })
+};
+
+/* The form renders the saved configuration, the loaded snapshot, rather than the running one. Each row seeds the two apart through the module's own save: the
+ * form posts hdhr.enabled false and a test handler refuses it, so the file and the loaded snapshot turn HDHomeRun off while CONFIG keeps it on. Only src/app.ts
+ * imports the HDHomeRun module, so the row registers the refusing handler for the full path itself. The save writes through the real file store, so each row
+ * takes a data directory of its own rather than the os.tmpdir() this file initializes, and each row re-initializes CONFIG and the snapshot to the defaults.
+ */
+describe("the form renders the saved configuration", () => {
+
+  /**
+   * Reads whether the HDHomeRun enable checkbox in a rendered fragment is checked.
+   * @param html - The rendered fragment.
+   * @returns True when the checkbox carries the checked attribute.
+   */
+  function isEnabledChecked(html: string): boolean {
+
+    const tag = (/<input class="form-checkbox" type="checkbox" id="hdhr-enabled"[^>]*>/).exec(html)?.[0];
+
+    assert.ok(tag !== undefined, "the HDHomeRun enable checkbox renders");
+
+    return / checked(?=[ >])/.test(tag);
+  }
+
+  /**
+   * Reads the class list of the form group that renders a field, from the group's opening tag.
+   * @param html - The rendered fragment.
+   * @param inputId - The id of the field's input.
+   * @returns The group's classes.
+   */
+  function groupClassesOf(html: string, inputId: string): string[] {
+
+    const group = html.split("<div class=\"form-group").find((chunk) => chunk.includes("for=\"" + inputId + "\""));
+
+    assert.ok(group !== undefined, "the " + inputId + " group renders");
+
+    return ("form-group" + group.slice(0, group.indexOf("\""))).split(" ");
+  }
+
+  /**
+   * Saves hdhr.enabled false through the settings save with a handler refusing it, so the saved configuration turns HDHomeRun off while CONFIG keeps it on.
+   * @param dir - The row's data directory.
+   */
+  async function saveRefusedDisable(dir: string): Promise<void> {
+
+    initializeDataDir(dir);
+    registerConfigChangeHandler("hdhr.enabled", async (changes): Promise<readonly ChangeRejection[]> => changes.map((change) => ({
+
+      path: change.path,
+      reason: "The HDHomeRun surface refused the change."
+    })));
+
+    const { app, invoke } = makeExpressStub();
+
+    setupSettingsRoutes(app as never);
+
+    const result = await invoke("post", "/config", { body: { hdhr: { enabled: false } } });
+
+    assert.equal(result.statusCode, 200, "precondition: the save completed");
+    assert.equal(CONFIG.hdhr.enabled, true, "precondition: the refusal kept HDHomeRun on in the running configuration");
+    assert.equal(getLoadedConfiguration().hdhr.enabled, false, "precondition: the saved configuration turns HDHomeRun off");
+  }
+
+  beforeEach(async () => {
+
+    resetConfigChangeHandlers();
+    await initializeConfiguration(undefined, emptyStore);
+  });
+
+  afterEach(async () => {
+
+    resetConfigChangeHandlers();
+    await initializeConfiguration(undefined, emptyStore);
+    initializeDataDir(os.tmpdir());
+  });
+
+  test("the Settings tab renders a field from the saved configuration, not the running one", async () => {
+
+    await withTempDir(async (dir) => {
+
+      assert.equal(isEnabledChecked(generateSettingsTabContent(new Map())), true, "precondition: the field renders checked while the saved and running values agree");
+
+      await saveRefusedDisable(dir);
+
+      assert.equal(isEnabledChecked(generateSettingsTabContent(new Map())), false, "the field shows the saved value");
+    });
+  });
+
+  test("a collapsible section renders a field from the saved configuration, not the running one", async () => {
+
+    const setting = getSettingByPath("hdhr.enabled");
+
+    assert.ok(setting !== undefined, "precondition: the setting exists");
+
+    const section: AdvancedSection = { displayName: "HDHomeRun", id: "hdhr", settings: [setting] };
+
+    await withTempDir(async (dir) => {
+
+      assert.equal(isEnabledChecked(generateCollapsibleSection(section, new Map())), true,
+        "precondition: the field renders checked while the saved and running values agree");
+
+      await saveRefusedDisable(dir);
+
+      assert.equal(isEnabledChecked(generateCollapsibleSection(section, new Map())), false, "the field shows the saved value");
+    });
+  });
+
+  test("the dependsOn grey-out follows the toggle in the saved configuration, not the running one", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const before = groupClassesOf(generateSettingsTabContent(new Map()), "hdhr-port");
+
+      assert.ok(before.includes("form-group"), "precondition: the port's group renders");
+      assert.equal(before.includes("depends-disabled"), false, "precondition: the port is not greyed while the saved and running values agree");
+
+      await saveRefusedDisable(dir);
+
+      assert.ok(groupClassesOf(generateSettingsTabContent(new Map()), "hdhr-port").includes("depends-disabled"), "the port greys out from the saved toggle");
+    });
+  });
+});
+
+/* An import document is merged into the file inside the save, so a key that names prototype machinery would reach a prototype rather than a setting. Each
+ * document is built from JSON text, because JSON.parse keeps such a key as an ordinary own property where an object literal would set the prototype instead.
+ * The import goes through the real file store, so each row takes a data directory of its own.
+ */
+describe("POST /config/import - a key that is not a setting", () => {
+
+  afterEach(() => {
+
+    // A key that got through would leave its write on a shared object for every later row in this process, so each row clears every place it could land.
+    Reflect.deleteProperty(Object.prototype, "polluted");
+    Reflect.deleteProperty(Object, "polluted");
+    initializeDataDir(os.tmpdir());
+  });
+
+  for(const key of [ "__proto__", "constructor", "prototype" ]) {
+
+    for(const [ level, document ] of [ [ "the top level", "{\"" + key + "\": {\"polluted\": true}}" ],
+      [ "the category level", "{\"hdhr\": {\"" + key + "\": {\"polluted\": true}}}" ] ] as const) {
+
+      test("answers a validation error for a " + key + " key at " + level + ", writes nothing, and leaves the prototype untouched", async () => {
+
+        await withTempDir(async (dir) => {
+
+          initializeDataDir(dir);
+
+          const { app, invoke } = makeExpressStub();
+
+          setupSettingsRoutes(app as never);
+
+          const result = await invoke("post", "/config/import", { body: JSON.parse(document) as unknown });
+
+          assert.equal(result.statusCode, 400, "the import answers a validation error");
+          assert.equal((result.body as { error: string }).error, "The configuration document carries the key " + key + ", which is not a setting.",
+            "the import is refused by the key it carries");
+          assert.equal(Object.hasOwn(Object.prototype, "polluted"), false, "the shared prototype is untouched");
+          assert.equal(existsSync(getConfigFilePath()), false, "nothing was written");
+        });
+      });
+    }
+  }
+});
+
+/* The validators hold a numeric setting to the minimum its metadata declares, and recovery.backoffJitter declares zero, so zero is a value the settings form and
+ * the import accept. Each row posts zero through the real file store in a data directory of its own and reads the value back from the file and the running
+ * configuration.
+ */
+describe("a setting whose declared minimum is zero accepts zero", () => {
+
+  beforeEach(async () => {
+
+    await initializeConfiguration(undefined, emptyStore);
+  });
+
+  afterEach(async () => {
+
+    await initializeConfiguration(undefined, emptyStore);
+    initializeDataDir(os.tmpdir());
+  });
+
+  test("the settings form saves zero for recovery.backoffJitter, and the value reaches the file and the running configuration", async () => {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(getSettingByPath("recovery.backoffJitter")?.min, 0, "precondition: the metadata declares a floor of zero");
+      assert.equal(CONFIG.recovery.backoffJitter, 1000, "precondition: the running value is the default");
+
+      const { app, invoke } = makeExpressStub();
+
+      setupSettingsRoutes(app as never);
+
+      const result = await invoke("post", "/config", { body: { recovery: { backoffJitter: 0 } } });
+
+      assert.equal((result.body as { errors?: Record<string, string> }).errors, undefined, "the form raises no validation error for zero");
+      assert.equal(result.statusCode, 200, "the save completes");
+      assert.equal((await readConfig()).config.recovery?.backoffJitter, 0, "the file holds zero");
+      assert.equal(CONFIG.recovery.backoffJitter, 0, "the live setting is committed to the running configuration");
+    });
+  });
+
+  test("an import of zero for recovery.backoffJitter is accepted, and the value reaches the file and the running configuration", async () => {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      assert.equal(CONFIG.recovery.backoffJitter, 1000, "precondition: the running value is the default");
+
+      const { app, invoke } = makeExpressStub();
+
+      setupSettingsRoutes(app as never);
+
+      const result = await invoke("post", "/config/import", { body: { recovery: { backoffJitter: 0 } } });
+
+      assert.equal((result.body as { error?: string }).error, undefined, "the import raises no validation error for zero");
+      assert.equal(result.statusCode, 200, "the import completes");
+      assert.equal((await readConfig()).config.recovery?.backoffJitter, 0, "the file holds zero");
+      assert.equal(CONFIG.recovery.backoffJitter, 0, "the live setting is committed to the running configuration");
+    });
+  });
+});
+
 describe("generateSettingsFormFooter", () => {
 
   test("returns a div containing the literal 'Configuration file' label", () => {
@@ -334,10 +572,9 @@ describe("generateSettingsFormFooter", () => {
   });
 });
 
-/* The validation paths in setupSettingsRoutes return 4xx envelopes before touching disk-backed state (mutateConfig, scheduleServerRestart). They are pure
- * functions of req shape modulo CONFIG_METADATA, which is a static module export. We exercise them via the stub's invoke helper, which constructs a minimal req
- * and captures the JSON envelope written to res. The /config/restart-now handler is also covered here because its non-service guard returns 400 without
- * touching any I/O.
+/* The validation paths in setupSettingsRoutes return 4xx envelopes before touching disk-backed state (applyConfigurationChange, scheduleServerRestart). They are pure
+ * functions of req shape modulo CONFIG_METADATA, which is a static module export. We exercise them via the stub's invoke helper, which constructs a minimal req and
+ * captures the JSON envelope written to res. The /config/restart-now handler is also covered here because its non-service guard returns 400 without touching any I/O.
  */
 describe("setupSettingsRoutes - validation handlers (invoked via Express stub)", () => {
 

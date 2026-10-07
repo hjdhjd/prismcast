@@ -12,6 +12,7 @@ import type { ChannelTableCounts, ChannelTablePatch } from "../channels/table.ts
 import { LOG, formatError } from "../../../utils/index.ts";
 import { buildChannelTablePatch, generateTagFilterContent, generateTagManagerBody } from "../channels/table.ts";
 import { getActiveTagVocabulary, getTagRegistry } from "../../../config/userChannels.ts";
+import { ConfigurationRejectedError } from "../../../config/index.ts";
 import { FileStoreParseError } from "../../../config/persistence.ts";
 import { PLAYLIST_HINT } from "../channels/http/playlistHint.ts";
 import type { Response } from "express";
@@ -192,9 +193,9 @@ export function sendFormErrors(res: Response, errors: Record<string, string>): v
  * Sends an error response. Two call shapes:
  *
  *   1. `sendErrorResponse(res, error, action)` - caught-exception form. The error (anything thrown, typed `unknown` to accept the result of `catch(error)`)
- *      is logged via LOG.error and shipped as `{ error: "Failed to <action>: <details>", success: false }` at 500. FileStoreParseError (corrupt JSON) is a
- *      special case that produces a 400 with the parse details. This is the form used by the route wrapper in handler.ts so every endpoint handles
- *      exceptions uniformly.
+ *      is logged via LOG.error and shipped as `{ error: "Failed to <action>: <details>", success: false }` at 500. FileStoreParseError (corrupt JSON) and
+ *      ConfigurationRejectedError (a save refusing a configuration that fails validation) are the special cases that produce a 400 carrying their message.
+ *      This is the form used by the route wrapper in handler.ts so every endpoint handles exceptions uniformly.
  *
  *   2. `sendErrorResponse(res, payload, status)` - rich-payload form. The payload is shipped verbatim at the given status with `success: false` appended.
  *      No log is emitted - the caller has already decided what message and status to ship. Use this when an endpoint needs to attach extension fields
@@ -220,9 +221,10 @@ export function sendErrorResponse(res: Response, input: unknown, actionOrStatus:
     return;
   }
 
-  // Form 1 (caught-exception): the existing behavior, byte-preserved for every existing caller. FileStoreParseError surfaces parse details at 400; all other
-  // throwables route through formatError and ship at 500 with the action label embedded for log correlation.
-  if(input instanceof FileStoreParseError) {
+  // Form 1 (caught-exception): FileStoreParseError surfaces parse details at 400, and a ConfigurationRejectedError is the validation error it is - a save
+  // refused the configuration it would have written - so its reason ships at 400 as the message. All other throwables route through formatError and ship at
+  // 500 with the action label embedded for log correlation.
+  if((input instanceof FileStoreParseError) || (input instanceof ConfigurationRejectedError)) {
 
     sendError(res, 400, { error: input.message });
 

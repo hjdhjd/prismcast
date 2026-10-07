@@ -76,8 +76,8 @@ const BROWSER_TEARDOWN_DRAIN_BOUND_MS = TERM_WAIT_MS + KILL_WAIT_MS;
 
 /**
  * Builds the browser relaunch governor's policy from live configuration. The supervisor's policy port is a getter, so this is read fresh at each governor decision -
- * an operator's change to the recovery.relaunch* settings takes effect without reconstructing the supervisor (and a deferred config reload that restarts the server
- * applies it too). The scalar tolerances come from CONFIG.recovery (conservative, biased eager-for-the-first-failure: the first failures cost no cooldown; only
+ * an operator's change to the recovery.relaunch* settings takes effect at the next governor decision without reconstructing the supervisor. The scalar
+ * tolerances come from CONFIG.recovery (conservative, biased eager-for-the-first-failure: the first failures cost no cooldown; only
  * repeated failures within the window trip the escalating cooldown); the cooldown ladder is the fixed escalation shape above.
  * @returns The current launch governor policy.
  */

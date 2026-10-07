@@ -2,14 +2,16 @@
  *
  * index.ts: Configuration management for PrismCast.
  */
-import type { ApplyResult, ChangeOutcome, ConfigChange } from "./reactivity.ts";
+import type { ApplyResult, ConfigChangePartition } from "./reactivity.ts";
+import { CONFIG_METADATA, DEFAULTS, getNestedValue, getReactivityClass, getSettingByPath, mergeConfiguration, mutateConfig, readConfig,
+  setNestedValue } from "./userConfig.ts";
 import type { Config, Nullable } from "../types/index.ts";
-import { DEFAULTS, getNestedValue, getSettingByPath, mergeConfiguration, mutateConfig, readConfig } from "./userConfig.ts";
 import { LOG, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
-import { applyConfigChanges, computeConfigDiff, registerConfigChangeHandler } from "./reactivity.ts";
+import { applyConfigChanges, computeConfigDiff, partitionConfigChanges } from "./reactivity.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
 import { getPresetViewport, getValidPresetIds } from "./presets.ts";
 import { RECOGNIZED_CODECS } from "../types/index.ts";
+import type { UserConfig } from "./userConfig.ts";
 import path from "node:path";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
@@ -59,8 +61,26 @@ export interface ConfigStore {
 
 const defaultConfigStore: ConfigStore = { mutateConfig, readConfig };
 
-// The CONFIG object is initialized during startup. It starts as a copy of DEFAULTS and is replaced by the merged configuration.
+// The CONFIG object is the running configuration. It starts as a copy of DEFAULTS, is replaced by the merged configuration at startup, and from then on moves
+// one realized leaf at a time as saves reconcile it, so a restart-class value a save holds out never reaches it.
 export let CONFIG: Config = structuredClone(DEFAULTS);
+
+/* The loaded snapshot: the configuration file as last loaded, merged and normalized exactly as the next boot would read it. It is recorded at startup, again
+ * after the startup coercions, and at the end of every completed reconcile, once that reconcile has committed what its handlers realized, and nowhere else.
+ * The running configuration and this snapshot differ exactly where the process does not yet reflect the file - a restart-class value waiting for the
+ * restart, a live value a handler refused, or a leaf the process wrote ahead of the file - and every save reconciles that gap.
+ */
+let loadedConfig: Config = structuredClone(DEFAULTS);
+
+/**
+ * The error a save throws when the configuration it would write fails validation. The store writes nothing when its mutation throws, so the file, the running
+ * configuration and the loaded snapshot all stay as they were. Its message is the validation reason alone, complete sentences an operator can act on, so a
+ * route answers it as the validation error it is.
+ */
+export class ConfigurationRejectedError extends Error {
+
+  override name = "ConfigurationRejectedError";
+}
 
 /**
  * Indicates whether a user config file parse error occurred during initialization. The web UI displays a warning when this is true.
@@ -72,27 +92,27 @@ export let configParseError = false;
  */
 export let configParseErrorMessage: string | undefined;
 
-// Stashed CLI overrides from the most recent initializeConfiguration call. reloadConfiguration re-applies them so the priority chain (CLI > env > user > defaults)
-// stays consistent across reloads. CLI overrides are a startup-only concern in practice; capturing them once and replaying them avoids losing the binding when a
-// live reload runs in a process where the operator originally passed --port or --chrome-data-dir. The --data-dir flag is resolved separately, before
-// configuration loads, and never flows through this stash.
+// Stashed CLI overrides from the most recent initializeConfiguration call. Every candidate a save builds re-applies them so the priority chain (CLI > env >
+// user > defaults) holds for the saved configuration exactly as it did at boot. CLI overrides are a startup-only concern in practice; capturing them once and
+// replaying them avoids losing the binding when a save runs in a process where the operator originally passed --port or --chrome-data-dir. The --data-dir
+// flag is resolved separately, before configuration loads, and never flows through this stash.
 let stashedCliOverrides: CliOverrides | undefined;
 
 // Whether a higher-priority debug source (the PRISMCAST_DEBUG env var or the --debug CLI flag) established the active debug filter before the persisted config
-// filter was first applied. Captured once in initializeConfiguration, ahead of the persisted filter, so a later reloadConfiguration can re-apply a changed
-// persisted filter live without ever clobbering an env/CLI override - that override must win for the entire process lifetime.
+// filter was first applied. Captured once in initializeConfiguration, ahead of the persisted filter, so a later save can re-apply a changed persisted filter
+// live without ever clobbering an env/CLI override - that override must win for the entire process lifetime.
 let envOrCliDebugOverride = false;
 
-/* Serialization queue for reloadConfiguration. Each call chains onto the previous one, so overlapping reloads read and commit in call order. Without it, two
- * concurrent save-then-reload requests can interleave such that the reload holding the older disk snapshot commits last, leaving the live binding on a state
- * the user already replaced.
+/* Serialization queue for the reconcile. Each save's reconcile chains onto the previous one, so overlapping saves commit in the order their writes landed.
+ * Without it, a reconcile waiting on a slow handler could commit its realized changes after a later save's reconcile had already committed newer values,
+ * leaving the running configuration on a state the user already replaced.
  */
-let reloadQueue: Promise<unknown> = Promise.resolve();
+let reconcileQueue: Promise<unknown> = Promise.resolve();
 
 // Whether validateConfiguration coerced a capture setting (forced FFmpeg mode, normalized captureCodecs) on the live CONFIG at startup. persistCoercedConfig
 // reads this to decide whether to write the coerced values back to disk so the on-disk state matches the live binding. Without the write-back a config file
-// holding an unsupported capture value (native mode) stays divergent from the coerced CONFIG forever, and the reload-validation path would then reject every
-// later save on the resulting phantom capture diff.
+// holding an unsupported capture value (native mode) stays divergent from the coerced CONFIG forever, and the save's validation would then refuse every later
+// save, because each candidate is built from that file.
 let captureConfigCoercedAtStartup = false;
 
 /**
@@ -111,114 +131,207 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
   configParseErrorMessage = result.parseErrorMessage;
   stashedCliOverrides = cliOverrides;
 
+  // The store answers a file it could not read and a file with no parseable copy with the defaults, and the boot starts from them rather than refusing to start.
+  // One warning names which failure it was, because the store refuses every write until the file is readable again.
+  if(result.readError) {
+
+    LOG.warn("The configuration file could not be read, so the configuration starts from the defaults and saves are refused until it can be.");
+  } else if(result.parseError) {
+
+    LOG.warn("The configuration file is not valid JSON and has no usable backup, so the configuration starts from the defaults and saves are refused until it is.",
+      { reason: result.parseErrorMessage });
+  }
+
   // Capture whether a higher-priority debug source (PRISMCAST_DEBUG / --debug) already owns the active filter before we apply the persisted config filter, so a
-  // later reload can re-apply a changed persisted filter live without overriding env/CLI. Measured here, ahead of normalizeConfig/commitDebugFilter, it reflects
+  // later save can re-apply a changed persisted filter live without overriding env/CLI. Measured here, ahead of normalizeConfig/commitDebugFilter, it reflects
   // env/CLI alone rather than the persisted filter applying to itself.
   envOrCliDebugOverride = isAnyDebugEnabled();
 
-  // Merge defaults, user config, environment variables, and CLI overrides, then run the same post-merge normalization reload replays, and commit the persisted
-  // debug filter to the runtime. The two steps are kept separate so reload can normalize a candidate config without applying its filter until it is committed.
-  CONFIG = mergeConfiguration(result.config, cliOverrides);
-  normalizeConfig(CONFIG);
+  // Build the running configuration exactly as every save builds its candidate, then commit the persisted debug filter to the runtime. The two steps are kept
+  // separate so a save can build and validate a candidate without applying its filter until a reconcile commits it.
+  CONFIG = buildCandidate(result.config);
   commitDebugFilter();
+  recordLoadedConfiguration();
 
   LOG.info("Configuration initialized from defaults, user config, environment variables, and CLI overrides.");
 }
 
 /**
- * Re-reads the user config file, re-merges with the original CLI overrides, applies post-merge normalizations, commits the result to the in-memory CONFIG
- * binding, and dispatches the resulting diff to registered config-change handlers. This is the single entry point for "config changed - tell subsystems"; both
- * the /config save handler and /config/import handler call it after writing to disk. The returned ApplyResult partitions the diff into changes that were
- * applied live, deferred (requiring restart), or rejected (refused by a handler). Callers use the deferred count to decide whether to schedule a restart.
- *
- * Atomicity contract: failures during the read, merge, or normalize steps leave CONFIG completely untouched - the function builds the new shape in isolation
- * and only reassigns the live binding after all of those steps succeed. Failures DURING handler dispatch, however, occur after the CONFIG reassignment: CONFIG
- * already reflects the new on-disk state, but the handler chain may have run partway. The conservative answer is that handlers must not throw; they should
- * report outcomes (including "rejected") instead. That atomicity-on-read behavior is exercised by index.reload.test.ts.
- *
- * Validation contract: before committing, the merged shape is re-checked against the same hard-error and capture-coercion checks the startup path enforces.
- * A configuration that carries a hard error (out-of-range numeric, non-absolute path, conflicting HDHR port) or would need a capture coercion (native mode, a
- * captureCodecs list missing the h264 baseline) is rejected rather than silently coerced: CONFIG stays on the previous valid state and every diffed change is
- * reported as rejected so the operator sees why nothing took effect. This closes the window where a live save could commit an un-normalized capture
- * configuration into the live binding without passing through validateConfiguration. The reject-on-invalid path is exercised by index.reload.test.ts.
- *
- * Serialization contract: calls are serialized on a module-level queue, so overlapping reloads read and commit in call order and the last reload to run always
- * reads a snapshot at least as fresh as every write that preceded its call. A failed reload rejects to its own caller without breaking the chain for later
- * ones. This extends the handler contract: a registered config-change handler must never call reloadConfiguration, because a queued reload awaiting a nested
- * reload would deadlock the chain.
- * @returns The aggregate result of dispatching the diff.
+ * Returns the loaded snapshot: the configuration file as last loaded, merged and normalized exactly as the next boot would read it. Where it differs from CONFIG,
+ * the running process does not yet reflect the file. The settings form renders from it, so a page loaded after a save shows what is saved rather than what is
+ * running, and submitting that page cannot post the running value back over a change waiting for a restart.
+ * @returns The loaded snapshot. Callers read it and never mutate it.
  */
-export async function reloadConfiguration(io: ConfigStore = defaultConfigStore): Promise<ApplyResult> {
+export function getLoadedConfiguration(): Readonly<Config> {
 
-  const operation = reloadQueue.then(async () => doReloadConfiguration(io));
+  return loadedConfig;
+}
 
-  // Swallow errors on the chain reference so future reloads can proceed. The error still propagates to the caller via the returned promise.
+/**
+ * Answers which saved settings the running process does not yet reflect: the gap between CONFIG and the loaded snapshot, partitioned by reactivity class. Its
+ * held members are the settings pending a restart, and its live and next-stream members are the settings a handler could not realize. The view covers the
+ * settings surface alone, the paths CONFIG_METADATA declares, because a leaf the process writes and the loaded snapshot does not yet hold is the process ahead
+ * of the file rather than a save the user is waiting on. Derived on every call from CONFIG and the loaded snapshot, so it holds no state of its own. A
+ * reconcile publishes the snapshot only once it has committed what its handlers realized, so a caller outside the reconcile queue reads CONFIG and the snapshot
+ * as the last completed reconcile left them, and a change a save introduces is never listed as unrealized while its handlers are still running.
+ * @returns The settings-surface gap, partitioned into held, live, and next-stream changes, each carrying the running value as previous and the saved value as
+ *   current.
+ */
+export function getConfigurationGap(): ConfigChangePartition {
+
+  const settingsSurface = computeConfigDiff(CONFIG, loadedConfig).filter((change) => getSettingByPath(change.path) !== undefined);
+
+  return partitionConfigChanges(settingsSurface, getReactivityClass);
+}
+
+/**
+ * The one entry for a write to the settings surface - the settings save, the import, and the debug page all go through it. Inside the store's own mutation it
+ * applies the caller's mutator to the current file, builds the candidate exactly as the next boot would read that file, and refuses an invalid candidate by
+ * throwing ConfigurationRejectedError with the validation reason, so the store writes nothing. A file the store cannot parse or cannot read refuses the
+ * mutation inside the store the same way. Once the file is written, the save enqueues the reconcile of that candidate and answers with its result.
+ *
+ * The store's queue serializes the read-modify-validate-write of concurrent saves, and the reconcile queue serializes their commits in the order their writes
+ * landed. A config-change handler never saves, because the reconcile it runs inside holds the queue that save's reconcile would wait on.
+ * @param mutator - Applies the caller's change to the current file in place. A throw inside it writes nothing.
+ * @param io - The config store the save writes through.
+ * @returns What the reconcile realized, the restart-class changes this save holds for a restart, and the changes of this save a handler refused.
+ * @throws ConfigurationRejectedError when the candidate fails validation, and the store's own error when the file cannot be parsed, read, or written.
+ */
+export async function saveConfiguration(mutator: (current: UserConfig) => void, io: ConfigStore = defaultConfigStore): Promise<ApplyResult> {
+
+  // The callback runs under the store's queue against the file the store just read, so the candidate is built from exactly the configuration this save writes.
+  // The store runs it before resolving, which is what lets the reconcile below start from it without reading the file a second time.
+  const saved: { candidate?: Config } = {};
+
+  await io.mutateConfig((current) => {
+
+    mutator(current);
+
+    // The candidate is built on a clone so normalization never reaches the file object the store is about to write.
+    const candidate = buildCandidate(structuredClone(current));
+    const rejection = collectCandidateRejection(candidate);
+
+    if(rejection !== null) {
+
+      throw new ConfigurationRejectedError(rejection);
+    }
+
+    saved.candidate = candidate;
+  });
+
+  const { candidate } = saved;
+
+  if(candidate === undefined) {
+
+    throw new Error("The configuration store completed the save without running it, so there is nothing to reconcile.");
+  }
+
+  // The store read and parsed the file to run the callback, so a parse failure the boot recorded does not describe the file this save wrote.
+  configParseError = false;
+  configParseErrorMessage = undefined;
+
+  const operation = reconcileQueue.then(async () => reconcileConfiguration(candidate));
+
+  // Swallow errors on the chain reference so future reconciles can proceed. The error still propagates to the caller via the returned promise.
   // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional no-op: errors are propagated to the caller via the returned promise.
-  reloadQueue = operation.catch(() => {});
+  reconcileQueue = operation.catch(() => {});
 
   return operation;
 }
 
 /**
- * Executes one reload: read, merge, normalize, diff, validate, commit, dispatch. Called only through the queue in reloadConfiguration, which is what makes the
- * read-to-commit sequence below atomic with respect to other reloads.
- * @param io - The config store to read through.
- * @returns The aggregate result of dispatching the diff.
+ * Reconciles the running configuration against a candidate a save has just written. The gap between CONFIG and the candidate is partitioned by class: its
+ * restart-class changes are held out of CONFIG, and its live and next-stream changes go to their handlers together with the candidate running configuration -
+ * CONFIG with those changes applied - so a handler realizes the state it is handed. Only the changes no handler refused are committed, one path at a time, so a
+ * process write that lands while the handlers run survives, and nothing is rolled back: a refused change stays in the gap, and every later save retries it.
+ *
+ * The candidate becomes the loaded snapshot only once the realized changes are committed. A reader outside the reconcile queue - the settings form, the gap
+ * accessor - therefore sees CONFIG and the loaded snapshot only as a completed reconcile left them, and a change this save introduces never reads as
+ * unrealized while its handlers are still running. A reconcile that throws before that point leaves the snapshot where it was: the next save's gap retries
+ * whatever this one did not commit, and its delta, read against that earlier snapshot, reports this save's changes again.
+ *
+ * The result reports everything the reconcile realized. Its deferred and rejected lists answer for this save alone, through the delta between the previous
+ * loaded snapshot and this one: a restart-class change is deferred when this save introduced it and it still differs from the running value, so a save that
+ * writes the running value back schedules no restart, and a refusal is reported when this save asked for the refused change. Called only through the reconcile
+ * queue in saveConfiguration.
+ * @param candidate - The configuration the save wrote, merged, normalized, and validated.
+ * @returns The save's outcome.
  */
-async function doReloadConfiguration(io: ConfigStore): Promise<ApplyResult> {
+async function reconcileConfiguration(candidate: Config): Promise<ApplyResult> {
 
-  // Re-read the on-disk config snapshot that mutateConfig just wrote, then build the new in-memory shape in isolation so normalizations do not mutate the
-  // previous snapshot before the diff is computed.
-  const result = await io.readConfig();
+  const previousLoaded = loadedConfig;
+  const delta = partitionConfigChanges(computeConfigDiff(previousLoaded, candidate), getReactivityClass);
+  const gap = partitionConfigChanges(computeConfigDiff(CONFIG, candidate), getReactivityClass);
+  const next = structuredClone(CONFIG);
 
-  configParseError = result.parseError;
-  configParseErrorMessage = result.parseErrorMessage;
+  for(const change of [ ...gap.live, ...gap.nextStream ]) {
 
-  const nextConfig = mergeConfiguration(result.config, stashedCliOverrides);
-
-  // Normalize the candidate in place WITHOUT any global side effects (no runtime debug-filter change). The live debug filter is applied by commitDebugFilter
-  // only after this reload is known to be committed, so a rejected reload below never touches the running filter.
-  normalizeConfig(nextConfig);
-
-  // Compute the diff between the prior CONFIG and the freshly merged one before any reassignment. Reassignment is safe because ESM exports are live bindings -
-  // every import { CONFIG } reads through the binding at access time, so there is no stale-reference window.
-  const diff = computeConfigDiff(CONFIG, nextConfig);
-
-  // Re-validate the merged shape against the same hard-error and capture-coercion checks the startup path enforces. When it cannot be committed safely, leave
-  // CONFIG untouched and report every diffed change as rejected with the joined reason - the save was persisted to disk by the caller, but the live binding
-  // stays on the previous valid state until the operator corrects the source. The diff.length guard avoids fabricating rejected entries when there is nothing
-  // to apply (an empty diff cannot carry a regression).
-  const rejection = collectReloadRejection(nextConfig);
-
-  if((diff.length > 0) && (rejection !== null)) {
-
-    const applyResult: ApplyResult = { applied: [], deferred: [], rejected: diff.map((change) => ({ change, reason: rejection })) };
-
-    LOG.warn("Configuration reload rejected; the saved configuration fails validation and was not applied live.", { reason: rejection });
-    logReloadOutcome(diff, applyResult);
-
-    return applyResult;
+    setNestedValue(next as unknown as Record<string, unknown>, change.path, structuredClone(change.current));
   }
 
-  CONFIG = nextConfig;
+  const dispatch = await applyConfigChanges(gap, next);
 
-  // Now that the new configuration is committed, apply its persisted debug filter to the live runtime. Kept out of normalizeConfig so the rejected path above
-  // can never change the running filter.
+  // Commit exactly what the handlers realized, leaf by leaf, rather than assigning whole categories: a process writer may have moved another leaf of CONFIG while
+  // the handlers ran, and a per-path commit leaves that write in place. Each value is cloned so CONFIG never shares an array with the loaded snapshot.
+  for(const change of dispatch.realized) {
+
+    setNestedValue(CONFIG as unknown as Record<string, unknown>, change.path, structuredClone(change.current));
+  }
+
+  // The snapshot moves here, after what the handlers realized is committed, so CONFIG and the loaded snapshot change together for every reader outside the
+  // reconcile queue.
+  loadedConfig = candidate;
+
+  // The debug filter's one side effect: a committed change to the persisted filter reaches the runtime filter here, unless an env or CLI source owns it.
   commitDebugFilter();
 
-  const applyResult = await applyConfigChanges(diff);
+  const livePaths = new Set(gap.live.map((change) => change.path));
+  const heldPaths = new Set(gap.held.map((change) => change.path));
+  const requestedPaths = new Set([ ...delta.live, ...delta.nextStream ].map((change) => change.path));
+  const result: ApplyResult = {
 
-  logReloadOutcome(diff, applyResult);
+    applied: dispatch.realized.filter((change) => livePaths.has(change.path)),
+    deferred: delta.held.filter((change) => heldPaths.has(change.path)),
+    nextStream: dispatch.realized.filter((change) => !livePaths.has(change.path)),
+    rejected: dispatch.rejected.filter((refusal) => requestedPaths.has(refusal.change.path))
+  };
 
-  return applyResult;
+  logReconcileOutcome(result);
+
+  return result;
+}
+
+/**
+ * Builds a configuration from a user configuration file exactly as the boot does: defaults, the file, the environment, and the stashed CLI overrides merged in
+ * priority order, then normalized. The boot and every save share it, so a saved candidate is the configuration the next boot would read.
+ * @param userConfig - The user configuration file. A save passes a clone of the file it is writing, so nothing the build does reaches that object.
+ * @returns The merged, normalized configuration.
+ */
+function buildCandidate(userConfig: UserConfig): Config {
+
+  const config = mergeConfiguration(userConfig, stashedCliOverrides);
+
+  normalizeConfig(config);
+
+  return config;
+}
+
+/**
+ * Records the running configuration as the loaded snapshot. It runs at the end of initializeConfiguration, and inside validateConfiguration after the startup
+ * coercions and before the hard-error check, which a boot that fails exits on. Those are the startup steps that build CONFIG from the file, so the snapshot
+ * starts equal to the running configuration and a save's gap holds only what the process has not realized.
+ */
+function recordLoadedConfiguration(): void {
+
+  loadedConfig = structuredClone(CONFIG);
 }
 
 /**
  * Normalizes a configuration in place WITHOUT any global side effects: clamps an out-of-vocabulary quality preset to the default, clamps an out-of-range frame
  * rate to the nearer bound its metadata declares, and rewrites the persisted debug-filter string to its canonical form. Pure with respect to process state - it
- * touches only the passed config - so it is safe to run on a candidate nextConfig before reload decides whether to commit it. Shared by initializeConfiguration
- * and reloadConfiguration so the two paths cannot drift. The live runtime debug filter is applied separately by commitDebugFilter, which runs only once a
- * configuration is committed, so a rejected reload never changes the running filter.
+ * touches only the passed config - so it is safe to run on a candidate a save may still refuse. Every configuration is built through buildCandidate, so the
+ * boot and the save cannot drift. The live runtime debug filter is applied separately by commitDebugFilter, which runs only once a configuration is
+ * committed, so a refused save never changes the running filter.
  * @param config - The freshly merged configuration to normalize in place.
  */
 function normalizeConfig(config: Config): void {
@@ -260,9 +373,9 @@ function normalizeConfig(config: Config): void {
 /**
  * Applies the committed CONFIG's persisted debug filter to the live runtime filter, when no higher-priority env/CLI source owns it and the canonical value
  * differs from what is currently active. This is the global side effect split out of normalizeConfig: it runs only after a configuration is committed (at
- * startup, and on a reload that passed validation), so a rejected reload leaves the running filter untouched. Re-applying a changed persisted filter here is
- * what lets a debug-filter change delivered via /config/import take effect live instead of waiting for a restart; an emptied persisted filter clears the runtime
- * filter the same way (initDebugFilter("") disables it).
+ * startup, and at the end of every reconcile), so a refused save leaves the running filter untouched. Re-applying a changed persisted filter here is what lets
+ * a debug-filter change delivered via /config/import take effect live instead of waiting for a restart; an emptied persisted filter clears the runtime filter
+ * the same way (initDebugFilter("") disables it).
  */
 function commitDebugFilter(): void {
 
@@ -273,55 +386,20 @@ function commitDebugFilter(): void {
 }
 
 /**
- * Live-applies the "logging." subset of a config diff. The debug filter is applied live by commitDebugFilter during reloadConfiguration - the runtime filter is
- * updated right after CONFIG is committed and before the diff dispatches - so it reports applied with no restart, which is what lets a debug-filter change take
- * effect immediately instead of waiting for one. The remaining logging fields (httpLogLevel, maxSize) are consumed when the logger and HTTP middleware are wired
- * at startup, so they defer to a restart.
- *
- * Exported so tests can invoke the dispatch directly with a synthetic diff. Registered with the reactivity primitive at module load (side effect below).
- * @param changes - The subset of the diff whose path begins with "logging.".
- * @returns Per-change outcomes.
+ * Logs a one-line summary of a save's outcome so operators can see which changes took effect and which wait for a restart. Silent when every bucket is empty,
+ * because a save that changed nothing the process reads - a form submitted unchanged - has nothing to report.
+ * @param result - The save's outcome.
  */
-// The ConfigChangeHandler contract is async (handlers that do real work, like the HDHomeRun handler, await it), but this handler's classification is purely
-// synchronous - there is nothing to await. We keep the async signature so every handler reads the same way and conforms to the type directly.
-export async function applyLoggingConfigChanges(changes: readonly ConfigChange[]): Promise<readonly ChangeOutcome[]> {
+function logReconcileOutcome(result: ApplyResult): void {
 
-  return changes.map((change) => {
+  const counts = { applied: result.applied.length, deferred: result.deferred.length, nextStream: result.nextStream.length, rejected: result.rejected.length };
 
-    if(change.path === "logging.debugFilter") {
-
-      return { kind: "applied", path: change.path };
-    }
-
-    return { kind: "deferred", path: change.path, reason: "this logging setting takes effect on the next restart" };
-  });
-}
-
-// Module-load side effect: register the logging live-apply handler once per process so a debug-filter change that commitDebugFilter already applied live
-// does not also trigger a redundant restart. ESM modules load at most once per process, so this runs deterministically at boot before any settings save can fire.
-// Tests that reset the reactivity registry can re-register by calling registerConfigChangeHandler("logging.", applyLoggingConfigChanges); the symbol is exported.
-registerConfigChangeHandler("logging.", applyLoggingConfigChanges);
-
-/**
- * Logs a one-line summary of a reload outcome so operators can see which changes landed live versus which need a restart. Suppressed for empty diffs - the
- * /config save handler can be called with no metadata fields changed (e.g., only system-state fields touched).
- * @param diff - The diff that was dispatched.
- * @param result - The aggregate apply result.
- */
-function logReloadOutcome(diff: readonly ConfigChange[], result: ApplyResult): void {
-
-  if(diff.length === 0) {
+  if(Object.values(counts).every((count) => count === 0)) {
 
     return;
   }
 
-  LOG.info("Configuration reloaded.", {
-
-    applied: result.applied.length,
-    deferred: result.deferred.length,
-    rejected: result.rejected.length,
-    total: diff.length
-  });
+  LOG.info("Configuration saved and reconciled with the running process.", counts);
 }
 
 /**
@@ -342,50 +420,61 @@ export function getDefaults(): Config {
  */
 
 /**
- * Validates that a configuration value is a positive integer within an optional range. This helper performs the common validation pattern of checking for valid
- * integers and enforcing minimum/maximum bounds. It returns an error message if validation fails, allowing the caller to collect all errors before reporting them.
- * @param name - The configuration name for error messages, typically the environment variable name.
- * @param value - The value to validate, typically parsed from an environment variable.
- * @param min - Optional minimum allowed value (inclusive).
+ * Validates that a configuration value is an integer at or above its floor and at or below an optional ceiling. The floor is the minimum the setting's metadata
+ * declares, and 1 when none is declared, so a setting whose metadata allows zero accepts it and an integer setting with no declared minimum stays positive. It
+ * returns an error message rather than throwing, so the caller can collect every error before reporting them. Every message is a complete sentence naming the
+ * value it refused, and a value below the floor draws a message naming the floor it applied, because a save joins the messages into the reason it answers with.
+ * @param name - The configuration name for error messages, typically the environment variable name or the setting's label.
+ * @param value - The value to validate.
+ * @param min - The declared minimum (inclusive). When it is omitted, the floor is 1.
  * @param max - Optional maximum allowed value (inclusive).
  * @returns Error message if invalid, null if valid.
  */
-export function validatePositiveInt(name: string, value: number, min?: number, max?: number): Nullable<string> {
+export function validateInteger(name: string, value: number, min?: number, max?: number): Nullable<string> {
 
-  // Check for NaN (from parseInt of invalid input) and non-positive values.
-  if(!Number.isInteger(value) || (value < 1)) {
+  // A non-integer, including the NaN an unparseable input yields, is refused before the bounds are read, because no bound makes it valid.
+  if(!Number.isInteger(value)) {
 
-    return name + " must be a positive integer, got: " + String(value);
+    return name + " must be an integer, but it is " + String(value) + ".";
   }
 
-  return checkBounds(name, value, min, max);
+  return checkBounds(name, value, min ?? 1, max);
 }
 
 /**
- * Validates that a configuration value is a positive number (including floats) within an optional range.
+ * Validates that a configuration value is a number, fractional or whole, at or above its floor and at or below an optional ceiling. The floor is the minimum the
+ * setting's metadata declares, and when none is declared the value must be positive, so zero is accepted only where the metadata says it is. Every message is a
+ * complete sentence naming the value it refused and, for a value below the floor, the floor it applied.
  * @param name - The configuration name for error messages.
  * @param value - The value to validate.
- * @param min - Optional minimum allowed value (inclusive).
+ * @param min - The declared minimum (inclusive). When it is omitted, the value must be greater than zero.
  * @param max - Optional maximum allowed value (inclusive).
  * @returns Error message if invalid, null if valid.
  */
-export function validatePositiveNumber(name: string, value: number, min?: number, max?: number): Nullable<string> {
+export function validateNumber(name: string, value: number, min?: number, max?: number): Nullable<string> {
 
-  // Check for NaN and non-positive values.
-  if(Number.isNaN(value) || (value <= 0)) {
+  // NaN compares false against every bound, so it is refused by name before the bounds are read.
+  if(Number.isNaN(value)) {
 
-    return name + " must be a positive number, got: " + String(value);
+    return name + " must be a number, but it is " + String(value) + ".";
+  }
+
+  // With no declared minimum the floor excludes zero itself, which an inclusive minimum cannot state, so this validator applies it rather than checkBounds.
+  if((min === undefined) && (value <= 0)) {
+
+    return name + " must be a positive number, but it is " + String(value) + ".";
   }
 
   return checkBounds(name, value, min, max);
 }
 
 /**
- * Shared min/max bound check used by validatePositiveInt and validatePositiveNumber after their first-guard predicate has accepted the value. Both validators
- * share identical bound-error message shape, so the check lives in one place to prevent drift.
+ * Shared bound check for validateInteger and validateNumber, run once a value has passed its validator's type check. The floor and the ceiling are inclusive,
+ * and the floor is the one the validator applies: the declared minimum, or 1 for an integer with none declared. The validators answer a value out of range in
+ * the same words, so the check lives in one place to keep them from drifting.
  * @param name - The configuration name for error messages.
  * @param value - The value to bound-check.
- * @param min - Optional minimum allowed value (inclusive).
+ * @param min - The floor the validator applies (inclusive), or undefined when it applies none here.
  * @param max - Optional maximum allowed value (inclusive).
  * @returns Error message if out of range, null if within bounds.
  */
@@ -393,12 +482,12 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
 
   if((min !== undefined) && (value < min)) {
 
-    return name + " must be at least " + String(min) + ", got: " + String(value);
+    return name + " must be at least " + String(min) + ", but it is " + String(value) + ".";
   }
 
   if((max !== undefined) && (value > max)) {
 
-    return name + " must be at most " + String(max) + ", got: " + String(value);
+    return name + " must be at most " + String(max) + ", but it is " + String(value) + ".";
   }
 
   return null;
@@ -406,10 +495,10 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
 
 /**
  * The capture-related coercions a configuration needs to satisfy the streaming requirements the startup path enforces. collectCoercions describes them without
- * mutating; applyCoercions applies them (startup); reloadConfiguration treats a non-empty set as grounds to reject a live save rather than coerce silently. The
+ * mutating; applyCoercions applies them (startup); a save treats a non-empty set as grounds to refuse its candidate rather than coerce silently. The
  * preset, frame-rate, and debug-filter normalizations are intentionally NOT modeled here - those are benign corrections handled by normalizeConfig on both
- * the startup and reload paths, whereas these capture coercions guard safety-critical requirements (native capture mode corrupts output after 20-30 minutes of
- * recording; the h264 baseline is universal) and so must surface to the operator on reload rather than be silently rewritten.
+ * the startup and save paths, whereas these capture coercions guard safety-critical requirements (native capture mode corrupts output after 20-30 minutes of
+ * recording; the h264 baseline is universal) and so must surface to the operator on a save rather than be silently rewritten.
  */
 interface ConfigCoercions {
 
@@ -421,7 +510,7 @@ interface ConfigCoercions {
 }
 
 /**
- * Describes the capture coercions a configuration would need, without mutating it. Pure so both the startup path (which then applies them) and the reload path
+ * Describes the capture coercions a configuration would need, without mutating it. Pure so both the startup path (which then applies them) and the save path
  * (which rejects when any are present) can ask the same question against any config snapshot.
  * @param config - The configuration to inspect.
  * @returns The set of needed coercions; captureCodecs is null and forceFfmpegMode is false when none apply.
@@ -438,7 +527,7 @@ function collectCoercions(config: Config): ConfigCoercions {
     normalizedCodecs.unshift("h264");
   }
 
-  // Only report a captureCodecs coercion when the normalized list actually differs from the input - identical contents must not trip the reload rejection.
+  // Only report a captureCodecs coercion when the normalized list actually differs from the input - identical contents must not trip the save's refusal.
   const captureCodecsChanged = (normalizedCodecs.length !== config.streaming.captureCodecs.length) ||
     normalizedCodecs.some((codec, index) => (codec !== config.streaming.captureCodecs[index]));
 
@@ -461,7 +550,7 @@ function hasCoercions(coercions: ConfigCoercions): boolean {
 
 /**
  * Applies the described coercions to a configuration in place, emitting the same operator-visible warning the startup path has always logged when forcing
- * FFmpeg mode. Used only by the startup path; the reload path rejects rather than coerces.
+ * FFmpeg mode. Used only by the startup path; a save refuses rather than coerces.
  * @param config - The configuration to mutate.
  * @param coercions - The coercions to apply, as computed by collectCoercions.
  */
@@ -529,8 +618,8 @@ export const STARTUP_BOUNDED_SETTINGS: readonly string[] = [
 
 /**
  * Validates one bounded setting against the floor and ceiling its CONFIG_METADATA entry declares, naming the error by that entry's environment variable so the
- * message points at the knob an operator would turn. The metadata type picks the validator: an integer or port setting must be a whole number, a float setting
- * need only be positive.
+ * message points at the knob an operator would turn. The metadata type picks the validator: an integer or port setting must be a whole number, while a float
+ * setting may be fractional.
  * @param config - The configuration to read the value from.
  * @param settingPath - The dot-separated CONFIG_METADATA path of the setting to validate.
  * @returns Error message if the value is invalid, null if it is within bounds.
@@ -555,13 +644,13 @@ function validateBoundedSetting(config: Config, settingPath: string): Nullable<s
 
     case "float": {
 
-      return validatePositiveNumber(errorName, value, setting.min, setting.max);
+      return validateNumber(errorName, value, setting.min, setting.max);
     }
 
     case "integer":
     case "port": {
 
-      return validatePositiveInt(errorName, value, setting.min, setting.max);
+      return validateInteger(errorName, value, setting.min, setting.max);
     }
 
     default: {
@@ -573,7 +662,7 @@ function validateBoundedSetting(config: Config, settingPath: string): Nullable<s
 
 /**
  * Collects every hard configuration error - an always-fatal value that no coercion can repair - for the given configuration. Pure: it never mutates and never
- * throws, so both validateConfiguration (which throws on a non-empty result at startup) and reloadConfiguration (which rejects the save) can reuse it.
+ * throws, so both validateConfiguration (which throws on a non-empty result at startup) and a save (which refuses the candidate) can reuse it.
  * @param config - The configuration to validate.
  * @returns The list of error messages; empty when the configuration has no hard errors.
  */
@@ -593,18 +682,18 @@ function collectHardErrors(config: Config): string[] {
   // Validate path overrides. When set, both chromeDataDir and logFile must be absolute paths to prevent ambiguity.
   if((config.paths.chromeDataDir !== null) && !path.isAbsolute(config.paths.chromeDataDir)) {
 
-    errors.push("paths.chromeDataDir must be an absolute path, got: " + config.paths.chromeDataDir);
+    errors.push("paths.chromeDataDir must be an absolute path, but it is " + config.paths.chromeDataDir + ".");
   }
 
   if((config.paths.logFile !== null) && !path.isAbsolute(config.paths.logFile)) {
 
-    errors.push("paths.logFile must be an absolute path, got: " + config.paths.logFile);
+    errors.push("paths.logFile must be an absolute path, but it is " + config.paths.logFile + ".");
   }
 
   // Validate the HDHomeRun port only when HDHR is enabled and the effective capture mode is FFmpeg. At startup applyCoercions has already forced FFmpeg mode
-  // before this runs, so the captureMode check is a defensive no-op here and the guard reduces to just "HDHR enabled". On reload, an un-coerced native-mode
-  // config skips this specific port check, but collectReloadRejection separately rejects it via the forceFfmpegMode reason before it could ever be committed
-  // with native mode active.
+  // before this runs, so the captureMode check is a defensive no-op here and the guard reduces to just "HDHR enabled". On a save, an un-coerced native-mode
+  // candidate skips this specific port check, but collectCandidateRejection separately refuses it via the forceFfmpegMode reason before it could ever be
+  // written with native mode active.
   if(config.hdhr.enabled && (config.streaming.captureMode === "ffmpeg")) {
 
     check(validateBoundedSetting(config, "hdhr.port"));
@@ -623,7 +712,7 @@ function collectHardErrors(config: Config): string[] {
  * Validates all configuration values and throws an error if any are invalid. This function runs at startup after configuration initialization. It first applies
  * the capture coercions in place (filtering captureCodecs, forcing FFmpeg mode, with the same operator-visible warning as before), then collects every hard
  * error against the coerced CONFIG and throws once with the complete list. Splitting the pure collectors (collectCoercions, collectHardErrors) from the in-place
- * application lets reloadConfiguration reuse the same hard-error and capture-coercion checks without silently coercing a live save.
+ * application lets a save reuse the same hard-error and capture-coercion checks without silently coercing a live save.
  * @throws If any configuration value is invalid. The error message lists all invalid values.
  */
 export function validateConfiguration(): void {
@@ -634,6 +723,10 @@ export function validateConfiguration(): void {
   captureConfigCoercedAtStartup = hasCoercions(coercions);
 
   applyCoercions(CONFIG, coercions);
+
+  // The coercions moved CONFIG away from the file it was built from, and persistCoercedConfig writes them back next, so the loaded snapshot follows CONFIG here
+  // rather than reporting the coerced values as a gap a later save would have to close.
+  recordLoadedConfiguration();
 
   const errors = collectHardErrors(CONFIG);
 
@@ -647,7 +740,7 @@ export function validateConfiguration(): void {
 /**
  * Persists the capture configuration that validateConfiguration coerced at startup back to disk so the on-disk state matches the live CONFIG. A no-op unless a
  * coercion actually occurred. Without this, a config file holding an unsupported capture value (native mode, or a captureCodecs list missing the h264 baseline)
- * stays divergent from the coerced live CONFIG forever, and the reload-validation path would then reject every later save on the resulting phantom capture diff.
+ * stays divergent from the coerced live CONFIG forever, and the save's validation would then refuse every later save, because each candidate is built from that file.
  * filterDefaults strips any value equal to its default on write, so a config coerced back to the FFmpeg/h264 defaults leaves a clean file with no capture override.
  * Failures degrade gracefully: the live CONFIG is already coerced, so a write failure only means the divergence persists until the next successful save or boot.
  */
@@ -675,21 +768,30 @@ export async function persistCoercedConfig(io: ConfigStore = defaultConfigStore)
 }
 
 /**
- * Determines whether a freshly merged configuration must be rejected on reload rather than committed. Returns a single human-readable reason when the
- * configuration carries a hard error (an always-fatal value) or would require a capture coercion the reload path refuses to apply silently, or null when the
- * configuration is safe to commit live. Most of the collected reason strings carry no trailing punctuation and are joined with a single space, so the combined
- * text reads as one flowing line rather than separate sentences when it is surfaced verbatim to the operator in the settings-save response.
- * @param config - The merged, normalized configuration about to be committed.
- * @returns The joined rejection reason, or null when the configuration may be committed.
+ * Determines whether a candidate a save built must be refused rather than written. Returns the reason when the candidate holds an object or a list at a setting
+ * that takes a single value, carries a hard error (an always-fatal value), or would require a capture coercion a save refuses to apply silently, and null when
+ * the candidate may be written. Every collected reason is a complete sentence, and the reasons are joined with a single space, so the combined text reads as
+ * consecutive sentences when it is surfaced verbatim to the operator in the save response.
+ * @param config - The merged, normalized candidate a save is about to write.
+ * @returns The joined refusal reason, or null when the candidate may be written.
  */
-function collectReloadRejection(config: Config): Nullable<string> {
+function collectCandidateRejection(config: Config): Nullable<string> {
+
+  // The shape check runs alone: the checks after it read every setting as the type its metadata declares, so they have nothing meaningful to say about a
+  // candidate that breaks that assumption.
+  const shapeErrors = collectShapeErrors(config);
+
+  if(shapeErrors.length > 0) {
+
+    return shapeErrors.join(" ");
+  }
 
   const reasons: string[] = collectHardErrors(config);
   const coercions = collectCoercions(config);
 
   if(coercions.forceFfmpegMode) {
 
-    reasons.push("Native capture mode is disabled and cannot be applied live; set capture mode to FFmpeg.");
+    reasons.push("Native capture mode is disabled and cannot be saved; set capture mode to FFmpeg.");
   }
 
   if(coercions.captureCodecs !== null) {
@@ -703,6 +805,35 @@ function collectReloadRejection(config: Config): Nullable<string> {
   }
 
   return reasons.join(" ");
+}
+
+/**
+ * Collects a reason for every setting whose value has the wrong shape: an object at any setting, or a list at a setting that takes a single value. A file
+ * edited by hand can carry such a value, and the merge copies whatever the file holds at a setting's path. A diff walks into a plain object as if its keys were
+ * settings, so a nested path would reach the class resolver, which classes only the paths the configuration defines, after the file had been written.
+ * @param config - The candidate to inspect.
+ * @returns One complete sentence per misshapen setting; empty when every setting holds a value of its declared shape.
+ */
+function collectShapeErrors(config: Config): string[] {
+
+  const errors: string[] = [];
+
+  for(const settings of Object.values(CONFIG_METADATA)) {
+
+    for(const setting of settings) {
+
+      const value = getNestedValue(config, setting.path);
+
+      if((typeof value !== "object") || (value === null) || (Array.isArray(value) && (setting.type === "checkboxList"))) {
+
+        continue;
+      }
+
+      errors.push(setting.path + " holds " + (Array.isArray(value) ? "a list" : "an object") + ", which this setting does not accept.");
+    }
+  }
+
+  return errors;
 }
 
 /**

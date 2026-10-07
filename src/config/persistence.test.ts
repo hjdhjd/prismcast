@@ -114,6 +114,7 @@ describe("FileStore.read - core paths", () => {
 
       assert.deepEqual(result.data, { items: [] });
       assert.equal(result.parseError, false);
+      assert.equal(result.readError, false, "an absent file is the first run, not a read failure");
       assert.equal(result.recoveredFromBackup, false);
     });
   });
@@ -132,6 +133,7 @@ describe("FileStore.read - core paths", () => {
 
       assert.deepEqual(result.data.items, [ 1, 2, 3 ]);
       assert.equal(result.parseError, false);
+      assert.equal(result.readError, false, "a healthy read is no read failure");
     });
   });
 
@@ -196,7 +198,7 @@ describe("FileStore.read - core paths", () => {
       });
       const result = await store.read();
 
-      assert.deepEqual(Object.keys(result).toSorted(), [ "data", "migrationResult", "parseError", "recoveredFromBackup" ],
+      assert.deepEqual(Object.keys(result).toSorted(), [ "data", "migrationResult", "parseError", "readError", "recoveredFromBackup" ],
         "a recovered read carries the members of the read result and nothing else");
     });
   });

@@ -37,6 +37,7 @@ const EXPECTED_FUNCTION_EXPORTS = [
   "expectAt",
   "firstOf",
   "flushMicrotasks",
+  "listConfigLeafPaths",
   "makeDocumentResponse",
   "makeExecFileError",
   "makeFakeCdpPage",

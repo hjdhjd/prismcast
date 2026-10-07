@@ -2,27 +2,30 @@
  *
  * reactivity.ts: Config-change reactivity primitive for PrismCast.
  *
- * Subsystems that need to react to configuration changes - opening or closing a network socket, rebinding a server, invalidating a cached resource - register a
- * handler against a path prefix and receive the subset of the diff that matches. Subsystems that simply read CONFIG live at use time need not register; the
- * primitive defaults their paths to "deferred", which preserves the legacy "restart on save" behavior for everything that has not opted in to live application.
+ * Every leaf of the configuration carries a reactivity class - live, next-stream, or restart - that says how a saved value reaches the running process. The
+ * caller, the reconcile in config/index.ts, records the file it just validated as the loaded snapshot and reconciles the gap between the running configuration
+ * and that snapshot through this module: it partitions the gap by class, holds the restart-class changes out of the running configuration, hands the live and
+ * next-stream changes to the handlers registered for their path prefixes together with the candidate running configuration, and commits exactly the changes
+ * the handlers realized.
  *
- * The primitive owns two responsibilities:
+ * The primitive owns the responsibilities below, and none of them touches a configuration object:
  *
- *   1. Computing a diff between two CONFIG snapshots (computeConfigDiff). Pure function. Walks both objects, emits one ConfigChange per leaf-value difference,
- *      treating arrays as opaque leaves so handlers can react to array replacement without per-element noise.
+ *   1. Computing a diff between two configuration snapshots (computeConfigDiff). Pure function. Walks both objects, emits one ConfigChange per leaf-value
+ *      difference, treating arrays as opaque leaves so handlers can react to array replacement without per-element noise.
  *
- *   2. Dispatching that diff to registered handlers (applyConfigChanges). Each change is routed to the longest-matching registered prefix; changes whose path
- *      is not matched by any handler are reported as deferred. Handlers are awaited; their per-path outcomes are merged into the final ApplyResult.
+ *   2. Partitioning a diff by reactivity class (partitionConfigChanges). Pure function. The classifier is injected, so the policy of which leaf carries which
+ *      class stays with the configuration layer, and a test can partition synthetic paths.
  *
- * The primitive intentionally does not touch the in-memory CONFIG object. The caller (typically the settings save handler) is responsible for committing the new
- * configuration to CONFIG before invoking applyConfigChanges, so handlers that re-read CONFIG see the post-commit state. Keeping commit and dispatch separate
- * lets callers control ordering and lets test code dispatch synthetic diffs against any handler set without mutating real config state.
+ *   3. Dispatching the live and next-stream changes to the registered handlers (applyConfigChanges). Each change is routed to the longest-matching registered
+ *      prefix, and each handler receives its changes with the candidate running configuration. A handler realizes the candidate and vetoes what it cannot
+ *      realize, returning a rejection with a reason for each such change and leaving that change's side effect at its previous state. A change no handler
+ *      refused is realized, a change no handler is registered for among them, because its readers take it up at their next use.
  *
  * Multiple handlers per prefix are disallowed at registration time and throw immediately, so duplicate-wiring bugs surface during boot rather than as silent
  * misrouted dispatches at runtime.
  */
-import { LOG, formatError, isPlainObject } from "../utils/index.ts";
-import type { Nullable } from "../types/index.ts";
+import type { Config, Nullable, ReactivityClass } from "../types/index.ts";
+import { LOG, assertNever, formatError, isPlainObject } from "../utils/index.ts";
 
 /**
  * A single config field that changed between two snapshots. Path is the dot-separated location (e.g., "hdhr.port"). previous and current are the leaf values
@@ -41,51 +44,86 @@ export interface ConfigChange {
 }
 
 /**
- * Per-change outcome reported by a handler. "applied" means the change is fully live (in-memory CONFIG plus any side effects); "deferred" means the value is in
- * CONFIG but full effect requires a restart; "rejected" means the handler refused the change (e.g., a dependency is unavailable). The reason field on the non-
- * applied variants is surfaced to operators in the settings-save response and the server log.
+ * A handler's refusal of one change it was given. The reconcile commits nothing a handler refused, so the running configuration keeps its value and the change
+ * stays in the gap every later save retries.
  */
-export type ChangeOutcome =
-  { readonly kind: "applied"; readonly path: string } |
-  { readonly kind: "deferred"; readonly path: string; readonly reason: string } |
-  { readonly kind: "rejected"; readonly path: string; readonly reason: string };
+export interface ChangeRejection {
+
+  // The dot-separated path of the change the handler refused.
+  readonly path: string;
+
+  // Why the handler refused it, in a complete sentence the save response and the log carry to the operator.
+  readonly reason: string;
+}
 
 /**
- * Handler signature. Receives the subset of the diff that matched the handler's registered prefix and returns one outcome per change. Handlers may report
- * outcomes for paths they did not receive; the primitive ignores those entries and emits a debug-level warning. Handlers that omit a path are conservatively
- * treated as having deferred that change.
+ * Handler signature. Receives the live and next-stream changes that matched the handler's registered prefix, together with the candidate running configuration:
+ * the running configuration with every live and next-stream change of the gap applied. CONFIG still holds the previous values while handlers run, so a handler
+ * reads the state it is asked to realize from the candidate. It drives its subsystem to that state and returns a rejection for each change it could not
+ * realize; returning nothing accepts every change it was given. A rejection for a path the handler was not given is ignored with a debug-level line.
  *
  * Concurrency contract: applyConfigChanges dispatches handlers across distinct prefixes in parallel via Promise.allSettled, so a thrown handler does not
- * short-circuit the rest of the apply - the throwing bucket's changes are converted to rejected outcomes with the formatted error message as the reason, and
- * every other bucket's outcomes flow through unaffected. Within a single prefix, all changes that matched it arrive in one invocation as a sorted batch, so
- * the handler can sequence its internal work however it wants. Across prefixes, handlers run concurrently and must not share mutable state with one another.
- * Subsystems whose live-apply work touches state owned by another subsystem need to coordinate through that subsystem's public API, not through shared globals.
+ * short-circuit the rest of the dispatch - each change in the throwing bucket is rejected with a reason naming the prefix and carrying the formatted error, and
+ * every other bucket flows through unaffected. Within a single prefix, all changes that matched it arrive in one invocation as a batch in the partition's order,
+ * so the handler can sequence its internal work however it wants. Across prefixes, handlers run concurrently and must not share mutable state with one another.
+ * A handler never saves the configuration itself, because the reconcile it runs inside holds the queue that save would wait on.
  */
-export type ConfigChangeHandler = (changes: readonly ConfigChange[]) => Promise<readonly ChangeOutcome[]>;
+export type ConfigChangeHandler = (changes: readonly ConfigChange[], next: Readonly<Config>) => Promise<readonly ChangeRejection[]>;
 
 /**
- * Aggregate result of applyConfigChanges. The three buckets are disjoint and together cover every ConfigChange in the input diff.
+ * Resolves the reactivity class of a configuration path. The configuration layer passes getReactivityClass; a test passes its own over synthetic paths.
+ */
+export type ReactivityClassifier = (path: string) => ReactivityClass;
+
+/**
+ * A diff partitioned by reactivity class. The lists are disjoint, together cover every change of the diff, and each keeps the diff's order.
+ */
+export interface ConfigChangePartition {
+
+  // Changes whose class holds them out of the running configuration: restart-class, persisted and never committed, pending while the loaded value
+  // differs from the running one.
+  readonly held: readonly ConfigChange[];
+
+  // Changes whose class is live: committed once a handler realizes them, in effect at their readers' next use.
+  readonly live: readonly ConfigChange[];
+
+  // Changes whose class is next-stream: committed once a handler realizes them, read by streams that start after the commit.
+  readonly nextStream: readonly ConfigChange[];
+}
+
+/**
+ * The outcome of dispatching a partition's live and next-stream changes. Together the lists cover every change dispatched.
+ */
+export interface DispatchResult {
+
+  // The live and next-stream changes no handler refused, in the partition's order; the caller commits exactly these.
+  readonly realized: readonly ConfigChange[];
+
+  // The changes a handler refused, each with its reason; the caller commits none of them.
+  readonly rejected: readonly { readonly change: ConfigChange; readonly reason: string }[];
+}
+
+/**
+ * The outcome a save reports. The reconcile composes it from the gap it realized and from the delta between the previous loaded snapshot and the file this save
+ * wrote: everything realized is reported, while the restart a save schedules and the refusals it reports are the ones its own changes earned.
  */
 export interface ApplyResult {
 
-  // Changes whose handler reported "applied".
+  // Live changes the reconcile realized.
   readonly applied: readonly ConfigChange[];
 
-  // Changes whose handler reported "deferred" or for which no handler was registered. The reason explains the deferral.
-  readonly deferred: readonly { readonly change: ConfigChange; readonly reason: string }[];
+  // This save's restart-class changes whose loaded value differs from the running one, in effect once the restart reads the file.
+  readonly deferred: readonly ConfigChange[];
 
-  // Changes whose handler reported "rejected". The reason explains the refusal.
+  // Next-stream changes the reconcile realized.
+  readonly nextStream: readonly ConfigChange[];
+
+  // This save's changes a handler refused, each with its reason.
   readonly rejected: readonly { readonly change: ConfigChange; readonly reason: string }[];
 }
 
 // Registry of (prefix -> handler) entries. Lookups walk the entries by descending prefix length to honor longest-prefix-match semantics.
 const handlers = new Map<string, ConfigChangeHandler>();
-
-// Default deferral reason when no handler is registered for a path. Surfaced to operators and useful in tests that want to assert this specific code path.
-export const NO_HANDLER_REASON = "no live-apply handler registered for this field";
-
-// Default deferral reason when a handler did not report an outcome for one of its input changes. A handler bug, but a safe conservative default.
-export const MISSING_OUTCOME_REASON = "handler did not report an outcome for this field";
 
 /**
  * Registers a handler that will receive any ConfigChange whose path starts with the given prefix. Throws if a handler is already registered for the prefix to
@@ -131,30 +169,82 @@ export function computeConfigDiff(previous: object, current: object): readonly C
 }
 
 /**
- * Dispatches a diff to registered handlers and returns the aggregate outcome. Changes are grouped by longest-matching prefix, handlers are awaited in parallel,
- * and per-change outcomes are folded back into the input order. Changes with no matching prefix are returned as deferred with NO_HANDLER_REASON. Handlers that
- * omit a path from their outcome list have that path conservatively recorded as deferred with MISSING_OUTCOME_REASON.
- * @param diff - The diff to dispatch.
- * @returns Aggregate result partitioning every input change into applied, deferred, or rejected.
+ * Partitions a diff by the reactivity class the classifier gives each change's path. Pure: the classifier is the only policy, and the input order survives
+ * within each list.
+ * @param diff - The changes to partition.
+ * @param classify - Resolves a path's reactivity class.
+ * @returns The changes held for a restart, the live changes, and the next-stream changes.
  */
-export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise<ApplyResult> {
+export function partitionConfigChanges(diff: readonly ConfigChange[], classify: ReactivityClassifier): ConfigChangePartition {
 
-  if(diff.length === 0) {
-
-    return { applied: [], deferred: [], rejected: [] };
-  }
-
-  // Bucket each change by the longest registered prefix that matches its path. Paths with no matching prefix go into the unhandled bucket.
-  const byPrefix = new Map<string, ConfigChange[]>();
-  const unhandled: ConfigChange[] = [];
+  const held: ConfigChange[] = [];
+  const live: ConfigChange[] = [];
+  const nextStream: ConfigChange[] = [];
 
   for(const change of diff) {
+
+    const reactivity = classify(change.path);
+
+    switch(reactivity) {
+
+      case "live": {
+
+        live.push(change);
+
+        break;
+      }
+
+      case "next-stream": {
+
+        nextStream.push(change);
+
+        break;
+      }
+
+      case "restart": {
+
+        held.push(change);
+
+        break;
+      }
+
+      default: {
+
+        assertNever(reactivity);
+      }
+    }
+  }
+
+  return { held, live, nextStream };
+}
+
+/**
+ * Dispatches a partition's live and next-stream changes to the registered handlers and reports which of them were realized. Changes are grouped by
+ * longest-matching prefix, each handler is called once with its group and the candidate running configuration, and handlers run in parallel. A change no
+ * handler refused is realized, whether or not a handler is registered for its path; a refused change is rejected with the handler's reason. Held changes never
+ * reach a handler.
+ * @param partition - The partitioned changes. Only its live and next-stream changes are dispatched.
+ * @param next - The candidate running configuration the handlers realize.
+ * @returns The realized and the rejected changes, each list in the partition's order.
+ */
+export async function applyConfigChanges(partition: ConfigChangePartition, next: Readonly<Config>): Promise<DispatchResult> {
+
+  const dispatched = [ ...partition.live, ...partition.nextStream ];
+
+  if(dispatched.length === 0) {
+
+    return { realized: [], rejected: [] };
+  }
+
+  // Bucket each change by the longest registered prefix that matches its path. A change no prefix matches has no handler that could refuse it, so it stays out
+  // of every bucket and is realized below.
+  const byPrefix = new Map<string, ConfigChange[]>();
+
+  for(const change of dispatched) {
 
     const prefix = findLongestPrefix(change.path);
 
     if(prefix === null) {
-
-      unhandled.push(change);
 
       continue;
     }
@@ -165,10 +255,9 @@ export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise
     byPrefix.set(prefix, bucket);
   }
 
-  // Dispatch each bucket to its handler in parallel via Promise.allSettled so a thrown handler does not short-circuit the rest of the apply. Materializing
+  // Dispatch each bucket to its handler in parallel via Promise.allSettled so a thrown handler does not short-circuit the rest of the dispatch. Materializing
   // the buckets up front lets us pair each settled result with its source bucket by index - allSettled preserves array length, so settled[i] aligns with
-  // buckets[i] for the lifetime of this dispatch. A handler that throws is treated as having rejected every change in its bucket: the formatted error message
-  // becomes the rejection reason for each change, so the dispatcher's guarantee that every input change gets an outcome holds even when handlers fail.
+  // buckets[i] for the lifetime of this dispatch.
   const buckets = Array.from(byPrefix.entries());
   const settled = await Promise.allSettled(buckets.map(async ([ prefix, changes ]) => {
 
@@ -177,111 +266,76 @@ export async function applyConfigChanges(diff: readonly ConfigChange[]): Promise
     // The handler must exist - findLongestPrefix returns a prefix only when handlers.has(prefix) is true - but TypeScript widens map.get to T | undefined.
     if(!handler) {
 
-      return [] as readonly ChangeOutcome[];
+      return [] as readonly ChangeRejection[];
     }
 
-    return handler(changes);
+    return handler(changes, next);
   }));
 
-  const dispatched = settled.map((result, index) => {
+  // Index each refusal by path. A handler is authoritative only for the changes it was given, so a rejection for any other path is ignored rather than allowed
+  // to refuse a change another handler realized. Ignored entries are surfaced at debug level so a misbehaving handler is diagnosable without polluting the
+  // operator-facing log.
+  const reasons = new Map<string, string>();
+
+  for(const [ index, result ] of settled.entries()) {
 
     // allSettled preserves array length, so buckets[index] is always defined; the explicit guard satisfies TypeScript without leaning on a non-null assertion.
     const bucket = buckets[index];
 
     if(!bucket) {
 
-      return { changes: [] as readonly ConfigChange[], outcomes: [] as readonly ChangeOutcome[] };
+      continue;
     }
 
-    const [ , changes ] = bucket;
+    const [ prefix, changes ] = bucket;
 
-    if(result.status === "fulfilled") {
+    // A handler that throws refuses every change in its bucket, so a failed handler never reads as a realized change and the caller commits none of them.
+    if(result.status === "rejected") {
 
-      return { changes, outcomes: result.value };
+      const reason = "The configuration handler for \"" + prefix + "\" failed: " + formatError(result.reason) + ".";
+
+      for(const change of changes) {
+
+        reasons.set(change.path, reason);
+      }
+
+      continue;
     }
 
-    // Handler threw - synthesize a rejected outcome so every change in the bucket still gets an outcome.
-    const reason = formatError(result.reason);
-    const outcomes: readonly ChangeOutcome[] = changes.map((c) => ({ kind: "rejected", path: c.path, reason }));
+    const givenPaths = new Set(changes.map((change) => change.path));
 
-    return { changes, outcomes };
-  });
+    for(const rejection of result.value) {
 
-  // Build the aggregate result. Iterate the input diff in order so callers see deterministic output even when handlers ran in parallel.
-  const applied: ConfigChange[] = [];
-  const deferred: { change: ConfigChange; reason: string }[] = [];
-  const rejected: { change: ConfigChange; reason: string }[] = [];
+      if(!givenPaths.has(rejection.path)) {
 
-  // Index outcomes by path for O(1) lookup during the merge below. A handler is only authoritative for the changes it was actually given, so we accept an
-  // outcome only when its path was in that handler's input batch. Ignoring foreign-path outcomes upholds the documented contract and prevents one handler
-  // from overriding another handler's classification of a shared path via last-write-wins into this map. Ignored entries are surfaced at debug level so
-  // a misbehaving handler is diagnosable without polluting the operator-facing log.
-  const outcomeByPath = new Map<string, ChangeOutcome>();
-
-  for(const { changes, outcomes } of dispatched) {
-
-    const inputPaths = new Set(changes.map((change) => change.path));
-
-    for(const outcome of outcomes) {
-
-      if(!inputPaths.has(outcome.path)) {
-
-        LOG.debug("config:reactivity", "Ignoring a config-change outcome for a path the handler was not given: %s.", outcome.path);
+        LOG.debug("config:reactivity", "Ignoring a config-change rejection for a path the handler was not given: %s.", rejection.path);
 
         continue;
       }
 
-      outcomeByPath.set(outcome.path, outcome);
+      reasons.set(rejection.path, rejection.reason);
     }
   }
 
-  // Anything in the unhandled bucket defers with NO_HANDLER_REASON.
-  const unhandledPaths = new Set(unhandled.map((c) => c.path));
+  // Fold the refusals back over the dispatched changes so the realized and rejected lists keep the partition's order even though handlers ran in parallel.
+  const realized: ConfigChange[] = [];
+  const rejected: { change: ConfigChange; reason: string }[] = [];
 
-  for(const change of diff) {
+  for(const change of dispatched) {
 
-    if(unhandledPaths.has(change.path)) {
+    const reason = reasons.get(change.path);
 
-      deferred.push({ change, reason: NO_HANDLER_REASON });
+    if(reason === undefined) {
+
+      realized.push(change);
 
       continue;
     }
 
-    const outcome = outcomeByPath.get(change.path);
-
-    if(!outcome) {
-
-      deferred.push({ change, reason: MISSING_OUTCOME_REASON });
-
-      continue;
-    }
-
-    switch(outcome.kind) {
-
-      case "applied": {
-
-        applied.push(change);
-
-        break;
-      }
-
-      case "deferred": {
-
-        deferred.push({ change, reason: outcome.reason });
-
-        break;
-      }
-
-      case "rejected": {
-
-        rejected.push({ change, reason: outcome.reason });
-
-        break;
-      }
-    }
+    rejected.push({ change, reason });
   }
 
-  return { applied, deferred, rejected };
+  return { realized, rejected };
 }
 
 /**

@@ -2,14 +2,17 @@
  *
  * debug.test.ts: Unit tests for the debug logging endpoint in debug.ts. setupDebugEndpoint registers GET /debug (renders the category management page) and
  * POST /debug (applies a new filter pattern and persists it). The page builder is a deterministic HTML generator over DEBUG_CATEGORIES; the POST handler
- * mutates the runtime filter via initDebugFilter and persists to config.json via mutateConfig. Tests run against an Express server with a temp data
- * directory so mutateConfig has a concrete target. The HTML structure is verified by checking for the documented sections and section headers.
+ * mutates the runtime filter via initDebugFilter and persists through the validated save, whose reconcile commits the pattern to CONFIG and the loaded
+ * snapshot. Tests run against an Express server with a temp data directory so the save has a concrete file to write, and each POST row re-initializes CONFIG
+ * and the loaded snapshot to the defaults through an in-memory store, so the pattern a row asserts reached CONFIG through the reconcile. The HTML structure is
+ * verified by checking for the documented sections and section headers. A save the validation refuses is covered in test/e2e/routes/debug-filter.test.ts.
  */
 import type { AddressInfo, Server } from "node:net";
-import { DEBUG_CATEGORIES, initDebugFilter } from "../utils/index.ts";
+import { CONFIG, getLoadedConfiguration, initializeConfiguration } from "../config/index.ts";
+import { DEBUG_CATEGORIES, LOG, initDebugFilter } from "../utils/index.ts";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { CONFIG } from "../config/index.ts";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { ConfigStore } from "../config/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
@@ -56,6 +59,28 @@ let sharedPort = 0;
 let tempDataDir = "";
 const ORIGINAL_DEBUG_FILTER = CONFIG.logging.debugFilter;
 
+// A store that reads an empty file, which re-initializes CONFIG and the loaded snapshot to the defaults. Only the boot reads through it; the route saves through
+// the real file store in the temp data directory.
+const emptyStore: ConfigStore = {
+
+  mutateConfig: async (): Promise<void> => {
+
+    throw new Error("The empty store takes no writes.");
+  },
+  readConfig: async () => ({ config: {}, parseError: false, readError: false })
+};
+
+/**
+ * Reads the debug filter the configuration file in the temp data directory holds.
+ * @returns The persisted pattern, or undefined when the file holds none.
+ */
+async function readPersistedFilter(): Promise<unknown> {
+
+  const persisted = JSON.parse(await readFile(path.join(tempDataDir, "config.json"), "utf8")) as { logging?: { debugFilter?: unknown } };
+
+  return persisted.logging?.debugFilter;
+}
+
 function urlFor(p: string): string {
 
   return "http://127.0.0.1:" + String(sharedPort) + p;
@@ -63,8 +88,8 @@ function urlFor(p: string): string {
 
 before(async () => {
 
-  // The POST handler persists via mutateConfig, which needs a data directory and a config.json file to exist. We seed a minimal empty JSON object so the
-  // configStore can read-modify-write it without complaining about missing/corrupt content.
+  // The POST handler persists through the validated save, which needs a data directory and a config.json file to exist. We seed a minimal empty JSON object so
+  // the configStore can read-modify-write it without complaining about missing/corrupt content.
   tempDataDir = await mkdtemp(path.join(os.tmpdir(), "prismcast-debug-test-"));
   initializeDataDir(tempDataDir);
   await writeFile(path.join(tempDataDir, "config.json"), "{}\n");
@@ -80,9 +105,9 @@ after(async () => {
   await closeServer(sharedServer);
   await rm(tempDataDir, { force: true, recursive: true });
 
-  // Restore the runtime filter and CONFIG state so other test files see the original.
+  // Restore the runtime filter, CONFIG, and the loaded snapshot so other test files see the original.
   initDebugFilter(ORIGINAL_DEBUG_FILTER);
-  CONFIG.logging.debugFilter = ORIGINAL_DEBUG_FILTER;
+  await initializeConfiguration(undefined, emptyStore);
   await closePuppeteerStreamWss();
 });
 
@@ -293,18 +318,19 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
 
 describe("setupDebugEndpoint - POST /debug (filter persistence)", () => {
 
-  beforeEach(() => {
+  beforeEach(async () => {
 
-    // Reset the runtime filter and CONFIG before each test so prior pattern state doesn't leak through.
+    // Reset the file, the runtime filter, CONFIG, and the loaded snapshot before each test so prior pattern state doesn't leak through. The runtime filter is
+    // cleared first, because the boot measures whether a launch source owns the filter from it.
+    await writeFile(path.join(tempDataDir, "config.json"), "{}\n");
     initDebugFilter("");
-    CONFIG.logging.debugFilter = "";
+    await initializeConfiguration(undefined, emptyStore);
   });
 
   afterEach(() => {
 
     // Restore between tests for safety. The after() hook does the final restore.
     initDebugFilter("");
-    CONFIG.logging.debugFilter = "";
   });
 
   test("redirects (HTTP 303 See Other) to /debug after applying a pattern", async () => {
@@ -322,9 +348,10 @@ describe("setupDebugEndpoint - POST /debug (filter persistence)", () => {
     await res.text();
   });
 
-  test("normalizes the pattern (whitespace around commas is stripped)", async () => {
+  test("saves the normalized pattern, and the reconcile commits it to CONFIG and the loaded snapshot", async () => {
 
-    // Boundary: initDebugFilter normalizes "tuning:hulu, recovery" to "tuning:hulu,recovery". The handler then writes the canonical form into CONFIG.
+    // Boundary: initDebugFilter normalizes "tuning:hulu, recovery" to "tuning:hulu,recovery". The handler saves the canonical form, and the save's reconcile
+    // commits it to CONFIG and records it as the loaded snapshot.
     const res = await fetch(urlFor("/debug"), {
 
       body: new URLSearchParams({ pattern: "tuning:hulu, recovery" }),
@@ -334,12 +361,35 @@ describe("setupDebugEndpoint - POST /debug (filter persistence)", () => {
 
     await res.text();
 
+    assert.equal(await readPersistedFilter(), "tuning:hulu,recovery", "the file holds the normalized form");
     assert.equal(CONFIG.logging.debugFilter, "tuning:hulu,recovery", "in-memory CONFIG should hold the normalized form");
+    assert.equal(getLoadedConfiguration().logging.debugFilter, "tuning:hulu,recovery", "the loaded snapshot follows the save");
+  });
+
+  test("logs the save's outcome at info, because the redirect carries no response body", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+    const res = await fetch(urlFor("/debug"), {
+
+      body: new URLSearchParams({ pattern: "tuning:hulu" }),
+      method: "POST",
+      redirect: "manual"
+    });
+
+    await res.text();
+
+    assert.equal(info.mock.calls.filter((call) => call.arguments[0] === "Configuration saved. 1 setting applied live.").length, 1,
+      "the outcome of the save is logged once");
   });
 
   test("accepts an empty pattern (clears the filter)", async () => {
 
-    // Boundary: a POST with no pattern field sets the filter to "" (empty). The handler treats missing/non-string as empty.
+    // Boundary: a POST with no pattern field sets the filter to "" (empty). The handler treats missing/non-string as empty. A pattern is saved first, so
+    // clearing it is a change the save has to commit.
+    await (await fetch(urlFor("/debug"), { body: new URLSearchParams({ pattern: "tuning:hulu" }), method: "POST", redirect: "manual" })).text();
+
+    assert.equal(CONFIG.logging.debugFilter, "tuning:hulu", "precondition: a pattern is committed");
+
     const res = await fetch(urlFor("/debug"), {
 
       body: new URLSearchParams(),

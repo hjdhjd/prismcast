@@ -182,7 +182,7 @@ describe("markSetupCompleted: one-shot transition", () => {
   });
 });
 
-describe("setupCompleted re-inference at startup (cross-store: services -> setupCompleted)", () => {
+describe("setupCompleted one-time inference at startup (cross-store: services -> setupCompleted)", () => {
 
   test("initializeUserChannels sets setupCompleted=true when enabledServices is non-empty even though config.json carries no setupCompleted entry", async () => {
 
@@ -204,7 +204,7 @@ describe("setupCompleted re-inference at startup (cross-store: services -> setup
 
     await initializeUserChannels();
 
-    assert.equal(CONFIG.channels.setupCompleted, true, "inference re-establishes setupCompleted from observed services state");
+    assert.equal(CONFIG.channels.setupCompleted, true, "the inference sets setupCompleted once from the observed services state");
   });
 });
 

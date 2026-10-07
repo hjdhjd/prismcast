@@ -3,14 +3,15 @@
  * settings.ts: Settings UI and route handlers for the PrismCast configuration interface.
  */
 import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.ts";
-import { CONFIG, getDefaults, validatePositiveInt, validatePositiveNumber } from "../../config/index.ts";
-import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, readConfig,
+import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, readConfig,
   setNestedValue } from "../../config/userConfig.ts";
+import { ConfigurationRejectedError, getDefaults, getLoadedConfiguration, validateInteger, validateNumber } from "../../config/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, isRunningAsService, sanitizeString, stringifySorted } from "../../utils/index.ts";
 import { applyConfigurationChange, describeConfigurationOutcome } from "./index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
+import type { ApplyConfigurationResult } from "./index.ts";
 import type { Nullable } from "../../types/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import { getConfigFilePath } from "../../config/paths.ts";
@@ -299,7 +300,7 @@ function getFieldWidthClass(setting: SettingMetadata): string {
 /**
  * Generates HTML for a single setting form field. Supports text inputs, number inputs, and select dropdowns based on the setting type and validValues.
  * @param setting - The setting metadata.
- * @param currentValue - The current effective value (in storage units).
+ * @param currentValue - The saved value the form shows (in storage units).
  * @param defaultValue - The default value (in storage units).
  * @param envOverride - The environment variable value if overridden, undefined otherwise.
  * @returns HTML string for the form field.
@@ -320,10 +321,11 @@ function generateSettingField(setting: SettingMetadata, currentValue: unknown, d
   // Determine if this should be a select dropdown.
   const hasValidValues = setting.validValues && (setting.validValues.length > 0);
 
-  // Check if this setting depends on a boolean toggle that is currently disabled. The depends-disabled class applies a visual grey-out without actually
-  // disabling the inputs, so values are still submitted during save.
+  // Check if this setting depends on a boolean toggle the saved configuration turns off. The depends-disabled class applies a visual grey-out without actually
+  // disabling the inputs, so values are still submitted during save. The toggle is read from the saved configuration every field renders from, so the grey-out
+  // agrees with the toggle the form shows.
   const dependsOnId = setting.dependsOn ? setting.dependsOn.replaceAll(".", "-") : undefined;
-  const isDependencyDisabled = setting.dependsOn ? !getNestedValue(CONFIG, setting.dependsOn) : false;
+  const isDependencyDisabled = setting.dependsOn ? !getNestedValue(getLoadedConfiguration(), setting.dependsOn) : false;
 
   // Build CSS classes for the form group.
   const groupClasses = ["form-group"];
@@ -708,7 +710,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
         return setting.label + " must be a number";
       }
 
-      const error = validatePositiveInt(setting.label, value, setting.min, setting.max);
+      const error = validateInteger(setting.label, value, setting.min, setting.max);
 
       return error ?? undefined;
     }
@@ -720,7 +722,7 @@ function validateSettingValue(setting: SettingMetadata, value: unknown): string 
         return setting.label + " must be a number";
       }
 
-      const error = validatePositiveNumber(setting.label, value, setting.min, setting.max);
+      const error = validateNumber(setting.label, value, setting.min, setting.max);
 
       return error ?? undefined;
     }
@@ -851,6 +853,10 @@ export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, str
   const tabs = getUITabs();
   const settingsTab = tabs.find((t) => t.id === "settings");
   const defaults = getDefaults();
+
+  // The form shows the saved configuration, the loaded snapshot, rather than the running one. After a save that holds a change for a restart, a page load shows
+  // that change, so submitting the page cannot post the running value back over it.
+  const saved = getLoadedConfiguration();
   const lines: string[] = [];
 
   // Panel header with description and reset button.
@@ -869,7 +875,7 @@ export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, str
     // Generate setting fields for this section.
     for(const setting of section.settings) {
 
-      const currentValue = getNestedValue(CONFIG, setting.path);
+      const currentValue = getNestedValue(saved, setting.path);
       const defaultValue = getNestedValue(defaults, setting.path);
       const envOverride = envOverrides.get(setting.path);
 
@@ -891,6 +897,10 @@ export function generateSettingsTabContent(envOverrides: ReadonlyMap<string, str
 export function generateCollapsibleSection(section: AdvancedSection, envOverrides: ReadonlyMap<string, string>): string {
 
   const defaults = getDefaults();
+
+  // The section shows the saved configuration rather than the running one, as the Settings tab does, so a page load after a save that holds a change for a
+  // restart cannot post the running value back over it.
+  const saved = getLoadedConfiguration();
   const lines: string[] = [];
   const settingCount = section.settings.length;
 
@@ -910,7 +920,7 @@ export function generateCollapsibleSection(section: AdvancedSection, envOverride
   // Generate setting fields for this section.
   for(const setting of section.settings) {
 
-    const currentValue = getNestedValue(CONFIG, setting.path);
+    const currentValue = getNestedValue(saved, setting.path);
     const defaultValue = getNestedValue(defaults, setting.path);
     const envOverride = envOverrides.get(setting.path);
 
@@ -962,20 +972,46 @@ export function generateSettingsFormFooter(): string {
 }
 
 /**
+ * The keys that name an object's prototype machinery rather than a setting. A document parsed from JSON carries any of them as an ordinary key, and assigning
+ * through one reaches a prototype instead of the configuration, so the merge refuses each of them at every level it walks.
+ */
+const PROTOTYPE_KEYS = new Set<string>([ "__proto__", "constructor", "prototype" ]);
+
+/**
+ * Refuses a document key that would reach an object's prototype rather than name a setting. The merge runs inside the save's store mutation, so the refusal
+ * writes nothing, and the route answers it as the validation error it is.
+ * @param key - The key the merge is about to assign through.
+ * @throws ConfigurationRejectedError when the key names prototype machinery.
+ */
+function refusePrototypeKey(key: string): void {
+
+  if(PROTOTYPE_KEYS.has(key)) {
+
+    throw new ConfigurationRejectedError("The configuration document carries the key " + key + ", which is not a setting.");
+  }
+}
+
+/**
  * Shallow-merges a source config into a target config. Top-level object values are merged one level deep (preserving sibling keys within each category).
- * Non-object values are assigned directly. This is the single merge strategy used by both the settings form save and config import endpoints.
+ * Non-object values are assigned directly. This is the single merge strategy the settings form save and the config import share. A key that names prototype
+ * machinery, at any level the merge walks, is refused before anything is assigned through it.
  * @param target - The existing config to merge into (modified in place).
  * @param source - The new values to merge.
+ * @throws ConfigurationRejectedError when the source carries a key that is not a setting.
  */
 function mergeConfigValues(target: UserConfig, source: UserConfig): void {
 
   for(const [ path, value ] of Object.entries(source as Record<string, unknown>)) {
+
+    refusePrototypeKey(path);
 
     if((typeof value === "object") && (value !== null) && !Array.isArray(value)) {
 
       (target as Record<string, unknown>)[path] ??= {};
 
       for(const [ subPath, subValue ] of Object.entries(value as Record<string, unknown>)) {
+
+        refusePrototypeKey(subPath);
 
         ((target as Record<string, unknown>)[path] as Record<string, unknown>)[subPath] = subValue;
       }
@@ -984,6 +1020,25 @@ function mergeConfigValues(target: UserConfig, source: UserConfig): void {
       (target as Record<string, unknown>)[path] = value;
     }
   }
+}
+
+/**
+ * Builds the data envelope of a save response from the save's outcome. The settings save and the import share it, so each answers with the same fields.
+ * @param outcome - The save's apply and restart result.
+ * @returns The response data: the active stream count and restart flags of a scheduled restart, and the count of each bucket the save reported.
+ */
+function buildSaveResponseData(outcome: ApplyConfigurationResult): Record<string, unknown> {
+
+  return {
+
+    activeStreams: outcome.restart?.activeStreams ?? 0,
+    appliedCount: outcome.apply.applied.length,
+    deferred: outcome.restart?.deferred ?? false,
+    deferredCount: outcome.apply.deferred.length,
+    nextStreamCount: outcome.apply.nextStream.length,
+    rejectedCount: outcome.apply.rejected.length,
+    willRestart: outcome.restart?.willRestart ?? false
+  };
 }
 
 /**
@@ -1051,33 +1106,17 @@ export function setupSettingsRoutes(app: Express): void {
         return;
       }
 
-      // Merge form values into the existing config via mutateConfig. The settings form only manages CONFIG_METADATA fields, but config.json also stores fields
-      // managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField, channelSortDirection,
-      // channelsDvr.host, hdhr.deviceId, etc.). Merging form values into the existing config preserves all non-form fields automatically - no carry-forward
-      // list to maintain.
-      await mutateConfig((existing) => {
+      // Merge form values into the existing config through the validated save. The settings form only manages CONFIG_METADATA fields, but config.json also
+      // stores fields managed by separate endpoints (disabledPredefined, enabledServices, visibleColumns, setupCompleted, channelSortField,
+      // channelSortDirection, channelsDvr.host, hdhr.deviceId, etc.). Merging form values into the existing config preserves all non-form fields
+      // automatically - no carry-forward list to maintain. The save then reconciles the running configuration against the file: each change takes effect as
+      // its reactivity class allows, and a restart is scheduled only when this save holds a restart-class change for one.
+      const outcome = await applyConfigurationChange("to apply configuration changes", (existing) => {
 
         mergeConfigValues(existing, newConfig);
       });
 
-      // Reload the in-memory CONFIG from the freshly-written disk state and dispatch the diff to registered subsystem handlers. Subsystems that opted in to
-      // live application (HDHR is the first) make their changes immediately; everything else is reported as deferred and triggers a service restart so the
-      // change lands on the next boot.
-      const outcome = await applyConfigurationChange("to apply configuration changes");
-
-      sendSuccess(res, {
-
-        data: {
-
-          activeStreams: outcome.restart?.activeStreams ?? 0,
-          appliedCount: outcome.apply.applied.length,
-          deferred: outcome.restart?.deferred ?? false,
-          deferredCount: outcome.apply.deferred.length,
-          rejectedCount: outcome.apply.rejected.length,
-          willRestart: outcome.restart?.willRestart ?? false
-        },
-        message: describeConfigurationOutcome(outcome)
-      });
+      sendSuccess(res, { data: buildSaveResponseData(outcome), message: describeConfigurationOutcome(outcome) });
     } catch(error) {
 
       sendErrorResponse(res, error, "save configuration");
@@ -1181,8 +1220,9 @@ export function setupSettingsRoutes(app: Express): void {
       // Import replaces the user settings layer and preserves the system state layer. CONFIG_METADATA is the SSOT for which fields are user settings
       // (port, timeouts, quality preset, etc.) vs system state (channelsDvr.host, deviceId, disabledPredefined, enabledServices, etc.). Clearing all
       // CONFIG_METADATA-tracked paths before merging ensures that settings not present in the import file revert to defaults rather than surviving
-      // from the previous config. System state fields are untouched because they're not in CONFIG_METADATA.
-      await mutateConfig((existing) => {
+      // from the previous config. System state fields are untouched because they're not in CONFIG_METADATA. The save validates the result before anything
+      // reaches disk and reconciles the running configuration against it, the same path every write to the settings takes.
+      const outcome = await applyConfigurationChange("after configuration import", (existing) => {
 
         // Clear all user settings from the existing config, leaving only system state.
         for(const settings of Object.values(CONFIG_METADATA)) {
@@ -1209,23 +1249,7 @@ export function setupSettingsRoutes(app: Express): void {
         mergeConfigValues(existing, importedConfig);
       });
 
-      // Reload and dispatch the diff. Import frequently changes more fields at once than the form save flow, so a higher fraction of imports will land in the
-      // "restart required" path - but the same live-apply machinery still picks off any subsystem that opted in.
-      const outcome = await applyConfigurationChange("after configuration import");
-
-      sendSuccess(res, {
-
-        data: {
-
-          activeStreams: outcome.restart?.activeStreams ?? 0,
-          appliedCount: outcome.apply.applied.length,
-          deferred: outcome.restart?.deferred ?? false,
-          deferredCount: outcome.apply.deferred.length,
-          rejectedCount: outcome.apply.rejected.length,
-          willRestart: outcome.restart?.willRestart ?? false
-        },
-        message: describeConfigurationOutcome(outcome)
-      });
+      sendSuccess(res, { data: buildSaveResponseData(outcome), message: describeConfigurationOutcome(outcome) });
     } catch(error) {
 
       sendErrorResponse(res, error, "import configuration");

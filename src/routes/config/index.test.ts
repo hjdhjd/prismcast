@@ -305,7 +305,7 @@ describe("describeConfigurationOutcome", () => {
 
     const outcome: ApplyConfigurationResult = {
 
-      apply: { applied: [], deferred: [{ change: makeChange("server.port"), reason: "no handler" }], rejected: [] },
+      apply: { applied: [], deferred: [makeChange("server.port")], nextStream: [], rejected: [] },
       restart: makeRestart("Server is restarting...")
     };
 
@@ -316,7 +316,7 @@ describe("describeConfigurationOutcome", () => {
 
     const outcome: ApplyConfigurationResult = {
 
-      apply: { applied: [], deferred: [], rejected: [] },
+      apply: { applied: [], deferred: [], nextStream: [], rejected: [] },
       restart: null
     };
 
@@ -327,7 +327,7 @@ describe("describeConfigurationOutcome", () => {
 
     const outcome: ApplyConfigurationResult = {
 
-      apply: { applied: [makeChange("hdhr.enabled")], deferred: [], rejected: [] },
+      apply: { applied: [makeChange("hdhr.enabled")], deferred: [], nextStream: [], rejected: [] },
       restart: null
     };
 
@@ -338,7 +338,7 @@ describe("describeConfigurationOutcome", () => {
 
     const outcome: ApplyConfigurationResult = {
 
-      apply: { applied: [ makeChange("hdhr.enabled"), makeChange("hdhr.port"), makeChange("hdhr.discoveryEnabled") ], deferred: [], rejected: [] },
+      apply: { applied: [ makeChange("hdhr.enabled"), makeChange("hdhr.port"), makeChange("hdhr.discoveryEnabled") ], deferred: [], nextStream: [], rejected: [] },
       restart: null
     };
 
@@ -353,27 +353,29 @@ describe("describeConfigurationOutcome", () => {
 
         applied: [makeChange("hdhr.discoveryEnabled")],
         deferred: [],
+        nextStream: [],
         rejected: [
-          { change: makeChange("hdhr.enabled"), reason: "FFmpeg unavailable" },
-          { change: makeChange("hdhr.port"), reason: "port in use" }
+          { change: makeChange("hdhr.enabled"), reason: "FFmpeg is unavailable." },
+          { change: makeChange("hdhr.port"), reason: "The port is in use." }
         ]
       },
       restart: null
     };
 
-    // The message reports the count using grammatical agreement ("2 changes were rejected") and includes the first reason as a directly actionable hint.
-    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 2 changes were rejected: FFmpeg unavailable.");
+    // The message reports the count using grammatical agreement ("2 changes were rejected") and carries the first reason verbatim as a directly actionable hint,
+    // its own sentence-ending period included and no second one added.
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 2 changes were rejected: FFmpeg is unavailable.");
   });
 
   test("agrees in number when exactly one change was rejected", () => {
 
     const outcome: ApplyConfigurationResult = {
 
-      apply: { applied: [], deferred: [], rejected: [{ change: makeChange("hdhr.enabled"), reason: "FFmpeg unavailable" }] },
+      apply: { applied: [], deferred: [], nextStream: [], rejected: [{ change: makeChange("hdhr.enabled"), reason: "FFmpeg is unavailable." }] },
       restart: null
     };
 
-    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 1 change was rejected: FFmpeg unavailable.");
+    assert.equal(describeConfigurationOutcome(outcome), "Configuration saved, but 1 change was rejected: FFmpeg is unavailable.");
   });
 });
 
