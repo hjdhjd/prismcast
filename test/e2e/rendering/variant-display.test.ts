@@ -326,7 +326,7 @@ describe("variant fallback contract under service filter", () => {
 
     /* The interaction between the always-on `direct` rule and the fallback resolver. abc has a site URL on its canonical
      * (tag = direct), and the direct tag is enabled regardless of enabledServices content (isServiceTagEnabled returns true for "direct" unconditionally). With a
-     * filter that names a tag matching no abc variant (e.g., "nonexistent"), every non-direct variant is filtered out but the canonical (direct) is not. With the
+     * filter that names a known tag matching no abc variant (paramountplus), every non-direct variant is filtered out but the canonical (direct) is not. With the
      * user's stored selection on a filtered tag (abc-yttv), resolveServiceKey returns findFirstEnabledVariant which scans alphabetically and returns the canonical
      * abc - the only enabled variant remaining.
      *
@@ -339,7 +339,7 @@ describe("variant fallback contract under service filter", () => {
     await initializePersistence(ctx);
 
     await setServiceSelection("abc", "abc-yttv");
-    await mutateEnabledServices(["nonexistent-service-tag"]);
+    await mutateEnabledServices(["paramountplus"]);
 
     const { displayRow } = generateChannelRowHtml("abc", getProfiles());
     const options = parseDropdownOptions(displayRow);

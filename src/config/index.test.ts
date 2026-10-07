@@ -2,21 +2,22 @@
  *
  * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.merge.test.ts; here we focus on
  * the validation gate (validateInteger, validateNumber, validateConfiguration), the boot's capture and HTTP log level corrections through initializeConfiguration
- * on an in-memory store, the per-CONFIG-clone behavior of getDefaults, the parse-error accessor surface, and the displayConfiguration startup block. Tests that
- * mutate CONFIG save and restore the prior state in afterEach so they remain independent of any other suite that touches CONFIG.
+ * on an in-memory store, the per-CONFIG-clone behavior of getDefaults, the parse-error accessor surface, the displayConfiguration startup block, and the debug
+ * filter handler the module registers at load, which a save here reaches because this suite resets no handler registry. Tests that mutate CONFIG save and
+ * restore the prior state in afterEach so they remain independent of any other suite that touches CONFIG.
  */
 import { CONFIG, STARTUP_BOUNDED_SETTINGS, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, initializeConfiguration,
-  validateConfiguration, validateInteger, validateNumber } from "./index.ts";
+  saveConfiguration, validateConfiguration, validateInteger, validateNumber } from "./index.ts";
 import { CONFIG_METADATA, DEFAULTS, getNestedValue, getSettingByPath } from "./userConfig.ts";
+import { LOG, getCurrentPattern, initDebugFilter, validateDeviceId } from "../utils/index.ts";
+import { SEEDED_DEVICE_ID, makeMemoryConfigStore } from "./index.helpers.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
-import { LOG } from "../utils/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { MemoryConfigStore } from "./index.helpers.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "./presets.ts";
 import { initializeDataDir } from "./paths.ts";
-import { makeMemoryConfigStore } from "./index.helpers.ts";
 import os from "node:os";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
@@ -313,10 +314,11 @@ describe("validateConfiguration", () => {
   });
 });
 
-/* The boot's capture correction, driven through initializeConfiguration on an in-memory store. Each row boots from the stored file it names on the store double
- * of index.helpers.ts, which normalizes its held file after each mutation as the real store's write hook does, so a row reads the file a write stored. Each row
- * starts with no environment variable the merge consults, and the suite restores the environment and boots from an empty file after each row, so CONFIG
- * holds the defaults again for the suites below.
+/* The boot's capture and DeviceID corrections, driven through initializeConfiguration on an in-memory store. Each row boots from the stored file it names on
+ * the store double of index.helpers.ts, which normalizes its held file after each mutation as the real store's write hook does, so a row reads the file a write
+ * stored. HDHomeRun is enabled by default, so a row whose subject is not the DeviceID seeds a valid one, and its boot corrects nothing for it. Each row starts
+ * with no environment variable the merge consults, and the suite restores the environment and boots from an empty file after each row, so CONFIG holds the
+ * defaults again for the suites below.
  */
 describe("initializeConfiguration - the boot's capture correction", () => {
 
@@ -326,6 +328,10 @@ describe("initializeConfiguration - the boot's capture correction", () => {
   const CAPTURE_WARNINGS = new Set<unknown>([ BASELINE_WARNING, MODE_WARNING, UNRECOGNIZED_WARNING ]);
   const CORRECTION_LINE = "The configuration file write carries corrected capture values.";
   const CORRECTION_LINES = new Set<unknown>([CORRECTION_LINE]);
+  const DEVICE_ID_GENERATED = "An HDHomeRun DeviceID was generated.";
+  const DEVICE_ID_REPLACED = "The configured HDHomeRun DeviceID fails its checksum, so a valid one takes its place.";
+  const DEVICE_ID_LINES = new Set<unknown>([ DEVICE_ID_GENERATED, DEVICE_ID_REPLACED ]);
+  const WRITE_FAILURE_LINE = "The corrected configuration could not be written, so the file keeps its stored values until the next write.";
   const ORIGINAL_ENV = { ...process.env };
 
   let store: MemoryConfigStore = makeMemoryConfigStore();
@@ -414,12 +420,16 @@ describe("initializeConfiguration - the boot's capture correction", () => {
       const info = t.mock.method(LOG, "info", () => undefined);
 
       // The write a startup migration makes before the boot reads the file passes the store's write hook like every other write.
-      store.file = { streaming: { captureMode: "native" } };
-      await store.mutateConfig(() => { /* A migration's write, which changes nothing the capture correction reads. */ });
+      store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID }, streaming: { captureMode: "native" } };
+      await store.mutateConfigThen(() => {
+
+        // A migration's write, which changes nothing the capture correction reads, and whose follow-up resolves at once.
+        return async (): Promise<void> => Promise.resolve();
+      });
 
       assert.deepEqual(callsNaming(info.mock.calls, CORRECTION_LINES), [[ CORRECTION_LINE, { corrections: [{ configured: "native", kind: "mode", using: "ffmpeg" }] } ]],
         "precondition: the write before the boot stored the correction and logged it");
-      assert.deepEqual(store.file, {}, "precondition: the held file needs no further correction");
+      assert.deepEqual(store.file, { hdhr: { deviceId: SEEDED_DEVICE_ID } }, "precondition: the held file needs no further correction");
 
       info.mock.resetCalls();
       store.writes = 0;
@@ -435,7 +445,7 @@ describe("initializeConfiguration - the boot's capture correction", () => {
 
     const warn = t.mock.method(LOG, "warn", () => undefined);
 
-    store.file = { streaming: { captureCodecs: "h264" as unknown as string[] } };
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID }, streaming: { captureCodecs: "h264" as unknown as string[] } };
 
     await assert.doesNotReject(initializeConfiguration(undefined, store));
     assert.deepEqual(CONFIG.streaming.captureCodecs, [ "h264", "hevc" ]);
@@ -447,6 +457,7 @@ describe("initializeConfiguration - the boot's capture correction", () => {
 
     const warn = t.mock.method(LOG, "warn", () => undefined);
 
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID } };
     process.env["CAPTURE_CODECS"] = "hevc";
     await initializeConfiguration(undefined, store);
 
@@ -474,11 +485,11 @@ describe("initializeConfiguration - the boot's capture correction", () => {
 
   test("a file storing capture values the server can capture with causes no write", async () => {
 
-    store.file = { streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } };
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID }, streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } };
     await initializeConfiguration(undefined, store);
 
     assert.equal(store.writes, 0);
-    assert.deepEqual(store.file, { streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } }, "the held file is as stored");
+    assert.deepEqual(store.file, { hdhr: { deviceId: SEEDED_DEVICE_ID }, streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } }, "the held file is as stored");
   });
 
   test("a stored native mode beside a hard error causes no write, because the boot never writes a configuration it will refuse", async (t) => {
@@ -491,6 +502,182 @@ describe("initializeConfiguration - the boot's capture correction", () => {
     assert.throws(() => { validateConfiguration(); }, /paths\.logFile must be an absolute path/, "precondition: the configuration carries a hard error");
     assert.equal(store.writes, 0, "nothing was written");
     assert.equal(store.file.streaming?.captureMode, "native", "the stored mode waits for the next write");
+  });
+
+  test("a stored DeviceID that fails its checksum boots with a valid id in its place, one write storing it, and the warning once", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { hdhr: { deviceId: "10000000" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+    assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "the stored id is replaced");
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
+    assert.deepEqual(callsNaming(warn.mock.calls, DEVICE_ID_LINES), [[ DEVICE_ID_REPLACED, { configured: "10000000", using: CONFIG.hdhr.deviceId.toUpperCase() } ]]);
+  });
+
+  test("a stored lower-case DeviceID that fails its checksum is logged upper-cased, as configured and as in use", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { hdhr: { deviceId: "abcdef12" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.deepEqual(callsNaming(warn.mock.calls, DEVICE_ID_LINES), [[ DEVICE_ID_REPLACED, { configured: "ABCDEF12", using: CONFIG.hdhr.deviceId.toUpperCase() } ]]);
+  });
+
+  test("a file with no hdhr category boots with a generated DeviceID, one write storing it, and the info line once", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    await initializeConfiguration(undefined, store);
+
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the generated DeviceID passes its checksum");
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
+    assert.deepEqual(callsNaming(info.mock.calls, DEVICE_ID_LINES), [[ DEVICE_ID_GENERATED, { deviceId: CONFIG.hdhr.deviceId.toUpperCase() } ]]);
+  });
+
+  test("a stored DeviceID that passes its checksum boots with no write and no DeviceID line", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(CONFIG.hdhr.deviceId, SEEDED_DEVICE_ID);
+    assert.equal(store.writes, 0, "no boot write");
+    assert.deepEqual(callsNaming([ ...warn.mock.calls, ...info.mock.calls ], DEVICE_ID_LINES), [], "no DeviceID line");
+  });
+
+  test("a stored native mode beside a stored DeviceID that fails its checksum leaves one write carrying the capture and the DeviceID corrections", async (t) => {
+
+    t.mock.method(LOG, "warn", () => undefined);
+    t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { hdhr: { deviceId: "10000000" }, streaming: { captureMode: "native" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 1, "one write");
+    assert.equal(store.file.streaming?.captureMode, undefined, "the held file stores no capture mode");
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
+  });
+
+  test("a stored native mode beside a DeviceID that passes its checksum leaves one write, which stores no capture mode and keeps the stored id", async (t) => {
+
+    // The emulation is enabled by default, so a file holding no valid id asks for the boot write through its DeviceID correction as well. The stored id here
+    // passes its checksum, so the stored capture mode alone asks for the write.
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID }, streaming: { captureMode: "native" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.deepEqual(callsNaming([ ...warn.mock.calls, ...info.mock.calls ], DEVICE_ID_LINES), [], "precondition: the stored DeviceID needs no correction");
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.streaming?.captureMode, undefined, "the held file stores no capture mode");
+    assert.equal(store.file.hdhr?.deviceId, SEEDED_DEVICE_ID, "the held file keeps the stored DeviceID");
+  });
+
+  test("a stored DeviceID that fails its checksum beside a hard error causes no write and runs a valid id", async (t) => {
+
+    t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { hdhr: { deviceId: "10000000" }, paths: { logFile: "relative/prismcast.log" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.throws(() => { validateConfiguration(); }, /paths\.logFile must be an absolute path/, "precondition: the configuration carries a hard error");
+    assert.equal(store.writes, 0, "nothing was written");
+    assert.equal(store.file.hdhr?.deviceId, "10000000", "the stored id waits for the next write");
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+  });
+
+  test("a disabled emulation boots with no write for the DeviceID and leaves the id as stored, whether none or one that fails its checksum", async (t) => {
+
+    t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { hdhr: { enabled: false } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 0, "no write for a missing DeviceID");
+    assert.equal(store.file.hdhr?.deviceId, undefined, "the file stores no DeviceID");
+    assert.equal(CONFIG.hdhr.deviceId, "", "the running configuration holds none");
+
+    store.file = { hdhr: { deviceId: "10000000", enabled: false } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 0, "no write for a DeviceID that fails its checksum");
+    assert.equal(store.file.hdhr?.deviceId, "10000000", "the file keeps the stored id");
+    assert.equal(CONFIG.hdhr.deviceId, "10000000", "the running configuration holds the stored id");
+  });
+
+  test("a boot on a file the store could not read attempts no write, logs no could-not-be-written line, and runs a valid DeviceID", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const mutate = t.mock.method(store, "mutateConfigThen");
+
+    store.armedFailure = "read";
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(mutate.mock.callCount(), 0, "the boot attempted no write");
+    assert.equal(warn.mock.calls.filter((call) => call.arguments[0] === WRITE_FAILURE_LINE).length, 0, "no could-not-be-written line");
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+  });
+
+  test("a boot on a file the store could not parse attempts no write, logs no could-not-be-written line, and runs a valid DeviceID", async (t) => {
+
+    // The double counts no write on an armed failure, so the row counts the calls the boot makes to the store's write member instead.
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const mutate = t.mock.method(store, "mutateConfigThen");
+
+    store.armedFailure = "parse";
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(mutate.mock.callCount(), 0, "the boot attempted no write");
+    assert.equal(warn.mock.calls.filter((call) => call.arguments[0] === WRITE_FAILURE_LINE).length, 0, "no could-not-be-written line");
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+  });
+
+  test("a boot write the store refuses leaves the generated DeviceID running and logs the could-not-be-written line once", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const mutate = t.mock.method(store, "mutateConfigThen");
+
+    t.mock.method(LOG, "info", () => undefined);
+    store.armedFailure = "write";
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(mutate.mock.callCount(), 1, "the boot attempted its one write");
+    assert.equal(store.writes, 0, "the store refused the write");
+    assert.equal(store.file.hdhr, undefined, "the held file keeps nothing of the refused write");
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the generated DeviceID keeps running");
+    assert.equal(warn.mock.calls.filter((call) => call.arguments[0] === WRITE_FAILURE_LINE).length, 1, "the could-not-be-written line, once");
+  });
+
+  test("HDHR_ENABLED turning the emulation on over a file that turns it off generates a DeviceID, written once", async (t) => {
+
+    t.mock.method(LOG, "info", () => undefined);
+
+    process.env["HDHR_ENABLED"] = "true";
+    store.file = { hdhr: { enabled: false } };
+    await initializeConfiguration(undefined, store);
+
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the generated DeviceID passes its checksum");
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
+  });
+
+  test("HDHR_ENABLED turning the emulation off over a file with no hdhr category causes no write", async () => {
+
+    process.env["HDHR_ENABLED"] = "false";
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 0, "no boot write");
+    assert.equal(CONFIG.hdhr.deviceId, "", "the running configuration holds no DeviceID");
   });
 
   test("a monitor interval below its floor refuses the boot with a hard error naming MONITOR_INTERVAL", async () => {
@@ -694,5 +881,33 @@ describe("configParseError exported state", () => {
     const messageType = typeof configParseErrorMessage;
 
     assert.equal((messageType === "string") || (messageType === "undefined"), true, "configParseErrorMessage is string or undefined at runtime");
+  });
+});
+
+describe("saveConfiguration - the debug filter handler the module registers at load", () => {
+
+  let store: MemoryConfigStore = makeMemoryConfigStore();
+
+  // The runtime filter is emptied before the boot and again after the row, so no environment or command-line source owns it when the boot measures that.
+  beforeEach(() => {
+
+    initDebugFilter("");
+    store = makeMemoryConfigStore({ hdhr: { deviceId: SEEDED_DEVICE_ID } });
+  });
+
+  afterEach(async () => {
+
+    initDebugFilter("");
+    store.file = { hdhr: { deviceId: SEEDED_DEVICE_ID } };
+
+    await initializeConfiguration(undefined, store);
+  });
+
+  test("a save that changes the debug filter applies it to the runtime through the handler the module registered at load", async () => {
+
+    await initializeConfiguration(undefined, store);
+    await saveConfiguration((current) => { current.logging = { debugFilter: "tuning:hulu,recovery" }; }, store);
+
+    assert.equal(getCurrentPattern(), "tuning:hulu,recovery", "the runtime filter follows the saved filter");
   });
 });

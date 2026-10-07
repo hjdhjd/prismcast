@@ -17,6 +17,7 @@
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { SEEDED_DEVICE_ID } from "../../../src/config/index.helpers.ts";
 import assert from "node:assert/strict";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
 import { mutateConfig } from "../../../src/config/userConfig.ts";
@@ -88,7 +89,7 @@ describe("settings-save preservation (catches the 4afa8a0 family)", () => {
     await mutateConfig((config) => {
 
       config.hdhr ??= {};
-      config.hdhr.deviceId = "12345678";
+      config.hdhr.deviceId = SEEDED_DEVICE_ID;
     });
 
     await mutateConfig((config) => {
@@ -99,7 +100,7 @@ describe("settings-save preservation (catches the 4afa8a0 family)", () => {
 
     const persisted = await readPersistedJson(ctx, "config.json") as { hdhr: { deviceId: string } };
 
-    assert.equal(persisted.hdhr.deviceId, "12345678", "hdhr.deviceId must survive a settings save");
+    assert.equal(persisted.hdhr.deviceId, SEEDED_DEVICE_ID, "hdhr.deviceId must survive a settings save");
   });
 
   test("a partial config update does not wipe the auto-discovered channelsDvr.host field", async () => {

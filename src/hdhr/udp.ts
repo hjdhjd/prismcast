@@ -222,8 +222,9 @@ function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; por
        * wildcard when the client sends neither, and a reply to a request aimed at another device type or another device would enrol PrismCast in a lineup the
        * client never asked for - a client discovering a specific tuner would see two answers and could bind to the wrong one.
        *
-       * The zero fallback in parseDeviceId cannot make a foreign request match here: ensureDeviceId writes a checksum-valid id into CONFIG before the UDP surface
-       * comes up, so a request targeting id zero matches no live device.
+       * The zero fallback in parseDeviceId cannot make a foreign request match here: while the emulation is enabled, the configuration layer replaces a DeviceID
+       * that is missing or fails its checksum where the boot loads the file and where a settings save writes it, before the UDP surface comes up, so a request
+       * targeting id zero matches no live device.
        */
       if(((parsed.requestedDeviceType !== HDHR_WILDCARD) && (parsed.requestedDeviceType !== HDHR_DEVICE_TYPE_TUNER)) ||
         ((parsed.requestedDeviceId !== HDHR_WILDCARD) && (parsed.requestedDeviceId !== deviceId))) {
@@ -411,7 +412,7 @@ function ipv4ToInt(ip: string): Nullable<number> {
 
 /**
  * Converts the 8-hex-character device id string from CONFIG.hdhr.deviceId into the 32-bit unsigned integer the wire protocol expects. Falls back to zero for
- * invalid input so a hand-edited config does not crash the responder; the integrity check at startup catches the underlying error separately.
+ * invalid input so a hand-edited config does not crash the responder; the correction the boot and a settings save make replaces such an id separately.
  * @param hex - The 8-character hex string from CONFIG.
  * @returns The 32-bit value.
  */

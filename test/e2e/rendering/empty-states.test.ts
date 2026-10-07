@@ -140,9 +140,10 @@ describe("empty-state rendering across tabs", () => {
 
   test("service filter excluding every non-direct channel: panel renders without crashing", async () => {
 
-    /* The empty-effective-listing case. enabledServices=["nonexistent-service-tag"] structurally means: every variant whose service tag is not "direct" is filtered
-     * out. Channels with a `direct` tag (those whose canonical URL is the network site, e.g., abc with abc.com) survive because isServiceTagEnabled returns
-     * true for "direct" unconditionally; channels without a `direct` tag (e.g., abcnews) are not visible.
+    /* The near-empty-effective-listing case. enabledServices=["paramountplus"] names a known tag, which the running filter keeps, that few channels carry, so
+     * structurally every variant whose service tag is neither "direct" nor paramountplus is filtered out. Channels with a `direct` tag (those whose canonical URL
+     * is the network site, e.g., abc with abc.com) survive because isServiceTagEnabled returns true for "direct" unconditionally, and so do the few with a
+     * paramountplus variant; channels with neither (e.g., abcnews) are not visible.
      *
      * Render the panel under this filter and assert it does not crash - even if the rendered set is structurally pruned to a fraction of the catalog. The
      * negative case is that the panel still renders the toolbar (so the user can clear the filter) and the table element (so the summary count is
@@ -152,7 +153,7 @@ describe("empty-state rendering across tabs", () => {
 
     await initializePersistence(ctx);
 
-    await mutateEnabledServices(["nonexistent-service-tag"]);
+    await mutateEnabledServices(["paramountplus"]);
 
     const html = generateChannelsPanel();
 

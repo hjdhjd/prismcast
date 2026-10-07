@@ -12,7 +12,7 @@
  *     array is empty.
  *   - transformChannelTags: no-op skip via isDeepStrictEqual on sorted tags + null-empty-tags branch.
  */
-import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
+import { createIntegrationContext, initializePersistence, readPersistedJson, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { disablePredefinedChannels, enablePredefinedChannels, getPredefinedScopeCounts, getStoredUserChannels, initializeUserChannels, isChannelAvailable,
   markSetupCompleted, mutateChannelDisplayPrefs, mutateChannels, transformChannelTags } from "../../../src/config/userChannels.ts";
@@ -128,34 +128,32 @@ describe("getPredefinedScopeCounts", () => {
 
 describe("mutateChannelDisplayPrefs: partial update + runtime CONFIG sync", () => {
 
-  test("partial input: absent fields are copied from CONFIG; the explicit field overrides", async () => {
+  test("partial input: an absent field keeps the file's value; the explicit field overrides", async () => {
 
-    /* Contract: the function reads absent fields from runtime CONFIG and writes the union back through mutateConfig. After the call, runtime CONFIG reflects
-     * the merged shape - this is what subsequent renders / playlist generators read.
+    /* Contract: the function writes only the fields the request supplies, onto the file the store just read, so a field the request leaves out keeps the value
+     * the file holds rather than taking the running one. After the call, the file and runtime CONFIG hold the supplied field - this is what subsequent renders /
+     * playlist generators read.
      *
-     * Note on disk shape: filterDefaults strips fields equal to defaults by the PROCESS_FIELDS state rule, which keeps a direction, a field, or a visibleColumns
-     * list only when it differs from its default. When the explicit override differs from default but the inherited fields still equal defaults, only the
-     * override lands on disk. The contract worth asserting is the runtime CONFIG state, not the on-disk shape (which is filterDefaults' contract).
+     * The file's direction is seeded as "desc" while the running configuration holds "asc", the default. filterDefaults strips a direction equal to its default
+     * by the PROCESS_FIELDS state rule, so a write that filled the absent direction from the running configuration would leave the file with no direction at
+     * all, and the readback below tells the two apart.
      */
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
 
-    /* Snapshot pre-call CONFIG values; the function's "absent fields copied from CONFIG" rule means these survive into the post-call state.
-     */
-    const preDirection = CONFIG.channels.channelSortDirection;
+    CONFIG.channels.channelSortDirection = "asc";
+    await writePersistedJson(ctx, "config.json", { channels: { channelSortDirection: "desc" } });
 
     await mutateChannelDisplayPrefs({ channelSortField: "channelNumber" });
 
     assert.equal(CONFIG.channels.channelSortField, "channelNumber", "runtime CONFIG reflects the override");
-    assert.equal(CONFIG.channels.channelSortDirection, preDirection, "absent input field copied from runtime CONFIG (pre-call value preserved)");
+    assert.equal(CONFIG.channels.channelSortDirection, "asc", "runtime CONFIG keeps the running direction, because the request left that field out");
 
-    /* Disk shape: only fields that differ from defaults survive filterDefaults. channelSortField is "channelNumber" (differs from default "name"), so it
-     * persists. channelSortDirection's persistence depends on whether the snapshotted preDirection equals the default "asc".
-     */
     const persisted = await readPersistedJson(ctx, "config.json") as { channels?: { channelSortField?: string; channelSortDirection?: string } };
 
     assert.equal(persisted.channels?.channelSortField, "channelNumber", "explicit override persisted");
+    assert.equal(persisted.channels.channelSortDirection, "desc", "an absent field keeps the file's value rather than taking the running one");
   });
 });
 
@@ -212,8 +210,7 @@ describe("disablePredefinedChannels/enablePredefinedChannels: empty-keys early r
 
   test("disablePredefinedChannels([]) is a no-op (no disk write, no exception)", async () => {
 
-    /* Empty input -> the helper returns immediately without entering mutateConfig. Verify by reading the on-disk state before and after and confirming nothing
-     * changed.
+    /* Empty input -> the helper returns immediately without a write. Verify by reading the on-disk state before and after and confirming nothing changed.
      */
     await using ctx = await createIntegrationContext();
 

@@ -5,14 +5,16 @@
  * the UI-tab/section accessors - and for one write through the configuration store itself, which shows the store's write hook storing corrected capture
  * values. The merge priority order, env var handling, and filterDefaults are covered in userConfig.merge.test.ts.
  */
-import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, collectStoredCaptureCorrections, correctCaptureValues, getAdvancedSections, getNestedValue,
-  getReactivityClass, getSettingByPath, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, normalizeStoredConfig, readConfig,
-  setNestedValue } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, collectStoredCaptureCorrections, correctCaptureValues, correctStoredDeviceId, getAdvancedSections,
+  getNestedValue, getReactivityClass, getSettingByPath, getSettingsTabSections, getUITabs, isEqualToDefault, mergeConfiguration, mutateConfig,
+  normalizeStoredConfig, readConfig, setNestedValue } from "./userConfig.ts";
+import type { Config, ReactivityClass } from "../types/index.ts";
+import { LOG, validateDeviceId } from "../utils/index.ts";
 import { describe, test } from "node:test";
 import { listConfigLeafPaths, withTempDir } from "../testing.helpers.ts";
 import { CONFIG } from "./index.ts";
-import { LOG } from "../utils/index.ts";
-import type { ReactivityClass } from "../types/index.ts";
+import { SEEDED_DEVICE_ID } from "./index.helpers.ts";
+import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "./paths.ts";
 import os from "node:os";
@@ -388,6 +390,88 @@ describe("capture corrections", () => {
     assert.deepEqual(info.mock.calls.filter((call) => call.arguments[0] === CORRECTION_LINE).map((call) => [...call.arguments]),
       [[ CORRECTION_LINE, { corrections: [{ configured: [ "h264", "av1" ], ignored: ["av1"], kind: "unrecognizedCodecs", using: ["h264"] }] } ]],
       "the write logged its correction once");
+  });
+});
+
+/* The DeviceID correction reads the candidate the merge builds from a file, so each row builds its candidate from the file it names through mergeConfiguration,
+ * the way the boot and a save build theirs, and reads the candidate and the file afterward. No row sets an environment variable, so the merge leaves HDHomeRun
+ * enabled by its default unless the file turns it off.
+ */
+describe("correctStoredDeviceId", () => {
+
+  /**
+   * Builds the candidate a file yields and runs the correction on the candidate and the file.
+   * @param file - The configuration file, which the correction may write.
+   * @param running - The running DeviceID handed to the correction.
+   * @returns The correction's answer and the candidate.
+   */
+  function correct(file: UserConfig, running: string): { candidate: Config; result: ReturnType<typeof correctStoredDeviceId> } {
+
+    const candidate = mergeConfiguration(file);
+
+    return { candidate, result: correctStoredDeviceId({ candidate, file, running }) };
+  }
+
+  test("a valid stored id answers null and leaves the candidate and the file unchanged", () => {
+
+    const file: UserConfig = { hdhr: { deviceId: SEEDED_DEVICE_ID } };
+    const { candidate, result } = correct(file, "");
+
+    assert.equal(result, null);
+    assert.equal(candidate.hdhr.deviceId, SEEDED_DEVICE_ID);
+    assert.deepEqual(file, { hdhr: { deviceId: SEEDED_DEVICE_ID } });
+  });
+
+  test("a file with no hdhr category gains a DeviceID equal to the candidate's, which passes its checksum", () => {
+
+    const file: UserConfig = {};
+    const { candidate, result } = correct(file, "");
+
+    assert.ok(validateDeviceId(candidate.hdhr.deviceId), "the candidate's new id passes its checksum");
+    assert.equal(file.hdhr?.deviceId, candidate.hdhr.deviceId, "the file holds the candidate's id");
+    assert.deepEqual(result, { configured: "", generated: true, kind: "deviceId", using: candidate.hdhr.deviceId });
+  });
+
+  test("a file whose hdhr category is not an object gains an object holding the DeviceID", () => {
+
+    const file = { hdhr: false } as unknown as UserConfig;
+    const { candidate } = correct(file, "");
+
+    assert.deepEqual(file.hdhr, { deviceId: candidate.hdhr.deviceId }, "the category is replaced by an object holding the id");
+    assert.ok(validateDeviceId(candidate.hdhr.deviceId));
+  });
+
+  test("a stored id that fails its checksum takes a valid running id rather than a generated one", () => {
+
+    const file: UserConfig = { hdhr: { deviceId: "10000000" } };
+    const { candidate, result } = correct(file, SEEDED_DEVICE_ID);
+
+    assert.deepEqual(result, { configured: "10000000", generated: false, kind: "deviceId", using: SEEDED_DEVICE_ID });
+    assert.equal(candidate.hdhr.deviceId, SEEDED_DEVICE_ID);
+    assert.equal(file.hdhr?.deviceId, SEEDED_DEVICE_ID);
+  });
+
+  test("a stored id that fails its checksum beside a running id that fails too takes a generated id", () => {
+
+    const file: UserConfig = { hdhr: { deviceId: "10000000" } };
+    const { candidate, result } = correct(file, "10000000");
+
+    assert.ok(result !== null, "the stored id needs a correction");
+    assert.equal(result.generated, true);
+    assert.equal(result.configured, "10000000");
+    assert.ok(validateDeviceId(result.using), "the generated id passes its checksum");
+    assert.equal(candidate.hdhr.deviceId, result.using);
+    assert.equal(file.hdhr?.deviceId, result.using);
+  });
+
+  test("a disabled emulation answers null and leaves a stored id that fails its checksum as stored", () => {
+
+    const file: UserConfig = { hdhr: { deviceId: "10000000", enabled: false } };
+    const { candidate, result } = correct(file, "");
+
+    assert.equal(result, null);
+    assert.equal(candidate.hdhr.deviceId, "10000000", "the candidate keeps the stored id");
+    assert.equal(file.hdhr?.deviceId, "10000000", "the file keeps the stored id");
   });
 });
 

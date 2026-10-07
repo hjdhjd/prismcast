@@ -1,28 +1,26 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle and its live-apply config-change handler. Coverage spans the observable behaviors
- * of startHdhrServer / stopHdhrServer - the disabled short-circuit, an OS-assigned port advertised as bound, automatic DeviceID generation when missing or
- * invalid, graceful EADDRINUSE handling on port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, which realizes the
- * candidate it is handed and returns only the rejections the surfaces earned, including a save to an already-occupied port driven end to end through
- * saveConfiguration and a port change that binds the requested port before it closes the bound one.
- * Each test uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port; data-directory side effects are routed into a
- * per-test temp dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
+ * of startHdhrServer / stopHdhrServer - the disabled short-circuit, an OS-assigned port advertised as bound, the advertised DeviceID the boot generated when
+ * the stored one was missing or invalid, graceful EADDRINUSE handling on port collision, and shutdown that is safe to call more than once - plus
+ * applyHdhrConfigChanges, which realizes the candidate it is handed and returns only the rejections the surfaces earned, including a save to an
+ * already-occupied port driven end to end through saveConfiguration and a port change that binds the requested port before it closes the bound one.
+ * Each test uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port, and every configuration a row boots or saves goes
+ * through an in-memory store double, so nothing reaches the user's real ~/.prismcast directory.
  */
 import { CONFIG, initializeConfiguration, saveConfiguration } from "../config/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { applyHdhrConfigChanges, startHdhrServer, stopHdhrServer } from "./index.ts";
+import { generateDeviceId, validateDeviceId } from "../utils/index.ts";
 import type { Config } from "../types/index.ts";
 import type { ConfigChange } from "../config/reactivity.ts";
-import type { ConfigStore } from "../config/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
+import type { MemoryConfigStore } from "../config/index.helpers.ts";
 import type { Server } from "node:http";
-import type { UserConfig } from "../config/userConfig.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { generateDeviceId } from "./deviceId.ts";
-import { initializeDataDir } from "../config/paths.ts";
+import { makeMemoryConfigStore } from "../config/index.helpers.ts";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
-import { withTempDir } from "../testing.helpers.ts";
 
 // snapshotConfig captures the specific CONFIG.hdhr fields these tests mutate (deviceId, discoveryEnabled, enabled, port) so each test can restore the prior
 // values verbatim. It does not cover every field startHdhrServer reads, such as CONFIG.server.host, only the ones these tests exercise.
@@ -75,28 +73,6 @@ async function closeServer(server: Server): Promise<void> {
   server.close(() => { resolve(); });
 
   return promise;
-}
-
-/**
- * Builds an in-memory config store whose mutations apply to the file it holds, so a row can re-initialize CONFIG from it and drive a real save through it.
- * @param initial - The file the store starts with.
- * @returns The store.
- */
-function memoryStore(initial: UserConfig): ConfigStore {
-
-  let file = structuredClone(initial);
-
-  return {
-
-    mutateConfig: async (fn): Promise<void> => {
-
-      const working = structuredClone(file);
-
-      fn(working);
-      file = working;
-    },
-    readConfig: async () => ({ config: structuredClone(file), parseError: false, readError: false })
-  };
 }
 
 /**
@@ -162,19 +138,6 @@ describe("startHdhrServer - disabled", () => {
     // stopHdhrServer must be a safe no-op when no server was started.
     await assert.doesNotReject(stopHdhrServer);
   });
-
-  test("leaves a valid DeviceID untouched while the surface is disabled", async () => {
-
-    const validId = generateDeviceId();
-
-    CONFIG.hdhr.enabled = false;
-    CONFIG.hdhr.deviceId = validId;
-    CONFIG.hdhr.port = 0;
-
-    await startHdhrServer();
-
-    assert.equal(CONFIG.hdhr.deviceId, validId, "DeviceID untouched when disabled");
-  });
 });
 
 describe("startHdhrServer - successful start", () => {
@@ -200,7 +163,7 @@ describe("startHdhrServer - successful start", () => {
 
     // Port 0 lets the OS pick a free port. The controller's HTTP surface owns the chosen port, so the row reads it from the listening line, which names the port
     // from the server's own address, and the documents must advertise that same port while CONFIG still names 0.
-    await initializeConfiguration(undefined, memoryStore({ hdhr: { deviceId: generateDeviceId(), discoveryEnabled: false, enabled: true, port: 0 } }));
+    await initializeConfiguration(undefined, makeMemoryConfigStore({ hdhr: { deviceId: generateDeviceId(), discoveryEnabled: false, enabled: true, port: 0 } }));
 
     assert.equal(CONFIG.hdhr.port, 0, "precondition: CONFIG names port 0");
 
@@ -215,55 +178,47 @@ describe("startHdhrServer - successful start", () => {
     assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(port), "the documents advertise the assigned port, not the port CONFIG names");
   });
 
-  test("preserves a valid existing DeviceID without regenerating", async () => {
+  /**
+   * Boots the configuration from a file holding the given DeviceID with the emulation enabled, starts the surface on an OS-assigned port, and answers the
+   * listening line it logged with the port that line names. The boot runs on the file's default port, because port 0 is no port the configuration accepts, and
+   * the row points the running configuration at port 0 only once the boot has written its correction.
+   * @param deviceId - The DeviceID the stored file holds.
+   * @returns The store the boot wrote through, and the listening line with its port.
+   */
+  async function bootAndStart(deviceId: string): Promise<{ line: string | undefined; port: number; store: MemoryConfigStore }> {
 
-    // When deviceId passes validateDeviceId, the function leaves it alone. Locking this prevents a regression where every restart would mint a fresh ID.
-    const validId = generateDeviceId();
+    const store = makeMemoryConfigStore({ hdhr: { deviceId, discoveryEnabled: false, enabled: true } });
 
-    CONFIG.hdhr.enabled = true;
-    CONFIG.hdhr.deviceId = validId;
+    await initializeConfiguration(undefined, store);
+
     CONFIG.hdhr.port = 0;
 
-    await startHdhrServer();
+    const { entries } = await withLogCapture(() => startHdhrServer());
+    const [line] = listeningLines(entries);
 
-    assert.equal(CONFIG.hdhr.deviceId, validId, "valid DeviceID was preserved across start");
-  });
+    return { line, port: Number(/:(\d+) \(DeviceID/.exec(line ?? "")?.[1]), store };
+  }
 
   test("regenerates the DeviceID when the existing one is empty", async () => {
 
-    await withTempDir(async (dir) => {
+    // The configuration layer generates the DeviceID as the boot loads a file that holds none, so the surface advertises the id the boot stored.
+    const { line, port, store } = await bootAndStart("");
 
-      // The persistence call inside startHdhrServer needs a valid data dir; without one it falls into the catch path and warns. Either branch leaves CONFIG
-      // populated with a valid generated ID, which is what we assert here.
-      initializeDataDir(dir);
-
-      CONFIG.hdhr.enabled = true;
-      CONFIG.hdhr.deviceId = "";
-      CONFIG.hdhr.port = 0;
-
-      await startHdhrServer();
-
-      assert.notEqual(CONFIG.hdhr.deviceId, "", "DeviceID was generated");
-      assert.match(CONFIG.hdhr.deviceId, /^[0-9a-f]{8}$/, "DeviceID is valid hex");
-    });
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+    assert.notEqual(CONFIG.hdhr.deviceId, "", "a DeviceID was generated");
+    assert.equal(line, listeningLine(port, CONFIG.hdhr.deviceId), "the listening line names the running DeviceID");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
   });
 
   test("regenerates the DeviceID when the existing one fails the checksum", async () => {
 
-    await withTempDir(async (dir) => {
+    // 10000000 has the right shape but a nonzero checksum, so the boot replaces it before the surface starts.
+    const { line, port, store } = await bootAndStart("10000000");
 
-      initializeDataDir(dir);
-
-      CONFIG.hdhr.enabled = true;
-      // 10000000 has the right shape but a nonzero checksum (caught by validateDeviceId).
-      CONFIG.hdhr.deviceId = "10000000";
-      CONFIG.hdhr.port = 0;
-
-      await startHdhrServer();
-
-      assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "invalid-checksum DeviceID was replaced");
-      assert.match(CONFIG.hdhr.deviceId, /^[0-9a-f]{8}$/, "new DeviceID is valid hex");
-    });
+    assert.ok(validateDeviceId(CONFIG.hdhr.deviceId), "the running DeviceID passes its checksum");
+    assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "the stored id was replaced");
+    assert.equal(line, listeningLine(port, CONFIG.hdhr.deviceId), "the listening line names the running DeviceID");
+    assert.equal(store.file.hdhr?.deviceId, CONFIG.hdhr.deviceId, "the held file carries the running DeviceID");
   });
 });
 
@@ -401,7 +356,7 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
 
   beforeEach(async () => {
 
-    await initializeConfiguration(undefined, memoryStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: false } }));
+    await initializeConfiguration(undefined, makeMemoryConfigStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: false } }));
   });
 
   afterEach(async () => {
@@ -513,31 +468,15 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     assert.deepEqual(rejections, []);
   });
 
-  test("an enabled surface replaces a DeviceID that failed its checksum with a generated one and refuses the saved id", async () => {
+  test("a DeviceID change refuses nothing, and the enabled surface binds with the DeviceID the candidate carries", async () => {
 
-    await withTempDir(async (dir) => {
+    // The configuration layer corrects a DeviceID before any candidate reaches the handler, so the handler binds with the id it is handed and refuses none.
+    const port = await reserveFreePort();
+    const { entries, result } = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.deviceId")],
+      candidate({ deviceId: "10000000", enabled: true, port })));
 
-      // The generated id is persisted through the module's own store, which needs a data directory.
-      initializeDataDir(dir);
-
-      const port = await reserveFreePort();
-      const { entries, result } = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.deviceId")],
-        candidate({ deviceId: "10000000", enabled: true, port })));
-
-      assert.deepEqual(result, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so a newly generated DeviceID replaced it." }]);
-      assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "the invalid id never reached CONFIG");
-      assert.notEqual(CONFIG.hdhr.deviceId, validDeviceId, "a fresh id was generated in its place");
-      assert.match(CONFIG.hdhr.deviceId, /^[0-9a-f]{8}$/);
-      assert.deepEqual(listeningLines(entries), [listeningLine(port, CONFIG.hdhr.deviceId)], "the listening line names the generated DeviceID the surface advertises");
-    });
-  });
-
-  test("a disabled surface refuses a DeviceID that failed its checksum and keeps the running id", async () => {
-
-    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.deviceId")], candidate({ deviceId: "10000000", enabled: false }));
-
-    assert.deepEqual(rejections, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so the running DeviceID was kept." }]);
-    assert.equal(CONFIG.hdhr.deviceId, validDeviceId);
+    assert.deepEqual(result, [], "the handler refuses no DeviceID change");
+    assert.deepEqual(listeningLines(entries), [listeningLine(port, "10000000")], "the listening line names the DeviceID the candidate carries");
   });
 
   test("a save to an occupied port is rejected, CONFIG keeps the bound port, and the documents advertise it", async () => {
@@ -546,7 +485,7 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     // collision - a 0.0.0.0 bind and a 127.0.0.1 listener on the same port coexist under SO_REUSEADDR and would not collide.
     const hdhrHost = CONFIG.server.host;
     const boundPort = await reserveFreePort(hdhrHost);
-    const store = memoryStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: true, port: boundPort } });
+    const store = makeMemoryConfigStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: true, port: boundPort } });
 
     await initializeConfiguration(undefined, store);
     await startHdhrServer();

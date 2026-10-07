@@ -6,7 +6,7 @@
  * caller, the reconcile in config/index.ts, records the file it just validated as the loaded snapshot and reconciles the gap between the running configuration
  * and that snapshot through this module: it partitions the gap by class, holds the restart-class changes out of the running configuration, hands the live and
  * next-stream changes to the handlers registered for their path prefixes together with the candidate running configuration, and commits exactly the changes
- * the handlers realized.
+ * the handlers realized. A process write's commit in the same module dispatches the leaves it wrote to their handlers the same way.
  *
  * The primitive owns the responsibilities below, and none of them touches a configuration object:
  *
@@ -58,15 +58,17 @@ export interface ChangeRejection {
 
 /**
  * Handler signature. Receives the live and next-stream changes that matched the handler's registered prefix, together with the candidate running configuration:
- * the running configuration with every live and next-stream change of the gap applied. CONFIG still holds the previous values while handlers run, so a handler
- * reads the state it is asked to realize from the candidate. It drives its subsystem to that state and returns a rejection for each change it could not
- * realize; returning nothing accepts every change it was given. A rejection for a path the handler was not given is ignored with a debug-level line.
+ * the running configuration with every live and next-stream change of the dispatch applied, the gap's for a save's reconcile and the written leaves for a
+ * process write's commit. CONFIG still holds the previous values while handlers run, so a handler reads the state it is asked to realize from the candidate. It
+ * drives its subsystem to that state and returns a rejection for each change it could not realize; returning nothing accepts every change it was given. A
+ * rejection for a path the handler was not given is ignored with a debug-level line.
  *
  * Concurrency contract: applyConfigChanges dispatches handlers across distinct prefixes in parallel via Promise.allSettled, so a thrown handler does not
  * short-circuit the rest of the dispatch - each change in the throwing bucket is rejected with a reason naming the prefix and carrying the formatted error, and
  * every other bucket flows through unaffected. Within a single prefix, all changes that matched it arrive in one invocation as a batch in the partition's order,
  * so the handler can sequence its internal work however it wants. Across prefixes, handlers run concurrently and must not share mutable state with one another.
- * A handler never saves the configuration itself, because the reconcile it runs inside holds the queue that save would wait on.
+ * A handler never writes the configuration, because the save's reconcile or the process write's commit it runs inside holds the store's queue, and a write it
+ * awaited would wait on that queue and never settle.
  */
 export type ConfigChangeHandler = (changes: readonly ConfigChange[], next: Readonly<Config>) => Promise<readonly ChangeRejection[]>;
 

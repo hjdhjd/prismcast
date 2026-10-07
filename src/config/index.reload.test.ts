@@ -11,26 +11,37 @@
  *   3. A save writes nothing it refuses: a candidate that fails validation, a file that fails to parse, and a file that cannot be read all leave the file,
  *      CONFIG, and the loaded snapshot exactly as they were.
  *
- *   4. Saves are serialized: overlapping saves commit in the order their writes landed, and a refused save leaves the next one free to complete.
+ *   4. Saves are serialized on the store's queue, held through each save's reconcile. The rows on overlapping saves run on the real store in
+ *      index.ordering.test.ts, because the double this suite runs on models no chain.
  *
- *   5. The loaded snapshot moves with the commit: a reader outside the reconcile queue sees CONFIG and the snapshot only as a completed reconcile left them, and
- *      a boot records it from the file it read.
+ *   5. The loaded snapshot moves with the commit: a reader that does not wait on the store's queue sees CONFIG and the snapshot only as a completed reconcile
+ *      left them, and a boot records it from the file it read.
  *
  *   6. The boot and the outcome line report exactly what happened: one warning naming the failure the store reported, and no outcome line for a save with
  *      nothing to report.
  *
- *   7. A capture value the server cannot capture with is corrected rather than refused: a save carrying one commits the correction with one warning per
- *      correction, the file holds the corrected value, and a value the environment supplies is corrected in every candidate and never written.
+ *   7. A capture value the server cannot capture with is corrected rather than refused: a save carrying one commits the correction and logs one warning for
+ *      each correction once its write lands, a save the validation or the store refuses logs none, the file holds the corrected value, and a value the
+ *      environment supplies is corrected in every candidate and never written.
+ *
+ *   8. A save corrects the DeviceID on the file it writes while the emulation is enabled: a stored id that fails its checksum takes the running one, a save
+ *      that turns the emulation on carries a generated id in its own write, and a save the validation or the store refuses announces no DeviceID correction.
+ *
+ *   9. A process write records the leaves the process owns: it commits exactly those leaves to CONFIG and the loaded snapshot, dispatches only their handlers
+ *      whatever CONFIG held before, validates nothing, and leaves every other difference between CONFIG and the file to the next settings save; a write the
+ *      store refuses commits its leaves to CONFIG alone with one warning and resolves, and a rejection raised once its write has landed rejects the call.
+ *
+ *  10. The runtime debug filter follows a saved filter through its registered handler: a save whose gap does not hold the filter leaves a filter the debug page
+ *      applied ahead of its save in place, a save that changes the filter applies it, and a filter an environment source owns stays applied.
  *
  * config/index.ts composes its disk persistence behind the injectable ConfigStore port. Every row runs against the in-memory store double of index.helpers.ts,
  * built fresh for each row, whose doc comment states the store rules it keeps. Each row re-initializes CONFIG and the loaded snapshot from the stored file it
  * names through initializeConfiguration, so no row inherits another's state.
  */
 import * as indexModule from "./index.ts";
-import { LOG, getCurrentPattern, initDebugFilter } from "../utils/index.ts";
-import { READ_FAILURE_MESSAGE, makeMemoryConfigStore } from "./index.helpers.ts";
+import { LOG, getCurrentPattern, initDebugFilter, validateDeviceId } from "../utils/index.ts";
+import { READ_FAILURE_MESSAGE, WRITE_FAILURE_MESSAGE, makeMemoryConfigStore } from "./index.helpers.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { closePuppeteerStreamWssOnIdle, flushMicrotasks } from "../testing.helpers.ts";
 import { computeConfigDiff, registerConfigChangeHandler, resetConfigChangeHandlers } from "./reactivity.ts";
 import type { ChangeRejection } from "./reactivity.ts";
 import { FileStoreParseError } from "./persistence.ts";
@@ -38,6 +49,7 @@ import type { MemoryConfigStore } from "./index.helpers.ts";
 import type { Nullable } from "../types/index.ts";
 import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
+import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -90,6 +102,9 @@ beforeEach(async () => {
 
   store = makeMemoryConfigStore();
   resetConfigChangeHandlers();
+
+  // The debug-filter handler registers at module load, so the reset above drops it and every row takes it back, as a suite that resets the registry must.
+  registerConfigChangeHandler("logging.debugFilter", indexModule.applyDebugFilterChange);
   initDebugFilter("");
 
   await indexModule.initializeConfiguration(undefined, store);
@@ -149,23 +164,6 @@ describe("saveConfiguration - each class reaches the running configuration as it
     assert.deepEqual(seen, { candidate: 0.2, committed: 0.1 }, "the handler ran with the change in the candidate and not yet in CONFIG");
     assert.equal(indexModule.CONFIG.playback.stallThreshold, 0.2, "the change is committed once the handler realized it");
   });
-
-  test("a process write that lands while a handler runs survives the reconcile's commit, even beside a realized change in its own category", async () => {
-
-    // The handler writes a process-owned leaf of the category whose live change it is realizing, the way the HDHomeRun handler writes a generated DeviceID,
-    // so a commit that assigned whole categories from the candidate would overwrite it.
-    registerConfigChangeHandler("hdhr.", async () => {
-
-      indexModule.CONFIG.hdhr.deviceId = "1234abcd";
-
-      return [];
-    });
-
-    await save((current) => { current.hdhr = { friendlyName: "Den" }; });
-
-    assert.equal(indexModule.CONFIG.hdhr.friendlyName, "Den", "the realized change is committed");
-    assert.equal(indexModule.CONFIG.hdhr.deviceId, "1234abcd", "the write made during the dispatch is still in CONFIG");
-  });
 });
 
 describe("saveConfiguration - a refused live change is never committed and is retried by every later save", () => {
@@ -224,6 +222,18 @@ describe("saveConfiguration - a refused live change is never committed and is re
     assert.deepEqual(result.rejected, [], "the refusal belongs to the save that asked for the port");
     assert.deepEqual(paths(result.applied), ["playback.stallThreshold"]);
     assert.equal(indexModule.CONFIG.hdhr.port, 5004, "the port is still refused");
+  });
+
+  test("a refused port beside a realized friendly name in one save keeps the port out of CONFIG and commits the friendly name", async () => {
+
+    // The commit sets each realized leaf on its own, so a refused change stays out of CONFIG beside a realized change in the same category.
+    registerRefusingHandler("hdhr.port", () => true);
+
+    const result = await save((current) => { current.hdhr = { ...current.hdhr, friendlyName: "PrismCast Den", port: 5005 }; });
+
+    assert.deepEqual(result.rejected.map((refusal) => refusal.change.path), ["hdhr.port"], "the save reports the port rejected");
+    assert.equal(indexModule.CONFIG.hdhr.port, 5004, "the running configuration keeps the port the boot read");
+    assert.equal(indexModule.CONFIG.hdhr.friendlyName, "PrismCast Den", "the friendly name, which no handler refused, is committed");
   });
 });
 
@@ -382,12 +392,12 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
     const readsBefore = store.reads;
 
     await assert.rejects(save((current) => { current.hdhr = { port: 5589 }; }), /conflicts with the main server port/);
-    assert.equal(store.file.hdhr, undefined, "the refused save wrote nothing");
+    assert.equal(store.file.hdhr?.port, undefined, "the refused save wrote nothing");
 
     const result = await save((current) => { current.playback = { stallThreshold: 0.2 }; });
 
     assert.deepEqual(paths(result.applied), ["playback.stallThreshold"], "the next save completes");
-    assert.equal(store.file.hdhr, undefined, "the refused port never reached the file");
+    assert.equal(store.file.hdhr?.port, undefined, "the refused port never reached the file");
     assert.equal(store.reads, readsBefore, "a save reconciles the candidate its mutation built, without reading the file again");
   });
 
@@ -428,61 +438,6 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
   });
 });
 
-/* Reconciles are serialized on a module-level queue, so two overlapping saves cannot interleave into a state where the reconcile holding the older candidate
- * commits last. The first row holds the first save's handler open while the second save is issued, which is the shape a slow handler and a quick second save
- * produce.
- */
-describe("saveConfiguration - serialized saves", () => {
-
-  test("overlapping saves commit in the order their writes landed, leaving CONFIG on the newest value", async () => {
-
-    const entered = Promise.withResolvers<null>();
-    const gate = Promise.withResolvers<null>();
-    let calls = 0;
-
-    registerConfigChangeHandler("playback.", async () => {
-
-      calls++;
-
-      if(calls === 1) {
-
-        entered.resolve(null);
-        await gate.promise;
-      }
-
-      return [];
-    });
-
-    const older = save((current) => { current.playback = { stallThreshold: 0.2 }; });
-    const newer = save((current) => { current.playback = { stallThreshold: 0.3 }; });
-
-    // Hold the first save's handler open until the second save has had every turn it needs to run to completion if nothing serialized it. Unserialized, the
-    // second reconcile would commit 0.3 here and the first would then overwrite it with its older 0.2 once released.
-    await entered.promise;
-    await flushMicrotasks(100);
-
-    gate.resolve(null);
-
-    await older;
-    await newer;
-
-    assert.equal(indexModule.CONFIG.playback.stallThreshold, 0.3, "the running configuration ends on the later save's value");
-  });
-
-  test("a refused save rejects its own caller and leaves the next save free to complete", async () => {
-
-    const refused = save((current) => { current.server = { port: 0 }; });
-    const completed = save((current) => { current.playback = { stallThreshold: 0.2 }; });
-
-    await assert.rejects(refused, indexModule.ConfigurationRejectedError);
-
-    const result = await completed;
-
-    assert.deepEqual(paths(result.applied), ["playback.stallThreshold"]);
-    assert.equal(store.file.server, undefined, "the refused mutation never reached the file");
-  });
-});
-
 describe("saveConfiguration - the loaded snapshot moves with the commit", () => {
 
   test("a handler reads the snapshot from before the save and a gap without the path it is realizing, and the snapshot moves once the commit lands",
@@ -492,8 +447,8 @@ describe("saveConfiguration - the loaded snapshot moves with the commit", () => 
       const before = indexModule.getLoadedConfiguration();
       let seen: Nullable<{ inHeld: boolean; inLive: boolean; inNextStream: boolean; loadedUnchanged: boolean }> = null;
 
-      // The handler records what a reader outside the reconcile queue sees while the change is being dispatched. It asserts nothing itself, because a throw
-      // inside a handler is a rejection of its bucket rather than a failed test.
+      // The handler records what a reader that does not wait on the store's queue sees while the change is being dispatched. It asserts nothing itself,
+      // because a throw inside a handler is a rejection of its bucket rather than a failed test.
       registerConfigChangeHandler("playback.", async () => {
 
         const gap = indexModule.getConfigurationGap();
@@ -595,9 +550,10 @@ describe("the boot warning and the outcome line", () => {
  */
 describe("the boot's capture correction and the saves after it", () => {
 
+  const BASELINE_WARNING = "The configured capture codecs omit the H.264 baseline, so it is restored.";
   const MODE_WARNING = "Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.";
   const UNRECOGNIZED_WARNING = "The configured capture codecs include identifiers the server does not recognize, so they are ignored.";
-  const CAPTURE_WARNINGS = new Set<unknown>([ MODE_WARNING, UNRECOGNIZED_WARNING, "The configured capture codecs omit the H.264 baseline, so it is restored." ]);
+  const CAPTURE_WARNINGS = new Set<unknown>([ BASELINE_WARNING, MODE_WARNING, UNRECOGNIZED_WARNING ]);
   const ORIGINAL_ENV = { ...process.env };
 
   /**
@@ -690,4 +646,451 @@ describe("the boot's capture correction and the saves after it", () => {
       assert.equal(store.file.streaming?.captureMode, undefined, "the environment's mode is never written");
       assert.equal(store.file.streaming?.captureCodecs, undefined, "the environment's codec list is never written");
     });
+
+  test("a save the hard-error check refuses beside a stored native capture mode logs no capture warning", async (t) => {
+
+    // The environment's list and the stored mode each need a correction in the save's candidate, so a warning logged before the validation shows here.
+    process.env["CAPTURE_CODECS"] = "hevc";
+    store.file = { streaming: { captureMode: "native" } };
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    await assert.rejects(save((current) => { current.server = { port: 0 }; }), indexModule.ConfigurationRejectedError);
+
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [], "a save the validation refuses announces none of its candidate's corrections");
+  });
+
+  test("a save of a playback setting while the environment supplies a list without the baseline logs the baseline warning once", async (t) => {
+
+    process.env["CAPTURE_CODECS"] = "hevc";
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [BASELINE_WARNING], "a landed save announces its candidate's correction once");
+  });
+
+  test("a save the store refuses at the write beside a stored native capture mode logs no capture warning", async (t) => {
+
+    // The store refuses once the save's callback has run and its validation has passed, so a warning logged inside the callback shows here.
+    process.env["CAPTURE_CODECS"] = "hevc";
+    store.file = { streaming: { captureMode: "native" } };
+    store.armedFailure = "write";
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    await assert.rejects(save((current) => { current.playback = { stallThreshold: 0.2 }; }), { message: WRITE_FAILURE_MESSAGE });
+
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [], "a save the store refuses announces none of its candidate's corrections");
+    assert.equal(store.file.streaming?.captureMode, "native", "the file keeps its stored mode, because the refused write kept nothing");
+  });
+});
+
+/* A settings save corrects the DeviceID on the file object it writes while the emulation is enabled. Every row starts from the boot of the suite's empty file,
+ * which generated the running DeviceID and stored it, and a row that needs the emulation off boots again from a file that turns it off.
+ */
+describe("saveConfiguration - the DeviceID correction", () => {
+
+  const DEVICE_ID_GENERATED = "An HDHomeRun DeviceID was generated.";
+  const DEVICE_ID_REPLACED = "The configured HDHomeRun DeviceID fails its checksum, so a valid one takes its place.";
+
+  /**
+   * Answers the DeviceID lines among a mocked logger method's recorded calls, in the order they were logged.
+   * @param calls - The mock's recorded calls.
+   * @returns Each DeviceID line's arguments.
+   */
+  function deviceIdLines(calls: readonly { readonly arguments: readonly unknown[] }[]): unknown[][] {
+
+    return calls.filter((call) => [ DEVICE_ID_GENERATED, DEVICE_ID_REPLACED ].includes(call.arguments[0] as string)).map((call) => [...call.arguments]);
+  }
+
+  test("a save whose mutator stores a DeviceID that fails its checksum keeps the running id in the file and in CONFIG, with the warning once", async (t) => {
+
+    const running = indexModule.CONFIG.hdhr.deviceId;
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    assert.equal(store.file.hdhr?.deviceId, running, "precondition: the boot stored its generated DeviceID");
+
+    const result = await save((current) => { current.hdhr = { ...current.hdhr, deviceId: "10000000" }; });
+    const saved = store.file;
+
+    assert.equal(saved.hdhr?.deviceId, running, "the file keeps the running DeviceID");
+    assert.equal(indexModule.CONFIG.hdhr.deviceId, running, "CONFIG keeps the running DeviceID");
+    assert.deepEqual(deviceIdLines(warn.mock.calls), [[ DEVICE_ID_REPLACED, { configured: "10000000", using: running.toUpperCase() } ]]);
+    assert.deepEqual(result.rejected, [], "the save reports no rejection for the DeviceID");
+  });
+
+  test("a save over a file whose DeviceID was removed by hand stores the running id in the file and in CONFIG and logs no DeviceID line", async (t) => {
+
+    const running = indexModule.CONFIG.hdhr.deviceId;
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    assert.equal(store.file.hdhr?.deviceId, running, "precondition: the boot stored its generated DeviceID");
+
+    // A hand edit removes the stored id once the boot has run, so the save's candidate holds an empty id and the running one takes its place.
+    store.file = { ...store.file, hdhr: {} };
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.equal(store.file.playback?.stallThreshold, 0.2, "precondition: the save landed");
+    assert.equal(store.file.hdhr?.deviceId, running, "the file stores the running DeviceID");
+    assert.equal(indexModule.CONFIG.hdhr.deviceId, running, "CONFIG keeps the running DeviceID");
+    assert.deepEqual(deviceIdLines([ ...warn.mock.calls, ...info.mock.calls ]), [], "an empty stored id that took the running one announces nothing");
+  });
+
+  test("a save that turns the emulation on over a file that holds no DeviceID writes a generated id in that same write", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { hdhr: { enabled: false } };
+    await indexModule.initializeConfiguration(undefined, store);
+
+    assert.equal(indexModule.CONFIG.hdhr.deviceId, "", "precondition: the disabled boot generated no DeviceID");
+
+    const writesBefore = store.writes;
+
+    info.mock.resetCalls();
+    await save((current) => { current.hdhr = { ...current.hdhr, enabled: true }; });
+
+    assert.equal(store.writes, writesBefore + 1, "the save wrote once");
+    assert.ok(validateDeviceId(store.file.hdhr?.deviceId ?? ""), "the file holds a DeviceID that passes its checksum");
+    assert.equal(indexModule.CONFIG.hdhr.deviceId, store.file.hdhr?.deviceId, "CONFIG runs the DeviceID the file holds");
+    assert.deepEqual(deviceIdLines(info.mock.calls), [[ DEVICE_ID_GENERATED, { deviceId: indexModule.CONFIG.hdhr.deviceId.toUpperCase() } ]]);
+  });
+
+  test("a save of another setting on a disabled emulation with no stored DeviceID leaves the file with none", async () => {
+
+    store.file = { hdhr: { enabled: false } };
+    await indexModule.initializeConfiguration(undefined, store);
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.equal(store.file.playback?.stallThreshold, 0.2, "precondition: the save landed");
+    assert.equal(store.file.hdhr?.deviceId, undefined, "the file holds no DeviceID");
+  });
+
+  test("a save the hard-error check refuses beside a stored DeviceID that fails its checksum logs no DeviceID line", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { ...store.file, hdhr: { deviceId: "10000000" } };
+
+    await assert.rejects(save((current) => { current.server = { port: 0 }; }), indexModule.ConfigurationRejectedError);
+
+    assert.deepEqual(deviceIdLines([ ...warn.mock.calls, ...info.mock.calls ]), [], "a refused save announces no DeviceID correction");
+  });
+
+  test("a save the store refuses at the write beside a stored DeviceID that fails its checksum logs no DeviceID line", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    store.file = { ...store.file, hdhr: { deviceId: "10000000" } };
+    store.armedFailure = "write";
+
+    await assert.rejects(save((current) => { current.playback = { stallThreshold: 0.2 }; }), { message: WRITE_FAILURE_MESSAGE });
+
+    assert.deepEqual(deviceIdLines([ ...warn.mock.calls, ...info.mock.calls ]), [], "a save the store refused announces no DeviceID correction");
+  });
+});
+
+/* A process write records leaves the process already holds and owns. Every row starts from the boot of the suite's empty file, so the held file carries the
+ * DeviceID that boot generated and nothing else, and CONFIG and the loaded snapshot hold the defaults.
+ */
+describe("writeProcessFields - the process write", () => {
+
+  const REFUSED_WRITE = "The configuration file refused a process write, so the new value applies to the running configuration alone.";
+  const HANDLER_REFUSED = "A configuration handler refused a value the process owns, so the running configuration keeps it regardless.";
+  const MODE_WARNING = "Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.";
+
+  /**
+   * Writes one process leaf through the store double.
+   * @param fields - Answers the leaves to write from the stored configuration it is handed.
+   */
+  async function write(fields: (stored: Readonly<UserConfig>) => indexModule.ProcessFieldValues): Promise<void> {
+
+    await indexModule.writeProcessFields(fields, store);
+  }
+
+  /**
+   * Counts the calls among a mocked logger method's recorded calls that carry one message.
+   * @param calls - The mock's recorded calls.
+   * @param message - The message to count.
+   * @returns How many calls carried it.
+   */
+  function countOf(calls: readonly { readonly arguments: readonly unknown[] }[], message: string): number {
+
+    return calls.filter((call) => call.arguments[0] === message).length;
+  }
+
+  test("a write beside a hand edit commits only its own leaf, leaves the edit for the next settings save, and that save defers the edit", async () => {
+
+    // The hand edit lands in the file once the boot has read it, so CONFIG and the loaded snapshot hold the port the boot read and the edit is in neither.
+    store.file = { ...store.file, server: { port: 6000 } };
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(store.file.server?.port, 6000, "the held file keeps the hand edit");
+    assert.equal(store.file.channels?.channelSortField, "channelNumber", "the held file carries the written leaf beside it");
+    assert.equal(indexModule.CONFIG.channels.channelSortField, "channelNumber", "CONFIG holds the written leaf");
+    assert.equal(indexModule.getLoadedConfiguration().channels.channelSortField, "channelNumber", "the loaded snapshot holds the written leaf");
+    assert.equal(indexModule.CONFIG.server.port, 5589, "CONFIG keeps the port the boot read");
+    assert.equal(indexModule.getLoadedConfiguration().server.port, 5589, "the loaded snapshot keeps the port the boot read");
+    assert.deepEqual(paths(indexModule.getConfigurationGap().held), [], "the process write reports nothing pending a restart");
+
+    const result = await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.deepEqual(paths(result.deferred), ["server.port"], "the next settings save reconciles the hand edit and defers it for a restart");
+  });
+
+  test("a write whose list equals the one CONFIG holds dispatches the list's handler once", async () => {
+
+    let calls = 0;
+
+    registerConfigChangeHandler("channels.enabledServices", async () => {
+
+      calls++;
+
+      return [];
+    });
+
+    await write(() => ({ "channels.enabledServices": [...indexModule.CONFIG.channels.enabledServices] }));
+
+    assert.equal(calls, 1, "the handler re-derives its state from the written list even though CONFIG already held it");
+  });
+
+  test("a write the store refuses at the read commits the leaf to CONFIG alone, dispatches its handler, logs the refusal once, and resolves", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    let calls = 0;
+
+    registerConfigChangeHandler("channels.channelSortField", async () => {
+
+      calls++;
+
+      return [];
+    });
+
+    store.armedFailure = "read";
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(indexModule.CONFIG.channels.channelSortField, "channelNumber", "the running configuration holds the leaf");
+    assert.equal(indexModule.getLoadedConfiguration().channels.channelSortField, "name", "the loaded snapshot keeps the file's value");
+    assert.equal(calls, 1, "the leaf's handler was dispatched");
+    assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 1, "the refusal is logged once");
+  });
+
+  test("a write the store refuses once its callback ran answers its leaves again from a clone of CONFIG and commits that answer to CONFIG alone",
+    async (t) => {
+
+      // The held file and CONFIG disagree on the list, so the answer fields gives on each tells which one the refused path committed.
+      const warn = t.mock.method(LOG, "warn", () => undefined);
+      const handed: Readonly<UserConfig>[] = [];
+
+      store.file = { ...store.file, channels: { disabledPredefined: ["a"] } };
+      store.armedFailure = "write";
+
+      assert.deepEqual(indexModule.CONFIG.channels.disabledPredefined, [], "precondition: CONFIG holds the empty list the boot read");
+
+      await write((stored) => {
+
+        handed.push(stored);
+
+        const list = stored.channels?.disabledPredefined;
+
+        return { "channels.disabledPredefined": [ ...(Array.isArray(list) ? list : []), "x" ] };
+      });
+
+      assert.equal(handed.length, 2, "fields ran on the file the store read and again on the refused path");
+      assert.notEqual(handed[1], indexModule.CONFIG, "the refused path handed fields an object other than CONFIG");
+      assert.deepEqual(store.file.channels?.disabledPredefined, ["a"], "the held file is as it was");
+      assert.deepEqual(indexModule.CONFIG.channels.disabledPredefined, ["x"], "CONFIG holds the answer fields gave on its clone of CONFIG");
+      assert.deepEqual(indexModule.getLoadedConfiguration().channels.disabledPredefined, [], "the loaded snapshot keeps the file's value");
+      assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 1, "the refusal is logged once");
+    });
+
+  test("a handler that refuses a process leaf leaves the leaf committed and logs the refusal once", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    registerRefusingHandler("channels.channelSortField", () => true);
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(indexModule.CONFIG.channels.channelSortField, "channelNumber", "the process owns the leaf, so it is committed regardless");
+    assert.equal(countOf(warn.mock.calls, HANDLER_REFUSED), 1, "the refusal is logged once");
+  });
+
+  test("a file holding an object at a setting that takes a single value takes a process write, which validates nothing", async (t) => {
+
+    // A save would refuse this file by its shape; a process write records its own leaf and leaves the rest of the file to the next save.
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { ...store.file, playback: { stallThreshold: { hand: "edited" } as unknown as number } };
+
+    const writesBefore = store.writes;
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(store.writes, writesBefore + 1, "the double counted one write more");
+    assert.equal(store.file.channels?.channelSortField, "channelNumber", "the held file carries the leaf");
+    assert.equal(indexModule.getLoadedConfiguration().channels.channelSortField, "channelNumber", "the loaded snapshot holds the leaf");
+    assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 0, "the write was not refused");
+  });
+
+  test("a file holding a number where the channels category belongs takes a process write of a channels leaf", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { ...store.file, channels: 5 as unknown as UserConfig["channels"] };
+
+    const writesBefore = store.writes;
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(store.writes, writesBefore + 1, "the double counted one write more");
+    assert.deepEqual(store.file.channels, { channelSortField: "channelNumber" }, "the held file holds a category with the leaf where the number stood");
+    assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 0, "the write was not refused");
+  });
+
+  test("a process write dispatches only its own leaves, leaving a refused settings change undispatched and in the gap", async () => {
+
+    let calls = 0;
+
+    registerConfigChangeHandler("playback.", async (changes): Promise<readonly ChangeRejection[]> => {
+
+      calls++;
+
+      return changes.map((change) => ({ path: change.path, reason: "The playback setting cannot be applied." }));
+    });
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    const callsAfterSave = calls;
+
+    assert.deepEqual(paths(indexModule.getConfigurationGap().live), ["playback.stallThreshold"], "precondition: the refused change is in the gap");
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(calls, callsAfterSave, "the playback handler was not called again");
+    assert.equal(indexModule.CONFIG.playback.stallThreshold, 0.1, "CONFIG keeps the running stall threshold");
+    assert.deepEqual(paths(indexModule.getConfigurationGap().live), ["playback.stallThreshold"], "the refused change stays in the gap for the next save");
+  });
+
+  test("a process write logs no reconcile outcome line and no correction warning", async (t) => {
+
+    // The stored native capture mode is one a candidate's build would correct with a warning, and the process write builds no candidate.
+    const info = t.mock.method(LOG, "info", () => undefined);
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { ...store.file, streaming: { captureMode: "native" } };
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    assert.equal(countOf(info.mock.calls, OUTCOME_LINE), 0, "no reconcile outcome line");
+    assert.equal(countOf(warn.mock.calls, MODE_WARNING), 0, "no correction warning");
+  });
+
+  test("a follow-up that rejects once the write has landed rejects the call with its error and takes no refused-write path", async (t) => {
+
+    // A path no setting or state entry classifies passes the store's write and then makes the class resolver throw inside the follow-up's commit.
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const writesBefore = store.writes;
+    let fieldsCalls = 0;
+
+    await assert.rejects(write(() => {
+
+      fieldsCalls++;
+
+      return { "channels.unclassified": 1 } as unknown as indexModule.ProcessFieldValues;
+    }), { message: "The configuration path channels.unclassified carries no reactivity class." });
+
+    assert.equal(fieldsCalls, 1, "fields ran once, on the file the store read");
+    assert.equal(store.writes, writesBefore + 1, "the write landed before the follow-up rejected");
+    assert.equal(Object.hasOwn(indexModule.CONFIG.channels, "unclassified"), false, "CONFIG does not hold the leaf");
+    assert.equal(Object.hasOwn(indexModule.getLoadedConfiguration().channels, "unclassified"), false,
+      "the loaded snapshot does not hold the leaf, because it moves only once the commit has completed");
+    assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 0, "no refused-write warning");
+  });
+
+  test("a landed process write followed by one the store refuses at the read takes the refused path for the second", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    await write(() => ({ "channels.channelSortField": "channelNumber" }));
+
+    store.armedFailure = "read";
+
+    await write(() => ({ "channels.channelSortDirection": "desc" }));
+
+    assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 1, "the second write's refusal is logged once");
+    assert.equal(indexModule.CONFIG.channels.channelSortDirection, "desc", "the second write's leaf is committed to CONFIG");
+  });
+});
+
+/* The debug page applies its filter to the runtime before its save is queued, so the runtime pattern can run ahead of CONFIG. Each row sets it ahead the same
+ * way, through initDebugFilter once the boot has run, and reads what a save leaves applied.
+ */
+describe("saveConfiguration - the runtime debug filter follows a saved filter through its handler", () => {
+
+  test("a save of a playback change leaves a runtime pattern set ahead of CONFIG applied", async () => {
+
+    initDebugFilter("tuning:hulu");
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.equal(getCurrentPattern(), "tuning:hulu", "a save whose gap does not hold the filter leaves the runtime filter as it stands");
+  });
+
+  test("a filter save the hard-error check refuses, followed by an unrelated save, leaves a runtime pattern set ahead applied", async () => {
+
+    initDebugFilter("tuning:hulu");
+
+    await assert.rejects(save((current) => {
+
+      current.logging = { debugFilter: "tuning:hulu" };
+      current.server = { port: 0 };
+    }), indexModule.ConfigurationRejectedError);
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.equal(getCurrentPattern(), "tuning:hulu", "the refused save wrote nothing, and the unrelated save left the runtime filter as it stands");
+  });
+
+  test("an import-shaped save whose filter equals CONFIG's leaves a runtime pattern set ahead applied", async () => {
+
+    initDebugFilter("tuning:hulu");
+
+    await save((current) => {
+
+      current.logging = { debugFilter: indexModule.CONFIG.logging.debugFilter };
+      current.playback = { stallThreshold: 0.2 };
+    });
+
+    assert.equal(getCurrentPattern(), "tuning:hulu", "a filter equal to the saved one is no change, so the runtime filter stays");
+  });
+
+  test("a save that changes the filter applies it to the runtime", async () => {
+
+    initDebugFilter("tuning:hulu");
+
+    await save((current) => { current.logging = { debugFilter: "recovery" }; });
+
+    assert.equal(getCurrentPattern(), "recovery", "the handler applies the changed filter");
+  });
+
+  test("a filter an environment source owns, set before the boot, stays applied through a save of another filter", async () => {
+
+    // The runtime filter set before the boot stands in for PRISMCAST_DEBUG or --debug: the boot reads it as owned by a higher-priority source.
+    initDebugFilter("streaming:showinfo");
+    await indexModule.initializeConfiguration(undefined, store);
+
+    await save((current) => { current.logging = { debugFilter: "recovery" }; });
+
+    assert.equal(indexModule.CONFIG.logging.debugFilter, "recovery", "precondition: the save committed its filter");
+    assert.equal(getCurrentPattern(), "streaming:showinfo", "the owned runtime filter stays");
+  });
 });

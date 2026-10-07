@@ -7,6 +7,7 @@ export * from "./chromeFetch.ts";
 export * from "./cliOutput.ts";
 export * from "./debugFilter.ts";
 export * from "./delay.ts";
+export * from "./deviceId.ts";
 export * from "./errors.ts";
 export * from "./evaluate.ts";
 export * from "./ffmpeg.ts";

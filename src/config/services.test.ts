@@ -437,13 +437,12 @@ describe("getEnabledServices: defensive copy", () => {
  */
 describe("the running filter and the persisted list", () => {
 
-  // An empty configuration file held in memory. Initializing from it resets CONFIG, the persisted list among it, to the defaults, and it writes nothing anywhere.
+  // An empty configuration file held in memory. Initializing from it resets CONFIG, the persisted list among it, to the defaults, and it writes nothing anywhere:
+  // the store only seeds the initialization and no row saves through it, so a write runs its callback on an empty object it keeps nothing of, and then its
+  // follow-up.
   const emptyStore: ConfigStore = {
 
-    mutateConfig: async (): Promise<void> => {
-
-      // Intentional no-op: the store only seeds the initialization, and no row saves through it.
-    },
+    mutateConfigThen: async (fn) => fn({})(),
     readConfig: async () => ({ config: {}, parseError: false, readError: false })
   };
 
@@ -452,6 +451,27 @@ describe("the running filter and the persisted list", () => {
     await initializeConfiguration(undefined, emptyStore);
     setEnabledServices([]);
   });
+
+  /**
+   * Runs a row in a data directory of its own, so the writer's process write reaches a real file store, and points the data directory back at os.tmpdir(), a
+   * directory that exists, once the row ends and its directory is removed, as the settings route rows leave it.
+   * @param row - The row's body.
+   */
+  async function inDataDir(row: () => Promise<void>): Promise<void> {
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+
+      try {
+
+        await row();
+      } finally {
+
+        initializeDataDir(os.tmpdir());
+      }
+    });
+  }
 
   test("setEnabledServices sets the running filter and leaves the persisted list in CONFIG untouched", () => {
 
@@ -493,23 +513,49 @@ describe("the running filter and the persisted list", () => {
     assert.equal(warn.mock.callCount(), 1, "an empty list ignores nothing, so it adds no warning");
   });
 
-  test("mutateEnabledServices writes the file, then the persisted list in CONFIG, then the running filter", async (t) => {
+  test("mutateEnabledServices writes the list through one process write, so the file, the persisted list in CONFIG and the running filter all hold it",
+    async () => {
 
-    // The row points the data directory at a temporary directory withTempDir removes, so once the row ends the resolver names os.tmpdir() instead, a directory
-    // that exists, as the settings route rows leave it.
-    t.after(() => {
+      await inDataDir(async () => {
 
-      initializeDataDir(os.tmpdir());
+        await mutateEnabledServices([ "hulu", "yttv" ]);
+
+        assert.deepEqual((await readConfig()).config.channels?.enabledServices, [ "hulu", "yttv" ], "the file holds the list");
+        assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "yttv" ], "the persisted list in CONFIG holds it too");
+        assert.deepEqual(getEnabledServices(), [ "hulu", "yttv" ], "the handler the write dispatched made it the running filter");
+      });
     });
 
-    await withTempDir(async (dir) => {
+  test("mutateEnabledServices of a list holding an unknown tag writes the list as given and runs only the known tags, with one warning naming the unknown one",
+    async (t) => {
 
-      initializeDataDir(dir);
+      await inDataDir(async () => {
+
+        const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+
+        await mutateEnabledServices([ "hulu", "unknown-tag-d" ]);
+
+        assert.deepEqual((await readConfig()).config.channels?.enabledServices, [ "hulu", "unknown-tag-d" ], "the file keeps the list as given");
+        assert.deepEqual(getEnabledServices(), ["hulu"], "the running filter holds the known tags alone");
+        assert.equal(warn.mock.callCount(), 1, "one warning");
+        assert.equal(warn.mock.calls[0]?.arguments[1], "unknown-tag-d", "the warning names the unknown tag");
+      });
+    });
+
+  test("mutateEnabledServices of a list equal to the persisted one makes it the running filter when the running filter is narrower", async () => {
+
+    // The write dispatches the list's handler whatever CONFIG held before, so a running filter left narrower than the persisted list is re-derived from the list
+    // even though the write changes nothing CONFIG holds.
+    await inDataDir(async () => {
+
+      await mutateEnabledServices([ "hulu", "yttv" ]);
+      setEnabledServices(["hulu"]);
+
+      assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "yttv" ], "precondition: the persisted list is the one the call below writes");
+
       await mutateEnabledServices([ "hulu", "yttv" ]);
 
-      assert.deepEqual((await readConfig()).config.channels?.enabledServices, [ "hulu", "yttv" ], "the file holds the list");
-      assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "yttv" ], "the persisted list in CONFIG follows the file");
-      assert.deepEqual(getEnabledServices(), [ "hulu", "yttv" ], "the running filter follows CONFIG");
+      assert.deepEqual(getEnabledServices(), [ "hulu", "yttv" ], "the running filter is the persisted list again");
     });
   });
 });

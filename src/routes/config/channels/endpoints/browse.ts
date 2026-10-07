@@ -8,9 +8,8 @@
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
-import { disablePredefinedChannels, enablePredefinedChannels, isPredefinedChannel, mutateChannels,
-  validateChannelUrl } from "../../../../config/userChannels.ts";
 import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.ts";
+import { isPredefinedChannel, mutateChannels, updatePredefinedChannels, validateChannelUrl } from "../../../../config/userChannels.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
 import type { UserChannel } from "../../../../config/userChannels.ts";
@@ -110,7 +109,8 @@ export function registerBrowseRoutes(app: Express): void {
 
     // Process all entries inside a single transactional mutation. Channel changes and service-selection changes go through data.* directly, so that portion of the
     // batch lands as one atomic write - the framework persists exactly what the fn produced. Atomicity covers only the channel and service-selection writes made
-    // here; the predefined enable/disable side effects run as separate follow-up writes after this mutation, so the batch as a whole is not crash-consistent.
+    // here; the predefined enable/disable side effects run as one follow-up configuration write after this mutation, so the batch as a whole is not
+    // crash-consistent.
     await mutateChannels((data) => {
 
       const allKeys = new Set(Object.keys(PREDEFINED_CHANNELS)).union(new Set(Object.keys(data.channels)));
@@ -256,17 +256,14 @@ export function registerBrowseRoutes(app: Express): void {
       }
     });
 
-    // Enable predefined channels that had the "enable" action. Runs after the mutation since the config write makes the channel visible in the lineup.
+    // Enable the predefined channels that had the "enable" action and disable the ones the batch reverted, in one configuration write after the channel
+    // mutation, since that write makes an enabled channel visible in the lineup. A key named in each list ends disabled, and a batch with no key to enable or
+    // disable writes nothing.
     const enableKeys = entries
       .filter((e): e is typeof e & { canonicalKey: string } => (e.action === "enable") && Boolean(e.canonicalKey?.trim()))
       .map((e) => e.canonicalKey.trim());
 
-    if(enableKeys.length > 0) {
-
-      await enablePredefinedChannels(enableKeys);
-    }
-
-    await disablePredefinedChannels([...keysToDisable]);
+    await updatePredefinedChannels({ disable: [...keysToDisable], enable: enableKeys });
 
     for(const disabledKey of keysToDisable) {
 

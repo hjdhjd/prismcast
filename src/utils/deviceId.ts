@@ -1,6 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * deviceId.ts: HDHomeRun DeviceID generation for PrismCast.
+ * deviceId.ts: HDHomeRun DeviceID validation and generation for PrismCast. It lives among the shared utilities, beneath the configuration layer, which corrects a
+ * stored DeviceID with it, and beneath the HDHomeRun emulation, which advertises the id the configuration layer corrected.
  */
 import crypto from "node:crypto";
 

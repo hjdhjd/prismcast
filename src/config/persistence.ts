@@ -233,7 +233,8 @@ export interface FileStoreOptions<T> {
 
 /**
  * A transactional file store that provides atomic writes, serialized mutations, corruption recovery, snapshots, declarative migrations, and integrity
- * validation. Callers interact with data through `mutate()` (serialized read-modify-write) and `read()` (read-only access). Direct file I/O is never exposed.
+ * validation. Callers interact with data through `mutate()` (serialized read-modify-write), `mutateThen()` (the same, with a follow-up that runs while the
+ * queue is still held) and `read()` (read-only access). Direct file I/O is never exposed.
  * @template T - The in-memory data type that callers mutate.
  */
 export interface FileStore<T> {
@@ -252,6 +253,20 @@ export interface FileStore<T> {
    * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard).
    */
   mutate(fn: (current: T) => void): Promise<void>;
+
+  /**
+   * Serialized read-modify-write operation that holds the store's queue through a follow-up. The mutation function modifies the current data in place, as
+   * mutate()'s does, and returns the follow-up; once the write and its readback have landed, the store awaits that follow-up before the next queued operation
+   * reads the file, and resolves with its result. A mutation function that throws writes nothing and runs no follow-up, a write or readback that fails runs no
+   * follow-up, and a follow-up that rejects rejects the caller with the write left on disk and the queue released.
+   *
+   * The held queue imposes one rule on the follow-up: nothing it awaits may write this store, because that write would wait on the queue the follow-up holds
+   * and never settle.
+   * @param fn - Mutation function. Receives current data, modifies it in place, and returns the follow-up to run once the write has landed.
+   * @returns The follow-up's result.
+   * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard), and whatever the follow-up rejects with.
+   */
+  mutateThen<R>(fn: (current: T) => () => Promise<R>): Promise<R>;
 
   /**
    * Read-only access to the current file contents. Returns the parsed data with parse status, recovery status, and migration result. Does not acquire the
@@ -304,7 +319,8 @@ export async function ensureAllMigrated(): Promise<void> {
  *
  * Safety guarantees:
  * - **Atomic writes:** data is written to a `.tmp` file and renamed over the original. `rename()` is atomic on POSIX and NTFS.
- * - **Serialization:** a promise chain ensures only one `mutate()` runs at a time. Concurrent callers queue behind the active operation.
+ * - **Serialization:** a promise chain ensures only one `mutate()` or `mutateThen()` runs at a time, a `mutateThen()` holding it through its follow-up.
+ *   Concurrent callers queue behind the active operation.
  * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if both the main file and its `.bak` are unparseable, preventing save-over-corrupt cascades.
  * - **Read-failure guard:** `mutate()` throws when the main file exists but could not be read, because the read then answers with defaults, and writing over
  *   the file would replace its contents with them. `readError` on the read result marks that outcome for a caller reading on its own.
@@ -331,8 +347,8 @@ export async function ensureAllMigrated(): Promise<void> {
  */
 export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
-  // Serialization queue. Each mutate() call chains onto this promise so operations execute one at a time.
-  let queue: Promise<void> = Promise.resolve();
+  // Serialization queue. Each mutateThen() call, and every mutate() through it, chains onto this promise so operations execute one at a time.
+  let queue: Promise<unknown> = Promise.resolve();
 
   // Lazy data directory creation. The directory is created once on the first write, then skipped for subsequent writes.
   let dataDirEnsured = false;
@@ -782,10 +798,11 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   }
 
   /**
-   * Executes a single mutation: read (with migrations), guard, snapshot pre-state for validation, mutate, validate, backup, atomic write. Called under the
-   * serialization queue.
+   * Executes a single mutation: read (with migrations), guard, snapshot pre-state for validation, mutate, validate, backup, atomic write, readback. Called under
+   * the serialization queue. It answers the follow-up the mutation function returned once the write is verified, and runs none of it, so the caller decides
+   * where in the queue the follow-up runs.
    */
-  async function doMutate(fn: (current: T) => void): Promise<void> {
+  async function doMutate<R>(fn: (current: T) => () => Promise<R>): Promise<() => Promise<R>> {
 
     const filePath = options.path();
 
@@ -810,8 +827,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     // Capture pre-mutation state for the validator. Skip the clone when no validator is configured to avoid the overhead.
     const prevState = options.validate ? structuredClone(result.data) : null;
 
-    // Apply the caller's mutation. Callbacks modify data in place.
-    fn(result.data);
+    // Apply the caller's mutation. Callbacks modify data in place and answer the follow-up to run once the write has landed.
+    const followUp = fn(result.data);
 
     // Run the validator if one is configured. Issues are logged without aborting the write.
     if(options.validate && prevState) {
@@ -891,21 +908,42 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     }
 
     LOG.debug("persistence:write", "Saved %s to %s.", options.label, filePath);
+
+    return followUp;
   }
 
   /**
-   * Enqueues a mutation onto the serialization queue. The promise chain ensures only one mutation runs at a time. Errors propagate to the caller but do not
-   * break the chain for subsequent callers.
+   * Enqueues a mutation and its follow-up onto the serialization queue as one operation, the only place the queue is appended to. The follow-up runs inside the
+   * queued operation, after the write and its readback, so the next operation reads the file only once the follow-up has settled. Errors propagate to the
+   * caller but do not break the chain for subsequent callers.
    */
-  async function mutate(fn: (current: T) => void): Promise<void> {
+  async function mutateThen<R>(fn: (current: T) => () => Promise<R>): Promise<R> {
 
-    const operation = queue.then(async () => doMutate(fn));
+    const operation = queue.then(async () => {
+
+      const followUp = await doMutate(fn);
+
+      return followUp();
+    });
 
     // Swallow errors on the chain reference so future operations can proceed. The error still propagates to the caller via the returned promise.
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional no-op: errors are propagated to the caller via the returned promise.
     queue = operation.catch(() => {});
 
     return operation;
+  }
+
+  /**
+   * Enqueues a mutation onto the serialization queue: a mutateThen() whose follow-up resolves at once, so the queue is released as soon as the write has landed.
+   */
+  async function mutate(fn: (current: T) => void): Promise<void> {
+
+    return mutateThen((current) => {
+
+      fn(current);
+
+      return async (): Promise<void> => Promise.resolve();
+    });
   }
 
   /**
@@ -935,7 +973,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     return peek.migrationResult;
   }
 
-  const store: FileStore<T> = { ensureMigrated, mutate, read, snapshot };
+  const store: FileStore<T> = { ensureMigrated, mutate, mutateThen, read, snapshot };
 
   registeredStores.push(store);
 

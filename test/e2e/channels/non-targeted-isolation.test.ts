@@ -57,9 +57,9 @@ describe("channels.json non-targeted byte-preservation", () => {
       data.channels["amc"] = { stationId: "999003" };
     });
 
-    // Disable abc and ae via the public wrapper so the in-memory CONFIG cache stays in sync with the persisted disabledPredefined list. mutateConfig() writes
-    // to disk but does NOT sync CONFIG.channels.disabledPredefined - that runtime cache is owned by the disablePredefinedChannels / enablePredefinedChannels
-    // pair, and isPredefinedChannelDisabled reads from CONFIG. Going through the wrapper is the documented contract for runtime-effective disable.
+    // Disable abc and ae via the public wrapper, whose process write lands the disabledPredefined list in the file and in CONFIG together. The store-level
+    // mutateConfig() writes the file alone and never reaches CONFIG.channels.disabledPredefined, which isPredefinedChannelDisabled reads. Going through the
+    // wrapper is the documented contract for runtime-effective disable.
     await disablePredefinedChannels([ "abc", "ae" ]);
 
     const before = await snapshotEntries(ctx, [ "abc", "ae" ]);

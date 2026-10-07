@@ -229,8 +229,9 @@ export interface ChannelsDvrConfig {
  */
 export interface HdhrConfig {
 
-  // Device ID for HDHomeRun identification on the network. Auto-generated on first startup using the HDHomeRun checksum algorithm and stored in the config file
-  // for persistence across restarts. Must be exactly 8 hex characters with a valid check digit.
+  // Device ID for HDHomeRun identification on the network, stored in the config file for persistence across restarts. While the emulation is enabled, a missing
+  // id or one that fails its checksum takes the running id when that one passes and otherwise one generated with the HDHomeRun checksum algorithm, where the boot
+  // loads the file or a settings save writes it, and a disabled instance's file is never written for it. Must be exactly 8 hex characters with a valid check digit.
   deviceId: string;
 
   // Whether LAN discovery is enabled. When true and HDHR emulation is enabled, PrismCast binds a UDP responder on the standard HDHomeRun discovery port (65001)
@@ -298,8 +299,8 @@ export interface ServerConfig {
  * - "ffmpeg": Captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
  * - "native": Captures fMP4 (H264+AAC) directly from Chrome. No dependencies but may be unstable with long recordings.
  *
- * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so every configuration the server builds, at startup and on every
- * save, corrects "native" to "ffmpeg" with a warning, and every write of the configuration file stores the corrected value.
+ * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so every configuration the server builds corrects "native" to
+ * "ffmpeg", the warning is logged at startup and by a save whose write lands, and every write of the configuration file stores the corrected value.
  */
 export type CaptureMode = "ffmpeg" | "native";
 
@@ -318,8 +319,8 @@ export interface StreamingConfig {
 
   // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
-  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Any other value is corrected to "ffmpeg" with a warning wherever a configuration is built, at startup
-  // and on every save, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
+  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Every configuration built corrects any other value to "ffmpeg", and the warning is logged at startup
+  // and by a save whose write lands, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
   captureMode: CaptureMode;
 
   // Target frame rate for video capture. Higher frame rates produce smoother video but require more CPU and bandwidth. 60fps is ideal for sports content; 30fps

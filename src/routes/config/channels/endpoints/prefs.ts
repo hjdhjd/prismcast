@@ -20,7 +20,8 @@ import { route } from "../http/handler.ts";
 export function registerPrefsRoutes(app: Express): void {
 
   // POST /config/channels/display-prefs - Update channel table display preferences (visible columns, sort field, sort direction). Every field is optional;
-  // only supplied fields are updated. mutateChannelDisplayPrefs persists the change and updates the runtime CONFIG cache atomically.
+  // mutateChannelDisplayPrefs writes only the supplied fields, so a field the request leaves out keeps the value the file holds, and the supplied ones reach
+  // the file and the running configuration before the route answers.
   app.post("/config/channels/display-prefs", route("update display preferences", async (req: Request, res: Response) => {
 
     const body = req.body as { sortDirection?: string; sortField?: string; visibleColumns?: string[] };

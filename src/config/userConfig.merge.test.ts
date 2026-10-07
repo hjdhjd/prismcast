@@ -647,8 +647,8 @@ describe("process field hydration", () => {
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* channelsDvr.host is discovered by the show-info module, which writes it into CONFIG and persists it through showInfo.persistDvrHost, and its
-     * PROCESS_FIELDS state entry keeps it on disk. This test asserts that the same entry brings it back into runtime CONFIG on boot, which is where the
+    /* channelsDvr.host is discovered by the show-info module, which writes it to the file and to CONFIG through one process write, and its PROCESS_FIELDS
+     * state entry keeps it on disk. This test asserts that the same entry brings it back into runtime CONFIG on boot, which is where the
      * show-info module and pretune read the host, so it is known from the first poll rather than after the next discovery.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };

@@ -2,17 +2,17 @@
  *
  * index.ts: Configuration management for PrismCast.
  */
-import type { ApplyResult, ConfigChangePartition } from "./reactivity.ts";
-import { CONFIG_METADATA, DEFAULTS, collectStoredCaptureCorrections, correctCaptureValues, getNestedValue, getReactivityClass, getSettingByPath,
-  mergeConfiguration, mutateConfig, readConfig, setNestedValue } from "./userConfig.ts";
+import type { ApplyResult, ChangeRejection, ConfigChange, ConfigChangePartition } from "./reactivity.ts";
+import { CONFIG_METADATA, DEFAULTS, collectStoredCaptureCorrections, correctCaptureValues, correctStoredDeviceId, getNestedValue, getReactivityClass,
+  getSettingByPath, mergeConfiguration, mutateConfigThen, readConfig, setNestedValue } from "./userConfig.ts";
+import type { CaptureCorrection, DeviceIdCorrection, ProcessFieldPath, UserConfig } from "./userConfig.ts";
 import type { Config, Nullable } from "../types/index.ts";
-import { LOG, assertNever, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter,
-  isAnyDebugEnabled } from "../utils/index.ts";
-import { applyConfigChanges, computeConfigDiff, partitionConfigChanges } from "./reactivity.ts";
+import { LOG, assertNever, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled,
+  isPlainObject } from "../utils/index.ts";
+import { applyConfigChanges, computeConfigDiff, partitionConfigChanges, registerConfigChangeHandler } from "./reactivity.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
 import { getPresetViewport, getValidPresetIds } from "./presets.ts";
 import { HTTP_LOG_LEVELS } from "../types/index.ts";
-import type { UserConfig } from "./userConfig.ts";
 import path from "node:path";
 
 /* The CONFIG object centralizes all tunable parameters for the application. Configuration uses a layered approach with the following priority (highest to lowest):
@@ -52,24 +52,27 @@ export type CliOverrides = Record<string, unknown>;
 /* ConfigStore is the disk-persistence boundary config/index.ts composes on: the read-load and write-back operations backed by the file store. It is injected as a
  * default parameter on the persistence-facing functions so a test can substitute an in-memory store in the same place - no loader mock - while production uses
  * the real defaultConfigStore. mergeConfiguration and the normalization helpers stay direct because they are pure and touch no disk. This mirrors the library's
- * Clock port: a typed interface plus a module-const default, consumed through a defaulted parameter.
+ * Clock port: a typed interface plus a module-const default, consumed through a defaulted parameter. Its one write member holds the store's queue through a
+ * follow-up, so every write the configuration layer makes finishes what follows it before the next write reads the file.
  */
 export interface ConfigStore {
 
-  readonly mutateConfig: typeof mutateConfig;
+  readonly mutateConfigThen: typeof mutateConfigThen;
   readonly readConfig: typeof readConfig;
 }
 
-const defaultConfigStore: ConfigStore = { mutateConfig, readConfig };
+const defaultConfigStore: ConfigStore = { mutateConfigThen, readConfig };
 
 // The CONFIG object is the running configuration. It starts as a copy of DEFAULTS, is replaced by the merged configuration at startup, and from then on moves
-// one realized leaf at a time as saves reconcile it, so a restart-class value a save holds out never reaches it.
+// one leaf at a time, a realized leaf as saves reconcile it and a written leaf as process writes commit it, so a restart-class value a save holds out never
+// reaches it. Only this module writes it.
 export let CONFIG: Config = structuredClone(DEFAULTS);
 
 /* The loaded snapshot: the configuration file as last loaded, merged and normalized exactly as the next boot would read it. It is recorded at the end of the
- * boot's configuration load, and at the end of every completed reconcile, once that reconcile has committed what its handlers realized, and nowhere else.
- * The running configuration and this snapshot differ exactly where the process does not yet reflect the file - a restart-class value waiting for the
- * restart, a live value a handler refused, or a leaf the process wrote ahead of the file - and every save reconciles that gap.
+ * boot's configuration load and at the end of every completed reconcile, once that reconcile has committed what its handlers realized, and a landed process
+ * write sets its own leaves on it once it has committed them. The running configuration and this snapshot differ exactly where the process does not yet
+ * reflect the file - a restart-class value waiting for the restart, a live value a handler refused, or a leaf the process wrote ahead of the file, which only
+ * a process write the file refused leaves - and every save reconciles that gap.
  */
 let loadedConfig: Config = structuredClone(DEFAULTS);
 
@@ -104,18 +107,13 @@ let stashedCliOverrides: CliOverrides | undefined;
 // live without ever clobbering an env/CLI override - that override must win for the entire process lifetime.
 let envOrCliDebugOverride = false;
 
-/* Serialization queue for the reconcile. Each save's reconcile chains onto the previous one, so overlapping saves commit in the order their writes landed.
- * Without it, a reconcile waiting on a slow handler could commit its realized changes after a later save's reconcile had already committed newer values,
- * leaving the running configuration on a state the user already replaced.
- */
-let reconcileQueue: Promise<unknown> = Promise.resolve();
-
 /**
  * Initializes the configuration by loading the user config file, merging with defaults, applying environment variable overrides, and applying CLI overrides. This
  * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values. A file whose stored
- * capture values need a correction is written once through the store, which corrects them, unless the configuration carries a hard error.
+ * capture values need a correction, or whose HDHomeRun DeviceID the boot corrected, is written once through the store, the one write storing either correction
+ * or both, unless the store could not read the file or the configuration carries a hard error.
  * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
- * @param io - The config store the boot reads from and writes a capture correction through.
+ * @param io - The config store the boot reads from and makes its one correcting write through, which stores a capture correction, a DeviceID correction, or both.
  */
 export async function initializeConfiguration(cliOverrides?: CliOverrides, io: ConfigStore = defaultConfigStore): Promise<void> {
 
@@ -140,28 +138,61 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
   }
 
   // Capture whether a higher-priority debug source (PRISMCAST_DEBUG / --debug) already owns the active filter before we apply the persisted config filter, so a
-  // later save can re-apply a changed persisted filter live without overriding env/CLI. Measured here, ahead of normalizeConfig/commitDebugFilter, it reflects
-  // env/CLI alone rather than the persisted filter applying to itself.
+  // later save can re-apply a changed persisted filter live without overriding env/CLI. Measured here, ahead of normalizeConfig and applyPersistedDebugFilter, it
+  // reflects env/CLI alone rather than the persisted filter applying to itself.
   envOrCliDebugOverride = isAnyDebugEnabled();
 
-  // Build the running configuration exactly as every save builds its candidate, then commit the persisted debug filter to the runtime. The two steps are kept
-  // separate so a save can build and validate a candidate without applying its filter until a reconcile commits it.
-  CONFIG = buildCandidate(result.config);
-  commitDebugFilter();
+  // Build the running configuration exactly as every save builds its candidate, then apply its persisted debug filter to the runtime through
+  // applyPersistedDebugFilter. The steps are kept separate because the build is pure: a save builds and validates a candidate without touching the runtime filter,
+  // and applies a changed filter only through its registered handler, once the save's write has landed and its reconcile dispatches the change.
+  const built = buildCandidate(result.config);
 
-  /* The candidate is corrected as it is built, and the store corrects the stored capture values on every write, so a file whose own capture values need a
-   * correction gets one write that changes nothing else and lets the store's hook store the correction and log it. It is written only when the configuration has
-   * no hard error, because the boot never writes a configuration it is about to refuse, and a value the environment supplies asks for no write, because it is
-   * never stored.
+  CONFIG = built.config;
+  applyPersistedDebugFilter(CONFIG.logging.debugFilter);
+
+  // The boot has no running DeviceID to keep, so while the emulation is enabled a stored id that is missing or fails its checksum is replaced by a generated
+  // one, set on CONFIG and on the file the boot read together.
+  const deviceIdCorrection = correctStoredDeviceId({ candidate: CONFIG, file: result.config, running: "" });
+  const corrections = (deviceIdCorrection === null) ? built.corrections : [ ...built.corrections, deviceIdCorrection ];
+
+  // The boot announces every correction its configuration needed, the way a save announces its own once its write has landed.
+  for(const correction of corrections) {
+
+    logConfigurationCorrection(correction);
+  }
+
+  /* One write stores what the file itself needs and changes nothing else. The store corrects the stored capture values on every write, so a file whose own
+   * capture values need a correction gets a write that lets the store's hook store and log it, and a DeviceID the boot corrected is set on the file that write
+   * reads, so the one write stores either correction or both. A value the environment supplies asks for no write, because it is never stored. The write runs
+   * only when the store read the file itself, because the boot has already said the store refuses writes on a file it could not read or parse, and only when
+   * the configuration has no hard error, because the boot never writes a configuration it is about to refuse.
    */
-  if((collectStoredCaptureCorrections(result.config).length > 0) && (collectHardErrors(CONFIG).length === 0)) {
+  const fileNeedsWrite = (collectStoredCaptureCorrections(result.config).length > 0) || (deviceIdCorrection !== null);
+
+  if(fileNeedsWrite && !result.readError && !result.parseError && (collectHardErrors(CONFIG).length === 0)) {
 
     try {
 
-      await io.mutateConfig(() => { /* The store's write hook makes the correction. */ });
+      await io.mutateConfigThen((current) => {
+
+        // The store's write hook makes the capture correction, and the corrected DeviceID is set here, so the one write stores either correction or both.
+        if(deviceIdCorrection !== null) {
+
+          if(!isPlainObject(current.hdhr)) {
+
+            current.hdhr = {};
+          }
+
+          current.hdhr.deviceId = CONFIG.hdhr.deviceId;
+        }
+
+        // Nothing follows the boot's write, so its follow-up resolves at once and releases the store's queue.
+        return async (): Promise<void> => Promise.resolve();
+      });
     } catch(error) {
 
-      LOG.warn("The corrected capture configuration could not be written, so the file keeps its stored value until the next write.", { error: formatError(error) });
+      // The running configuration keeps a corrected DeviceID, and the next settings save writes it onto the file.
+      LOG.warn("The corrected configuration could not be written, so the file keeps its stored values until the next write.", { error: formatError(error) });
     }
   }
 
@@ -184,10 +215,11 @@ export function getLoadedConfiguration(): Readonly<Config> {
 /**
  * Answers which saved settings the running process does not yet reflect: the gap between CONFIG and the loaded snapshot, partitioned by reactivity class. Its
  * held members are the settings pending a restart, and its live and next-stream members are the settings a handler could not realize. The view covers the
- * settings surface alone, the paths CONFIG_METADATA declares, because a leaf the process writes and the loaded snapshot does not yet hold is the process ahead
- * of the file rather than a save the user is waiting on. Derived on every call from CONFIG and the loaded snapshot, so it holds no state of its own. A
- * reconcile publishes the snapshot only once it has committed what its handlers realized, so a caller outside the reconcile queue reads CONFIG and the snapshot
- * as the last completed reconcile left them, and a change a save introduces is never listed as unrealized while its handlers are still running.
+ * settings surface alone, the paths CONFIG_METADATA declares, because a leaf the process wrote and the loaded snapshot does not hold, which only a process
+ * write the file refused leaves, is the process ahead of the file rather than a save the user is waiting on. Derived on every call from CONFIG and the loaded
+ * snapshot, so it holds no state of its own. A reconcile publishes the snapshot only once it has committed what its handlers realized, so a caller that does
+ * not wait on the store's queue reads CONFIG and the snapshot as the last completed reconcile left them, and a change a save introduces is never listed as
+ * unrealized while its handlers are still running.
  * @returns The settings-surface gap, partitioned into held, live, and next-stream changes, each carrying the running value as previous and the saved value as
  *   current.
  */
@@ -202,10 +234,12 @@ export function getConfigurationGap(): ConfigChangePartition {
  * The one entry for a write to the settings surface - the settings save, the import, and the debug page all go through it. Inside the store's own mutation it
  * applies the caller's mutator to the current file, builds the candidate exactly as the next boot would read that file, and refuses an invalid candidate by
  * throwing ConfigurationRejectedError with the validation reason, so the store writes nothing. A file the store cannot parse or cannot read refuses the
- * mutation inside the store the same way. Once the file is written, the save enqueues the reconcile of that candidate and answers with its result.
+ * mutation inside the store the same way. Once the file is written, the save reconciles that candidate as the write's follow-up and answers with its result.
  *
- * The store's queue serializes the read-modify-validate-write of concurrent saves, and the reconcile queue serializes their commits in the order their writes
- * landed. A config-change handler never saves, because the reconcile it runs inside holds the queue that save's reconcile would wait on.
+ * One queue: the store's chain serializes each write's read-modify-write together with its follow-up, a save's reconcile or a process write's commit, which
+ * runs while the store's queue is held, so no write reads the file while another write's reconcile or commit is running, and overlapping saves commit in the
+ * order their writes landed. A config-change handler never writes the configuration, because the reconcile or the process write's commit it runs inside holds
+ * the store's queue, and a write it awaited would wait on that queue and never settle.
  * @param mutator - Applies the caller's change to the current file in place. A throw inside it writes nothing.
  * @param io - The config store the save writes through.
  * @returns What the reconcile realized, the restart-class changes this save holds for a restart, and the changes of this save a handler refused.
@@ -213,61 +247,195 @@ export function getConfigurationGap(): ConfigChangePartition {
  */
 export async function saveConfiguration(mutator: (current: UserConfig) => void, io: ConfigStore = defaultConfigStore): Promise<ApplyResult> {
 
-  // The callback runs under the store's queue against the file the store just read, so the candidate is built from exactly the configuration this save writes.
-  // The store runs it before resolving, which is what lets the reconcile below start from it without reading the file a second time.
-  const saved: { candidate?: Config } = {};
-
-  await io.mutateConfig((current) => {
+  // The callback runs under the store's queue against the file the store just read, so the candidate is built from exactly the configuration this save writes,
+  // and the follow-up it returns reconciles that candidate once the write has landed, before the store lets the next write read the file.
+  return io.mutateConfigThen((current) => {
 
     mutator(current);
 
     // The candidate is built on a clone so normalization never reaches the file object the store is about to write.
-    const candidate = buildCandidate(structuredClone(current));
-    const rejection = collectCandidateRejection(candidate);
+    const built = buildCandidate(structuredClone(current));
+
+    // The DeviceID is corrected once the build has settled the enabled flag and the stored id the correction reads, and before the validation, so the
+    // candidate that is validated and reconciled carries the same id the correction sets on the file object the store writes.
+    const deviceIdCorrection = correctStoredDeviceId({ candidate: built.config, file: current, running: CONFIG.hdhr.deviceId });
+    const candidate = (deviceIdCorrection === null) ? built : { config: built.config, corrections: [ ...built.corrections, deviceIdCorrection ] };
+    const rejection = collectCandidateRejection(candidate.config);
 
     if(rejection !== null) {
 
       throw new ConfigurationRejectedError(rejection);
     }
 
-    saved.candidate = candidate;
+    return async (): Promise<ApplyResult> => {
+
+      // The write has landed, so the corrections the candidate needed are announced here, and a save the validation or the store refused announces none of them.
+      for(const correction of candidate.corrections) {
+
+        logConfigurationCorrection(correction);
+      }
+
+      // The store read and parsed the file to run the callback, so a parse failure the boot recorded does not describe the file this save wrote.
+      configParseError = false;
+      configParseErrorMessage = undefined;
+
+      return reconcileConfiguration(candidate.config);
+    };
   });
+}
 
-  const { candidate } = saved;
+/**
+ * The leaves a process write answers, keyed by the dot path of a field the process owns, so a path PROCESS_FIELDS does not declare as a state field is a
+ * compile error.
+ */
+export type ProcessFieldValues = Readonly<Partial<Record<ProcessFieldPath, unknown>>>;
 
-  if(candidate === undefined) {
+/**
+ * The operation for every field the process owns, the leaves the settings form never writes: the setup flag, the disabled predefined channels, the display
+ * preferences, the service list, and the discovered DVR host. Inside the store's own mutation it answers the leaves from the file the store just read and sets
+ * each on that file, and once the write has landed its follow-up commits exactly those leaves: their handlers are dispatched whatever CONFIG held before, and
+ * each leaf is set on CONFIG and then on the loaded snapshot. It builds no candidate and validates nothing beyond the store's own write normalization, because
+ * the process already holds the values it writes, and every other difference between CONFIG and the file, a hand edit or a refused setting among them, stays
+ * for the next settings save to reconcile and report.
+ *
+ * When the store refuses the write - it could not read or parse the file, or the callback, the write, or its readback failed - the leaves are answered again
+ * from the running configuration and committed to CONFIG alone with one warning naming them, and the operation resolves, because the process owns the value
+ * and the file is only its record. A readback that fails is such a refusal though the file may hold the leaves, and the loaded snapshot takes them at the
+ * next settings save that lands. A rejection that arrives once the follow-up has begun is rethrown instead, because that write has landed: committing and
+ * dispatching the leaves a second time would log a refusal the file never made.
+ *
+ * A caller's fields answers from its argument alone and changes nothing it reaches, because it may run twice, once on the file the store read and once on the
+ * clone of CONFIG the refused path hands it, and Readonly holds only its argument's top level. A handler for a process field never writes the configuration,
+ * because the commit it runs inside holds the store's queue; a handler that refuses a process leaf leaves it committed regardless.
+ * @param fields - Answers the leaves to write, keyed by path, from the stored configuration it is handed.
+ * @param io - The config store the write goes through.
+ * @throws Whatever a follow-up that has begun rejects with, such as the class resolver's error for a leaf no setting or state entry classifies.
+ */
+export async function writeProcessFields(fields: (stored: Readonly<UserConfig>) => ProcessFieldValues, io: ConfigStore = defaultConfigStore): Promise<void> {
 
-    throw new Error("The configuration store completed the save without running it, so there is nothing to reconcile.");
+  // Set by the follow-up's first statement and local to this call, so the catch below tells a write the store refused, which committed nothing, from a landed
+  // write whose commit rejected. The flag is a field rather than a bare local because a closure sets it, which the compiler's narrowing of a local cannot see.
+  const followUp = { begun: false };
+
+  try {
+
+    await io.mutateConfigThen((current) => {
+
+      const values = fields(current);
+
+      for(const [ leafPath, value ] of Object.entries(values)) {
+
+        setFileLeaf(current, leafPath, structuredClone(value));
+      }
+
+      return async (): Promise<void> => {
+
+        followUp.begun = true;
+
+        // The store read and parsed the file to run the callback, so a parse failure the boot recorded does not describe the file this write landed on.
+        configParseError = false;
+        configParseErrorMessage = undefined;
+
+        await commitProcessFields(values);
+
+        // The loaded snapshot takes the leaves once they are committed, the order a landed save keeps, so a commit that rejects leaves it as it was.
+        for(const [ leafPath, value ] of Object.entries(values)) {
+
+          setNestedValue(loadedConfig as unknown as Record<string, unknown>, leafPath, structuredClone(value));
+        }
+      };
+    });
+  } catch(error) {
+
+    if(followUp.begun) {
+
+      throw error;
+    }
+
+    const values = fields(structuredClone(CONFIG));
+
+    await commitProcessFields(values);
+
+    LOG.warn("The configuration file refused a process write, so the new value applies to the running configuration alone.",
+      { error: formatError(error), paths: Object.keys(values) });
+  }
+}
+
+/**
+ * Commits the leaves a process write answered, the step its landed and refused paths share: each leaf becomes a change against CONFIG, the changes are partitioned by
+ * class and dispatched to their handlers with a clone of CONFIG carrying every leaf, whatever CONFIG held before, so a handler re-derives its state from the
+ * value written, and then each leaf is set on CONFIG. A handler's refusal is logged and commits the leaf regardless, because the process owns it.
+ * @param values - The leaves the write answered, keyed by path.
+ */
+async function commitProcessFields(values: ProcessFieldValues): Promise<void> {
+
+  const changes = Object.entries(values).map(([ leafPath, current ]) => ({ current, path: leafPath, previous: getNestedValue(CONFIG, leafPath) }));
+  const partition = partitionConfigChanges(changes, getReactivityClass);
+  const next = structuredClone(CONFIG);
+
+  for(const change of changes) {
+
+    setNestedValue(next as unknown as Record<string, unknown>, change.path, structuredClone(change.current));
   }
 
-  // The store read and parsed the file to run the callback, so a parse failure the boot recorded does not describe the file this save wrote.
-  configParseError = false;
-  configParseErrorMessage = undefined;
+  const dispatch = await applyConfigChanges(partition, next);
 
-  const operation = reconcileQueue.then(async () => reconcileConfiguration(candidate));
+  for(const refusal of dispatch.rejected) {
 
-  // Swallow errors on the chain reference so future reconciles can proceed. The error still propagates to the caller via the returned promise.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional no-op: errors are propagated to the caller via the returned promise.
-  reconcileQueue = operation.catch(() => {});
+    LOG.warn("A configuration handler refused a value the process owns, so the running configuration keeps it regardless.",
+      { path: refusal.change.path, reason: refusal.reason });
+  }
 
-  return operation;
+  // Each value is cloned so CONFIG never shares an array with the loaded snapshot or with the file the store wrote.
+  for(const change of changes) {
+
+    setNestedValue(CONFIG as unknown as Record<string, unknown>, change.path, structuredClone(change.current));
+  }
+}
+
+/**
+ * Sets one leaf on a configuration file the store is about to write, first replacing each intermediate on the leaf's path that is not a plain object with an
+ * empty one, so a hand-edited value standing where a category belongs takes the write rather than refusing every later one.
+ * @param file - The configuration file.
+ * @param leafPath - The dot-separated path of the leaf.
+ * @param value - The value to set.
+ */
+function setFileLeaf(file: UserConfig, leafPath: string, value: unknown): void {
+
+  const root = file as unknown as Record<string, unknown>;
+  let node = root;
+
+  for(const segment of leafPath.split(".").slice(0, -1)) {
+
+    const child = node[segment];
+
+    if(!isPlainObject(child)) {
+
+      node[segment] = {};
+    }
+
+    node = node[segment] as Record<string, unknown>;
+  }
+
+  setNestedValue(root, leafPath, value);
 }
 
 /**
  * Reconciles the running configuration against a candidate a save has just written. The gap between CONFIG and the candidate is partitioned by class: its
  * restart-class changes are held out of CONFIG, and its live and next-stream changes go to their handlers together with the candidate running configuration -
- * CONFIG with those changes applied - so a handler realizes the state it is handed. Only the changes no handler refused are committed, one path at a time, so a
- * process write that lands while the handlers run survives, and nothing is rolled back: a refused change stays in the gap, and every later save retries it.
+ * CONFIG with those changes applied - so a handler realizes the state it is handed. Only the changes no handler refused are committed, one path at a time, so
+ * a refused change and a held restart-class change stay out of CONFIG while the realized changes beside them in the same category are committed, and nothing
+ * is rolled back: a refused change stays in the gap, and every later save retries it.
  *
- * The candidate becomes the loaded snapshot only once the realized changes are committed. A reader outside the reconcile queue - the settings form, the gap
- * accessor - therefore sees CONFIG and the loaded snapshot only as a completed reconcile left them, and a change this save introduces never reads as
- * unrealized while its handlers are still running. A reconcile that throws before that point leaves the snapshot where it was: the next save's gap retries
+ * The candidate becomes the loaded snapshot only once the realized changes are committed. A reader that does not wait on the store's queue - the settings
+ * form, the gap accessor - therefore sees CONFIG and the loaded snapshot only as a completed reconcile left them, and a change this save introduces never reads
+ * as unrealized while its handlers are still running. A reconcile that throws before that point leaves the snapshot where it was: the next save's gap retries
  * whatever this one did not commit, and its delta, read against that earlier snapshot, reports this save's changes again.
  *
  * The result reports everything the reconcile realized. Its deferred and rejected lists answer for this save alone, through the delta between the previous
  * loaded snapshot and this one: a restart-class change is deferred when this save introduced it and it still differs from the running value, so a save that
- * writes the running value back schedules no restart, and a refusal is reported when this save asked for the refused change. Called only through the reconcile
- * queue in saveConfiguration.
+ * writes the running value back schedules no restart, and a refusal is reported when this save asked for the refused change. It runs only as the follow-up
+ * of a save's write, while the store's queue is held.
  * @param candidate - The configuration the save wrote, merged, normalized, and validated.
  * @returns The save's outcome.
  */
@@ -285,19 +453,17 @@ async function reconcileConfiguration(candidate: Config): Promise<ApplyResult> {
 
   const dispatch = await applyConfigChanges(gap, next);
 
-  // Commit exactly what the handlers realized, leaf by leaf, rather than assigning whole categories: a process writer may have moved another leaf of CONFIG while
-  // the handlers ran, and a per-path commit leaves that write in place. Each value is cloned so CONFIG never shares an array with the loaded snapshot.
+  // Commit exactly what the handlers realized, leaf by leaf, rather than assigning whole categories from the candidate: a change a handler refused and a
+  // restart-class change the save holds stay out of CONFIG, beside realized changes in the same category. Each value is cloned so CONFIG never shares an array
+  // with the loaded snapshot.
   for(const change of dispatch.realized) {
 
     setNestedValue(CONFIG as unknown as Record<string, unknown>, change.path, structuredClone(change.current));
   }
 
-  // The snapshot moves here, after what the handlers realized is committed, so CONFIG and the loaded snapshot change together for every reader outside the
-  // reconcile queue.
+  // The snapshot moves here, after what the handlers realized is committed, so CONFIG and the loaded snapshot change together for every reader that does not
+  // wait on the store's queue.
   loadedConfig = candidate;
-
-  // The debug filter's one side effect: a committed change to the persisted filter reaches the runtime filter here, unless an env or CLI source owns it.
-  commitDebugFilter();
 
   const livePaths = new Set(gap.live.map((change) => change.path));
   const heldPaths = new Set(gap.held.map((change) => change.path));
@@ -316,34 +482,60 @@ async function reconcileConfiguration(candidate: Config): Promise<ApplyResult> {
 }
 
 /**
+ * One correction a configuration needs before the server runs with it, tagged by the correction it makes. The capture corrections are the ones
+ * correctCaptureValues() answers, the DeviceID correction is the one correctStoredDeviceId() answers, and each other member carries the values its warning
+ * names.
+ *
+ * - frameRate: a frame rate outside the range its metadata declares is clamped to the nearer bound.
+ * - httpLogLevel: an HTTP log level the request logger does not know becomes the level that logs every request.
+ * - qualityPreset: a quality preset the server does not know becomes the default preset.
+ */
+type ConfigurationCorrection = CaptureCorrection | DeviceIdCorrection |
+  { readonly applied: number; readonly configured: number; readonly kind: "frameRate"; readonly max: number; readonly min: number } |
+  { readonly configured: string; readonly kind: "httpLogLevel"; readonly using: "all" } |
+  { readonly configured: string; readonly kind: "qualityPreset"; readonly using: string };
+
+/**
+ * What buildCandidate() answers: the merged, normalized configuration and the corrections its normalization made, in the order it made them.
+ */
+interface BuiltCandidate {
+
+  readonly config: Config;
+  readonly corrections: readonly ConfigurationCorrection[];
+}
+
+/**
  * Builds a configuration from a user configuration file exactly as the boot does: defaults, the file, the environment, and the stashed CLI overrides merged in
  * priority order, then normalized. The boot and every save share it, so a saved candidate is the configuration the next boot would read.
  * @param userConfig - The user configuration file. A save passes a clone of the file it is writing, so nothing the build does reaches that object.
- * @returns The merged, normalized configuration.
+ * @returns The merged, normalized configuration as config, and the corrections its normalization made as corrections, which the caller announces.
  */
-function buildCandidate(userConfig: UserConfig): Config {
+function buildCandidate(userConfig: UserConfig): BuiltCandidate {
 
   const config = mergeConfiguration(userConfig, stashedCliOverrides);
+  const corrections = normalizeConfig(config);
 
-  normalizeConfig(config);
-
-  return config;
+  return { config, corrections };
 }
 
 /**
  * Normalizes a configuration in place WITHOUT any global side effects: clamps an out-of-vocabulary quality preset to the default, clamps an out-of-range frame
  * rate to the nearer bound its metadata declares, corrects an unavailable capture mode or codec list to values the server can capture with, corrects an
- * unrecognized HTTP log level to the level that logs every request, and rewrites the persisted debug-filter string to its canonical form. Each correction logs
- * one warning. Pure with respect to process state - it touches only the passed config - so it is safe to run on a candidate a save may still refuse. Every
- * configuration is built through buildCandidate, so the boot and the save cannot drift. The live runtime debug filter is applied separately by
- * commitDebugFilter, which runs only once a configuration is committed, so a refused save never changes the running filter.
+ * unrecognized HTTP log level to the level that logs every request, and rewrites the persisted debug-filter string to its canonical form. It logs nothing and
+ * answers each correction it made, in order, because a configuration's corrections are announced by the boot and by a save whose write has landed, never while
+ * a candidate a save may still refuse is built. Pure with respect to process state - it touches only the passed config - so it is safe to run on a candidate a
+ * save may still refuse. Every configuration is built through buildCandidate, so the boot and the save cannot drift. The live runtime debug filter is applied
+ * separately, by the boot and by the registered debug-filter handler a landed save dispatches, so a refused save never changes the running filter.
  * @param config - The freshly merged configuration to normalize in place.
+ * @returns The corrections made, in the order they were made; empty when the configuration needed none.
  */
-function normalizeConfig(config: Config): void {
+function normalizeConfig(config: Config): readonly ConfigurationCorrection[] {
+
+  const corrections: ConfigurationCorrection[] = [];
 
   // Canonicalize the persisted debug-filter string (trim whitespace around commas, collapse duplicates) unless a higher-priority env/CLI source owns the filter.
   // This keeps the committed CONFIG and the computed diff working with canonical values and avoids a phantom whitespace-only diff; it does NOT touch the runtime
-  // filter - commitDebugFilter performs that side effect after a configuration is committed.
+  // filter - applyPersistedDebugFilter performs that side effect, at the boot and from the handler a landed save dispatches.
   if(!envOrCliDebugOverride) {
 
     config.logging.debugFilter = canonicalizeDebugPattern(config.logging.debugFilter);
@@ -353,8 +545,7 @@ function normalizeConfig(config: Config): void {
   // outside them, from the environment or a hand-edited file, is corrected here to the level that logs every request rather than reaching that switch.
   if(!HTTP_LOG_LEVELS.includes(config.logging.httpLogLevel)) {
 
-    LOG.warn("The configured HTTP log level is not one the server recognizes, so every request is logged.",
-      { configured: config.logging.httpLogLevel, using: "all" });
+    corrections.push({ configured: config.logging.httpLogLevel, kind: "httpLogLevel", using: "all" });
 
     config.logging.httpLogLevel = "all";
   }
@@ -364,8 +555,7 @@ function normalizeConfig(config: Config): void {
 
   if(!validPresets.includes(config.streaming.qualityPreset)) {
 
-    LOG.warn("The configured quality preset is not one the server recognizes, so the default preset is in use.",
-      { configured: config.streaming.qualityPreset, using: DEFAULTS.streaming.qualityPreset });
+    corrections.push({ configured: config.streaming.qualityPreset, kind: "qualityPreset", using: DEFAULTS.streaming.qualityPreset });
 
     config.streaming.qualityPreset = DEFAULTS.streaming.qualityPreset;
   }
@@ -378,69 +568,137 @@ function normalizeConfig(config: Config): void {
 
   if(clampedFrameRate !== config.streaming.frameRate) {
 
-    LOG.warn("The configured frame rate is outside the supported range, so the nearer bound is in use.",
-      { applied: clampedFrameRate, configured: config.streaming.frameRate, max, min });
+    corrections.push({ applied: clampedFrameRate, configured: config.streaming.frameRate, kind: "frameRate", max, min });
 
     config.streaming.frameRate = clampedFrameRate;
   }
 
-  /* Correct the capture values to ones the server can capture with, one warning per correction. Every candidate passes here, the boot's and every save's, so a
-   * capture value from the file or the environment is corrected by construction. The environment is re-applied to every candidate and never written, so a
-   * value it supplies warns at every build, while the file's own values are corrected once, by the store's write hook.
+  /* Correct the capture values to ones the server can capture with. Every candidate passes here, the boot's and every save's, so a capture value from the file or
+   * the environment is corrected by construction. The environment is re-applied to every candidate and never written, so a value it supplies warns at the boot
+   * and at every landed save, while the file's own values are corrected once, by the store's write hook.
    */
-  const { corrections, values } = correctCaptureValues(config.streaming);
+  const capture = correctCaptureValues(config.streaming);
 
-  for(const correction of corrections) {
+  corrections.push(...capture.corrections);
+  config.streaming = { ...config.streaming, ...capture.values };
 
-    switch(correction.kind) {
-
-      case "baseline": {
-
-        LOG.warn("The configured capture codecs omit the H.264 baseline, so it is restored.", { configured: correction.configured, using: correction.using });
-
-        break;
-      }
-
-      case "mode": {
-
-        LOG.warn("Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.",
-          { configured: correction.configured, using: correction.using });
-
-        break;
-      }
-
-      case "unrecognizedCodecs": {
-
-        LOG.warn("The configured capture codecs include identifiers the server does not recognize, so they are ignored.",
-          { configured: correction.configured, ignored: correction.ignored, using: correction.using });
-
-        break;
-      }
-
-      default: {
-
-        assertNever(correction);
-      }
-    }
-  }
-
-  config.streaming = { ...config.streaming, ...values };
+  return corrections;
 }
 
 /**
- * Applies the committed CONFIG's persisted debug filter to the live runtime filter, when no higher-priority env/CLI source owns it and the canonical value
- * differs from what is currently active. This is the global side effect split out of normalizeConfig: it runs only after a configuration is committed (at
- * startup, and at the end of every reconcile), so a refused save leaves the running filter untouched. Re-applying a changed persisted filter here is what lets
- * a debug-filter change delivered via /config/import take effect live instead of waiting for a restart; an emptied persisted filter clears the runtime filter
- * the same way (initDebugFilter("") disables it).
+ * Logs one correction a configuration needed, as one line carrying the values it names: a warning for each correction, and an info line for a DeviceID
+ * generated where none was stored. A configuration's corrections are announced by the boot and by a save whose write has landed, never while a candidate a save
+ * may still refuse is built, so a save the validation or the store refuses announces none of them.
+ * @param correction - The correction to announce.
  */
-function commitDebugFilter(): void {
+function logConfigurationCorrection(correction: ConfigurationCorrection): void {
 
-  if(!envOrCliDebugOverride && (CONFIG.logging.debugFilter !== getCurrentPattern())) {
+  switch(correction.kind) {
 
-    initDebugFilter(CONFIG.logging.debugFilter);
+    case "baseline": {
+
+      LOG.warn("The configured capture codecs omit the H.264 baseline, so it is restored.", { configured: correction.configured, using: correction.using });
+
+      break;
+    }
+
+    case "deviceId": {
+
+      // Every id is upper-cased, as the HDHomeRun surface prints it. A stored id that was empty and took the running one changes nothing an operator sees, so
+      // it is not announced.
+      if(correction.configured !== "") {
+
+        LOG.warn("The configured HDHomeRun DeviceID fails its checksum, so a valid one takes its place.",
+          { configured: correction.configured.toUpperCase(), using: correction.using.toUpperCase() });
+      } else if(correction.generated) {
+
+        LOG.info("An HDHomeRun DeviceID was generated.", { deviceId: correction.using.toUpperCase() });
+      }
+
+      break;
+    }
+
+    case "frameRate": {
+
+      LOG.warn("The configured frame rate is outside the supported range, so the nearer bound is in use.",
+        { applied: correction.applied, configured: correction.configured, max: correction.max, min: correction.min });
+
+      break;
+    }
+
+    case "httpLogLevel": {
+
+      LOG.warn("The configured HTTP log level is not one the server recognizes, so every request is logged.",
+        { configured: correction.configured, using: correction.using });
+
+      break;
+    }
+
+    case "mode": {
+
+      LOG.warn("Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.",
+        { configured: correction.configured, using: correction.using });
+
+      break;
+    }
+
+    case "qualityPreset": {
+
+      LOG.warn("The configured quality preset is not one the server recognizes, so the default preset is in use.",
+        { configured: correction.configured, using: correction.using });
+
+      break;
+    }
+
+    case "unrecognizedCodecs": {
+
+      LOG.warn("The configured capture codecs include identifiers the server does not recognize, so they are ignored.",
+        { configured: correction.configured, ignored: correction.ignored, using: correction.using });
+
+      break;
+    }
+
+    default: {
+
+      assertNever(correction);
+    }
   }
 }
+
+/**
+ * Applies a persisted debug filter to the live runtime filter, when no higher-priority env/CLI source owns it and the filter differs from what is currently
+ * active. This is the global side effect split out of normalizeConfig. The boot applies the filter it read, and a save applies one only through
+ * applyDebugFilterChange, its registered handler, which the reconcile dispatches only when the save's gap holds the filter. A save that leaves the filter alone
+ * therefore leaves the runtime filter as it stands, which matters because the debug page applies its filter to the runtime before its save is queued: a save
+ * queued ahead of that one, or the page's own save refused, must not put the persisted filter back over it. A changed filter delivered through /config/import
+ * takes effect live the same way, and an emptied persisted filter clears the runtime filter (initDebugFilter("") disables it).
+ * @param filter - The persisted filter, canonical as the build left it.
+ */
+function applyPersistedDebugFilter(filter: string): void {
+
+  if(!envOrCliDebugOverride && (filter !== getCurrentPattern())) {
+
+    initDebugFilter(filter);
+  }
+}
+
+/**
+ * Realizes a change to the persisted debug filter: the candidate's filter becomes the runtime filter unless an env or CLI source owns it. Applying a filter
+ * cannot fail, so the handler refuses nothing. It is exported, as every module-registered handler is, so a suite that resets the registry re-registers it.
+ * @param _changes - The change under the handler's path; the candidate carries the filter, so the handler reads it there instead.
+ * @param next - The candidate running configuration.
+ * @returns No rejections.
+ */
+export async function applyDebugFilterChange(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+
+  applyPersistedDebugFilter(next.logging.debugFilter);
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("logging.debugFilter", applyDebugFilterChange);
 
 /**
  * Logs a one-line summary of a save's outcome so operators can see which changes took effect and which wait for a restart. Silent when every bucket is empty,
@@ -649,7 +907,7 @@ function validateBoundedSetting(config: Config, settingPath: string): Nullable<s
 /**
  * Collects every hard configuration error - an always-fatal value the server refuses to run with rather than correcting - for the given configuration. Pure: it
  * never mutates and never throws, so validateConfiguration (which throws on a non-empty result at startup), a save (which refuses the candidate), and the
- * boot's capture correction write (which never stores a configuration the boot will refuse) all read the same answer.
+ * boot's correcting write (which never stores a configuration the boot will refuse) all read the same answer.
  * @param config - The configuration to validate.
  * @returns The list of error messages; empty when the configuration has no hard errors.
  */

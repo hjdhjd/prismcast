@@ -17,6 +17,7 @@
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { getNestedValue, mutateConfig } from "../../../src/config/userConfig.ts";
+import { SEEDED_DEVICE_ID } from "../../../src/config/index.helpers.ts";
 import assert from "node:assert/strict";
 import { getDefaults } from "../../../src/config/index.ts";
 import { stringifySorted } from "../../../src/utils/index.ts";
@@ -49,7 +50,7 @@ describe("POST /config/import - replaces the user-settings layer, preserves syst
       config.channels ??= {};
       config.channels.disabledPredefined = [ "abc-hulu", "nbc-yttv" ];
       config.hdhr ??= {};
-      config.hdhr.deviceId = "ABCD1234";
+      config.hdhr.deviceId = SEEDED_DEVICE_ID;
       config.hls ??= {};
       config.hls.segmentDuration = seededSegmentDuration;
     });
@@ -74,7 +75,7 @@ describe("POST /config/import - replaces the user-settings layer, preserves syst
 
     // Both system-state fields are outside CONFIG_METADATA, so the clear-then-merge never touches them.
     assert.deepEqual(getNestedValue(persisted, "channels.disabledPredefined"), [ "abc-hulu", "nbc-yttv" ], "disabledPredefined (system state) must survive import");
-    assert.equal(getNestedValue(persisted, "hdhr.deviceId"), "ABCD1234", "hdhr.deviceId (system state) must survive import");
+    assert.equal(getNestedValue(persisted, "hdhr.deviceId"), SEEDED_DEVICE_ID, "hdhr.deviceId (system state) must survive import");
   });
 
   test("a non-object import body is rejected with a 400 validation error", async () => {

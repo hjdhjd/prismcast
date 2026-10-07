@@ -12,6 +12,7 @@ import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { after, before, describe, test } from "node:test";
 import { registerStream, unregisterStream } from "../streaming/registry.ts";
 import type { ConfigStore } from "../config/index.ts";
+import { SEEDED_DEVICE_ID } from "../config/index.helpers.ts";
 import assert from "node:assert/strict";
 import express from "express";
 import { firstOf } from "../testing.helpers.ts";
@@ -43,8 +44,8 @@ function makeServer(): Promise<{ port: number; server: Server }> {
 }
 
 /**
- * Builds an in-memory config store whose file names only the given HDHomeRun port, so a row can re-initialize CONFIG and the loaded snapshot from it. Only
- * the boot reads through it.
+ * Builds an in-memory config store whose file names only the given HDHomeRun port and a valid DeviceID, so a row can re-initialize CONFIG and the loaded
+ * snapshot from it and the boot finds nothing to correct. Only the boot reads through it.
  * @param port - The HDHomeRun port the file names.
  * @returns The store.
  */
@@ -52,11 +53,11 @@ function storeNamingHdhrPort(port: number): ConfigStore {
 
   return {
 
-    mutateConfig: async (): Promise<void> => {
+    mutateConfigThen: async (): Promise<never> => {
 
       throw new Error("The read-only store takes no writes.");
     },
-    readConfig: async () => ({ config: { hdhr: { port } }, parseError: false, readError: false })
+    readConfig: async () => ({ config: { hdhr: { deviceId: SEEDED_DEVICE_ID, port } }, parseError: false, readError: false })
   };
 }
 

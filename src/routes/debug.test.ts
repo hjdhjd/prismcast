@@ -13,6 +13,7 @@ import { DEBUG_CATEGORIES, LOG, initDebugFilter } from "../utils/index.ts";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { ConfigStore } from "../config/index.ts";
+import { SEEDED_DEVICE_ID } from "../config/index.helpers.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWss } from "../testing.helpers.ts";
 import express from "express";
@@ -59,15 +60,15 @@ let sharedPort = 0;
 let tempDataDir = "";
 const ORIGINAL_DEBUG_FILTER = CONFIG.logging.debugFilter;
 
-// A store that reads an empty file, which re-initializes CONFIG and the loaded snapshot to the defaults. Only the boot reads through it; the route saves through
-// the real file store in the temp data directory.
+// A store that reads a file holding only a valid DeviceID, which re-initializes CONFIG and the loaded snapshot to the defaults with nothing for the boot to
+// correct. Only the boot reads through it; the route saves through the real file store in the temp data directory.
 const emptyStore: ConfigStore = {
 
-  mutateConfig: async (): Promise<void> => {
+  mutateConfigThen: async (): Promise<never> => {
 
     throw new Error("The empty store takes no writes.");
   },
-  readConfig: async () => ({ config: {}, parseError: false, readError: false })
+  readConfig: async () => ({ config: { hdhr: { deviceId: SEEDED_DEVICE_ID } }, parseError: false, readError: false })
 };
 
 /**

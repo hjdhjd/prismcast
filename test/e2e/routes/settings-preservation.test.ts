@@ -27,6 +27,7 @@
 import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { SEEDED_DEVICE_ID } from "../../../src/config/index.helpers.ts";
 import assert from "node:assert/strict";
 
 // The DVR host every row seeds. A save hands a host it changes to the live channelsDvr. handler, which starts a logo population against it, so the seed is a
@@ -37,9 +38,10 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
   test("disabledPredefined survives a settings-form POST", async () => {
 
-    /* Seed the dirty state via mutateConfig (the same path the toggle endpoint uses), then POST a form-shape body that touches only a CONFIG_METADATA field
-     * (server.port). The handler's mergeConfigValues call must preserve the disabledPredefined list. We assert the on-disk file directly because the route
-     * also schedules a restart when running as a service - running outside a service is the test harness's behavior, so the restart-skip branch fires.
+    /* Seed the dirty state into the file through the store-level write (the leaf the toggle endpoint writes), then POST a form-shape body that touches only a
+     * CONFIG_METADATA field (server.port). The handler's mergeConfigValues call must preserve the disabledPredefined list. We assert the on-disk file directly
+     * because the route also schedules a restart when running as a service - running outside a service is the test harness's behavior, so the restart-skip
+     * branch fires.
      */
     await using ctx = await createIntegrationContext();
 
@@ -106,7 +108,7 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
     await mutateConfig((config) => {
 
       config.hdhr ??= {};
-      config.hdhr.deviceId = "12345678";
+      config.hdhr.deviceId = SEEDED_DEVICE_ID;
     });
 
     const response = await fetch(urlFor("/config"), {
@@ -120,7 +122,7 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
     const persisted = await readPersistedJson(ctx, "config.json") as { hdhr: { deviceId: string } };
 
-    assert.equal(persisted.hdhr.deviceId, "12345678", "hdhr.deviceId must survive the form save");
+    assert.equal(persisted.hdhr.deviceId, SEEDED_DEVICE_ID, "hdhr.deviceId must survive the form save");
   });
 
   test("channelsDvr.host survives a settings-form POST", async () => {
@@ -165,6 +167,7 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
       config.channels ??= {};
       config.channels.disabledPredefined = ["abc-hulu"];
+      config.hdhr = { deviceId: SEEDED_DEVICE_ID };
     });
 
     const before = await readPersistedJson(ctx, "config.json");
@@ -202,7 +205,7 @@ const SEED_VALUES: Record<string, unknown> = {
   "channels.setupCompleted": true,
   "channels.visibleColumns": [ "channelNumber", "name", "service" ],
   "channelsDvr.host": UNRESOLVABLE_DVR_HOST,
-  "hdhr.deviceId": "ABCD1234",
+  "hdhr.deviceId": SEEDED_DEVICE_ID,
   "logging.debugFilter": "browser:*",
   "migrationsApplied": ["test-suite-17-marker"],
   "schemaVersion": 3

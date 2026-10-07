@@ -10,20 +10,22 @@
  * because identity is canonical-only. (2) A standalone add (no canonicalKey) preserves the submitted stationId on the identity-owning canonical record, and a batch entry
  * whose name yields no generatable key is skipped with a per-entry error while the rest of the batch still applies - the batch is not aborted. (3) The remove
  * action clears the service selection and, via resolveServiceKey, either survives (a multi-service channel with an alternative service is not disabled) or, when the
- * resolved service is still the removed service (a single-service predefined channel), disables the predefined channel by adding it to disabledPredefined.
+ * resolved service is still the removed service (a single-service predefined channel), disables the predefined channel by adding it to disabledPredefined. (4) A
+ * batch's enables and disables of predefined channels land as one configuration write, dispatched once, which leaves the disabled list sorted.
  *
  * Fixtures use only real predefined channels from src/channels/index.ts: "abc" (multi-service, canonical is its own "site" so the canonical tag is "direct") and
  * "bloombergoriginals" (single-service - only YouTube TV, so its canonical tag is "yttv" and removing "yttv" leaves no alternative).
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
+import { disablePredefinedChannels, mutateChannels } from "../../../src/config/userChannels.ts";
 import assert from "node:assert/strict";
-import { mutateChannels } from "../../../src/config/userChannels.ts";
+import { registerConfigChangeHandler } from "../../../src/config/reactivity.ts";
 
 /**
- * Reads the persisted disabledPredefined list from config.json, tolerating the file's absence. The browse endpoint writes config.json only when it actually
- * disables a channel (disablePredefinedChannels short-circuits on an empty key set), so a test that asserts a channel was NOT disabled must treat a missing
- * config.json as an empty disabled list rather than a read error.
+ * Reads the persisted disabledPredefined list from config.json, tolerating the file's absence. The browse endpoint makes its one configuration write through
+ * updatePredefinedChannels, which writes nothing for a batch with no key to enable or disable, so a test that asserts a channel was NOT disabled must treat a
+ * missing config.json as an empty disabled list rather than a read error.
  * @param ctx - The integration context whose data directory holds config.json.
  * @returns The persisted disabled-predefined keys, or an empty array when config.json does not exist.
  */
@@ -262,5 +264,46 @@ describe("POST /config/channels/modify - remove reverts a multi-service channel 
 
     assert.equal(disabled.includes("abc"), false,
       "abc reverts to its canonical default and stays enabled - removing a channel's currently-selected service must not disable a multi-service channel");
+  });
+});
+
+describe("POST /config/channels/modify - a batch's enables and disables land as one configuration write", () => {
+
+  test("a batch that enables one predefined channel and disables another writes the disabled list once, sorted", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+
+    const { urlFor } = await bootApp(ctx);
+
+    await disablePredefinedChannels([ "abc", "nbc" ]);
+
+    let dispatches = 0;
+
+    registerConfigChangeHandler("channels.disabledPredefined", async () => {
+
+      dispatches++;
+
+      return [];
+    });
+
+    /* The batch enables "abc" and removes the only service of "bloombergoriginals", so the route's one updatePredefinedChannels call takes "abc" off the
+     * disabled list and adds "bloombergoriginals". The writer's set holds the kept "nbc" ahead of the added key, so a sorted list in the file shows the write
+     * sorted it.
+     */
+    const response = await fetch(urlFor("/config/channels/modify"), {
+
+      body: JSON.stringify({ channels: [
+        { action: "enable", canonicalKey: "abc", name: "ABC", serviceSlug: "hulu" },
+        { action: "remove", canonicalKey: "bloombergoriginals", name: "Bloomberg Originals", serviceSlug: "yttv" }
+      ] }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    assert.equal(response.status, 200, "the batch should succeed; body: " + (await response.clone().text()).slice(0, 200));
+    assert.equal(dispatches, 1, "the enables and disables were one write, dispatched once");
+    assert.deepEqual(await readDisabledPredefined(ctx), [ "bloombergoriginals", "nbc" ], "the file's disabled list holds the kept and the disabled keys, sorted");
   });
 });

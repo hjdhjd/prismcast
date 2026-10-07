@@ -2,17 +2,16 @@
  *
  * showInfo.ts: Channels DVR API integration for show name and channel logo lookup.
  */
+import { CONFIG, writeProcessFields } from "../config/index.ts";
 import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
 import type { Config, Nullable } from "../types/index.ts";
 import { LOG, formatError, normalizeClientAddress, timeoutSignal } from "../utils/index.ts";
 import { TimerRegistry, systemClock } from "homebridge-plugin-utils";
 import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, getChannelStationId, setChannelLogo,
   setChannelLogos } from "../config/userChannels.ts";
-import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
 import { emitChannelUpdate } from "./statusEmitter.ts";
 import { getAllStreams } from "./registry.ts";
-import { mutateConfig } from "../config/userConfig.ts";
 import { registerConfigChangeHandler } from "../config/reactivity.ts";
 
 /* This module integrates with the Channels DVR API for two purposes: show name lookup and channel logo population.
@@ -205,8 +204,14 @@ export function getDvrHost(): Nullable<string> {
 }
 
 /**
- * Makes a host the running DVR host and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a
- * host.
+ * Makes a discovered host the DVR host through one process write of channelsDvr.host, so the file and the running configuration hold it before this resolves
+ * and the lookup that follows reads it. Called by the discovery phase of the show-info poll when a matching M3U device is found on a host. The write
+ * dispatches the registered handler, which repopulates the logos from the written host; it clears no device mapping, because the discovery that found the host
+ * just fetched its mappings.
+ *
+ * A poll that confirms the running host writes nothing and populates nothing, by the early return below. That return reads CONFIG, which moves only in a
+ * write's follow-up, so it cannot catch a call made while an earlier one naming the same host is still in flight: each writes the host, the later one
+ * changing nothing in the file and dispatching the handler once more, which starts a second logo population.
  *
  * The host must be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
  * with a debug log rather than silently stripped, because a colon-bearing host indicates a caller-side bug (auto-discovery should be feeding IPs, not
@@ -215,7 +220,7 @@ export function getDvrHost(): Nullable<string> {
  *
  * @param host - The DVR server hostname or IP address. Must NOT include a port.
  */
-export function setDvrHost(host: string): void {
+export async function setDvrHost(host: string): Promise<void> {
 
   if(host.includes(":")) {
 
@@ -229,15 +234,7 @@ export function setDvrHost(host: string): void {
     return;
   }
 
-  // The running configuration takes the host first, so every reader sees it at once, and the file follows, so the next save finds the two equal and reports
-  // nothing for it.
-  CONFIG.channelsDvr.host = host;
-
-  void persistDvrHost(host);
-
-  // Populate logos whenever the DVR host changes. The early return above prevents redundant calls during show name polling's repeated confirmations of the same
-  // host. A genuine host change (e.g., DVR migration) triggers a full re-population with the new host's data.
-  populateRunningChannelLogos();
+  await writeProcessFields(() => ({ "channelsDvr.host": host }));
 }
 
 /**
@@ -265,7 +262,8 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
     void updateShowNames();
   }, POLL_INTERVAL_MS);
 
-  // Start the 24-hour logo refresh. A start with no DVR host known populates nothing above; setDvrHost or a save populates once a host becomes known.
+  // Start the 24-hour logo refresh. A start with no DVR host known populates nothing above; the handler a discovered host's write or a save dispatches populates
+  // once a host becomes known.
   timers.setInterval("logos", () => {
 
     populateRunningChannelLogos();
@@ -363,7 +361,7 @@ async function updateShowNames(): Promise<void> {
 
       if(mappings.size > 0) {
 
-        setDvrHost(host);
+        await setDvrHost(host);
       }
     })
   );
@@ -705,31 +703,10 @@ export async function fetchFromDvr<T>(host: string, port: number, path: string, 
   }
 }
 
-/**
- * Persists the DVR host to the config file so it survives restarts. setDvrHost has already made it the running host, and a write that fails leaves the file
- * behind the running configuration until the next save reconciles the two from the file.
- * @param host - The DVR server hostname or IP address.
- */
-async function persistDvrHost(host: string): Promise<void> {
-
-  try {
-
-    await mutateConfig((config) => {
-
-      config.channelsDvr ??= {};
-      config.channelsDvr.host = host;
-    });
-  } catch(error) {
-
-    LOG.debug("streaming:showinfo", "Failed to persist DVR host: %s.", formatError(error));
-  }
-}
-
 // Logo Population.
 
 /**
- * Populates the logos from the running DVR host and port when a host is known, the population the poller's start, its daily refresh, and a discovered host
- * run.
+ * Populates the logos from the running DVR host and port when a host is known, the population the poller's start and its daily refresh run.
  */
 function populateRunningChannelLogos(): void {
 
@@ -744,8 +721,8 @@ function populateRunningChannelLogos(): void {
 /**
  * Populates the channel logo cache in two tiers. Tier 1 fetches logo URLs from the DVR's /devices endpoint (covers all channels in the M3U playlist). Tier 2 runs
  * TMS station name searches for any remaining channels with station IDs not covered by tier 1. Runs when a DVR host becomes known or changes, when a save changes
- * the port, and every 24 hours to pick up network rebrands. The host and the port are arguments, so the reconcile's handler can hand it the candidate's values
- * while the running configuration still holds the previous ones.
+ * the port, and every 24 hours to pick up network rebrands. The host and the port are arguments, so the handler a save or a process write dispatches can hand it
+ * the candidate's values while the running configuration still holds the previous ones.
  * @param host - The DVR server hostname or IP address.
  * @param port - The DVR's API port.
  */
@@ -905,17 +882,21 @@ function normalizeLogoUrl(url: string): string {
 }
 
 /**
- * Realizes a saved change to the DVR host or port. The device mappings were fetched from the DVR the running configuration names, so the cache is cleared, and
- * the logos repopulate from the candidate's host and port, which the running configuration takes only once the reconcile commits. The population runs without
- * being awaited, so the save answers without waiting on the DVR, and a host the save clears populates nothing. Nothing here can fail, so the handler refuses
- * nothing.
- * @param _changes - The changes under the handler's prefix; the candidate carries the host and the port, so the handler reads them there instead.
+ * Realizes a change to the DVR host or port, a save's or a discovered host's process write. The device mappings are cached by host and were fetched at the
+ * running port, so a change that holds the port clears the cache; a host change clears nothing, because the discovery that found a new host just fetched its
+ * mappings, and a host the cache already holds keeps mappings still fresh at the same port. The logos repopulate from the candidate's host and port, which the
+ * running configuration takes only once the dispatch commits. The population runs without being awaited, so the write answers without waiting on the DVR, and
+ * a host the change clears populates nothing. Nothing here can fail, so the handler refuses nothing.
+ * @param changes - The changes under the handler's prefix, read for whether they hold the port; the candidate carries the host and the port themselves.
  * @param next - The candidate running configuration.
  * @returns No rejections.
  */
-async function applyDvrConfigChanges(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+async function applyDvrConfigChanges(changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
 
-  deviceMappingsByHost.clear();
+  if(changes.some((change) => change.path === "channelsDvr.port")) {
+
+    deviceMappingsByHost.clear();
+  }
 
   if(next.channelsDvr.host.length > 0) {
 

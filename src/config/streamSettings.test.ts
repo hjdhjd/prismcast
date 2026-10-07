@@ -16,10 +16,9 @@ import { CONFIG, initializeConfiguration, saveConfiguration } from "./index.ts";
 import { CONFIG_METADATA, DEFAULTS, getNestedValue, getReactivityClass, getSettingByPath, setNestedValue } from "./userConfig.ts";
 import { describe, test } from "node:test";
 import type { Config } from "../types/index.ts";
-import type { ConfigStore } from "./index.ts";
 import type { StreamSettings } from "./streamSettings.ts";
-import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
+import { makeMemoryConfigStore } from "./index.helpers.ts";
 import { snapshotStreamSettings } from "./streamSettings.ts";
 
 // The next-stream set, derived from the classification rather than restated, sorted.
@@ -113,19 +112,7 @@ describe("snapshotStreamSettings", () => {
      * is what the class promises the streams that start afterward, while a snapshot taken before the save keeps the value it copied, which is what a running
      * stream keeps. A second save writing the original back leaves the running configuration as it began.
      */
-    let file: UserConfig = {};
-
-    const io: ConfigStore = {
-
-      mutateConfig: async (fn) => {
-
-        const working = structuredClone(file);
-
-        fn(working);
-        file = working;
-      },
-      readConfig: async () => ({ config: structuredClone(file), parseError: false, readError: false })
-    };
+    const io = makeMemoryConfigStore();
 
     await initializeConfiguration(undefined, io);
 

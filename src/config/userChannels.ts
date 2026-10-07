@@ -3,6 +3,7 @@
  * userChannels.ts: User channel file management for PrismCast.
  */
 import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "../types/index.ts";
+import { CONFIG, writeProcessFields } from "./index.ts";
 import type { Channel, ChannelDelta, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
   SortDirection, StoredChannel, StoredChannelMap } from "../types/index.ts";
 import { FileStoreParseError, createFileStore } from "./persistence.ts";
@@ -12,11 +13,10 @@ import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
 import { applyServiceFilter, buildServiceGroups, getResolvedChannel, isChannelAvailableByService, isServiceVariant, resolveServiceKey,
   setServiceSelections } from "./services.ts";
 import { pickBindingFields, pickIdentity, pickIdentityFields } from "./channelIdentity.ts";
-import { CONFIG } from "./index.ts";
+import type { ProcessFieldPath } from "./userConfig.ts";
 import fs from "node:fs";
 import { getChannelsFilePath } from "./paths.ts";
 import { isDeepStrictEqual } from "node:util";
-import { mutateConfig } from "./userConfig.ts";
 
 const { promises: fsPromises } = fs;
 
@@ -1530,7 +1530,7 @@ export async function initializeUserChannels(): Promise<void> {
   /* Inference for setupCompleted: an install that already has services or channels configured should not see the first-run setup wizard. This is runtime
    * inference rather than a schema migration because it depends on observed state across the channels and config stores, so it lives here at the cross-store
    * boundary where each store it reads is loaded. The flag is a one-way fact - the wizard was completed, or the install already had services or channels when
-   * this ran - so the inference writes it to the file as markSetupCompleted does, and no process writer clears it.
+   * this ran - so the inference records it through markSetupCompleted, and no process writer clears it.
    */
   const configuredServices = CONFIG.channels.enabledServices;
 
@@ -1541,13 +1541,7 @@ export async function initializeUserChannels(): Promise<void> {
 
     if(hasServices || hasUserChannels) {
 
-      CONFIG.channels.setupCompleted = true;
-
-      await mutateConfig((config) => {
-
-        config.channels ??= {};
-        config.channels.setupCompleted = true;
-      });
+      await markSetupCompleted();
     }
   }
 
@@ -2510,38 +2504,31 @@ export function getDisabledPredefinedChannels(): string[] {
 }
 
 /**
- * Applies a set operation (add or delete) to the disabledPredefined list in user config. Persists the change to config.json and syncs the runtime CONFIG object
- * so subsequent reads see the updated state immediately. This is the internal implementation shared by disablePredefinedChannels and enablePredefinedChannels so
- * the mutateConfig scaffolding, sort, and CONFIG sync live in exactly one place.
- * @param op - "add" to insert keys into the disabled list, "delete" to remove them.
- * @param keys - The predefined channel keys to apply the operation to.
+ * Writes the disabledPredefined list through one process write: the stored list with the enabled keys removed and then the disabled keys added, sorted, so a
+ * key named in each list ends disabled. The list lands in the file and in CONFIG before this resolves, so a route's same-request patches read the new list. A
+ * call with no key to enable or disable writes nothing and dispatches nothing, because the browse route calls this on every request and most have nothing to
+ * change, and the stored list is read only when it is an array, the shape rule mergeConfiguration keeps. disablePredefinedChannels, enablePredefinedChannels
+ * and updatePredefinedChannels all delegate here, so the list's write lives in exactly one place.
+ * @param keys - The predefined channel keys to change.
+ * @param keys.disable - The keys to add to the disabled list.
+ * @param keys.enable - The keys to remove from the disabled list.
  */
-async function mutateDisabledPredefined(op: "add" | "delete", keys: readonly string[]): Promise<void> {
+async function mutateDisabledPredefined(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<void> {
 
-  if(keys.length === 0) {
+  const { disable, enable } = keys;
+
+  if((disable.length === 0) && (enable.length === 0)) {
 
     return;
   }
 
-  let updatedList: string[] = [];
+  await writeProcessFields((stored) => {
 
-  await mutateConfig((config) => {
+    const list = stored.channels?.disabledPredefined;
+    const disabledSet = new Set(Array.isArray(list) ? list : []).difference(new Set(enable)).union(new Set(disable));
 
-    config.channels ??= {};
-    config.channels.disabledPredefined ??= [];
-
-    const disabledSet = new Set(config.channels.disabledPredefined);
-
-    for(const key of keys) {
-
-      disabledSet[op](key);
-    }
-
-    config.channels.disabledPredefined = [...disabledSet].toSorted();
-    updatedList = config.channels.disabledPredefined;
+    return { "channels.disabledPredefined": [...disabledSet].toSorted() };
   });
-
-  CONFIG.channels.disabledPredefined = updatedList;
 }
 
 /**
@@ -2551,7 +2538,7 @@ async function mutateDisabledPredefined(op: "add" | "delete", keys: readonly str
  */
 export async function disablePredefinedChannels(keys: readonly string[]): Promise<void> {
 
-  await mutateDisabledPredefined("add", keys);
+  await mutateDisabledPredefined({ disable: keys, enable: [] });
 }
 
 /**
@@ -2560,15 +2547,26 @@ export async function disablePredefinedChannels(keys: readonly string[]): Promis
  */
 export async function enablePredefinedChannels(keys: readonly string[]): Promise<void> {
 
-  await mutateDisabledPredefined("delete", keys);
+  await mutateDisabledPredefined({ disable: [], enable: keys });
 }
 
 /**
- * Persists a partial update of channel-table display preferences (sort field, sort direction, visible columns) to config.json. Only fields present in `prefs`
- * are written; absent fields are left untouched. The mutate fn copies the new values into data and the runtime CONFIG cache is updated post-write to match.
- * Persists and hydrates the runtime cache in a single call, consistent with mutateServiceSelections, mutateEnabledServices, and setTagRegistry.
+ * Enables and disables predefined channels in one write of the disabledPredefined list, the form the browse route needs: the enabled keys are removed and then
+ * the disabled keys added, so a key named in each list ends disabled.
+ * @param keys - The predefined channel keys to change.
+ * @param keys.disable - The keys to add to the disabled list.
+ * @param keys.enable - The keys to remove from the disabled list.
+ */
+export async function updatePredefinedChannels(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<void> {
+
+  await mutateDisabledPredefined(keys);
+}
+
+/**
+ * Writes a partial update of the channel-table display preferences (sort field, sort direction, visible columns) through one process write. Only the fields
+ * present in `prefs` are written, onto the file the store just read, so a field the request leaves out keeps the file's value; the supplied fields land in the
+ * file and in CONFIG before this resolves. A call that supplies no field writes nothing and dispatches nothing, as the predefined writer's call with no key does.
  * @param prefs - Subset of display preferences to update.
- * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */
 export async function mutateChannelDisplayPrefs(prefs: {
   channelSortDirection?: SortDirection;
@@ -2576,44 +2574,41 @@ export async function mutateChannelDisplayPrefs(prefs: {
   visibleColumns?: readonly string[];
 }): Promise<void> {
 
-  const next = {
+  const supplied: Partial<Record<ProcessFieldPath, unknown>> = {};
 
-    channelSortDirection: prefs.channelSortDirection ?? CONFIG.channels.channelSortDirection,
-    channelSortField: prefs.channelSortField ?? CONFIG.channels.channelSortField,
-    visibleColumns: prefs.visibleColumns ? [...prefs.visibleColumns] : [...CONFIG.channels.visibleColumns]
-  };
+  if(prefs.channelSortDirection !== undefined) {
 
-  await mutateConfig((config) => {
+    supplied["channels.channelSortDirection"] = prefs.channelSortDirection;
+  }
 
-    config.channels ??= {};
-    config.channels.channelSortDirection = next.channelSortDirection;
-    config.channels.channelSortField = next.channelSortField;
-    config.channels.visibleColumns = next.visibleColumns;
-  });
+  if(prefs.channelSortField !== undefined) {
 
-  // Hydrate the runtime CONFIG cache from the values just written.
-  CONFIG.channels.channelSortDirection = next.channelSortDirection;
-  CONFIG.channels.channelSortField = next.channelSortField;
-  CONFIG.channels.visibleColumns = next.visibleColumns;
+    supplied["channels.channelSortField"] = prefs.channelSortField;
+  }
+
+  if(prefs.visibleColumns !== undefined) {
+
+    supplied["channels.visibleColumns"] = [...prefs.visibleColumns];
+  }
+
+  if(Object.keys(supplied).length === 0) {
+
+    return;
+  }
+
+  await writeProcessFields(() => supplied);
 }
 
 /**
- * Marks the first-run Service Setup wizard as completed. Writes the flag to runtime CONFIG and persists to config.json in one call - the operation is a single
- * one-way transition (it moves setupCompleted from false or absent to true, and no process writer moves it back), so splitting into set+save would be
- * ceremony without benefit.
+ * Marks the first-run Service Setup wizard as completed through one process write of the flag, which lands in the file and in CONFIG before this resolves. The
+ * operation is a one-way transition: it moves setupCompleted from false or absent to true, and no process writer moves it back.
  *
- * Persistence note: setupCompleted is a state field in PROCESS_FIELDS in userConfig.ts, so the true value written below survives filterDefaults and comes
- * back into the running configuration at the next boot. No process writer clears the flag, because the wizard it records cannot be un-completed.
+ * Persistence note: setupCompleted is a state field in PROCESS_FIELDS in userConfig.ts, so the true value written here survives filterDefaults and comes back
+ * into the running configuration at the next boot. No process writer clears the flag, because the wizard it records cannot be un-completed.
  */
 export async function markSetupCompleted(): Promise<void> {
 
-  CONFIG.channels.setupCompleted = true;
-
-  await mutateConfig((config) => {
-
-    config.channels ??= {};
-    config.channels.setupCompleted = true;
-  });
+  await writeProcessFields(() => ({ "channels.setupCompleted": true }));
 }
 
 /**

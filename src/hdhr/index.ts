@@ -25,14 +25,12 @@
 import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
 import type { Config, HdhrConfig, Nullable } from "../types/index.ts";
 import { HDHR_DISCOVERY_PORT, createUdpSurface } from "./udp.ts";
-import { LOG, assertNever } from "../utils/index.ts";
-import { generateDeviceId, validateDeviceId } from "./deviceId.ts";
 import type { AddressInfo } from "node:net";
 import { CONFIG } from "../config/index.ts";
+import { LOG } from "../utils/index.ts";
 import type { Server } from "node:http";
 import express from "express";
 import { formatError } from "../utils/errors.ts";
-import { mutateConfig } from "../config/userConfig.ts";
 import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { setupHdhrEndpoints } from "./discover.ts";
 
@@ -72,18 +70,9 @@ interface HttpSurface extends AsyncDisposable {
 }
 
 /**
- * How the DeviceID a reconcile was handed fared against its checksum. A valid id is kept. An id that fails is replaced by a freshly generated one, written to
- * CONFIG and persisted, when the surface is enabled, and is left unreplaced when it is not, because a disabled surface advertises no DeviceID.
- */
-type DeviceIdOutcome = "generated" | "invalid" | "valid";
-
-/**
  * What a reconcile could not realize. The handler translates each failure into a rejection, so a change the surfaces did not reach is never committed.
  */
 interface HdhrReconcileResult {
-
-  // How the desired DeviceID fared against its checksum.
-  readonly deviceId: DeviceIdOutcome;
 
   // True when the HTTP surface could not bind the desired port.
   readonly httpFailed: boolean;
@@ -269,52 +258,6 @@ function createHttpSurface(): HttpSurface {
 }
 
 /**
- * Checks the desired DeviceID against its checksum whatever the surface's enabled state, so an id that fails is never committed, and generates and persists a
- * fresh one into CONFIG when the surface is enabled and needs one. Called from reconcile before the surfaces move, so a never-before-enabled HDHR setup gets a
- * DeviceID on first activation rather than only at process boot.
- * @param desired - The desired HDHomeRun state.
- * @returns How the desired DeviceID fared.
- */
-async function ensureDeviceId(desired: Readonly<HdhrConfig>): Promise<DeviceIdOutcome> {
-
-  // Generate a DeviceID on first run, or regenerate if the desired ID fails checksum validation (e.g., hand-edited config with a typo). Plex silently rejects
-  // tuners with invalid DeviceIDs during discovery, so we catch this early.
-  if(desired.deviceId && validateDeviceId(desired.deviceId)) {
-
-    return "valid";
-  }
-
-  if(!desired.enabled) {
-
-    return "invalid";
-  }
-
-  if(desired.deviceId) {
-
-    LOG.warn("HDHomeRun DeviceID '%s' has an invalid checksum. Generating a new one.", desired.deviceId.toUpperCase());
-  }
-
-  CONFIG.hdhr.deviceId = generateDeviceId();
-
-  LOG.info("Generated HDHomeRun DeviceID: %s.", CONFIG.hdhr.deviceId.toUpperCase());
-
-  // Save the generated ID to the user config so it persists across restarts.
-  try {
-
-    await mutateConfig((config) => {
-
-      config.hdhr ??= {};
-      config.hdhr.deviceId = CONFIG.hdhr.deviceId;
-    });
-  } catch(error) {
-
-    LOG.warn("Failed to persist HDHomeRun DeviceID: %s. A new ID will be generated on next restart.", formatError(error));
-  }
-
-  return "generated";
-}
-
-/**
  * Creates the HDHomeRun controller. The controller owns the two surface nodes for the whole process lifetime; their sockets cycle internally as reconcile drives
  * them. Failures at any surface are reported up, not thrown - the broader application continues to work even if HDHR emulation cannot bind.
  * @returns An HdhrController node.
@@ -328,8 +271,6 @@ function createHdhrController(): HdhrController {
 
   async function reconcile(desired: Readonly<HdhrConfig>): Promise<HdhrReconcileResult> {
 
-    const deviceId = await ensureDeviceId(desired);
-
     // Desired state "disabled": bring both surfaces down. UDP first so it stops advertising a BaseURL before the HTTP server it points at goes away. This cannot
     // fail. The surfaces remain reusable, so a later enable rebinds them.
     if(!desired.enabled) {
@@ -337,13 +278,12 @@ function createHdhrController(): HdhrController {
       await udp.ensureDown();
       await http.ensureDown();
 
-      return { deviceId, httpFailed: false, udpFailed: false };
+      return { httpFailed: false, udpFailed: false };
     }
 
-    // The listening line names the DeviceID the surface advertises: the desired one when it passed its checksum, or the one ensureDeviceId generated into CONFIG
-    // in its place, because the desired state a save hands over still carries the id that failed.
-    const advertisedId = (deviceId === "generated") ? CONFIG.hdhr.deviceId : desired.deviceId;
-    const httpFailed = !(await http.ensureBound({ deviceId: advertisedId, host: CONFIG.server.host, port: desired.port }));
+    // The surface binds with the DeviceID it is handed. The configuration layer corrects that id whenever the boot loads the file or a settings save writes it
+    // while the emulation is enabled, so the id is the one the file holds, and a process write leaves the id as the file holds it.
+    const httpFailed = !(await http.ensureBound({ deviceId: desired.deviceId, host: CONFIG.server.host, port: desired.port }));
 
     // UDP is gated on the HTTP server actually being bound: a discovery responder must never advertise a BaseURL pointing at an HTTP port with no listener, so
     // when HTTP is down we stop UDP regardless of the discoveryEnabled flag. The Discover reply advertises http.boundPort (not the desired port) so it always
@@ -358,7 +298,7 @@ function createHdhrController(): HdhrController {
       await udp.ensureDown();
     }
 
-    return { deviceId, httpFailed, udpFailed };
+    return { httpFailed, udpFailed };
   }
 
   async function disposeAsync(): Promise<void> {
@@ -404,10 +344,9 @@ export async function stopHdhrServer(): Promise<void> {
 /**
  * Realizes the HDHomeRun state of a save's candidate running configuration. The controller realizes the desired state it is handed once - the whole state, so
  * there is no per-change ordering to get wrong - and the handler reports only what the surfaces could not realize: the HTTP-driving fields (enabled, port) when
- * the HTTP surface failed to bind, discoveryEnabled when discovery was requested and its bind failed, and a DeviceID that failed its checksum, which is never
- * committed. Each setting's reactivity class has already decided that the change applies live, and the reconcile commits nothing refused here, so a refused
- * change keeps its running value and is retried by every later save. Every other HDHomeRun field is read where it is used, so reaching the desired state
- * realizes it.
+ * the HTTP surface failed to bind, and discoveryEnabled when discovery was requested and its bind failed. Each setting's reactivity class has already decided
+ * that the change applies live, and the reconcile commits nothing refused here, so a refused change keeps its running value and is retried by every later save.
+ * Every other HDHomeRun field, the DeviceID among them, is read where it is used, so reaching the desired state realizes it.
  *
  * Exported so tests can invoke the dispatch directly with a synthetic diff. Registered with the reactivity primitive at module load (side effect at the bottom
  * of this file) so production settings saves route here automatically.
@@ -418,46 +357,12 @@ export async function stopHdhrServer(): Promise<void> {
 export async function applyHdhrConfigChanges(changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
 
   const desired = next.hdhr;
-  const { deviceId, httpFailed, udpFailed } = await hdhrController.reconcile(desired);
+  const { httpFailed, udpFailed } = await hdhrController.reconcile(desired);
   const rejections: ChangeRejection[] = [];
 
   for(const change of changes) {
 
     switch(change.path) {
-
-      case "hdhr.deviceId": {
-
-        // The reconcile never keeps a DeviceID that failed its checksum, so the change is refused in every case; the reason tells the operator whether a newly
-        // generated id stands in its place.
-        switch(deviceId) {
-
-          case "generated": {
-
-            rejections.push({ path: change.path, reason: "The saved HDHomeRun DeviceID failed its checksum, so a newly generated DeviceID replaced it." });
-
-            break;
-          }
-
-          case "invalid": {
-
-            rejections.push({ path: change.path, reason: "The saved HDHomeRun DeviceID failed its checksum, so the running DeviceID was kept." });
-
-            break;
-          }
-
-          case "valid": {
-
-            break;
-          }
-
-          default: {
-
-            assertNever(deviceId);
-          }
-        }
-
-        break;
-      }
 
       case "hdhr.enabled":
       case "hdhr.port": {

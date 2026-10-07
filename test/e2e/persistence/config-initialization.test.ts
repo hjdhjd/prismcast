@@ -4,8 +4,8 @@
  * run beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts):
  *
  *   1. Persisted debug filter restoration. When config.json carries a logging.debugFilter and no environment- or CLI-driven debug filter is active,
- *      normalizeConfig() rewrites the in-memory copy to its canonical form via canonicalizeDebugPattern() and commitDebugFilter() applies that pattern to the
- *      live runtime filter via initDebugFilter().
+ *      normalizeConfig() rewrites the in-memory copy to its canonical form via canonicalizeDebugPattern() and the boot's applyPersistedDebugFilter() applies that
+ *      pattern to the live runtime filter via initDebugFilter().
  *   2. Quality preset validation gate. An unknown qualityPreset (typo in config.json or a preset removed in a release upgrade) is reset to DEFAULTS with an
  *      operator-visible warning rather than allowed through to the validation layer where it would only surface as a viewport mismatch.
  *   3. Frame rate range clamp. A frame rate outside the floor and ceiling its metadata declares (a hand-edited config.json or a FRAME_RATE value) is clamped to
@@ -55,7 +55,7 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
 
     /* The persisted form may carry user-formatted whitespace (e.g., "tuning:hulu, recovery"); normalizeConfig() rewrites CONFIG.logging.debugFilter via
      * canonicalizeDebugPattern() to its canonical form (the same form getCurrentPattern would yield) so equality checks elsewhere see the parser's exact output,
-     * while commitDebugFilter() applies that pattern to the live runtime filter via initDebugFilter() as a separate side effect.
+     * while the boot's applyPersistedDebugFilter() applies that pattern to the live runtime filter via initDebugFilter() as a separate side effect.
      */
     await using ctx = await createIntegrationContext();
 
@@ -71,7 +71,7 @@ describe("initializeConfiguration: persisted debugFilter branch", () => {
   test("does NOT re-apply the persisted filter when isAnyDebugEnabled is already true", async () => {
 
     /* Pre-condition: any debug pattern is already active at init time. initializeConfiguration captures that into the envOrCliDebugOverride snapshot (from
-     * isAnyDebugEnabled() before the persisted filter applies), and commitDebugFilter() then gates on that snapshot to skip the persisted-pattern apply branch.
+     * isAnyDebugEnabled() before the persisted filter applies), and applyPersistedDebugFilter() then gates on that snapshot to skip the persisted-pattern apply branch.
      * We simulate by pre-initializing the filter ourselves; the persisted value still flows through mergeConfiguration into CONFIG, but the function does not call
      * initDebugFilter again. The behavioral contract is that the previously-active pattern remains untouched.
      */

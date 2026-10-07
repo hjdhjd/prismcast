@@ -3,6 +3,7 @@
  * eslint.config.mjs: Linting configuration for PrismCast.
  */
 import hbPluginUtils from "homebridge-plugin-utils/eslint";
+import path from "node:path";
 
 /* Project-local ESLint rules. Each rule enforces a convention specific to this codebase that has caused regressions in the past:
  *
@@ -19,6 +20,12 @@ import hbPluginUtils from "homebridge-plugin-utils/eslint";
  *   a moment a test cannot drive and production cannot redirect. The page-callback exemption is decided by ancestry - a read inside the callback the three
  *   page methods take as their first argument, or the one evaluateWithAbort takes as its second, runs in the browser rather than in Node - and the
  *   client-script and helper files are exempt by path.
+ *
+ * - config-write-entry: the configuration is written only through config/index.ts, by saveConfiguration for the settings surface and writeProcessFields
+ *   for the fields the process owns, so the file and the running configuration move together. Outside src/config/index.ts, an import or a
+ *   named re-export of the store's writers (mutateConfig, mutateConfigThen) from config/userConfig.ts, a namespace import or a star re-export of that module,
+ *   and an assignment, an update or a delete on a member chain rooted at CONFIG are each a write that goes around those operations. The test, helper, and
+ *   client-script files are exempt by path, the same list the clock-port rule reads, because a test seeds a file through the store directly.
  *
  * Every project-local rule is exported (named) so unit tests under src/ can import it and exercise the rule logic via ESLint's RuleTester. The default
  * export of this file is the full flat config; the named `rules` export is just the rule definitions, decoupled from homebridge-plugin-utils for
@@ -181,6 +188,139 @@ export const rules = {
       type: "problem"
     }
   },
+  "config-write-entry": {
+
+    create(context) {
+
+      // The configuration layer is the one module that writes the configuration, so it is the one file the rule leaves alone.
+      if(context.filename.split(path.sep).join("/").endsWith("src/config/index.ts")) {
+
+        return {};
+      }
+
+      const writers = new Set([ "mutateConfig", "mutateConfigThen" ]);
+
+      // A source names the store module when it resolves, against the linted file's own directory, to src/config/userConfig.ts. Resolving the path rather than
+      // matching its text catches every relative spelling of the module, and leaves alone a file of the same name in another directory.
+      const namesStoreModule = (source) => (typeof source === "string") && source.startsWith(".") &&
+        path.resolve(path.dirname(context.filename), source).split(path.sep).join("/").endsWith("src/config/userConfig.ts");
+
+      // A module export name is an identifier, or a string literal in the arbitrary-name form.
+      const exportName = (node) => (node.type === "Identifier") ? node.name : node.value;
+
+      // A write target is rooted at CONFIG when walking its member chain down through every object ends at that identifier. The walk reaches a write at any
+      // depth and through a computed member, so CONFIG.a, CONFIG.a.b.c and CONFIG["a"].b are each caught.
+      const isConfigChain = (node) => {
+
+        if(node.type !== "MemberExpression") {
+
+          return false;
+        }
+
+        let root = node;
+
+        while(root.type === "MemberExpression") {
+
+          root = root.object;
+        }
+
+        return (root.type === "Identifier") && (root.name === "CONFIG");
+      };
+
+      return {
+
+        AssignmentExpression(node) {
+
+          if(isConfigChain(node.left)) {
+
+            context.report({ messageId: "configWrite", node });
+          }
+        },
+
+        ExportAllDeclaration(node) {
+
+          if(namesStoreModule(node.source.value)) {
+
+            context.report({ messageId: "starExport", node });
+          }
+        },
+
+        ExportNamedDeclaration(node) {
+
+          if(!node.source || !namesStoreModule(node.source.value)) {
+
+            return;
+          }
+
+          for(const specifier of node.specifiers) {
+
+            if(writers.has(exportName(specifier.local))) {
+
+              context.report({ data: { name: exportName(specifier.local) }, messageId: "writerReExport", node: specifier });
+            }
+          }
+        },
+
+        ImportDeclaration(node) {
+
+          if(!namesStoreModule(node.source.value)) {
+
+            return;
+          }
+
+          for(const specifier of node.specifiers) {
+
+            if(specifier.type === "ImportNamespaceSpecifier") {
+
+              context.report({ messageId: "namespaceImport", node: specifier });
+
+              continue;
+            }
+
+            if((specifier.type === "ImportSpecifier") && writers.has(exportName(specifier.imported))) {
+
+              context.report({ data: { name: exportName(specifier.imported) }, messageId: "writerImport", node: specifier });
+            }
+          }
+        },
+
+        UnaryExpression(node) {
+
+          if((node.operator === "delete") && isConfigChain(node.argument)) {
+
+            context.report({ messageId: "configWrite", node });
+          }
+        },
+
+        UpdateExpression(node) {
+
+          if(isConfigChain(node.argument)) {
+
+            context.report({ messageId: "configWrite", node });
+          }
+        }
+      };
+    },
+    meta: {
+
+      docs: {
+
+        description: "The configuration is written only through config/index.ts's saveConfiguration and writeProcessFields. A store writer imported from " +
+          "config/userConfig.ts, or a write to CONFIG, anywhere else bypasses them."
+      },
+      messages: {
+
+        configWrite: "Change the running configuration through config/index.ts's saveConfiguration or writeProcessFields, never by writing to CONFIG directly.",
+        namespaceImport: "Import config/userConfig.ts by name, never as a namespace, so its store writers stay out of reach outside config/index.ts.",
+        starExport: "Never re-export config/userConfig.ts wholesale, because that carries its store writers past config/index.ts.",
+        writerImport: "Write the configuration through config/index.ts's saveConfiguration or writeProcessFields, never through {{name}} imported from " +
+          "config/userConfig.ts.",
+        writerReExport: "Never re-export {{name}} from config/userConfig.ts, because the configuration is written only through config/index.ts."
+      },
+      schema: [],
+      type: "problem"
+    }
+  },
   "no-helpers-in-types": {
 
     create(context) {
@@ -260,6 +400,11 @@ export const rules = {
 
 const prismcastPlugin = { rules };
 
+// The files the Node-runtime rules skip: the test suites and their helpers, the testing infrastructure, and the landing page's content and client scripts,
+// which carry code the browser runs. The clock-port and config-write-entry blocks read this one list.
+const nodeRuntimeIgnores = [ "src/**/*.helpers.ts", "src/**/*.test.ts", "src/routes/root/content.ts", "src/routes/root/scripts/**/*.ts", "src/testing/**/*.ts",
+  "src/testing.helpers.ts" ];
+
 export default hbPluginUtils({
 
   allowDefaultProject: ["eslint.config.mjs"],
@@ -271,6 +416,9 @@ export default hbPluginUtils({
    * reading out fixture-shaped data (no-non-null-assertion). The block scoped to the src types directory enforces the project-local helper-location rule
    * against everything under it. The block scoped to the src and test TypeScript sources, excluding the testing helpers' own implementation directory,
    * enforces barrel-only imports for the testing helpers, since that directory is itself the barrel's implementation and must import from its own submodules.
+   * The block scoped to the src TypeScript sources less the Node-runtime ignore list enforces the clock-port rule, so every time read and timer in server code
+   * goes through the Clock port. The block with the same scope and the same ignore list enforces the config-write-entry rule, so every configuration write in
+   * server code goes through config/index.ts.
    */
   extraConfigs: [
     {
@@ -313,12 +461,21 @@ export default hbPluginUtils({
     {
 
       files: ["src/**/*.ts"],
-      ignores: [ "src/**/*.helpers.ts", "src/**/*.test.ts", "src/routes/root/content.ts", "src/routes/root/scripts/**/*.ts", "src/testing/**/*.ts",
-        "src/testing.helpers.ts" ],
+      ignores: nodeRuntimeIgnores,
       plugins: { prismcast: prismcastPlugin },
       rules: {
 
         "prismcast/clock-port": "error"
+      }
+    },
+    {
+
+      files: ["src/**/*.ts"],
+      ignores: nodeRuntimeIgnores,
+      plugins: { prismcast: prismcastPlugin },
+      rules: {
+
+        "prismcast/config-write-entry": "error"
       }
     }
   ],

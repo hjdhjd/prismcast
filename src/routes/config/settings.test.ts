@@ -21,6 +21,7 @@ import { getConfigFilePath, initializeDataDir } from "../../config/paths.ts";
 import { getGpuCapabilities, setGpuCapabilities } from "../../browser/display.ts";
 import { registerConfigChangeHandler, resetConfigChangeHandlers } from "../../config/reactivity.ts";
 import type { ConfigStore } from "../../config/index.ts";
+import { SEEDED_DEVICE_ID } from "../../config/index.helpers.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -380,14 +381,15 @@ describe("the environment-override map the render passes down", () => {
   });
 });
 
-// A store that reads an empty file, which re-initializes CONFIG and the loaded snapshot to the defaults. Only the boot reads through it.
+// A store that reads a file holding only a valid DeviceID, which re-initializes CONFIG and the loaded snapshot to the defaults with nothing for the boot to
+// correct. Only the boot reads through it.
 const emptyStore: ConfigStore = {
 
-  mutateConfig: async (): Promise<void> => {
+  mutateConfigThen: async (): Promise<never> => {
 
     throw new Error("The empty store takes no writes.");
   },
-  readConfig: async () => ({ config: {}, parseError: false, readError: false })
+  readConfig: async () => ({ config: { hdhr: { deviceId: SEEDED_DEVICE_ID } }, parseError: false, readError: false })
 };
 
 /* The form renders the saved configuration, the loaded snapshot, rather than the running one. Each row seeds the two apart through the module's own save: the

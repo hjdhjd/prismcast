@@ -36,6 +36,7 @@ import type { ConfigStore } from "../config/index.ts";
 import { HDHR_DEVICE_TYPE_TUNER } from "./identity.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { NetworkInterfaceInfo } from "node:os";
+import { SEEDED_DEVICE_ID } from "../config/index.helpers.ts";
 import type { UdpSurface } from "./udp.ts";
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
@@ -52,8 +53,8 @@ function httpPortProvider(): number {
 }
 
 /**
- * Builds an in-memory config store whose file names only the given HDHomeRun port, so a row can re-initialize CONFIG and the loaded snapshot from it. Only
- * the boot reads through it.
+ * Builds an in-memory config store whose file names only the given HDHomeRun port and a valid DeviceID, so a row can re-initialize CONFIG and the loaded
+ * snapshot from it and the boot finds nothing to correct. Only the boot reads through it.
  * @param port - The HDHomeRun port the file names.
  * @returns The store.
  */
@@ -61,11 +62,11 @@ function storeNamingHdhrPort(port: number): ConfigStore {
 
   return {
 
-    mutateConfig: async (): Promise<void> => {
+    mutateConfigThen: async (): Promise<never> => {
 
       throw new Error("The read-only store takes no writes.");
     },
-    readConfig: async () => ({ config: { hdhr: { port } }, parseError: false, readError: false })
+    readConfig: async () => ({ config: { hdhr: { deviceId: SEEDED_DEVICE_ID, port } }, parseError: false, readError: false })
   };
 }
 

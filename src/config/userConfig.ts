@@ -4,7 +4,7 @@
  */
 import { CAPTURE_BASELINE_CODEC, HTTP_LOG_LEVELS, RECOGNIZED_CODECS } from "../types/index.ts";
 import type { Config, Nullable, ProcessFieldReactivity, ReactivityClass } from "../types/index.ts";
-import { LOG, assertNever, sanitizeString } from "../utils/index.ts";
+import { LOG, assertNever, generateDeviceId, isPlainObject, sanitizeString, validateDeviceId } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
 import type { Migration } from "./persistence.ts";
 import { createFileStore } from "./persistence.ts";
@@ -923,7 +923,8 @@ export interface UserConfigLoadResult {
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
  * Configuration persistence uses a transactional file store that provides atomic writes, serialized mutations, corruption protection, and backup rotation.
- * All config modifications go through mutateConfig(), which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
+ * Every write the running process makes goes through config/index.ts, by saveConfiguration() or writeProcessFields(), each a store mutation that refuses to
+ * write over a file it could not parse or read, which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
 /* Current schema version for config.json. Migrations are declared in configMigrations below; the framework runs them in order from the file's stored version
@@ -1221,12 +1222,72 @@ export function normalizeStoredConfig(data: UserConfig): UserConfig {
   return filterDefaults({ ...data, streaming: { ...data.streaming, ...values } });
 }
 
-/* Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized, so every write - a save,
- * the boot's correcting write, a startup migration's or a backup recovery's, and every other write the process makes - stores capture values the running
- * configuration can hold and logs the correction it makes, and keeps only the values that differ from their defaults, whichever call site started it. The
- * capture correction belongs here rather than in any one caller because the settings form cannot change a stored capture mode or clear the H.264 box, so a
- * stored value the server cannot capture with would otherwise outlive every save. Schema migrations run automatically via the file store framework's migration
- * runner before the data reaches mergeConfiguration.
+// The DeviceID correction.
+
+/**
+ * The correction a stored HDHomeRun DeviceID needs while the emulation is enabled: the id the configuration held, which is empty when none was stored, and the
+ * valid id that takes its place.
+ */
+export interface DeviceIdCorrection {
+
+  // The DeviceID the configuration held before the correction, empty when the file stored none.
+  readonly configured: string;
+
+  // True when the id in use was generated, false when it is the running DeviceID.
+  readonly generated: boolean;
+
+  readonly kind: "deviceId";
+
+  // The valid DeviceID the configuration and the file hold once the correction is made.
+  readonly using: string;
+}
+
+/**
+ * Corrects a configuration's HDHomeRun DeviceID while the emulation is enabled, writing one valid id onto the configuration built from a file and onto that file.
+ *
+ * It reads the enabled flag and the stored id from the candidate rather than the file, because the candidate holds the flag the running surface obeys, an
+ * environment or command-line override included, and holds a stored id only when the merge restored it as a non-empty string. It prefers the running id when
+ * that one passes its checksum, so the identity the surface advertises stays the same, and generates one otherwise. One id is written onto both objects,
+ * because a generated id is random: choosing it once for the candidate and again for the file would write one id and run another.
+ * @param options - The objects the correction reads and writes.
+ * @param options.candidate - The configuration built from the file, whose flag and stored id the correction reads, and which takes the id in use.
+ * @param options.file - The configuration file the candidate was built from, which takes the same id, its hdhr category replaced with an object first when it
+ *   is not one.
+ * @param options.running - The running DeviceID, kept when it passes its checksum, and empty where no configuration is running yet.
+ * @returns The correction made, or null when the emulation is disabled or the stored id passes its checksum, in which case nothing changes.
+ */
+export function correctStoredDeviceId(options: { readonly candidate: Config; readonly file: UserConfig; readonly running: string }): Nullable<DeviceIdCorrection> {
+
+  const { candidate, file, running } = options;
+
+  if(!candidate.hdhr.enabled || validateDeviceId(candidate.hdhr.deviceId)) {
+
+    return null;
+  }
+
+  const configured = candidate.hdhr.deviceId;
+  const generated = !validateDeviceId(running);
+  const using = generated ? generateDeviceId() : running;
+
+  candidate.hdhr.deviceId = using;
+
+  if(!isPlainObject(file.hdhr)) {
+
+    file.hdhr = {};
+  }
+
+  file.hdhr.deviceId = using;
+
+  return { configured, generated, kind: "deviceId", using };
+}
+
+/* Transactional store instance for config.json. The beforeWrite hook corrects the stored capture values and drops every value equal to its default on every
+ * write - a save, the boot's correcting write, a startup migration's or a backup recovery's, and every other write the process makes - and logs the capture
+ * correction it makes, whichever call site started it. The capture correction belongs here rather than in any one caller because the settings form cannot
+ * change a stored capture mode or clear the H.264 box, so a stored value the server cannot capture with would otherwise outlive every save. The DeviceID is
+ * corrected by the configuration layer instead, where the boot loads the file and where a settings save writes it, and never by a process write, because a
+ * generated id is random and cannot be corrected twice independently: a hook that generated its own would store one id while the process ran another. Schema
+ * migrations run automatically via the file store framework's migration runner before the data reaches mergeConfiguration.
  */
 const configStore = createFileStore<UserConfig>({
 
@@ -1248,7 +1309,7 @@ const configStore = createFileStore<UserConfig>({
 
 /**
  * Reads the current configuration from disk without acquiring the serialization lock. Returns the parsed (and migrated) config with parse status. Use this for
- * read-only access (export endpoints, startup initialization). For modifications, use mutateConfig() instead.
+ * read-only access (export endpoints, startup initialization). Every write the running process makes goes through config/index.ts instead.
  * @returns The loaded configuration with parse status.
  */
 export async function readConfig(): Promise<UserConfigLoadResult> {
@@ -1268,16 +1329,32 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
  * Serialized read-modify-write operation on config.json. The mutation function receives the current config (already migrated to the latest schema version) and
  * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and normalizeStoredConfig via the framework.
  *
- * This writes the file and nothing else. It is the write path for the leaves the process owns, the discovered DVR host and the generated DeviceID among them,
- * and for the boot's write of a capture correction the file needs, and each of those callers keeps the running configuration in step with its own write. A
- * write to the settings surface goes through saveConfiguration() in config/index.ts instead, which runs its mutation through this store, refuses an invalid
- * result before anything reaches disk, and reconciles the running configuration against the file it wrote.
+ * This writes the file and nothing else. It is the store-level write a test calls to seed a file, to exercise the store's write hook, or to stand in for a
+ * writer outside the configuration layer, as the ordering suite's concurrent write does. Every write the running process makes goes through config/index.ts
+ * instead, by saveConfiguration() for the settings surface or writeProcessFields() for the fields the process owns, each through mutateConfigThen(), so the
+ * file and the running configuration move together.
  * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored. A throw inside it writes nothing.
  * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and an Error if config.json could not be read.
  */
 export async function mutateConfig(fn: (current: UserConfig) => void): Promise<void> {
 
   await configStore.mutate(fn);
+}
+
+/**
+ * Serialized read-modify-write operation on config.json whose follow-up runs once the write has landed, while the store's queue is still held, so no other
+ * write reads the file until the follow-up settles. Its caller is the configuration layer in config/index.ts, whose save and process write each move the
+ * running configuration in the follow-up of their write: a save's reconcile and a process write's commit. Nothing the follow-up awaits may write config.json, because
+ * that write would wait on the queue the follow-up holds and never settle.
+ * @param fn - Mutation function. Receives current config, modifies it in place, and returns the follow-up. A throw inside it writes nothing and runs no
+ *   follow-up.
+ * @returns The follow-up's result.
+ * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, an Error if config.json could not be read, and whatever the
+ *   follow-up rejects with.
+ */
+export async function mutateConfigThen<R>(fn: (current: UserConfig) => () => Promise<R>): Promise<R> {
+
+  return configStore.mutateThen(fn);
 }
 
 /* These functions detect which settings are overridden by environment variables, so the UI can disable those fields and show appropriate warnings.
@@ -2089,14 +2166,10 @@ export type ProcessField =
   { readonly kind: "schema"; readonly preserve: (value: unknown) => boolean } |
   { readonly kind: "state"; readonly reactivity: ProcessFieldReactivity };
 
-/**
- * Every configuration field the process writes, keyed by dot path in ASCII order. The drift tests in userConfig.test.ts hold the state keys equal to exactly
- * the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without an entry here, or an entry left behind for a leaf that
- * moved into the metadata, fails at test time rather than throwing inside a save. A state field's class follows the same rule a setting's declared class does,
- * read off the field's own readers. Suite 17 in test/e2e/routes/settings-preservation.test.ts iterates the table directly, so a new entry is covered by its
- * preservation sweep once the entry's seed value joins that file's SEED_VALUES table.
+/* The table's literal, declared once. It is checked against the entry type with satisfies rather than annotated with it, so its keys and kind tags stay literal
+ * and ProcessFieldPath can derive the state paths from them; PROCESS_FIELDS exports it under the record type every consumer reads.
  */
-export const PROCESS_FIELDS: Readonly<Record<string, ProcessField>> = {
+const PROCESS_FIELD_TABLE = {
 
   "channels.channelSortDirection": { kind: "state", reactivity: "live" },
   "channels.channelSortField": { kind: "state", reactivity: "live" },
@@ -2113,7 +2186,24 @@ export const PROCESS_FIELDS: Readonly<Record<string, ProcessField>> = {
 
   // The version the migration runner reads to decide which migrations still run, kept whenever it is a number.
   "schemaVersion": { kind: "schema", preserve: (value: unknown): boolean => typeof value === "number" }
-};
+} satisfies Readonly<Record<string, ProcessField>>;
+
+/**
+ * Every configuration field the process writes, keyed by dot path in ASCII order. The drift tests in userConfig.test.ts hold the state keys equal to exactly
+ * the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without an entry here, or an entry left behind for a leaf that
+ * moved into the metadata, fails at test time rather than throwing inside a save. A state field's class follows the same rule a setting's declared class does,
+ * read off the field's own readers. Suite 17 in test/e2e/routes/settings-preservation.test.ts iterates the table directly, so a new entry is covered by its
+ * preservation sweep once the entry's seed value joins that file's SEED_VALUES table.
+ */
+export const PROCESS_FIELDS: Readonly<Record<string, ProcessField>> = PROCESS_FIELD_TABLE;
+
+/**
+ * The dot path of a field the process owns: a state entry of PROCESS_FIELDS. A process write answers its leaves by these paths, so a path the table does not
+ * declare as a state field is a compile error.
+ */
+export type ProcessFieldPath = {
+  [Path in keyof typeof PROCESS_FIELD_TABLE]: (typeof PROCESS_FIELD_TABLE)[Path] extends { readonly kind: "state" } ? Path : never
+}[keyof typeof PROCESS_FIELD_TABLE];
 
 /**
  * Answers the table's entry for a path, through Object.hasOwn, so an inherited key such as toString is never read as a field.

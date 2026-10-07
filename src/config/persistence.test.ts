@@ -17,6 +17,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Migration } from "./persistence.ts";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 import { withTempDir } from "../testing.helpers.ts";
@@ -409,6 +410,191 @@ describe("FileStore.mutate - core paths", () => {
       const parsed = JSON.parse(written) as { value: number };
 
       assert.equal(parsed.value, 7, "post-write readback contract: file content matches what we wrote");
+    });
+  });
+});
+
+/* mutateThen holds the store's queue through the follow-up its callback returns, so the next queued operation reads the file only once the follow-up has
+ * settled. The store's read, write and readback are file I/O that microtask turns never complete, so the row that holds a follow-up open while another mutate
+ * is queued waits a bounded real-time interval before it reads whether that mutate ran, and it opens the gate in a finally so a failed row leaves nothing
+ * waiting on the queue.
+ */
+describe("FileStore.mutateThen - the follow-up runs while the queue is held", () => {
+
+  // The real time a row gives a queued operation to reach its callback were the queue free: the read, write and readback of a small file, with room to spare.
+  const FILE_IO_SETTLE_MS = 300;
+
+  test("a mutate queued while a mutateThen follow-up is gated does not run its callback until the gate opens", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const store = makeStore<{ value: number }>(dir, "held.json", {
+
+        defaultValue: () => ({ value: 0 })
+      });
+      const entered = Promise.withResolvers<null>();
+      const gate = Promise.withResolvers<null>();
+      let queuedRan = false;
+      let ranWhileHeld = true;
+
+      const held = store.mutateThen((data) => {
+
+        data.value = 1;
+
+        return async (): Promise<void> => {
+
+          entered.resolve(null);
+          await gate.promise;
+        };
+      });
+
+      await entered.promise;
+
+      const queued = store.mutate((data) => {
+
+        queuedRan = true;
+        data.value = 2;
+      });
+
+      try {
+
+        await delay(FILE_IO_SETTLE_MS);
+        ranWhileHeld = queuedRan;
+      } finally {
+
+        gate.resolve(null);
+      }
+
+      await Promise.all([ held, queued ]);
+
+      const parsed = JSON.parse(await readFile(path.join(dir, "held.json"), "utf-8")) as { value: number };
+
+      assert.equal(ranWhileHeld, false, "the queued mutate's callback did not run while the follow-up held the queue");
+      assert.equal(queuedRan, true, "the queued mutate ran once the gate opened");
+      assert.equal(parsed.value, 2, "the queued mutate's write landed after the held one");
+    });
+  });
+
+  test("a follow-up that rejects rejects its caller, leaves the write on disk, and releases the queue", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const store = makeStore<{ value: number }>(dir, "rejecting.json", {
+
+        defaultValue: () => ({ value: 0 })
+      });
+      const readValue = async (): Promise<number> => (JSON.parse(await readFile(path.join(dir, "rejecting.json"), "utf-8")) as { value: number }).value;
+
+      await assert.rejects(store.mutateThen((data) => {
+
+        data.value = 1;
+
+        return async (): Promise<void> => {
+
+          throw new Error("synthetic follow-up failure");
+        };
+      }), /synthetic follow-up failure/);
+
+      assert.equal(await readValue(), 1, "the write the follow-up followed stays on disk");
+
+      await store.mutate((data) => { data.value = 2; });
+
+      assert.equal(await readValue(), 2, "the next mutate completes");
+    });
+  });
+
+  test("a callback that throws writes nothing and its follow-up never runs", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const store = makeStore<{ value: number }>(dir, "throwing-then.json", {
+
+        defaultValue: () => ({ value: 0 })
+      });
+      const refuse = (): never => {
+
+        throw new Error("synthetic mutation error");
+      };
+      let followed = false;
+
+      await store.mutate((data) => { data.value = 1; });
+
+      await assert.rejects(store.mutateThen((data) => {
+
+        data.value = 9;
+        refuse();
+
+        return async (): Promise<void> => {
+
+          followed = true;
+        };
+      }), /synthetic mutation error/);
+
+      const parsed = JSON.parse(await readFile(path.join(dir, "throwing-then.json"), "utf-8")) as { value: number };
+
+      assert.equal(parsed.value, 1, "the file keeps the value from before the throwing callback");
+      assert.equal(followed, false, "no follow-up ran");
+    });
+  });
+
+  test("a write whose readback fails runs no follow-up", async () => {
+
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/readback-then.json";
+    const realReadFile = backend.readFile;
+    let readFileCallCount = 0;
+    let followed = false;
+
+    // Seed the file so the pre-mutate read succeeds. The first read of the file is the mutation's own and the second is the post-write readback, which trips.
+    backend.files.set(filePath, "{\"value\":1}\n");
+    backend.mtimes.set(filePath, 1);
+    backend.readFile = async (p: string): Promise<string> => {
+
+      readFileCallCount += 1;
+
+      if((readFileCallCount >= 2) && (p === filePath)) {
+
+        throw new Error("synthetic-readback-failure");
+      }
+
+      return realReadFile(p);
+    };
+
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
+
+      defaultValue: () => ({ value: 0 })
+    });
+
+    await assert.rejects(store.mutateThen((data) => {
+
+      data.value = 2;
+
+      return async (): Promise<void> => {
+
+        followed = true;
+      };
+    }), /synthetic-readback-failure/);
+
+    assert.equal(followed, false, "no follow-up ran after the failed readback");
+  });
+
+  test("a follow-up that reads the file reads the write", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const store = makeStore<{ value: number }>(dir, "follow-read.json", {
+
+        defaultValue: () => ({ value: 0 })
+      });
+
+      const seen = await store.mutateThen((data) => {
+
+        data.value = 5;
+
+        return async (): Promise<number> => (await store.read()).data.value;
+      });
+
+      assert.equal(seen, 5, "the follow-up read the value the write stored");
     });
   });
 });

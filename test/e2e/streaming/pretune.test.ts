@@ -387,9 +387,9 @@ describe("pretune scheduling state machine", () => {
     await enablePredefinedChannels([ "abcnews", "cnn", "nbc" ]);
 
     // Set a filter that excludes every variant of abcnews. abcnews has no `direct` tag (no site URL), so isChannelAvailableByService(abcnews) is false: this is
-    // structurally a filtered-out channel from the user's perspective, but the pretune path does not consult that predicate. Use a tag that does not match any
-    // service in the channel catalog so we are unambiguously outside any abcnews variant's tag set.
-    await mutateEnabledServices(["nonexistent-service-tag"]);
+    // structurally a filtered-out channel from the user's perspective, but the pretune path does not consult that predicate. Use a known tag, which the running
+    // filter keeps, that no abcnews variant carries, so we are unambiguously outside every abcnews variant's tag set.
+    await mutateEnabledServices(["paramountplus"]);
 
     ctx.registerCleanup(async () => {
 

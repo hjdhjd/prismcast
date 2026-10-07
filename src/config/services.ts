@@ -5,14 +5,13 @@
 import type { ChangeRejection, ConfigChange } from "./reactivity.ts";
 import type { Channel, ChannelMap, Config, ResolvedChannel, ServiceGroup } from "../types/index.ts";
 import { LOG, extractDomain } from "../utils/index.ts";
-import { CONFIG } from "./index.ts";
 import { DOMAIN_CONFIG } from "./sites.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { getDomainConfig } from "./profiles.ts";
 import { getUserDomains } from "./userProfiles.ts";
-import { mutateConfig } from "./userConfig.ts";
 import { pickIdentity } from "./channelIdentity.ts";
 import { registerConfigChangeHandler } from "./reactivity.ts";
+import { writeProcessFields } from "./index.ts";
 
 /* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -277,8 +276,8 @@ export function getEnabledServices(): string[] {
 
 /**
  * Sets the running service filter, the module cache every filter reader consults, and writes nothing else. The cache is the running filter and
- * CONFIG.channels.enabledServices is the persisted list: applyServiceFilter derives the filter from the list, and mutateEnabledServices sets the list and then
- * the filter once the file holds a new list.
+ * CONFIG.channels.enabledServices is the persisted list: applyServiceFilter derives the filter from the list, at boot and in the handler a save or a process
+ * write of the list dispatches.
  * @param tags - The service tags the filter enables. Empty array means "no filter" (all services shown).
  */
 export function setEnabledServices(tags: readonly string[]): void {
@@ -289,9 +288,9 @@ export function setEnabledServices(tags: readonly string[]): void {
 /**
  * Makes a persisted service list the running filter, restricted to the tags the loaded channels and user domains know, with one warning naming any tag it
  * ignores. This is the one statement of the rule that an unknown tag never reaches the running filter: the boot applies it to the persisted list once the
- * service groups are built, and the reconcile applies it to the saved list whenever a save changes it. The file keeps the user's list rather than the restricted
- * one, because a partial store load can shrink the known set, and persisting the restriction would then delete tags that are legitimate once every store loads.
- * A list whose every tag is unknown restricts to the empty filter, which shows every service.
+ * service groups are built, and the handler applies it to the written list whenever a save changes the list or a process write writes it. The file keeps the
+ * user's list rather than the restricted one, because a partial store load can shrink the known set, and persisting the restriction would then delete tags
+ * that are legitimate once every store loads. A list whose every tag is unknown restricts to the empty filter, which shows every service.
  * @param tags - The persisted service list.
  */
 export function applyServiceFilter(tags: readonly string[]): void {
@@ -317,30 +316,22 @@ export function applyServiceFilter(tags: readonly string[]): void {
 }
 
 /**
- * Persists a new enabled-services list through the file store, then makes it the persisted list in CONFIG and the running filter, in that order, so after the
- * call returns the file, CONFIG, and the cache all hold it. Its caller, the service-filter route, accepts only tags that are known or already in the running
- * filter, so the list is set as given. Empty array means "no filter" (all services shown).
+ * Writes a new enabled-services list through one process write, so the file and CONFIG hold the list as given before this resolves. The write dispatches the
+ * registered handler, which makes the list the running filter restricted to the tags known at that moment, as the boot and an import restrict it, so the route's
+ * same-request counts read the new filter; it dispatches the handler even when the list equals the persisted one, which re-derives a running filter left
+ * narrower than the list. Empty array means "no filter" (all services shown).
  * @param tags - The new enabled service tags.
- * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */
 export async function mutateEnabledServices(tags: readonly string[]): Promise<void> {
 
-  const next = [...tags];
+  const list = [...tags];
 
-  await mutateConfig((config) => {
-
-    config.channels ??= {};
-    config.channels.enabledServices = next;
-  });
-
-  // CONFIG follows the file so the next save finds nothing to reconcile for the list, and the running filter follows CONFIG.
-  CONFIG.channels.enabledServices = [...next];
-  setEnabledServices(next);
+  await writeProcessFields(() => ({ "channels.enabledServices": list }));
 }
 
 /**
- * Realizes a saved change to the persisted service list: the candidate's list becomes the running filter through the same restriction the boot applies, and
- * the reconcile commits the list itself to CONFIG as the user saved it. Setting the cache cannot fail, so the handler refuses nothing.
+ * Realizes a change to the persisted service list, a save's or a process write's: the candidate's list becomes the running filter through the same restriction
+ * the boot applies, and the dispatch commits the list itself to CONFIG as it was written. Setting the cache cannot fail, so the handler refuses nothing.
  * @param _changes - The changes under the handler's prefix; the candidate carries the whole list, so the handler reads that instead.
  * @param next - The candidate running configuration.
  * @returns No rejections.

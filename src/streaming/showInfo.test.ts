@@ -4,18 +4,20 @@
  * fetch active recording jobs and program guide entries, and populate channel logos in two tiers. The module exposes a small public API (getDvrHost, setDvrHost,
  * getShowName, clearShowName, triggerShowNameUpdate, fetchFromDvr, getDeviceMappings, matchesM3uDevice, updateChannelLogo) plus the start/stop polling
  * lifecycle. Tests focus on the pure helpers (getShowName/clearShowName, getDvrHost/setDvrHost, fetchFromDvr success/timeout paths, matchesM3uDevice's overlap
- * boundaries) and avoid the polling start/stop which spawns intervals. The DVR host is the running configuration's, so the host rows seed and reset it by
- * re-initializing CONFIG from an empty in-memory store; the rows covering a save that changes the host or the port run against the real store in
- * test/e2e/streaming/show-info.test.ts.
+ * boundaries) and avoid the polling start/stop which spawns intervals. The DVR host is the running configuration's, and setDvrHost writes it through a process
+ * write, so each host row runs in a temporary data directory of its own and boots the configuration from that directory's empty file through the real store;
+ * the rows covering a save that changes the host or the port run in test/e2e/streaming/show-info.test.ts.
  */
 import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearShowName, fetchFromDvr, getDvrHost, getShowName, matchesM3uDevice, setDvrHost } from "./showInfo.ts";
-import { closePuppeteerStreamWssOnIdle, pendingBodyFetch } from "../testing.helpers.ts";
-import type { ConfigStore } from "../config/index.ts";
+import { closePuppeteerStreamWssOnIdle, pendingBodyFetch, withTempDir } from "../testing.helpers.ts";
 import { LOG } from "../utils/index.ts";
 import assert from "node:assert/strict";
+import { initializeDataDir } from "../config/paths.ts";
+import os from "node:os";
+import { readConfig } from "../config/userConfig.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -29,15 +31,31 @@ const SETTLE_TURNS = 10;
 // The Channels DVR port the defaults carry, which the running configuration holds in every row that does not change it.
 const DEFAULT_DVR_PORT = 8089;
 
-// An empty configuration file held in memory. Initializing from it resets CONFIG, the DVR host among it, to the defaults, and it writes nothing anywhere.
-const emptyStore: ConfigStore = {
+// The most macrotask boundaries a row crosses while it waits for the logo populations a write started to complete.
+const POPULATION_TURNS = 100;
 
-  mutateConfig: async (): Promise<void> => {
+/**
+ * Runs a row in a data directory of its own: the configuration store reads and writes there, the configuration boots from that directory's empty file through
+ * the real store, so CONFIG starts from the defaults with no DVR host, and the data directory points back at os.tmpdir(), a directory that exists, once the row
+ * ends and its directory is removed.
+ * @param row - The row's body.
+ */
+async function inDataDir(row: () => Promise<void>): Promise<void> {
 
-    // Intentional no-op: no row here saves through the configuration layer.
-  },
-  readConfig: async () => ({ config: {}, parseError: false, readError: false })
-};
+  await withTempDir(async (dir) => {
+
+    initializeDataDir(dir);
+
+    try {
+
+      await initializeConfiguration();
+      await row();
+    } finally {
+
+      initializeDataDir(os.tmpdir());
+    }
+  });
+}
 
 /* Counts the debug lines carrying the module's fetch-failure template for one host - the line a lapse must not produce and a real failure must. The host narrows
  * the count to the calling row's own request, because the spy sits on a logger every row in the file shares.
@@ -70,16 +88,14 @@ describe("getDvrHost / setDvrHost", () => {
 
   let originalFetch: typeof globalThis.fetch;
 
-  /* Setting the host fires the logo population without awaiting it, and its device-mapping request would otherwise reach the sentinel host after the row has
-   * finished and log its failure during a later row. A stub answering every request with an empty listing lets that population settle, silently, inside the
-   * row that started it; the drain before the restore is what keeps a late request from reaching the real fetch.
+  /* A write of a new host dispatches the handler, which starts the logo population without awaiting it, and its device-mapping request would otherwise reach
+   * the sentinel host after the row has finished and log its failure during a later row. A stub answering every request with an empty listing lets that
+   * population settle, silently, inside the row that started it; the drain before the restore is what keeps a late request from reaching the real fetch.
    */
-  // Each row starts from the defaults, so the running configuration holds no DVR host until the row sets one.
-  beforeEach(async () => {
+  beforeEach(() => {
 
     originalFetch = globalThis.fetch;
     globalThis.fetch = (async (): Promise<Response> => new Response("[]", { status: 200 }));
-    await initializeConfiguration(undefined, emptyStore);
   });
 
   afterEach(async () => {
@@ -88,52 +104,98 @@ describe("getDvrHost / setDvrHost", () => {
     globalThis.fetch = originalFetch;
   });
 
-  test("getDvrHost answers the host the running configuration holds, and null while it holds none", () => {
+  test("getDvrHost answers the host the running configuration holds, and null while it holds none", async () => {
 
-    CONFIG.channelsDvr.host = "test-host-0.example.invalid";
+    await inDataDir(async () => {
 
-    assert.equal(getDvrHost(), "test-host-0.example.invalid", "the running configuration's host is the DVR host");
+      CONFIG.channelsDvr.host = "test-host-0.example.invalid";
 
-    CONFIG.channelsDvr.host = "";
+      assert.equal(getDvrHost(), "test-host-0.example.invalid", "the running configuration's host is the DVR host");
 
-    assert.equal(getDvrHost(), null, "an empty host means no DVR host is known");
+      CONFIG.channelsDvr.host = "";
+
+      assert.equal(getDvrHost(), null, "an empty host means no DVR host is known");
+    });
   });
 
-  test("setDvrHost writes the host into the running configuration so getDvrHost surfaces it", () => {
+  test("setDvrHost writes the host into the file and the running configuration so getDvrHost surfaces it", async () => {
 
-    // Use a sentinel host that won't collide with real hostnames. setDvrHost also persists the host and populates the logos, neither of which this row reads:
-    // the persist has no data directory to write to here and its failure is logged, and the stub above answers the population.
-    setDvrHost("test-host-1.example.invalid");
+    await inDataDir(async () => {
 
-    assert.equal(CONFIG.channelsDvr.host, "test-host-1.example.invalid", "the running configuration holds the host at once");
-    assert.equal(getDvrHost(), "test-host-1.example.invalid");
+      // Use a sentinel host that won't collide with real hostnames. The write also starts the logo population, which this row does not read and the stub above
+      // answers.
+      await setDvrHost("test-host-1.example.invalid");
+
+      assert.equal((await readConfig()).config.channelsDvr?.host, "test-host-1.example.invalid", "the file holds the host once the call resolves");
+      assert.equal(CONFIG.channelsDvr.host, "test-host-1.example.invalid", "the running configuration holds it too");
+      assert.equal(getDvrHost(), "test-host-1.example.invalid");
+    });
   });
 
-  test("setDvrHost is safe to call twice with the same value - it does not change behavior", () => {
+  test("setDvrHost is safe to call twice with the same value - it does not change behavior", async () => {
 
-    setDvrHost("test-host-2.example.invalid");
-    setDvrHost("test-host-2.example.invalid");
+    await inDataDir(async () => {
 
-    assert.equal(getDvrHost(), "test-host-2.example.invalid");
+      await setDvrHost("test-host-2.example.invalid");
+      await setDvrHost("test-host-2.example.invalid");
+
+      assert.equal(getDvrHost(), "test-host-2.example.invalid");
+    });
   });
 
-  test("setDvrHost rejects colon-bearing inputs so post-migration drift cannot reintroduce host:port at runtime", () => {
+  test("setDvrHost rejects colon-bearing inputs so post-migration drift cannot reintroduce host:port at runtime", async () => {
 
     /* The runtime safety net for the v3 migration's architectural cleanup. The schema migration splits any legacy host:port value at read time, but only on
      * disk - a future caller mistakenly passing "1.2.3.4:8089" through setDvrHost would silently reintroduce the embedded-port form into module state and (via
-     * persist) onto disk. The colon-rejection in setDvrHost prevents that drift: colon-bearing inputs are dropped (with a debug log; not asserted here because
+     * its write) onto disk. The colon-rejection in setDvrHost prevents that drift: colon-bearing inputs are dropped (with a debug log; not asserted here because
      * the observable contract is the absent state change). This test asserts both halves of the contract - a valid host updates state, a colon-bearing host does
      * not - so a refactor that loosens the rejection (e.g., to "strip the port portion") would fail loudly instead of silently undoing the migration's intent.
      */
-    setDvrHost("1.2.3.4");
+    await inDataDir(async () => {
 
-    assert.equal(getDvrHost(), "1.2.3.4", "a host-only input updates the running host");
+      await setDvrHost("1.2.3.4");
 
-    setDvrHost("1.2.3.4:8089");
+      assert.equal(getDvrHost(), "1.2.3.4", "a host-only input updates the running host");
 
-    assert.equal(getDvrHost(), "1.2.3.4", "a colon-bearing input leaves the running host unchanged - the prior accepted value is preserved");
-    assert.equal(CONFIG.channelsDvr.host, "1.2.3.4", "and the running configuration with it");
+      await setDvrHost("1.2.3.4:8089");
+
+      assert.equal(getDvrHost(), "1.2.3.4", "a colon-bearing input leaves the running host unchanged - the prior accepted value is preserved");
+      assert.equal(CONFIG.channelsDvr.host, "1.2.3.4", "and the running configuration with it");
+      assert.equal((await readConfig()).config.channelsDvr?.host, "1.2.3.4", "and the file with it");
+    });
   });
+
+  test("calls naming one new host, started together, each write it and start a population, and a later call naming the running host starts none",
+    async (t) => {
+
+      /* The early return reads CONFIG, which a write moves only in its follow-up, so calls started in one turn each pass it: each writes the host, the second
+       * changing nothing in the file, and each dispatches the handler, which starts a logo population. Once a write has committed, a call naming the running host
+       * returns before it writes, so it starts no population. Each population logs one completion line at debug, which is what the row counts.
+       */
+      await inDataDir(async () => {
+
+        const debug = t.mock.method(LOG, "debug", () => undefined);
+        const populations = (): number => debug.mock.calls.filter((call) => String(call.arguments[1]).startsWith("Logo population complete")).length;
+
+        await Promise.all([ setDvrHost("test-host-3.example.invalid"), setDvrHost("test-host-3.example.invalid") ]);
+
+        assert.equal((await readConfig()).config.channelsDvr?.host, "test-host-3.example.invalid", "the file holds the host");
+        assert.equal(CONFIG.channelsDvr.host, "test-host-3.example.invalid", "the running configuration holds the host");
+
+        for(let turn = 0; (turn < POPULATION_TURNS) && (populations() < 2); turn++) {
+
+          // eslint-disable-next-line no-await-in-loop -- the loop is the drain: each turn lets the populations the writes started run further.
+          await settle();
+        }
+
+        assert.equal(populations(), 2, "each write dispatched the handler, and each dispatch started a population");
+
+        await setDvrHost("test-host-3.example.invalid");
+        await settle(SETTLE_TURNS);
+
+        assert.equal(populations(), 2, "a call naming the running host writes nothing and starts no third population");
+      });
+    });
 });
 
 describe("fetchFromDvr", () => {
