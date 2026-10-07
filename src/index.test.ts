@@ -2,11 +2,9 @@
  *
  * index.test.ts: Unit tests for the entry point module. index.ts is a top-level script: importing it runs the unhandled-rejection / uncaught-exception process
  * handlers, calls initializeDataDir, branches on the first argv token, and (on the default branch) calls startServer which spawns Chrome and binds the port. The
- * helpers it does have - parseArgs, requireAbsolutePath, printUsage, printEnvironmentVariables - are not exported, so they cannot be reached from a unit test
- * without importing the module and triggering its side effects. The only exported surface that is safe to import via `import type` (which is fully erased) is
- * the ParsedArgs interface, and this file exercises that surface.
- *
- * Everything else is deferred to the e2e suite, which is the appropriate level for testing process-level orchestration.
+ * helpers it keeps - parseArgs and requireAbsolutePath - are not exported, so they cannot be reached from a unit test without importing the module and
+ * triggering its side effects. The only exported surface that is safe to import via `import type` (which is fully erased) is the ParsedArgs interface, and this
+ * file exercises that surface. The behavior the entry point delegates is covered where it lives, and the notes at the end of this file name each place.
  */
 import { describe, test } from "node:test";
 import type { ParsedArgs } from "./index.ts";
@@ -70,26 +68,22 @@ describe("ParsedArgs", () => {
   });
 });
 
-/* The remaining surface area of index.ts is deferred. We document the deferrals here so a future maintainer can confirm the test conventions are being
- * followed and not just silently skipped:
+/* Where the rest of index.ts is covered. No suite spawns the entry point as a subprocess, because the default branch boots the server, which launches Chrome and
+ * binds the port, so what the entry point delegates lives in modules a unit row can import, and what it keeps for itself no suite reaches:
  *
- * - parseArgs(): not exported, parses process.argv directly and on -h / -v it calls process.exit. Cannot be tested in isolation without exporting
- *   it; importing the module to reach it would also run the surrounding entry-point code (initializeDataDir, branch on subcommand, startServer). Deferred to
- *   e2e where the CLI is invoked as a subprocess.
+ * - The usage text (-h / --help) and the environment listing (--list-env) render in cliHelp.ts, and src/cliHelp.test.ts covers the text and the listing, every
+ *   printed default and every category included.
  *
- * - requireAbsolutePath(): not exported, calls process.exit(1) on relative paths. Same import-side-effect problem as parseArgs. Deferred to e2e.
+ * - The startup failure catch is handleStartupFailure in app.ts, and src/app.test.ts covers its superseded and fatal branches.
  *
- * - printUsage(): not exported, writes to console.log. Same import-side-effect problem. Deferred to e2e.
- *
- * - printEnvironmentVariables(): not exported, walks CONFIG_METADATA and writes to console.log. Same import-side-effect problem. Deferred to e2e, where the
- *   subprocess invocation `prismcast --list-env` exercises every category branch end-to-end.
+ * - parseArgs() and requireAbsolutePath(): not exported, read process.argv directly and call process.exit on -h, -v and a relative path. No suite covers them.
  *
  * - The unhandledRejection / uncaughtException handlers: registered at module load via process.on. Mutating process state from a unit test would leak across
- *   the rest of the test run, and the test runner has its own unhandled-rejection guard that would compete. Deferred to e2e.
+ *   the rest of the test run, and the test runner has its own unhandled-rejection guard that would compete. No suite covers them.
  *
- * - The 'exit' handler that calls flushLogBufferSync / releaseInstanceSlot / killStaleChrome: registered only on the default branch (server startup), which we
- *   cannot reach without importing index.ts and triggering startServer. Deferred to e2e.
+ * - The 'exit' handler that calls flushLogBufferSync / releaseInstanceSlot / killStaleChrome: registered only on the default branch (server startup), which no
+ *   suite reaches.
  *
- * - The dispatch to handleServiceCommand / handleUpgradeCommand / printEnvironmentVariables / startServer: top-level await-less promise chains that branch on
- *   the first argv token. This is the script's main control flow and can only be observed by spawning the entry point as a subprocess. Deferred to e2e.
+ * - The dispatch to handleServiceCommand / handleUpgradeCommand / the environment listing / startServer: top-level promise chains that branch on the first argv
+ *   token, which no suite reaches.
  */

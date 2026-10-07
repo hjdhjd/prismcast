@@ -152,7 +152,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
     {
 
       description: "TCP port for the user's Channels DVR API. PrismCast polls Channels DVR over HTTP for show-info, device-mapping discovery, and pretune " +
-        "scheduling. Defaults to 8089, which is the canonical Channels DVR port. Override only when the user has changed the DVR's listen port from its default.",
+        "scheduling. The default is the canonical Channels DVR port. Override only when the user has changed the DVR's listen port from its default.",
       envVar: "CHANNELS_DVR_PORT",
       label: "Channels DVR Port",
       max: 65535,

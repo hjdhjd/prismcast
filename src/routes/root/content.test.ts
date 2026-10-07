@@ -10,6 +10,7 @@ import { after, before, describe, test } from "node:test";
 import { generateApiReferenceContent, generateChannelsTabContent, generateConfigContent, generateHelpContent, generateLogsContent,
   generateOverviewContent } from "./content.ts";
 import { mkdtempSync, rmSync } from "node:fs";
+import { CONFIG } from "../../config/index.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
 import { initializeDataDir } from "../../config/paths.ts";
@@ -105,13 +106,24 @@ describe("generateOverviewContent", () => {
     assert.ok(html.includes(baseUrl + "/hls/nbc/stream.m3u8"), "baseUrl + sample HLS URL should appear");
   });
 
-  test("includes the Plex Integration block referencing the HDHomeRun port", () => {
+  test("includes the Plex Integration block naming the configured HDHomeRun port", () => {
 
-    // The Plex section references port 5004 for HDHomeRun emulation. This is a soft check on the textual content so a renumber to a different port surfaces here.
-    const html = generateOverviewContent("http://localhost:5589");
+    // The Plex section tells the user the address to enter, so it renders the port the running configuration names. The row moves the port off its default, so a
+    // section that printed a fixed port would name the wrong one.
+    const original = CONFIG.hdhr.port;
 
-    assert.match(html, /<h3>Plex Integration<\/h3>/);
-    assert.match(html, /5004/);
+    CONFIG.hdhr.port = 5104;
+
+    try {
+
+      const html = generateOverviewContent("http://localhost:5589");
+
+      assert.match(html, /<h3>Plex Integration<\/h3>/);
+      assert.ok(html.includes("with port 5104 (e.g., <code>192.168.1.100:5104</code>)"), "the address the section gives names the configured HDHomeRun port");
+    } finally {
+
+      CONFIG.hdhr.port = original;
+    }
   });
 
   test("includes the Tuning Speed section with the documented timing tiers", () => {
@@ -173,6 +185,22 @@ describe("generateHelpContent", () => {
     const rowCount = (html.match(/<tr>/g) ?? []).length;
 
     assert.ok(rowCount >= 5, "should have multiple troubleshooting rows; got " + String(rowCount));
+  });
+
+  test("the port-conflict row names the configured server port", () => {
+
+    // The row moves the server port off its default, so a troubleshooting row that printed a fixed port would name a port the server does not use.
+    const original = CONFIG.server.port;
+
+    CONFIG.server.port = 5689;
+
+    try {
+
+      assert.ok(generateHelpContent().includes("<td>Another service using port 5689.</td>"), "the port-conflict cause names the configured server port");
+    } finally {
+
+      CONFIG.server.port = original;
+    }
   });
 
   test("includes Homebrew, npm, and Docker upgrade command examples", () => {

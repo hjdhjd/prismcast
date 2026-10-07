@@ -8,6 +8,9 @@ import type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
  * functional area. Most values can be supplied through a layered priority (CLI flags override environment variables, which override the config file, which overrides
  * builtin defaults), while a few are managed internally - the Channels DVR host is auto-discovered, the HDHomeRun device ID is auto-generated, and the debug filter
  * is owned by the /debug UI. The configuration is validated at startup to catch misconfigurations before the server begins accepting connections.
+ *
+ * The field comments below state what each field means and why it exists. A setting's default lives in DEFAULTS, and its environment variable, valid range and
+ * description in CONFIG_METADATA, which config/userConfig.ts declares, so the comments restate none of them.
  */
 
 /**
@@ -17,13 +20,12 @@ import type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 export interface BrowserConfig {
 
   // Path to the Chrome executable. When null, the application searches common installation paths across macOS, Linux, and Windows. Setting this explicitly is
-  // useful in containerized environments or when multiple browser versions are installed. Environment variable: CHROME_BIN.
+  // useful in containerized environments or when multiple browser versions are installed.
   executablePath: Nullable<string>;
 
   // Maximum time in milliseconds to wait after browser launch for the puppeteer-stream extension to initialize. The extension injects recording APIs into the
   // browser context, and attempting to capture streams before initialization completes causes silent failures. The system polls for readiness and proceeds early
-  // once the extension is ready, so this is a ceiling rather than a fixed delay. Increase this value if streams start with blank frames. Environment variable:
-  // BROWSER_INIT_TIMEOUT. Default: 3000ms.
+  // once the extension is ready, so this is a ceiling rather than a fixed delay. Increase this value if streams start with blank frames.
   initTimeout: number;
 }
 
@@ -49,51 +51,48 @@ export interface PathsConfig {
 export interface PlaybackConfig {
 
   // Time in milliseconds to allow buffering before declaring a stall. Live streams occasionally buffer due to network conditions, and triggering recovery too
-  // quickly causes unnecessary disruption. This grace period prevents false positives while still catching genuine stalls. Environment variable:
-  // BUFFERING_GRACE_PERIOD. Default: 10000ms (10 seconds).
+  // quickly causes unnecessary disruption. This grace period prevents false positives while still catching genuine stalls.
   bufferingGracePeriod: number;
 
   // Time in milliseconds to wait after clicking a channel selector before checking for video. Some multi-channel players have animated transitions or need time to
-  // load the new channel's stream. Environment variable: CHANNEL_SELECTOR_DELAY. Default: 5000ms.
+  // load the new channel's stream.
   channelSelectorDelay: number;
 
   // Time in milliseconds to wait after a channel switch completes for the stream to stabilize. This delay allows the player to finish any post-switch
-  // initialization before we begin monitoring playback health. Environment variable: CHANNEL_SWITCH_DELAY. Default: 4000ms.
+  // initialization before we begin monitoring playback health.
   channelSwitchDelay: number;
 
   // Time in milliseconds to wait for iframe content to initialize before searching for video elements. When video is embedded in an iframe, the iframe document
-  // loads asynchronously after the parent page. Searching too early returns no results. Environment variable: IFRAME_INIT_DELAY. Default: 1500ms.
+  // loads asynchronously after the parent page. Searching too early returns no results.
   iframeInitDelay: number;
 
   // Maximum number of full page navigations allowed within the pageReloadWindow time period. Full page reloads are the most disruptive recovery action, so we limit
   // their frequency to prevent reload loops on fundamentally broken streams. When the limit is reached, recovery falls back to less disruptive source reloads.
-  // Environment variable: MAX_PAGE_RELOADS. Default: 3.
   maxPageReloads: number;
 
   // Interval in milliseconds between playback health checks. Each check evaluates video state (currentTime, paused, ended, error, readyState) and triggers recovery
-  // if problems are detected. Shorter intervals detect problems faster but increase CPU usage. Environment variable: MONITOR_INTERVAL. Default: 2000ms.
+  // if problems are detected. Shorter intervals detect problems faster but increase CPU usage.
   monitorInterval: number;
 
   // Time window in milliseconds for tracking page reload frequency. Page reloads within this window count toward the maxPageReloads limit. After the window
-  // expires, the reload counter resets. Environment variable: PAGE_RELOAD_WINDOW. Default: 900000ms (15 minutes).
+  // expires, the reload counter resets.
   pageReloadWindow: number;
 
   // Time in milliseconds to wait after reloading the video source before resuming playback monitoring. Source reloads (resetting video.src and calling load())
-  // require time for the player to reinitialize its internal state. Environment variable: SOURCE_RELOAD_DELAY. Default: 2000ms.
+  // require time for the player to reinitialize its internal state.
   sourceReloadDelay: number;
 
   // Number of consecutive stalled checks before triggering recovery. A single stalled check might be a temporary glitch, so we require multiple consecutive
-  // failures before acting. With a 2-second monitor interval and threshold of 2, recovery triggers after 4-6 seconds of no progress. Environment variable:
-  // STALL_COUNT_THRESHOLD. Default: 2.
+  // failures before acting. With a 2-second monitor interval and threshold of 2, recovery triggers after 4-6 seconds of no progress.
   stallCountThreshold: number;
 
   // Minimum change in video.currentTime (in seconds) between checks to consider playback progressing. Values below this threshold are considered stalled. This
-  // accounts for timing precision issues and very slow playback rates. Environment variable: STALL_THRESHOLD. Default: 0.1 seconds.
+  // accounts for timing precision issues and very slow playback rates.
   stallThreshold: number;
 
   // Time in milliseconds of continuous healthy playback required before resetting the escalation level. After recovery succeeds, we keep the escalation level
   // elevated briefly in case the fix was temporary. Only after sustained healthy playback do we reset to level 0. This prevents "stutter loops" where playback
-  // works briefly then fails again. Environment variable: SUSTAINED_PLAYBACK_REQUIRED. Default: 60000ms (1 minute).
+  // works briefly then fails again.
   sustainedPlaybackRequired: number;
 }
 
@@ -104,46 +103,41 @@ export interface PlaybackConfig {
 export interface RecoveryConfig {
 
   // Maximum random jitter in milliseconds added to retry backoff delays. Jitter prevents "thundering herd" problems where multiple failed operations retry at
-  // exactly the same time, overwhelming the target service. The actual jitter for each retry is a random value between 0 and this maximum. Environment variable:
-  // BACKOFF_JITTER. Default: 1000ms.
+  // exactly the same time, overwhelming the target service. The actual jitter for each retry is a random value between 0 and this maximum.
   backoffJitter: number;
 
   // Number of failures within the circuitBreakerWindow that triggers stream termination. The circuit breaker prevents endless recovery attempts on fundamentally
-  // broken streams (wrong URL, geo-blocked content, expired authentication). When tripped, the stream is terminated and the client connection closed. Environment
-  // variable: CIRCUIT_BREAKER_THRESHOLD. Default: 10 failures.
+  // broken streams (wrong URL, geo-blocked content, expired authentication). When tripped, the stream is terminated and the client connection closed.
   circuitBreakerThreshold: number;
 
   // Time window in milliseconds for counting failures toward the circuit breaker threshold. Failures outside this window don't count. This allows occasional
-  // failures without triggering termination, while catching streams that fail repeatedly in a short period. Environment variable: CIRCUIT_BREAKER_WINDOW. Default:
-  // 300000ms (5 minutes).
+  // failures without triggering termination, while catching streams that fail repeatedly in a short period.
   circuitBreakerWindow: number;
 
   // Maximum delay in milliseconds between retry attempts. Exponential backoff doubles the delay after each failure, but this cap prevents excessively long waits.
-  // The actual delay is: min(1000 * 2^(attempt-1), maxBackoffDelay) + random(0, backoffJitter). Environment variable: MAX_BACKOFF_DELAY. Default: 3000ms.
+  // The actual delay is: min(1000 * 2^(attempt-1), maxBackoffDelay) + random(0, backoffJitter).
   maxBackoffDelay: number;
 
   // Number of failed browser relaunches within relaunchFailureWindow that trips the browser relaunch governor into a cooldown. Below this, the first relaunch
   // failures retry immediately (no penalty for the common transient); at it, the governor backs off along an escalating cooldown so a persistently-broken browser
-  // stops thrashing Chrome. Biased eager-for-the-first-failure. Environment variable: RELAUNCH_FAILURE_THRESHOLD. Default: 3 failures.
+  // stops thrashing Chrome. Biased eager-for-the-first-failure.
   relaunchFailureThreshold: number;
 
   // Time window in milliseconds for counting failed browser relaunches toward relaunchFailureThreshold. Failures outside this window do not count, so isolated
-  // failures over a long period never trip the governor while a rapid burst does. Environment variable: RELAUNCH_FAILURE_WINDOW. Default: 300000ms (5 minutes).
+  // failures over a long period never trip the governor while a rapid burst does.
   relaunchFailureWindow: number;
 
   // Continuous capture-readiness in milliseconds required before the browser relaunch governor resets to its normal state. The reset is health-gated rather than
   // success-gated: only sustained readiness clears the accrued failures and the cooldown escalation, so a flapping browser (briefly ready, then dead) still accrues
-  // toward a trip. Environment variable: RELAUNCH_HEALTH_HOLD. Default: 120000ms (2 minutes).
+  // toward a trip.
   relaunchHealthHold: number;
 
   // Interval in milliseconds between stale page cleanup runs. Browser pages can accumulate if cleanup fails during stream termination. This periodic cleanup
-  // identifies and closes pages not associated with active streams, preventing memory exhaustion. Environment variable: STALE_PAGE_CLEANUP_INTERVAL. Default:
-  // 60000ms (1 minute).
+  // identifies and closes pages not associated with active streams, preventing memory exhaustion.
   stalePageCleanupInterval: number;
 
   // Grace period in milliseconds before a page is considered stale. When a page is not associated with any active stream, we wait this duration before closing it.
-  // This prevents race conditions where a page is briefly untracked during stream initialization or cleanup. Environment variable: STALE_PAGE_GRACE_PERIOD.
-  // Default: 30000ms (30 seconds).
+  // This prevents race conditions where a page is briefly untracked during stream initialization or cleanup.
   stalePageGracePeriod: number;
 }
 
@@ -153,16 +147,16 @@ export interface RecoveryConfig {
 export interface HLSConfig {
 
   // Time in milliseconds before an HLS stream is terminated due to inactivity. If no segment or playlist requests are received within this window, the stream is
-  // considered abandoned and resources are released. Environment variable: HLS_IDLE_TIMEOUT. Default: 30000ms (30 seconds).
+  // considered abandoned and resources are released.
   idleTimeout: number;
 
   // Maximum number of segments to keep in memory per stream. Older segments are discarded as new ones arrive. This controls memory usage and determines how far
-  // back a client can seek. With 2-second segments, 10 segments = 20 seconds of buffer. Environment variable: HLS_MAX_SEGMENTS. Default: 10.
+  // back a client can seek. With 2-second segments, 10 segments = 20 seconds of buffer.
   maxSegments: number;
 
   // Target duration for each HLS segment in seconds. Shorter segments reduce latency but increase overhead. 2 seconds provides good latency for live TV. The
   // segmenter cuts a segment at the first fragment boundary once this much wall-clock time has elapsed since the segment began, and the playlist advertises it
-  // as the target duration. Environment variable: HLS_SEGMENT_DURATION. Default: 2.
+  // as the target duration.
   segmentDuration: number;
 }
 
@@ -171,10 +165,10 @@ export interface HLSConfig {
  */
 export interface ChannelsConfig {
 
-  // Sort direction for the channels table. Default: "asc".
+  // Sort direction for the channels table.
   channelSortDirection: SortDirection;
 
-  // Sort field for the channels table. Default: "name".
+  // Sort field for the channels table.
   channelSortField: ChannelSortField;
 
   // List of predefined channel keys that are disabled. Disabled channels are excluded from the playlist and cannot be streamed.
@@ -184,7 +178,7 @@ export interface ChannelsConfig {
   // service variant are included in the playlist and guide.
   enabledServices: string[];
 
-  // Service slugs selected for precaching. Empty array means no precaching (default). When non-empty, the listed services have their channel lineups discovered
+  // Service slugs selected for precaching. Empty array means no precaching. When non-empty, the listed services have their channel lineups discovered
   // each time the browser launches, and a newly selected service's lineup once a save adds it, so that even the first tune benefits from cached lineup data.
   precacheServices: string[];
 
@@ -214,8 +208,7 @@ export interface ChannelsDvrConfig {
   // found on a candidate host. Host-only - never includes a port. The process owns this value through auto-discovery, so it stays out of `CONFIG_METADATA`.
   host: string;
 
-  // TCP port for the user's Channels DVR API. Default 8089 (the canonical Channels DVR port). Override when the user has changed the DVR's listen port from
-  // its default.
+  // TCP port for the user's Channels DVR API. Override when the user has changed the DVR's listen port from the canonical Channels DVR port.
   port: number;
 }
 
@@ -237,20 +230,19 @@ export interface HdhrConfig {
   // so Plex can auto-detect PrismCast on the local network without the operator entering an IP and port manually. Channels DVR will also discover PrismCast on
   // the LAN, but its auto-discovery assumes port 80 for the HTTP control plane and so cannot fetch the lineup unless hdhr.port is set to 80 (which requires
   // elevated privileges to bind). Independent of hdhr.enabled so an operator who wants HTTP HDHR but not LAN announcement (multi-tenant boxes, environments
-  // with an existing real HDHR) can disable just the discovery surface. Environment variable: HDHR_DISCOVERY_ENABLED. Default: true.
+  // with an existing real HDHR) can disable just the discovery surface.
   discoveryEnabled: boolean;
 
   // Whether HDHomeRun emulation is enabled. When enabled, a second HTTP server listens on the configured port and responds to HDHomeRun API requests from Plex.
-  // When disabled, no additional server is started and no resources are consumed. Environment variable: HDHR_ENABLED. Default: true.
+  // When disabled, no additional server is started and no resources are consumed.
   enabled: boolean;
 
   // Friendly name displayed in HDHR-aware clients when they discover this tuner. This helps users identify PrismCast among multiple tuners in their setup.
-  // Environment variable: HDHR_FRIENDLY_NAME. Default: "PrismCast".
   friendlyName: string;
 
   // TCP port for the HDHomeRun emulation server. HDHomeRun devices traditionally use port 5004; this is the port a manual setup paste in Plex or Channels DVR
-  // expects. If another HDHomeRun device or emulator is already using this port, PrismCast logs a warning and continues without HDHR emulation. Environment
-  // variable: HDHR_PORT. Default: 5004. Valid range: 1-65535.
+  // expects. When the port is already in use, a boot logs a warning and runs without the emulation, and a save that moves the emulation onto it is refused
+  // while the server keeps answering on the port it holds.
   port: number;
 }
 
@@ -271,11 +263,10 @@ export interface LoggingConfig {
   debugFilter: string;
 
   // Controls HTTP request logging level. "none" disables HTTP request logging, "errors" logs only 4xx and 5xx responses, "filtered" logs important requests
-  // while skipping high-frequency endpoints like /logs and /health, "all" logs all requests. Environment variable: HTTP_LOG_LEVEL. Default: "errors".
+  // while skipping high-frequency endpoints like /logs and /health, "all" logs all requests.
   httpLogLevel: typeof HTTP_LOG_LEVELS[number];
 
   // Maximum size of the log file in bytes. When the file exceeds this size, it is trimmed to at most half the size, keeping the most recent complete lines.
-  // Environment variable: LOG_MAX_SIZE. Default: 1048576 (1MB). Valid range: 524288-104857600.
   maxSize: number;
 }
 
@@ -285,12 +276,11 @@ export interface LoggingConfig {
 export interface ServerConfig {
 
   // IP address or hostname to bind the HTTP server. Use "0.0.0.0" to accept connections on all network interfaces, or "127.0.0.1" to accept only local
-  // connections. In containerized deployments, "0.0.0.0" is typically required for the container's port mapping to work. Environment variable: HOST. Default:
-  // "0.0.0.0".
+  // connections. In containerized deployments, "0.0.0.0" is typically required for the container's port mapping to work.
   host: string;
 
   // TCP port number for the HTTP server. Channels DVR and other clients connect to this port to request streams and playlists. Choose a port that doesn't conflict
-  // with other services and is accessible through any firewalls. Environment variable: PORT. Default: 5589. Valid range: 1-65535.
+  // with other services and is accessible through any firewalls.
   port: number;
 }
 
@@ -310,50 +300,46 @@ export type CaptureMode = "ffmpeg" | "native";
 export interface StreamingConfig {
 
   // Audio bitrate in bits per second for the captured stream. Higher values improve audio quality but increase bandwidth requirements. 256kbps provides high-quality
-  // stereo audio; lower values (128kbps) work for speech-heavy content. Environment variable: AUDIO_BITRATE. Default: 256000. Valid range: 32000-512000.
+  // stereo audio; lower values (128kbps) work for speech-heavy content.
   audioBitsPerSecond: number;
 
   // Codecs allowed for browser capture. H.264 is always available as the universal baseline. HEVC provides better compression at the same bitrate when GPU hardware
-  // encoding is available. The system selects the highest-priority allowed codec that the GPU supports. Environment variable: CAPTURE_CODECS. Default: ["h264", "hevc"].
+  // encoding is available. The system selects the highest-priority allowed codec that the GPU supports.
   captureCodecs: string[];
 
   // The capture mode in effect. "ffmpeg", the capture mode every stream uses, captures Matroska (the effective capture codec plus Opus) and uses FFmpeg to
-  // transcode audio to AAC. "native" names Chrome's direct fMP4 (H264+AAC) recording, which no capture path implements.
-  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Every configuration built corrects any other value to "ffmpeg", and the warning is logged at startup
-  // and by a save whose write lands, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
+  // transcode audio to AAC. "native" names Chrome's direct fMP4 (H264+AAC) recording, which no capture path implements. Every configuration built corrects
+  // any other value to "ffmpeg", and the warning is logged at startup and by a save whose write lands, because Chrome's native fMP4 MediaRecorder corrupts output
+  // after 20-30 minutes of recording.
   captureMode: CaptureMode;
 
   // Target frame rate for video capture. Higher frame rates produce smoother video but require more CPU and bandwidth. 60fps is ideal for sports content; 30fps
-  // is sufficient for most television content. The browser may deliver fewer frames if the source content has a lower frame rate. Environment variable:
-  // FRAME_RATE. Default: 60.
+  // is sufficient for most television content. The browser may deliver fewer frames if the source content has a lower frame rate.
   frameRate: number;
 
   // Maximum number of simultaneous streaming sessions. Each stream consumes a browser tab, memory, and CPU resources. Setting this too high can exhaust system
-  // resources and degrade all streams. Setting too low prevents legitimate concurrent viewing. Environment variable: MAX_CONCURRENT_STREAMS. Default: 10. Valid
-  // range: 1-100.
+  // resources and degrade all streams. Setting too low prevents legitimate concurrent viewing.
   maxConcurrentStreams: number;
 
   // Maximum number of page navigation retry attempts before giving up. Navigation failures can occur due to network issues, slow page loads, or site problems.
-  // Retries use exponential backoff to avoid overwhelming struggling sites. Environment variable: MAX_NAV_RETRIES. Default: 4.
+  // Retries use exponential backoff to avoid overwhelming struggling sites.
   maxNavigationRetries: number;
 
   // Timeout in milliseconds for page navigation operations. This applies to page.goto() calls and determines how long to wait for the page to load before
-  // declaring failure. Increase for slow networks or sites with heavy JavaScript initialization. Environment variable: NAV_TIMEOUT. Default: 10000ms. Valid
-  // range: 1000-600000.
+  // declaring failure. Increase for slow networks or sites with heavy JavaScript initialization.
   navigationTimeout: number;
 
-  // Video quality preset that determines capture resolution. The preset controls the browser viewport dimensions used for video capture. Valid values: "480p",
-  // "720p", "720p-high", "1080p", "1080p-high", "4k". Bitrate and frame rate can be customized independently. Environment variable: QUALITY_PRESET. Default: "720p-high".
+  // Video quality preset that determines capture resolution. The preset controls the browser viewport dimensions used for video capture. Bitrate and frame rate
+  // can be customized independently.
   qualityPreset: string;
 
   // Video bitrate in bits per second for browser capture. This controls the quality of the stream captured by puppeteer-stream. For HLS output, FFmpeg copies
   // the video stream directly without re-encoding, preserving this quality. 8Mbps is suitable for 720p content; 15-20Mbps is recommended for 1080p. The actual
-  // bitrate may vary based on content complexity. Environment variable: VIDEO_BITRATE. Default: 12000000. Valid range: 100000-50000000.
+  // bitrate may vary based on content complexity.
   videoBitsPerSecond: number;
 
   // Timeout in milliseconds for waiting for a video element to become ready. After navigating to a page, we wait for a video element with sufficient readyState.
-  // Increase for sites with slow-loading video players or heavy preroll content. Environment variable: VIDEO_TIMEOUT. Default: 11000ms. Valid range:
-  // 1000-600000.
+  // Increase for sites with slow-loading video players or heavy preroll content.
   videoTimeout: number;
 }
 

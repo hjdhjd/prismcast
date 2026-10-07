@@ -7,12 +7,13 @@
 // the background-services stack in app.ts and the resource stacks in the stream setup path - reads a global that exists. It must be the first import here, before
 // any module that constructs one evaluates, and every launch path (the bin wrapper, the Docker entrypoint, the platform services) funnels through this file.
 import "homebridge-plugin-utils/polyfills";
-import { CONFIG_METADATA, DEFAULTS, getEnvOverrideValue, getNestedValue } from "./config/userConfig.ts";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
 import { getDebugEnv, getStartupLogFilePath, initializeDataDir } from "./config/paths.ts";
 import { handleStartupFailure, releaseInstanceSlot, startServer } from "./app.ts";
 import { isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
+import { renderEnvironmentVariables, renderUsage } from "./cliHelp.ts";
 import { flushLogBufferSync } from "./utils/fileLogger.ts";
+import { getEnvOverrideValue } from "./config/userConfig.ts";
 import { handleServiceCommand } from "./service/index.ts";
 import { handleUpgradeCommand } from "./upgrade/index.ts";
 import path from "node:path";
@@ -40,167 +41,6 @@ process.on("uncaughtException", (error: Error): void => {
 
 /* The entry point supports basic command-line arguments for common operations like changing the port, showing help, and displaying the version.
  */
-
-/**
- * Prints usage information to the console.
- */
-function printUsage(): void {
-
-  /* eslint-disable no-console */
-  console.log("Usage: prismcast [command] [options]");
-  console.log("");
-  console.log("Commands:");
-  console.log("  service                         Manage PrismCast as a system service");
-  console.log("                                  Run 'prismcast service --help' for details");
-  console.log("  upgrade                         Upgrade PrismCast to the latest version");
-  console.log("                                  Run 'prismcast upgrade --help' for details");
-  console.log("");
-  console.log("Options:");
-  console.log("  -c, --console                   Log to console instead of file (for Docker or debugging)");
-  console.log("  -d, --debug                     Enable debug logging (verbose output for troubleshooting)");
-  console.log("  -h, --help                      Show this help message");
-  console.log("  -p, --port <port>               Set server port (default: 5589)");
-  console.log("  -v, --version                   Show version number");
-  console.log("  --chrome-data-dir <path>        Set Chrome profile data directory (default: <data-dir>/chromedata)");
-  console.log("  --data-dir <path>               Set data directory (default: ~/.prismcast)");
-  console.log("  --list-env                      List all environment variables");
-  console.log("  --log-file <path>               Set log file path (default: <data-dir>/prismcast.log)");
-  console.log("");
-  console.log("If no command is specified, starts the PrismCast server.");
-  console.log("");
-  console.log("Common Environment Variables:");
-  console.log("  AUDIO_BITRATE                   Audio bitrate (bps)");
-  console.log("  CHROME_BIN                      Path to Chrome executable");
-  console.log("  FRAME_RATE                      Target frame rate");
-  console.log("  HOST                            HTTP server bind address");
-  console.log("  LOG_MAX_SIZE                    Maximum log file size in bytes (default: 1048576)");
-  console.log("  PORT                            HTTP server port");
-  console.log("  PRISMCAST_CHROME_DATA_DIR       Chrome profile data directory path");
-  console.log("  PRISMCAST_DATA_DIR              Data directory path (default: ~/.prismcast)");
-  console.log("  PRISMCAST_DEBUG                 Debug category filter (e.g., 'tuning:hulu', 'recovery', '*,-streaming:segmenter')");
-  console.log("  PRISMCAST_LOG_FILE              Log file path");
-  console.log("  QUALITY_PRESET                  Video quality preset (480p, 720p, 720p-high, 1080p, 1080p-high, 4k)");
-  console.log("  VIDEO_BITRATE                   Video bitrate (bps)");
-  console.log("");
-  console.log("  Run 'prismcast --list-env' for a complete list of all environment variables.");
-  /* eslint-enable no-console */
-}
-
-/**
- * Prints the environment variables organized by category. Walks a hand-maintained ordered category list and prints, for each listed category, the settings
- * CONFIG_METADATA holds that carry an environment variable; a CONFIG_METADATA category missing from that list is not printed. The Special section below is
- * hand-maintained since PRISMCAST_DATA_DIR and PRISMCAST_DEBUG are resolved outside config.json.
- */
-function printEnvironmentVariables(): void {
-
-  /* eslint-disable no-console */
-
-  // The hand-maintained category list, in print order: server first (most commonly configured), then the listed categories alphabetically, with Special last.
-  const categoryOrder: { displayName: string; key: string }[] = [
-    { displayName: "Server", key: "server" },
-    { displayName: "Browser", key: "browser" },
-    { displayName: "HDHomeRun", key: "hdhr" },
-    { displayName: "HLS", key: "hls" },
-    { displayName: "Logging", key: "logging" },
-    { displayName: "Paths", key: "paths" },
-    { displayName: "Playback", key: "playback" },
-    { displayName: "Recovery", key: "recovery" },
-    { displayName: "Streaming", key: "streaming" }
-  ];
-
-  // Dynamic default descriptions for null path settings that resolve at runtime rather than from DEFAULTS.
-  const dynamicDefaults: Record<string, string> = {
-
-    "browser.executablePath": "autodetect",
-    "paths.chromeDataDir": "<data-dir>/chromedata",
-    "paths.logFile": "<data-dir>/prismcast.log"
-  };
-
-  console.log("PrismCast Environment Variables");
-  console.log("");
-  console.log("All settings can also be configured via the web UI at /config or config.json.");
-  console.log("Priority: CLI flags > environment variables > config.json > defaults.");
-
-  for(const category of categoryOrder) {
-
-    const settings = CONFIG_METADATA[category.key] ?? [];
-
-    // Filter to settings that have an environment variable.
-    const envSettings = settings.filter((s) => s.envVar !== null);
-
-    if(envSettings.length === 0) {
-
-      continue;
-    }
-
-    console.log("");
-    console.log(category.displayName + ":");
-
-    let first = true;
-
-    for(const setting of envSettings) {
-
-      // Type narrowing: envSettings is already filtered to non-null envVar values, but TypeScript can't narrow through .filter() callbacks.
-      const envVar = setting.envVar;
-
-      if(!envVar) {
-
-        continue;
-      }
-
-      if(!first) {
-
-        console.log("");
-      }
-
-      first = false;
-
-      console.log("  " + envVar);
-
-      // Truncate description to first sentence for brevity. Full descriptions are available in the web UI.
-      const desc = setting.description;
-      const periodSpace = desc.indexOf(". ");
-      const firstSentence = (periodSpace !== -1) ? desc.slice(0, periodSpace + 1) : desc;
-
-      console.log("    " + firstSentence);
-
-      // Format default value with appropriate context for the setting type.
-      const dynamicDefault = dynamicDefaults[setting.path];
-      let defaultStr: string;
-
-      if(dynamicDefault) {
-
-        defaultStr = dynamicDefault;
-      } else {
-
-        const defaultValue = getNestedValue(DEFAULTS, setting.path);
-
-        defaultStr = String(defaultValue);
-
-        if((typeof defaultValue === "number") && setting.unit) {
-
-          defaultStr = defaultStr + " (" + setting.unit + ")";
-        }
-      }
-
-      console.log("    Default: " + defaultStr);
-    }
-  }
-
-  // Special environment variables that are not part of CONFIG_METADATA. PRISMCAST_DATA_DIR is resolved before config.json is loaded (chicken-and-egg), so it cannot
-  // be in config.json. PRISMCAST_DEBUG is a runtime-only setting parsed in the entry point.
-  console.log("");
-  console.log("Special:");
-  console.log("  PRISMCAST_DATA_DIR");
-  console.log("    Data directory path. Must be an absolute path.");
-  console.log("    Default: ~/.prismcast");
-  console.log("");
-  console.log("  PRISMCAST_DEBUG");
-  console.log("    Debug category filter (e.g., 'tuning:hulu', 'recovery', '*,-streaming:segmenter').");
-  console.log("    Default: (disabled)");
-
-  /* eslint-enable no-console */
-}
 
 /**
  * Result of parsing command-line arguments. CLI flags have the highest priority in the configuration merge order.
@@ -272,7 +112,8 @@ function parseArgs(): ParsedArgs {
 
     if((arg === "-h") || (arg === "--help")) {
 
-      printUsage();
+      // eslint-disable-next-line no-console
+      console.log(renderUsage());
 
       process.exit(0);
     }
@@ -359,7 +200,8 @@ if(subcommand === "service") {
 } else if(rawArgs.includes("--list-env")) {
 
   // Handle --list-env at the top level (like the service subcommand) to avoid starting the server.
-  printEnvironmentVariables();
+  // eslint-disable-next-line no-console
+  console.log(renderEnvironmentVariables());
 
   process.exit(0);
 } else {

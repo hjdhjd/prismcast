@@ -7,6 +7,7 @@ import { collectPendingSettings, generateAdvancedTabContent, generateChannelsPan
   generateSettingsFormFooter, generateSettingsTabContent } from "../config/index.ts";
 import { getEnvOverrides, getUITabs } from "../../config/userConfig.ts";
 import { ACTIONS } from "../clientActions.ts";
+import { CONFIG } from "../../config/index.ts";
 import { escapeHtml } from "../../utils/index.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
 
@@ -155,11 +156,10 @@ export function generateOverviewContent(baseUrl: string): string {
     "<p>PrismCast includes builtin HDHomeRun emulation, allowing Plex to use it as a network tuner for live TV and DVR recording.</p>",
     "<ol>",
     "<li>In Plex, go to <strong>Settings &rarr; Live TV &amp; DVR &rarr; Set Up Plex DVR</strong>.</li>",
-    "<li>Enter your PrismCast server address with port 5004 (e.g., <code>192.168.1.100:5004</code>).</li>",
+    "<li>Enter your PrismCast server address with port " + String(CONFIG.hdhr.port) + " (e.g., <code>192.168.1.100:" + String(CONFIG.hdhr.port) + "</code>).</li>",
     "<li>Plex will detect PrismCast as an HDHomeRun tuner and import available channels.</li>",
     "</ol>",
-    "<p>HDHomeRun emulation is enabled by default and can be configured in the ",
-    "<a href=\"#config/settings\">HDHomeRun / Plex</a> configuration tab.</p>",
+    "<p>HDHomeRun emulation can be configured in the <a href=\"#config/settings\">HDHomeRun / Plex</a> configuration tab.</p>",
     "</div>",
 
     // Tuning Speed.
@@ -385,7 +385,7 @@ export function generateHelpContent(): string {
     "</tr>",
     "<tr>",
     "<td>Port conflict (address in use)</td>",
-    "<td>Another service using port 5589.</td>",
+    "<td>Another service using port " + String(CONFIG.server.port) + ".</td>",
     "<td>Stop the conflicting service, or change the port in <a href=\"#config/settings\">Configuration</a>.</td>",
     "</tr>",
     "<tr>",

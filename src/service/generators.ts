@@ -6,6 +6,7 @@
  * getServiceGenerator() which uses createDefaultGeneratorIO() under the hood. Tests construct GeneratorIO literals inline so install/uninstall/start/stop run
  * against fakes that record subprocess invocations and file writes without spawning real launchctl/systemctl/powershell.exe.
  */
+import { BOOTSTRAP_ENV_VARS, getLogsDirectory } from "../config/paths.ts";
 import type { Platform, ServiceManager } from "../utils/platform.ts";
 import { SERVICE_ID, SERVICE_NAME } from "../identity.ts";
 import { getNodeExecutablePath, getPrismCastEntryPoint, getPrismCastWorkingDirectory } from "../utils/platform.ts";
@@ -13,7 +14,6 @@ import { CONFIG_METADATA } from "../config/userConfig.ts";
 import type { Nullable } from "../types/index.ts";
 import { createDefaultGeneratorIO } from "./generators.context.ts";
 import { escapeXml } from "../utils/index.ts";
-import { getLogsDirectory } from "../config/paths.ts";
 import path from "node:path";
 
 /* These generators create platform-specific service definitions that allow PrismCast to run as a managed service. Each generator produces the appropriate
@@ -1123,23 +1123,17 @@ export function getServiceGenerator(io: GeneratorIO = createDefaultGeneratorIO()
   }
 }
 
-/* Env vars that belong in the service environment but are not declared in CONFIG_METADATA. PRISMCAST_DATA_DIR resolves before config.json is read
- * (chicken-and-egg bootstrap), and PRISMCAST_DEBUG is a runtime-only setting parsed in the entry point - see src/index.ts where both are called out as special
- * cases for the same reason.
- */
-const BOOTSTRAP_ENV_VARS = [ "PRISMCAST_DATA_DIR", "PRISMCAST_DEBUG" ] as const;
-
 /**
  * Returns the full set of env var names that represent user-configurable PrismCast settings. Derived from CONFIG_METADATA (the documented single source of truth
- * for configurable settings) plus the bootstrap-only variables enumerated above. Deriving from CONFIG_METADATA means new settings are automatically captured by
- * the service layer the moment they are declared in config metadata - no second list to maintain.
+ * for configurable settings) plus the bootstrap variables config/paths.ts reads before config.json is, which have no metadata entry. Deriving from those owners
+ * means a setting is captured by the service layer the moment its owner declares it - no second list to maintain.
  * @returns An array of env var names.
  */
 function getConfigurableEnvVarNames(): string[] {
 
   const fromMetadata = Object.values(CONFIG_METADATA).flat().map((setting) => setting.envVar).filter((envVar) => envVar !== null);
 
-  return [ ...fromMetadata, ...BOOTSTRAP_ENV_VARS ];
+  return [ ...fromMetadata, ...BOOTSTRAP_ENV_VARS.map((variable) => variable.name) ];
 }
 
 /**

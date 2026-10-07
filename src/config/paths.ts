@@ -21,6 +21,42 @@ import path from "node:path";
  * Chrome data directory and log file paths are stored in Config (settable via config.json, env var, or CLI flag) and resolved after config loading.
  */
 
+/**
+ * An environment variable read outside config.json, so it has no CONFIG_METADATA entry: its name, the sentence that describes it, and how the help text renders
+ * the value in effect when it is unset.
+ */
+export interface BootstrapEnvVar {
+
+  // How the help text renders the value in effect when the variable is unset.
+  readonly defaultLabel: string;
+
+  // The sentence the help text and the environment listing print for the variable.
+  readonly description: string;
+
+  // The variable's name.
+  readonly name: string;
+}
+
+/* The environment variables this module reads that live outside config.json, each named once here and read through its descriptor. The data directory variable
+ * names the directory config.json lives in, so it resolves before the file can be read, and the debug variable is the filter the entry point applies at startup.
+ * The command-line help prints them from BOOTSTRAP_ENV_VARS, and the service generator carries them into an installed service's environment from the same list.
+ */
+export const DATA_DIR_VARIABLE: BootstrapEnvVar = {
+
+  defaultLabel: "~/.prismcast",
+  description: "Data directory path, which must be an absolute path.",
+  name: "PRISMCAST_DATA_DIR"
+};
+
+const DEBUG_VARIABLE: BootstrapEnvVar = {
+
+  defaultLabel: "(disabled)",
+  description: "Debug category filter (e.g., 'tuning:hulu', 'recovery', '*,-streaming:segmenter').",
+  name: "PRISMCAST_DEBUG"
+};
+
+export const BOOTSTRAP_ENV_VARS: readonly BootstrapEnvVar[] = [ DATA_DIR_VARIABLE, DEBUG_VARIABLE ];
+
 // The resolved data directory, initialized once at startup. All path getters depend on this value.
 let resolvedDataDir: string | undefined;
 
@@ -31,7 +67,7 @@ let resolvedDataDir: string | undefined;
  */
 export function initializeDataDir(cliDataDir?: string): void {
 
-  const envDataDir = process.env["PRISMCAST_DATA_DIR"];
+  const envDataDir = process.env[DATA_DIR_VARIABLE.name];
 
   if(cliDataDir) {
 
@@ -42,7 +78,7 @@ export function initializeDataDir(cliDataDir?: string): void {
     if(!path.isAbsolute(envDataDir)) {
 
       // eslint-disable-next-line no-console
-      console.error("Error: PRISMCAST_DATA_DIR must be an absolute path, got: " + envDataDir);
+      console.error("Error: " + DATA_DIR_VARIABLE.name + " must be an absolute path, got: " + envDataDir);
 
       process.exit(1);
     }
@@ -260,5 +296,5 @@ export function getStartupLogFilePath(cliLogFile: Nullable<string> | undefined, 
  */
 export function getDebugEnv(): string | undefined {
 
-  return process.env["PRISMCAST_DEBUG"];
+  return process.env[DEBUG_VARIABLE.name];
 }
