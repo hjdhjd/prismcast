@@ -18,6 +18,7 @@ import { buildSaveResponseData, collectPendingSettings, generateAdvancedTabConte
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "../../testing.helpers.ts";
 import { getAdvancedSections, getSettingByPath, readConfig } from "../../config/userConfig.ts";
 import { getConfigFilePath, initializeDataDir } from "../../config/paths.ts";
+import { getGpuCapabilities, setGpuCapabilities } from "../../browser/display.ts";
 import { registerConfigChangeHandler, resetConfigChangeHandlers } from "../../config/reactivity.ts";
 import type { ConfigStore } from "../../config/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
@@ -982,5 +983,61 @@ describe("setupSettingsRoutes", () => {
 
       setupSettingsRoutes(app as never);
     }, "registration should be side-effect-free at the app-stub level");
+  });
+});
+
+/* The capture-codec checkbox grid, verbatim, with HEVC unavailable, which is how the grid renders before the GPU capabilities are detected and when the GPU
+ * lacks HEVC hardware encoding, and with HEVC available. The baseline item reads the same in each.
+ */
+const CODEC_GRID_OPEN = "<div class=\"checkbox-list-grid\" style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem; " +
+  "margin-top: 10px;\">\n";
+const CODEC_UNAVAILABLE_LABEL = "<label style=\"display: flex; align-items: center; gap: 0.5rem; opacity: 0.5; cursor: not-allowed;\">\n";
+const CODEC_BASELINE_ITEM = CODEC_UNAVAILABLE_LABEL + "<input type=\"checkbox\" value=\"h264\" checked disabled data-change-action=\"update-checkbox-list\"> " +
+  "H.264 (always enabled)\n</label>\n";
+const CODEC_GRID_HEVC_UNAVAILABLE = CODEC_GRID_OPEN + CODEC_BASELINE_ITEM + CODEC_UNAVAILABLE_LABEL +
+  "<input type=\"checkbox\" value=\"hevc\" checked disabled data-change-action=\"update-checkbox-list\"> HEVC\n" +
+  "<span style=\"font-size: 0.85em; opacity: 0.7;\"> - Requires GPU with HEVC hardware encoding.</span>\n</label>\n</div>";
+const CODEC_GRID_HEVC_AVAILABLE = CODEC_GRID_OPEN + CODEC_BASELINE_ITEM + "<label style=\"display: flex; align-items: center; gap: 0.5rem; cursor: pointer;\">\n" +
+  "<input type=\"checkbox\" value=\"hevc\" checked data-change-action=\"update-checkbox-list\"> HEVC\n</label>\n</div>";
+
+/**
+ * Reads the capture-codec field's checkbox grid out of the rendered Settings tab, from its opening tag to its closing tag.
+ * @returns The grid's markup.
+ */
+function captureCodecGrid(): string {
+
+  const html = generateSettingsTabContent(NO_CONTEXT);
+  const field = html.indexOf("id=\"streaming-captureCodecs\"");
+
+  assert.notEqual(field, -1, "the capture-codec field renders");
+
+  const start = html.indexOf("<div class=\"checkbox-list-grid\"", field);
+
+  return html.slice(start, html.indexOf("</div>", start) + "</div>".length);
+}
+
+/* The GPU capabilities read null until a first write and no write can set them back, so the row for the state before detection runs ahead of every capability
+ * write in this file, and the rows that write them sit in the file's last block, so no later row renders under capabilities a row left behind.
+ */
+describe("the capture-codec checkbox items", () => {
+
+  test("render the baseline fixed and HEVC unavailable before the GPU capabilities are detected", () => {
+
+    assert.equal(getGpuCapabilities(), null, "precondition: no capability has been detected in this process");
+    assert.equal(captureCodecGrid(), CODEC_GRID_HEVC_UNAVAILABLE);
+  });
+
+  test("render HEVC unavailable with its reason when the GPU lacks HEVC hardware encoding", () => {
+
+    setGpuCapabilities({ av1HardwareEncoding: true, h264HardwareEncoding: true, hevcHardwareEncoding: false, renderer: "test-renderer" });
+
+    assert.equal(captureCodecGrid(), CODEC_GRID_HEVC_UNAVAILABLE);
+  });
+
+  test("render HEVC available when the GPU reports HEVC hardware encoding", () => {
+
+    setGpuCapabilities({ av1HardwareEncoding: false, h264HardwareEncoding: false, hevcHardwareEncoding: true, renderer: "test-renderer" });
+
+    assert.equal(captureCodecGrid(), CODEC_GRID_HEVC_AVAILABLE);
   });
 });

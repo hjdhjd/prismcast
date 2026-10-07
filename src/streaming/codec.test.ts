@@ -1,13 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * codec.test.ts: Unit tests for the capture codec selection SSOT in codec.ts. The module's three exports - getEffectiveCaptureCodec, getCaptureMimeType,
- * isCaptureHardwareAccelerated - all derive from two module-level inputs: the user's allowlist on CONFIG.streaming.captureCodecs and the GPU capabilities cached
- * in browser/display.ts. Tests save and restore both pieces of global state around each case so they're independent of one another and of any other test files
- * that touch CONFIG.
+ * codec.test.ts: Unit tests for the capture codec module in codec.ts. Every export derives from the user's allowlist on CONFIG.streaming.captureCodecs and the
+ * GPU capabilities cached in browser/display.ts. Tests save and restore that global state around each case so they're independent of one another and of any
+ * other test files that touch CONFIG. The capabilities read null until detection first runs and setGpuCapabilities cannot set them back, so the rows for
+ * that state run first in the file, ahead of every capability write, in the fresh process node:test gives each file.
  */
 import type { CaptureCodec, Nullable } from "../types/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getCaptureMimeType, getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
+import { getCaptureMimeType, getEffectiveCaptureCodec, isCaptureCodecSupported, isCaptureHardwareAccelerated } from "./codec.ts";
 import { getGpuCapabilities, setGpuCapabilities } from "../browser/display.ts";
 import { CONFIG } from "../config/index.ts";
 import type { GpuCapabilities } from "../browser/display.ts";
@@ -27,6 +27,58 @@ function makeGpuCapabilities(overrides: Partial<GpuCapabilities> = {}): GpuCapab
     ...overrides
   };
 }
+
+describe("isCaptureCodecSupported before detection", () => {
+
+  test("offers the baseline alone while the GPU capabilities have not been detected", () => {
+
+    // This row runs ahead of every capability write in the file, so the capabilities still read null, the state before detection. An unknown GPU must never be
+    // offered a codec it may not encode, while the baseline needs no GPU encoding at all.
+    assert.equal(getGpuCapabilities(), null, "precondition: no capability has been detected in this process");
+    assert.equal(isCaptureCodecSupported("hevc"), false, "hevc is not offered before detection");
+    assert.equal(isCaptureCodecSupported("h264"), true, "the baseline is offered before detection");
+  });
+});
+
+describe("isCaptureCodecSupported", () => {
+
+  let originalGpu: Nullable<GpuCapabilities>;
+
+  beforeEach(() => {
+
+    originalGpu = getGpuCapabilities();
+  });
+
+  afterEach(() => {
+
+    if(originalGpu) {
+
+      setGpuCapabilities(originalGpu);
+    }
+  });
+
+  test("supports the baseline under every capability", () => {
+
+    for(const capabilities of [ makeGpuCapabilities(), makeGpuCapabilities({ av1HardwareEncoding: true }), makeGpuCapabilities({ h264HardwareEncoding: true }),
+      makeGpuCapabilities({ hevcHardwareEncoding: true }) ]) {
+
+      setGpuCapabilities(capabilities);
+
+      assert.equal(isCaptureCodecSupported("h264"), true, "h264 is supported with capabilities " + JSON.stringify(capabilities));
+    }
+  });
+
+  test("supports hevc exactly when the GPU reports HEVC hardware encoding", () => {
+
+    setGpuCapabilities(makeGpuCapabilities({ hevcHardwareEncoding: true }));
+
+    assert.equal(isCaptureCodecSupported("hevc"), true, "hevc with HEVC hardware encoding");
+
+    setGpuCapabilities(makeGpuCapabilities({ av1HardwareEncoding: true, h264HardwareEncoding: true }));
+
+    assert.equal(isCaptureCodecSupported("hevc"), false, "hevc without HEVC hardware encoding, whatever else the GPU encodes");
+  });
+});
 
 describe("getEffectiveCaptureCodec", () => {
 

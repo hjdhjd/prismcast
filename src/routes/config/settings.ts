@@ -5,8 +5,10 @@
 import type { AdvancedSection, SettingMetadata, UserConfig } from "../../config/userConfig.ts";
 import type { ApplyConfigurationResult, RestartResult } from "./index.ts";
 import type { ApplyResult, ChangeRejection, ConfigChange, ConfigChangePartition } from "../../config/reactivity.ts";
+import { CAPTURE_BASELINE_CODEC, RECOGNIZED_CODECS } from "../../types/index.ts";
 import { CONFIG_METADATA, getAdvancedSections, getEnvOverrides, getNestedValue, getSettingsTabSections, getUITabs, isEqualToDefault, readConfig,
   setNestedValue } from "../../config/userConfig.ts";
+import type { CaptureCodec, Nullable } from "../../types/index.ts";
 import { ConfigurationRejectedError, getConfigurationGap, getDefaults, getLoadedConfiguration, validateInteger, validateNumber } from "../../config/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, escapeHtml, isRunningAsService, sanitizeString, serializeAttrs, stringifySorted } from "../../utils/index.ts";
@@ -14,17 +16,16 @@ import { PENDING_PATH_ATTRIBUTE, REACTIVITY_BADGES, formatSettingCount } from ".
 import { applyConfigurationChange, describeConfigurationOutcome } from "./index.ts";
 import { sendErrorResponse, sendFormErrors, sendSuccess, sendValidationError } from "./http/envelope.ts";
 import { ACTIONS } from "../clientActions.ts";
-import type { Nullable } from "../../types/index.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../config/presets.ts";
 import { generateBadge } from "../components.ts";
 import { getConfigFilePath } from "../../config/paths.ts";
-import { getGpuCapabilities } from "../../browser/display.ts";
 import { getProviderModuleInfo } from "../../browser/channelSelection.ts";
+import { isCaptureCodecSupported } from "../../streaming/codec.ts";
 import { systemClock } from "homebridge-plugin-utils";
 
 /* The checkboxList setting type renders a grid of checkboxes backed by a hidden JSON array input. Each checkboxList field specifies a listItemsKey that identifies
  * which item provider to use. The registry maps keys to functions that return the list of items to render. Keeping the registry in the routes layer (not the config
- * layer) preserves the dependency direction - routes can import browser capabilities, config cannot.
+ * layer) preserves the dependency direction - routes can import the codec module and the browser layer, config cannot.
  */
 
 /**
@@ -50,18 +51,28 @@ interface ListItem {
   value: string;
 }
 
+/* The capture-codec items' words: each recognized codec's label, and the reason each codec other than the baseline states when this GPU cannot capture it. Each
+ * table is keyed by the codec types, so a codec added to the recognized list cannot compile until the form decides its label and, unless it is the baseline,
+ * its reason. Which codecs are fixed and which are available is the codec module's answer, so the form holds only these words.
+ */
+const CAPTURE_CODEC_LABELS: Readonly<Record<CaptureCodec, string>> = {
+
+  h264: "H.264 (always enabled)",
+  hevc: "HEVC"
+};
+
+const CAPTURE_CODEC_REASONS: Readonly<Record<Exclude<CaptureCodec, typeof CAPTURE_BASELINE_CODEC>, string>> = {
+
+  hevc: "Requires GPU with HEVC hardware encoding."
+};
+
 // Registry of list item providers for checkboxList settings. Each key matches a listItemsKey value in CONFIG_METADATA.
 const LIST_ITEM_PROVIDERS: Record<string, () => ListItem[]> = {
 
-  captureCodecs: (): ListItem[] => {
-
-    const gpuCaps = getGpuCapabilities();
-
-    return [
-      { fixed: true, label: "H.264 (always enabled)", value: "h264" },
-      { disabled: !gpuCaps?.hevcHardwareEncoding, disabledReason: "Requires GPU with HEVC hardware encoding.", label: "HEVC", value: "hevc" }
-    ];
-  },
+  // Every recognized codec in order: the baseline as the fixed item, and every other codec disabled while this GPU cannot capture it.
+  captureCodecs: (): ListItem[] => RECOGNIZED_CODECS.map((codec): ListItem => (codec === CAPTURE_BASELINE_CODEC) ?
+    { fixed: true, label: CAPTURE_CODEC_LABELS[codec], value: codec } :
+    { disabled: !isCaptureCodecSupported(codec), disabledReason: CAPTURE_CODEC_REASONS[codec], label: CAPTURE_CODEC_LABELS[codec], value: codec }),
 
   providerModules: (): ListItem[] => getProviderModuleInfo().map((p) => ({ label: p.label, value: p.slug }))
 };

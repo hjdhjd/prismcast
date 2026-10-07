@@ -16,6 +16,12 @@ export const RECOGNIZED_CODECS = [ "h264", "hevc" ] as const;
 export type CaptureCodec = typeof RECOGNIZED_CODECS[number];
 
 /**
+ * The codec every capture can use without GPU encoding, Chrome's MediaRecorder baseline. Its literal type is kept and checked against CaptureCodec, so a type can
+ * exclude it by name. It lives beside the recognized list so the configuration and streaming layers read it without an import cycle.
+ */
+export const CAPTURE_BASELINE_CODEC = "h264" satisfies CaptureCodec;
+
+/**
  * Chrome's rejection text when it cannot open a capture source for the tab. Two layers speak this string and neither may spell it independently: the capture
  * module tests a refusal against it to decide whether the start is worth one more attempt, and the recovery module carries it in the signature list that
  * classifies a failure as capture infrastructure. It lives here, in a module with no runtime dependencies at all, so the classifier can read the protocol's own

@@ -16,5 +16,5 @@ export type { AuthWallIndicators, CategoryResolution, CategoryResolutionConfig, 
 export type { ChannelSortField, Nullable, SortDirection } from "./shared.ts";
 export type { CaptureCodec, HealthStatus, MediaContainer, StreamListItem, StreamListResponse, StreamingMode, UrlValidationResult, VideoSelectorType,
   VideoState } from "./streaming.ts";
-export { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, RECOGNIZED_CODECS } from "./streaming.ts";
+export { CAPTURE_BASELINE_CODEC, CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, RECOGNIZED_CODECS } from "./streaming.ts";
 export { isChannelSelectionProfile } from "./selection.ts";
