@@ -2,10 +2,12 @@
  *
  * app.ts: Express application builder for PrismCast.
  */
-import { CONFIG, displayConfiguration, initializeConfiguration, persistCoercedConfig, validateConfiguration } from "./config/index.ts";
-import type { Express, NextFunction, Request, Response } from "express";
+import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.ts";
+import type { ChangeRejection, ConfigChange } from "./config/reactivity.ts";
+import type { Config, LoggingConfig, Nullable } from "./types/index.ts";
+import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import type { IncomingMessage, Server } from "node:http";
-import { LOG, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release,
+import { LOG, assertNever, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release,
   resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
@@ -13,16 +15,16 @@ import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.t
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
 import { getAllStreams, isCaptureIdentity } from "./streaming/registry.ts";
 import { getDebugEnv, getLogFilePath, getServerPidFilePath } from "./config/paths.ts";
-import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
+import { initializeFileLogger, setMaxLogSize, shutdownFileLogger } from "./utils/fileLogger.ts";
 import { loadResumeState, saveResumeState } from "./streaming/hlsResume.ts";
 import { revalidateDomainAuth, stopPrecaching } from "./browser/precaching.ts";
 import { startHdhrServer, stopHdhrServer } from "./hdhr/index.ts";
 import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.ts";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.ts";
 import type { CliOverrides } from "./config/index.ts";
-import type { Nullable } from "./types/index.ts";
 import type { ParsedArgs } from "./index.ts";
 import type { ResumeStreamData } from "./streaming/hlsResume.ts";
+import type { StreamOptions } from "morgan";
 import { attachCdpUpgradeHandler } from "./routes/cdp.ts";
 import { cleanupIdleStreams } from "./streaming/hls.ts";
 import compression from "compression";
@@ -33,6 +35,7 @@ import { initializeUserProfiles } from "./config/userProfiles.ts";
 import { installHealthBridge } from "./routes/config/channels/healthBridge.ts";
 import { loadProviderLineups } from "./config/providerLineups.ts";
 import morgan from "morgan";
+import { registerConfigChangeHandler } from "./config/reactivity.ts";
 import { runConsistencyProbeAtStartup } from "./config/consistencyProbe.ts";
 import { setupRoutes } from "./routes/index.ts";
 import { systemClock } from "homebridge-plugin-utils";
@@ -123,8 +126,9 @@ function setupGracefulShutdown(): void {
     setGracefulShutdown(true);
 
     // Tear down the background services. HDHR is torn down first and awaited so its HTTP and UDP sockets fully release before the rest of shutdown proceeds. The
-    // long-lived pollers are disposed wholesale via the AsyncDisposableStack they registered on at startup. The browser-launch-scoped precache cycle is cancelled
-    // separately - its graceful-shutdown guard has already neutralized it via setGracefulShutdown above, and this clears the pending timer.
+    // long-lived pollers are disposed wholesale via the AsyncDisposableStack they registered on at startup. The precache scheduler, whose cycles browser launches
+    // and saves request rather than the boot starting them, is cancelled separately - its graceful-shutdown guard has already neutralized it via
+    // setGracefulShutdown above, and this clears its pending timers.
     await stopHdhrServer();
     await backgroundServices?.disposeAsync();
     stopPrecaching();
@@ -255,8 +259,8 @@ const FILTERED_SKIP_PATTERNS = [ "/logs", "/health", "/favicon", "/logo.png", "/
 const FILTERED_IMPORTANT_PATTERNS = [ "/stream", "/streams", "/config", "/playlist", "/debug" ];
 
 /**
- * Records a request's arrival time. Registered ahead of the logger so both readers of the elapsed time measure from the moment the request reached the app rather
- * than from whenever the logger happened to see it.
+ * Records a request's arrival time. The request logger's middleware calls it as a request arrives, before handing the request to morgan, so every reader of the
+ * elapsed time measures from the request's arrival rather than from whenever morgan happened to see it.
  * @param req - The incoming request.
  * @param _res - The response, unused.
  * @param next - The next middleware in the chain.
@@ -360,11 +364,92 @@ export function skipInFilteredMode(request: { elapsedMs: Nullable<number>; statu
   return request.url === "/";
 }
 
+/**
+ * Decides whether the request log skips a request at the given level: "none" skips every request, "all" logs every one, and "errors" and "filtered" apply their
+ * own rules. The switch is exhaustive, and no running level reaches its default arm, because every configuration the server builds corrects a level it does not
+ * recognize.
+ * @param options - The level in force, the elapsed milliseconds (null when unstamped), whether a Retry-After header is present, the response status, and the
+ *   request URL.
+ * @returns True when the request should not be logged.
+ */
+export function skipRequestLog(options: { elapsedMs: Nullable<number>; hasRetryAfter: boolean; level: LoggingConfig["httpLogLevel"]; statusCode: number;
+  url: string; }): boolean {
+
+  switch(options.level) {
+
+    case "all": {
+
+      return false;
+    }
+
+    case "errors": {
+
+      return skipInErrorsMode(options);
+    }
+
+    case "filtered": {
+
+      return skipInFilteredMode(options);
+    }
+
+    case "none": {
+
+      return true;
+    }
+
+    default: {
+
+      assertNever(options.level);
+    }
+  }
+}
+
 /* The token is defined once for the process, at module load. morgan's token registry is global to the module, so registering inside the app builder would re-register
  * on every build - harmless today because the definition is constant, but a registration whose count tracks how often the app is assembled is the kind of coupling
  * that only shows up once a second build carries different state.
  */
 morgan.token("elapsed", elapsedMillis);
+
+// The request log line. Its elapsed token reads the arrival stamp stampRequestStart records.
+const REQUEST_LOG_FORMAT = ":method :url from :remote-addr responded :status in :elapsed ms.";
+
+/**
+ * Builds the request logger: one morgan logger behind one middleware, each reading the configured HTTP log level per request, so a saved level applies from the
+ * next request. Whether a request is observed is decided when it arrives: under "none" the middleware hands it on at once, at the cost of one property read, and
+ * the request is never stamped or seen by morgan. Whether an observed request is logged is decided by the level in force when it finishes, because morgan makes
+ * its skip decision as the response completes. So a long-lived stream that arrived under "none" is never logged, and one that arrived under another level is
+ * judged by the level in force at its close.
+ * @param stream - The stream morgan writes each line to.
+ * @returns The request-logging middleware.
+ */
+export function createRequestLogger(stream: StreamOptions): RequestHandler {
+
+  const logger = morgan<Request, Response>(REQUEST_LOG_FORMAT, {
+
+    skip: (req, res): boolean => skipRequestLog({
+
+      elapsedMs: elapsedMillisValue(req),
+      hasRetryAfter: res.getHeader("Retry-After") !== undefined,
+      level: CONFIG.logging.httpLogLevel,
+      statusCode: res.statusCode,
+      url: req.originalUrl || req.url
+    }),
+
+    stream
+  });
+
+  return (req, res, next): void => {
+
+    if(CONFIG.logging.httpLogLevel === "none") {
+
+      next();
+
+      return;
+    }
+
+    stampRequestStart(req, res, () => { logger(req, res, next); });
+  };
+}
 
 /* The buildApp function creates and configures the Express application with all middleware and routes. This is separated from the server startup to allow for
  * testing and flexibility in deployment.
@@ -411,50 +496,9 @@ async function buildApp(): Promise<Express> {
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
-  // Configure Morgan for HTTP request logging based on httpLogLevel configuration. Morgan output goes through morganStream which handles timestamp formatting
-  // consistently for both console and file logging modes.
-  if(CONFIG.logging.httpLogLevel !== "none") {
-
-    const morganFormat = ":method :url from :remote-addr responded :status in :elapsed ms.";
-    const morganStream = createMorganStream();
-
-    // Stamp each request's arrival before morgan sees it, so the elapsed token and the filtered mode's slow-request rule read the same start time.
-    app.use(stampRequestStart);
-
-    if(CONFIG.logging.httpLogLevel === "errors") {
-
-      // Log requests with 4xx or 5xx status codes, but skip 404s for common browser asset requests.
-      app.use(morgan(morganFormat, {
-
-        skip: (req, res): boolean => skipInErrorsMode({
-
-          hasRetryAfter: res.getHeader("Retry-After") !== undefined,
-          statusCode: res.statusCode,
-          url: req.originalUrl || req.url
-        }),
-
-        stream: morganStream
-      }));
-    } else if(CONFIG.logging.httpLogLevel === "filtered") {
-
-      // Log important requests while skipping high-frequency polling endpoints. We always log errors, slow requests, and critical endpoints.
-      app.use(morgan(morganFormat, {
-
-        skip: (req, res): boolean => skipInFilteredMode({
-
-          elapsedMs: elapsedMillisValue(req),
-          statusCode: res.statusCode,
-          url: req.originalUrl || req.url
-        }),
-
-        stream: morganStream
-      }));
-    } else {
-
-      // Log all requests.
-      app.use(morgan(morganFormat, { stream: morganStream }));
-    }
-  }
+  // Log HTTP requests at the configured level, which the logger reads per request. Its output goes through the morgan stream adapter, which formats timestamps
+  // the same way in console and file logging modes.
+  app.use(createRequestLogger(createMorganStream()));
 
   // Set up all HTTP endpoints.
   setupRoutes(app);
@@ -572,6 +616,26 @@ async function listenMainServer(app: Express): Promise<Server> {
   return promise;
 }
 
+/**
+ * Applies a saved log size limit to the open log file. The composition root owns the handler because it wires the file logger, and the file logger, a utility
+ * the configuration layer builds on, cannot import that layer back. The limit comes from the candidate, because the reconcile commits CONFIG only after its
+ * handlers run. The size check is started rather than awaited: the save needs only the limit, which the setter assigns before its first await, so a save never
+ * waits on log-file I/O.
+ * @param _changes - The change to the log size limit; the candidate carries the limit, so the handler reads that instead.
+ * @param next - The candidate running configuration.
+ * @returns No rejections.
+ */
+export async function applyLogSizeChanges(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+
+  void setMaxLogSize(next.logging.maxSize);
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("logging.maxSize", applyLogSizeChanges);
+
 /* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
  * Express application.
  */
@@ -647,11 +711,6 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     await initializeConfiguration(cliOverrides);
     validateConfiguration();
 
-    // Write any startup capture coercion back to disk so the on-disk state matches the coerced live CONFIG. This keeps a config file that holds an unsupported
-    // capture value (native mode) from staying divergent forever, which would otherwise make the reload-validation path reject every later save on the phantom
-    // capture diff. A no-op unless validateConfiguration actually coerced something.
-    await persistCoercedConfig();
-
     await initializeUserProfiles();
     validateProfiles();
   } catch(error) {
@@ -699,21 +758,19 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     }
   }
 
-  // Check FFmpeg availability if using FFmpeg capture mode. This must be after file logger initialization so the log message is captured.
-  if(CONFIG.streaming.captureMode === "ffmpeg") {
+  // Check FFmpeg availability on every boot, because FFmpeg capture is always in effect: the configuration corrects any other capture mode as it is built. This
+  // must be after file logger initialization so the log message is captured.
+  const ffmpegPath = await resolveFFmpegPath();
 
-    const ffmpegPath = await resolveFFmpegPath();
+  if(!ffmpegPath) {
 
-    if(!ffmpegPath) {
+    LOG.error("FFmpeg is not available. FFmpeg capture mode requires FFmpeg to be installed and in the system PATH.");
+    LOG.error("Install FFmpeg and start PrismCast again.");
 
-      LOG.error("FFmpeg is not available. FFmpeg capture mode requires FFmpeg to be installed and in the system PATH.");
-      LOG.error("Either install FFmpeg or change the capture mode to 'native' in the configuration.");
-
-      process.exit(1);
-    }
-
-    LOG.info("Using FFmpeg at: %s.", ffmpegPath);
+    process.exit(1);
   }
+
+  LOG.info("Using FFmpeg at: %s.", ffmpegPath);
 
   // Load user channels from channels.json in the data directory if it exists.
   await initializeUserChannels();
@@ -768,8 +825,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
   // and a future service cannot be started without also being torn down. These are order-independent background loops/timers, so LIFO disposal order is immaterial.
-  // HDHR is intentionally not a member (it is torn down first in shutdown so its sockets release before the rest), and the browser-launch-scoped precache cycle is
-  // started elsewhere and stopped separately.
+  // HDHR is intentionally not a member (it is torn down first in shutdown so its sockets release before the rest), and the precache scheduler stays off the stack
+  // as well: browser launches and saves request its cycles, and shutdown stops it separately.
   backgroundServices = new AsyncDisposableStack();
 
   startStalePageCleanup();

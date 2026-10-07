@@ -3,14 +3,15 @@
  * index.ts: Configuration management for PrismCast.
  */
 import type { ApplyResult, ConfigChangePartition } from "./reactivity.ts";
-import { CONFIG_METADATA, DEFAULTS, getNestedValue, getReactivityClass, getSettingByPath, mergeConfiguration, mutateConfig, readConfig,
-  setNestedValue } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, collectStoredCaptureCorrections, correctCaptureValues, getNestedValue, getReactivityClass, getSettingByPath,
+  mergeConfiguration, mutateConfig, readConfig, setNestedValue } from "./userConfig.ts";
 import type { Config, Nullable } from "../types/index.ts";
-import { LOG, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter, isAnyDebugEnabled } from "../utils/index.ts";
+import { LOG, assertNever, canonicalizeDebugPattern, displayLine, formatError, getCurrentPattern, getPackageVersion, initDebugFilter,
+  isAnyDebugEnabled } from "../utils/index.ts";
 import { applyConfigChanges, computeConfigDiff, partitionConfigChanges } from "./reactivity.ts";
 import { getChromeDataDir, getConfigFilePath } from "./paths.ts";
 import { getPresetViewport, getValidPresetIds } from "./presets.ts";
-import { RECOGNIZED_CODECS } from "../types/index.ts";
+import { HTTP_LOG_LEVELS } from "../types/index.ts";
 import type { UserConfig } from "./userConfig.ts";
 import path from "node:path";
 
@@ -65,8 +66,8 @@ const defaultConfigStore: ConfigStore = { mutateConfig, readConfig };
 // one realized leaf at a time as saves reconcile it, so a restart-class value a save holds out never reaches it.
 export let CONFIG: Config = structuredClone(DEFAULTS);
 
-/* The loaded snapshot: the configuration file as last loaded, merged and normalized exactly as the next boot would read it. It is recorded at startup, again
- * after the startup coercions, and at the end of every completed reconcile, once that reconcile has committed what its handlers realized, and nowhere else.
+/* The loaded snapshot: the configuration file as last loaded, merged and normalized exactly as the next boot would read it. It is recorded at the end of the
+ * boot's configuration load, and at the end of every completed reconcile, once that reconcile has committed what its handlers realized, and nowhere else.
  * The running configuration and this snapshot differ exactly where the process does not yet reflect the file - a restart-class value waiting for the
  * restart, a live value a handler refused, or a leaf the process wrote ahead of the file - and every save reconciles that gap.
  */
@@ -109,16 +110,12 @@ let envOrCliDebugOverride = false;
  */
 let reconcileQueue: Promise<unknown> = Promise.resolve();
 
-// Whether validateConfiguration coerced a capture setting (forced FFmpeg mode, normalized captureCodecs) on the live CONFIG at startup. persistCoercedConfig
-// reads this to decide whether to write the coerced values back to disk so the on-disk state matches the live binding. Without the write-back a config file
-// holding an unsupported capture value (native mode) stays divergent from the coerced CONFIG forever, and the save's validation would then refuse every later
-// save, because each candidate is built from that file.
-let captureConfigCoercedAtStartup = false;
-
 /**
  * Initializes the configuration by loading the user config file, merging with defaults, applying environment variable overrides, and applying CLI overrides. This
- * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values.
+ * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values. A file whose stored
+ * capture values need a correction is written once through the store, which corrects them, unless the configuration carries a hard error.
  * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
+ * @param io - The config store the boot reads from and writes a capture correction through.
  */
 export async function initializeConfiguration(cliOverrides?: CliOverrides, io: ConfigStore = defaultConfigStore): Promise<void> {
 
@@ -151,7 +148,24 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
   // separate so a save can build and validate a candidate without applying its filter until a reconcile commits it.
   CONFIG = buildCandidate(result.config);
   commitDebugFilter();
-  recordLoadedConfiguration();
+
+  /* The candidate is corrected as it is built, and the store corrects the stored capture values on every write, so a file whose own capture values need a
+   * correction gets one write that changes nothing else and lets the store's hook store the correction and log it. It is written only when the configuration has
+   * no hard error, because the boot never writes a configuration it is about to refuse, and a value the environment supplies asks for no write, because it is
+   * never stored.
+   */
+  if((collectStoredCaptureCorrections(result.config).length > 0) && (collectHardErrors(CONFIG).length === 0)) {
+
+    try {
+
+      await io.mutateConfig(() => { /* The store's write hook makes the correction. */ });
+    } catch(error) {
+
+      LOG.warn("The corrected capture configuration could not be written, so the file keeps its stored value until the next write.", { error: formatError(error) });
+    }
+  }
+
+  loadedConfig = structuredClone(CONFIG);
 
   LOG.info("Configuration initialized from defaults, user config, environment variables, and CLI overrides.");
 }
@@ -317,21 +331,12 @@ function buildCandidate(userConfig: UserConfig): Config {
 }
 
 /**
- * Records the running configuration as the loaded snapshot. It runs at the end of initializeConfiguration, and inside validateConfiguration after the startup
- * coercions and before the hard-error check, which a boot that fails exits on. Those are the startup steps that build CONFIG from the file, so the snapshot
- * starts equal to the running configuration and a save's gap holds only what the process has not realized.
- */
-function recordLoadedConfiguration(): void {
-
-  loadedConfig = structuredClone(CONFIG);
-}
-
-/**
  * Normalizes a configuration in place WITHOUT any global side effects: clamps an out-of-vocabulary quality preset to the default, clamps an out-of-range frame
- * rate to the nearer bound its metadata declares, and rewrites the persisted debug-filter string to its canonical form. Pure with respect to process state - it
- * touches only the passed config - so it is safe to run on a candidate a save may still refuse. Every configuration is built through buildCandidate, so the
- * boot and the save cannot drift. The live runtime debug filter is applied separately by commitDebugFilter, which runs only once a configuration is
- * committed, so a refused save never changes the running filter.
+ * rate to the nearer bound its metadata declares, corrects an unavailable capture mode or codec list to values the server can capture with, corrects an
+ * unrecognized HTTP log level to the level that logs every request, and rewrites the persisted debug-filter string to its canonical form. Each correction logs
+ * one warning. Pure with respect to process state - it touches only the passed config - so it is safe to run on a candidate a save may still refuse. Every
+ * configuration is built through buildCandidate, so the boot and the save cannot drift. The live runtime debug filter is applied separately by
+ * commitDebugFilter, which runs only once a configuration is committed, so a refused save never changes the running filter.
  * @param config - The freshly merged configuration to normalize in place.
  */
 function normalizeConfig(config: Config): void {
@@ -342,6 +347,16 @@ function normalizeConfig(config: Config): void {
   if(!envOrCliDebugOverride) {
 
     config.logging.debugFilter = canonicalizeDebugPattern(config.logging.debugFilter);
+  }
+
+  // Hold the HTTP log level to the levels the request logger knows. The logger decides each request through an exhaustive switch over the level, so a level
+  // outside them, from the environment or a hand-edited file, is corrected here to the level that logs every request rather than reaching that switch.
+  if(!HTTP_LOG_LEVELS.includes(config.logging.httpLogLevel)) {
+
+    LOG.warn("The configured HTTP log level is not one the server recognizes, so every request is logged.",
+      { configured: config.logging.httpLogLevel, using: "all" });
+
+    config.logging.httpLogLevel = "all";
   }
 
   // Validate quality preset. Viewport is derived on-demand via getPresetViewport() rather than stored in CONFIG.
@@ -368,6 +383,48 @@ function normalizeConfig(config: Config): void {
 
     config.streaming.frameRate = clampedFrameRate;
   }
+
+  /* Correct the capture values to ones the server can capture with, one warning per correction. Every candidate passes here, the boot's and every save's, so a
+   * capture value from the file or the environment is corrected by construction. The environment is re-applied to every candidate and never written, so a
+   * value it supplies warns at every build, while the file's own values are corrected once, by the store's write hook.
+   */
+  const { corrections, values } = correctCaptureValues(config.streaming);
+
+  for(const correction of corrections) {
+
+    switch(correction.kind) {
+
+      case "baseline": {
+
+        LOG.warn("The configured capture codecs omit the H.264 baseline, so it is restored.", { configured: correction.configured, using: correction.using });
+
+        break;
+      }
+
+      case "mode": {
+
+        LOG.warn("Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.",
+          { configured: correction.configured, using: correction.using });
+
+        break;
+      }
+
+      case "unrecognizedCodecs": {
+
+        LOG.warn("The configured capture codecs include identifiers the server does not recognize, so they are ignored.",
+          { configured: correction.configured, ignored: correction.ignored, using: correction.using });
+
+        break;
+      }
+
+      default: {
+
+        assertNever(correction);
+      }
+    }
+  }
+
+  config.streaming = { ...config.streaming, ...values };
 }
 
 /**
@@ -493,82 +550,6 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
   return null;
 }
 
-/**
- * The capture-related coercions a configuration needs to satisfy the streaming requirements the startup path enforces. collectCoercions describes them without
- * mutating; applyCoercions applies them (startup); a save treats a non-empty set as grounds to refuse its candidate rather than coerce silently. The
- * preset, frame-rate, and debug-filter normalizations are intentionally NOT modeled here - those are benign corrections handled by normalizeConfig on both
- * the startup and save paths, whereas these capture coercions guard safety-critical requirements (native capture mode corrupts output after 20-30 minutes of
- * recording; the h264 baseline is universal) and so must surface to the operator on a save rather than be silently rewritten.
- */
-interface ConfigCoercions {
-
-  // The normalized captureCodecs list (unrecognized identifiers removed, h264 baseline ensured), present only when it differs from the input list.
-  readonly captureCodecs: Nullable<readonly string[]>;
-
-  // True when captureMode is not "ffmpeg" and must be forced. Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording.
-  readonly forceFfmpegMode: boolean;
-}
-
-/**
- * Describes the capture coercions a configuration would need, without mutating it. Pure so both the startup path (which then applies them) and the save path
- * (which rejects when any are present) can ask the same question against any config snapshot.
- * @param config - The configuration to inspect.
- * @returns The set of needed coercions; captureCodecs is null and forceFfmpegMode is false when none apply.
- */
-function collectCoercions(config: Config): ConfigCoercions {
-
-  // Filter captureCodecs to recognized identifiers and guarantee the h264 universal baseline. RECOGNIZED_CODECS in types/streaming.ts is the single definition
-  // for all capture codec identifiers.
-  const recognizedCodecs = new Set<string>(RECOGNIZED_CODECS);
-  const normalizedCodecs = config.streaming.captureCodecs.filter((codec) => recognizedCodecs.has(codec));
-
-  if(!normalizedCodecs.includes("h264")) {
-
-    normalizedCodecs.unshift("h264");
-  }
-
-  // Only report a captureCodecs coercion when the normalized list actually differs from the input - identical contents must not trip the save's refusal.
-  const captureCodecsChanged = (normalizedCodecs.length !== config.streaming.captureCodecs.length) ||
-    normalizedCodecs.some((codec, index) => (codec !== config.streaming.captureCodecs[index]));
-
-  return {
-
-    captureCodecs: captureCodecsChanged ? normalizedCodecs : null,
-    forceFfmpegMode: config.streaming.captureMode !== "ffmpeg"
-  };
-}
-
-/**
- * Predicate: does this coercion set require any change? Used to record whether a startup write-back is needed.
- * @param coercions - The coercions to test.
- * @returns True when at least one coercion would change the configuration.
- */
-function hasCoercions(coercions: ConfigCoercions): boolean {
-
-  return (coercions.captureCodecs !== null) || coercions.forceFfmpegMode;
-}
-
-/**
- * Applies the described coercions to a configuration in place, emitting the same operator-visible warning the startup path has always logged when forcing
- * FFmpeg mode. Used only by the startup path; a save refuses rather than coerces.
- * @param config - The configuration to mutate.
- * @param coercions - The coercions to apply, as computed by collectCoercions.
- */
-function applyCoercions(config: Config, coercions: ConfigCoercions): void {
-
-  if(coercions.captureCodecs !== null) {
-
-    config.streaming.captureCodecs = Array.from(coercions.captureCodecs);
-  }
-
-  if(coercions.forceFfmpegMode) {
-
-    LOG.warn("Native capture mode is disabled due to a Chrome fMP4 MediaRecorder bug. Forcing FFmpeg capture mode.");
-
-    config.streaming.captureMode = "ffmpeg";
-  }
-}
-
 /** The settings whose value the server refuses to start with out of range. Each entry is a CONFIG_METADATA path, and the floor, the ceiling, and the name the
  * error reports all come from that path's metadata - the same metadata the settings form validates a save against. One declaration of a bound means a value
  * the form accepts is a value the boot accepts, and there is no second copy to fall out of step with the first.
@@ -606,6 +587,11 @@ export const STARTUP_BOUNDED_SETTINGS: readonly string[] = [
 
   // Stall threshold, the one float among these.
   "playback.stallThreshold",
+
+  // Timer intervals. The floor keeps a timer from polling too tightly, and the ceiling keeps a stall or a stale page from going unattended longer than recovery
+  // is designed to wait.
+  "playback.monitorInterval",
+  "recovery.stalePageCleanupInterval",
 
   // Logging.
   "logging.maxSize",
@@ -661,8 +647,9 @@ function validateBoundedSetting(config: Config, settingPath: string): Nullable<s
 }
 
 /**
- * Collects every hard configuration error - an always-fatal value that no coercion can repair - for the given configuration. Pure: it never mutates and never
- * throws, so both validateConfiguration (which throws on a non-empty result at startup) and a save (which refuses the candidate) can reuse it.
+ * Collects every hard configuration error - an always-fatal value the server refuses to run with rather than correcting - for the given configuration. Pure: it
+ * never mutates and never throws, so validateConfiguration (which throws on a non-empty result at startup), a save (which refuses the candidate), and the
+ * boot's capture correction write (which never stores a configuration the boot will refuse) all read the same answer.
  * @param config - The configuration to validate.
  * @returns The list of error messages; empty when the configuration has no hard errors.
  */
@@ -690,11 +677,8 @@ function collectHardErrors(config: Config): string[] {
     errors.push("paths.logFile must be an absolute path, but it is " + config.paths.logFile + ".");
   }
 
-  // Validate the HDHomeRun port only when HDHR is enabled and the effective capture mode is FFmpeg. At startup applyCoercions has already forced FFmpeg mode
-  // before this runs, so the captureMode check is a defensive no-op here and the guard reduces to just "HDHR enabled". On a save, an un-coerced native-mode
-  // candidate skips this specific port check, but collectCandidateRejection separately refuses it via the forceFfmpegMode reason before it could ever be
-  // written with native mode active.
-  if(config.hdhr.enabled && (config.streaming.captureMode === "ffmpeg")) {
+  // The HDHomeRun port is checked whenever HDHomeRun emulation is on, and only then, so a port setting that nothing binds never refuses a boot or a save.
+  if(config.hdhr.enabled) {
 
     check(validateBoundedSetting(config, "hdhr.port"));
 
@@ -709,24 +693,12 @@ function collectHardErrors(config: Config): string[] {
 }
 
 /**
- * Validates all configuration values and throws an error if any are invalid. This function runs at startup after configuration initialization. It first applies
- * the capture coercions in place (filtering captureCodecs, forcing FFmpeg mode, with the same operator-visible warning as before), then collects every hard
- * error against the coerced CONFIG and throws once with the complete list. Splitting the pure collectors (collectCoercions, collectHardErrors) from the in-place
- * application lets a save reuse the same hard-error and capture-coercion checks without silently coercing a live save.
+ * Validates the running configuration and throws if it carries any hard error. It runs at startup once the configuration is initialized, collects every hard
+ * error, and throws once with the complete list, so the operator can fix every issue in one pass. A correctable value never reaches here uncorrected, because
+ * the configuration is corrected as it is built.
  * @throws If any configuration value is invalid. The error message lists all invalid values.
  */
 export function validateConfiguration(): void {
-
-  const coercions = collectCoercions(CONFIG);
-
-  // Record whether a capture coercion was applied so persistCoercedConfig can write the corrected values back to disk and keep the on-disk state accurate.
-  captureConfigCoercedAtStartup = hasCoercions(coercions);
-
-  applyCoercions(CONFIG, coercions);
-
-  // The coercions moved CONFIG away from the file it was built from, and persistCoercedConfig writes them back next, so the loaded snapshot follows CONFIG here
-  // rather than reporting the coerced values as a gap a later save would have to close.
-  recordLoadedConfiguration();
 
   const errors = collectHardErrors(CONFIG);
 
@@ -738,40 +710,11 @@ export function validateConfiguration(): void {
 }
 
 /**
- * Persists the capture configuration that validateConfiguration coerced at startup back to disk so the on-disk state matches the live CONFIG. A no-op unless a
- * coercion actually occurred. Without this, a config file holding an unsupported capture value (native mode, or a captureCodecs list missing the h264 baseline)
- * stays divergent from the coerced live CONFIG forever, and the save's validation would then refuse every later save, because each candidate is built from that file.
- * filterDefaults strips any value equal to its default on write, so a config coerced back to the FFmpeg/h264 defaults leaves a clean file with no capture override.
- * Failures degrade gracefully: the live CONFIG is already coerced, so a write failure only means the divergence persists until the next successful save or boot.
- */
-export async function persistCoercedConfig(io: ConfigStore = defaultConfigStore): Promise<void> {
-
-  if(!captureConfigCoercedAtStartup) {
-
-    return;
-  }
-
-  try {
-
-    await io.mutateConfig((config) => {
-
-      config.streaming ??= {};
-      config.streaming.captureCodecs = Array.from(CONFIG.streaming.captureCodecs);
-      config.streaming.captureMode = CONFIG.streaming.captureMode;
-    });
-
-    LOG.info("Normalized capture configuration written to disk after a startup coercion.");
-  } catch(error) {
-
-    LOG.warn("Failed to persist the normalized capture configuration to disk: %s.", formatError(error));
-  }
-}
-
-/**
  * Determines whether a candidate a save built must be refused rather than written. Returns the reason when the candidate holds an object or a list at a setting
- * that takes a single value, carries a hard error (an always-fatal value), or would require a capture coercion a save refuses to apply silently, and null when
- * the candidate may be written. Every collected reason is a complete sentence, and the reasons are joined with a single space, so the combined text reads as
- * consecutive sentences when it is surfaced verbatim to the operator in the save response.
+ * that takes a single value or carries a hard error (an always-fatal value), and null when the candidate may be written. A capture value the server cannot
+ * capture with is no reason to refuse, because the candidate was corrected as it was built and the store corrects the file it writes. Every collected reason
+ * is a complete sentence, and the reasons are joined with a single space, so the combined text reads as consecutive sentences when it is surfaced verbatim to
+ * the operator in the save response.
  * @param config - The merged, normalized candidate a save is about to write.
  * @returns The joined refusal reason, or null when the candidate may be written.
  */
@@ -786,18 +729,7 @@ function collectCandidateRejection(config: Config): Nullable<string> {
     return shapeErrors.join(" ");
   }
 
-  const reasons: string[] = collectHardErrors(config);
-  const coercions = collectCoercions(config);
-
-  if(coercions.forceFfmpegMode) {
-
-    reasons.push("Native capture mode is disabled and cannot be saved; set capture mode to FFmpeg.");
-  }
-
-  if(coercions.captureCodecs !== null) {
-
-    reasons.push("Capture codecs must include the h264 baseline and contain only recognized identifiers.");
-  }
+  const reasons = collectHardErrors(config);
 
   if(reasons.length === 0) {
 

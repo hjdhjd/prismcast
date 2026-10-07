@@ -10,13 +10,17 @@
  * The same injection point carries two further surfaces: the lineup write the discovery-outcome recorder performs, observed rather than executed, and the
  * empty-walk retry the guarded session owns, whose rows drive a stub page that records what it was asked to do and a provider whose successive walks are scripted.
  *
- * It carries the clock as well. Every timer the scheduler arms - the startup cycle, the deferred re-attempt, and each walk's deadline - runs on deps.clock, so a
- * row drives the whole schedule by advancing one TestClock and reads what was armed off that clock's ledger. The health store's debounced flush runs on a clock of
- * its own, established in each describe, so it arms nothing on the platform and nothing on the ledger these rows read.
+ * It carries the clock as well. Every timer the scheduler arms - the settle delay before a cycle, the deferred re-attempt, and each walk's deadline - runs on
+ * deps.clock, so a row drives the whole schedule by advancing one TestClock and reads what was armed off that clock's ledger. The health store's debounced flush
+ * runs on a clock of its own, established in each describe, so it arms nothing on the platform and nothing on the ledger these rows read.
+ *
+ * The same port carries the browser-connected check, which the rows set to stand a browser up or take it away, and a browser acquisition the rows count, so a row
+ * that saves the precache list proves that the walk it requests happens and that no walk ever acquires a browser the check found gone.
  */
 import type { Browser, Page } from "puppeteer-core";
-import type { DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
-import { DiscoveryWalkTimeoutError, precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching, withProviderGuidePage } from "./precaching.ts";
+import type { Config, DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
+import { DiscoveryWalkTimeoutError, applyPrecacheConfigChanges, precacheService, revalidateDomainAuth, startPrecaching, stopPrecaching,
+  withProviderGuidePage } from "./precaching.ts";
 import { LOG, extractDomain } from "../utils/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -26,11 +30,13 @@ import { getEnabledServices, setEnabledServices } from "../config/services.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
+import type { ConfigChange } from "../config/reactivity.ts";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import type { PrecachingDeps } from "./precaching.ts";
 import type { StartOverlayHandlingOptions } from "./consent.ts";
 import assert from "node:assert/strict";
 import { setImmediate as immediate } from "node:timers/promises";
+import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { useHealthStoreOnClock } from "../config/health.helpers.ts";
 
 // Mutable state the deps stubs read, so each test can shape the provider registry and browser behavior without re-registering stubs.
@@ -38,6 +44,11 @@ let mockGuideUrls: Record<string, string> = {};
 let mockProviders: Record<string, ProviderModule> = {};
 let windowSyncCalls = 0;
 let stubBrowser: Browser;
+
+// What the browser-connected check answers, and how many browser acquisitions the walks made. A row that takes the browser away sets the answer back when it ends,
+// because every other row expects a browser.
+let browserConnected = true;
+let browserAcquisitions = 0;
 
 // The overlay-handling options recorded by the injected startOverlayHandling stub (in call order), and an ordered log of the page operations the guarded session
 // performs, so the withProviderGuidePage tests can assert the phase, the abort state, and the mute-before-navigation ordering without a live Chrome.
@@ -66,8 +77,9 @@ const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] =
  * every per-row browser double keeps handing back the page double its row wrote, and what the creator itself puts in the creation options is asserted where the
  * creator lives, in index.test.ts. startOverlayHandling stands in for the real poll, recording each call's options (phase and abort signal) into
  * overlayHandlingCalls and logging its launch into pageEvents so the guide-page tests can assert the discovery phase and its abort timing; emulateLayoutSurface
- * logs itself into the same record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. Typed as the
- * production port so the doubles cannot drift. The health and login modules stay real.
+ * logs itself into the same record and answers with a fixed surface, so the walk's declaration is observable in the page-operation order. getCurrentBrowser
+ * counts each acquisition and isBrowserConnected answers what the row set, so a row reads whether a walk reached for a browser at all. Typed as the production
+ * port so the doubles cannot drift. The health and login modules stay real.
  *
  * The set is built by a factory rather than written as a literal because every describe rebuilds it around a fresh clock in its beforeEach: the scheduler's
  * timers and each walk's deadline arm on deps.clock, so a row that drives a schedule needs its own clock and a ledger no earlier row has written to.
@@ -89,11 +101,17 @@ function makeDeps(rowClock: Clock): PrecachingDeps {
 
       return { height: 1080, width: 1920 };
     },
-    getCurrentBrowser: async (): Promise<Browser> => stubBrowser,
+    getCurrentBrowser: async (): Promise<Browser> => {
+
+      browserAcquisitions++;
+
+      return stubBrowser;
+    },
     getPersistedLineup: (): null => null,
     getProviderBySlug: (slug: string): ProviderModule | undefined => mockProviders[slug],
     getProvidersForDomain: (domain: string): ProviderModule[] => Object.entries(mockGuideUrls)
       .filter(([ , guideUrl ]) => extractDomain(guideUrl) === domain).flatMap(([slug]) => mockProviders[slug] ?? []),
+    isBrowserConnected: (): boolean => browserConnected,
     isGracefulShutdown: (): boolean => false,
     persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
 
@@ -171,8 +189,8 @@ function makeLoginPageStub(): Page {
   } as unknown as Page;
 }
 
-// The scheduler's startup delay and its deferred re-attempt delay, mirroring PRECACHE_DELAY and PRECACHE_RETRY_DELAY in precaching.ts. The module keeps both
-// constants to itself, so the rows here name the same values and go red against a schedule that moves without them.
+// The scheduler's settle delay before a cycle and its deferred re-attempt delay, mirroring PRECACHE_DELAY and PRECACHE_RETRY_DELAY in precaching.ts. The module
+// keeps these constants to itself, so the rows here name the same values and go red against a schedule that moves without them.
 const PRECACHE_DELAY = 5000;
 const PRECACHE_RETRY_DELAY = 300000;
 
@@ -473,7 +491,7 @@ describe("startPrecaching - graceful-shutdown guard", () => {
     startPrecaching(deps);
 
     assert.equal(clock.pending, 1, "the same configuration schedules a cycle once shutdown clears");
-    assert.deepEqual(clock.requested, [PRECACHE_DELAY], "and arms it at the scheduler's own startup delay");
+    assert.deepEqual(clock.requested, [PRECACHE_DELAY], "and arms it at the scheduler's own settle delay");
   });
 });
 
@@ -482,7 +500,8 @@ describe("startPrecaching - graceful-shutdown guard", () => {
  * the delay and finding that the walk never happened - not by inspecting a handle.
  *
  * The counter every row reads is precacheService invocations per provider, taken from the cache clear each invocation performs. It counts attempts rather than
- * guide walks, which keeps the assertions about the schedule rather than about the guarded session's own empty-walk retry underneath it.
+ * guide walks, which keeps the assertions about the schedule rather than about the guarded session's own empty-walk retry underneath it. The rows nested last
+ * drive the same schedule from a save's request beside a launch's, since a save's cycle and a pending re-attempt share it.
  */
 describe("the deferred discovery re-attempt", () => {
 
@@ -529,7 +548,8 @@ describe("the deferred discovery re-attempt", () => {
 
   /**
    * Advances the row's clock by the given delay and drains, which fires whatever the scheduler had armed to come due there. The scheduler holds at most one
-   * pending item at a time, so a delay nothing was scheduled for fires nothing - exactly what a row asserting a cancellation is looking for.
+   * pending cycle and one pending re-attempt, each in its own slot, so a delay neither was armed for fires nothing - exactly what a row asserting a
+   * cancellation is looking for.
    * @param delayMs - The delay to advance the clock by.
    */
   async function fire(delayMs: number): Promise<void> {
@@ -583,7 +603,7 @@ describe("the deferred discovery re-attempt", () => {
     assert.deepEqual(attempts, { "deferred-empty": 1, "deferred-full": 1 }, "the cycle attempted both services once");
     assert.equal(clock.pending, 1, "the empty service earned a re-attempt, armed on the injected clock");
     assert.deepEqual(clock.requested, [ PRECACHE_DELAY, WALK_BUDGET, WALK_BUDGET, PRECACHE_RETRY_DELAY ],
-      "the cycle's startup delay, one walk deadline per service, then the re-attempt's own longer delay");
+      "the cycle's settle delay, one walk deadline per service, then the re-attempt's own longer delay");
 
     // The empty service's lineup shows up on the re-attempt, which is the outcome the delay is betting on.
     walkResults = { "deferred-empty": ONE_CHANNEL, "deferred-full": ONE_CHANNEL };
@@ -635,8 +655,8 @@ describe("the deferred discovery re-attempt", () => {
 
   test("a fresh cycle supersedes the pending pass", async () => {
 
-    // A browser relaunch schedules a full cycle over every configured service, the empty ones included. Letting the deferred pass survive alongside it would put
-    // two passes over the same guides in contention for one browser.
+    // A launch requests a cycle over every listed service, the empty ones included. Letting the deferred pass survive alongside it would set that pass against
+    // the cycle over the same guides, in contention for one browser.
     mockProviders = { "deferred-empty": deferredProvider("deferred-empty") };
     CONFIG.channels.precacheServices = ["deferred-empty"];
 
@@ -685,9 +705,9 @@ describe("the deferred discovery re-attempt", () => {
 
   test("a full-cycle request that arrives while the guard is held runs once the guard is released", async () => {
 
-    /* The dropped-cycle hand-off. A browser crash relaunch calls startPrecaching while a run still holds the guard, and that run is walking guides for a browser
-     * whose caches the relaunch just cleared - so its result is worth nothing and the request must not be discarded. The assertion is the second cycle actually running,
-     * which also proves the release ordering: the reentrant call has to find a free guard, or it would record the very request being honored and schedule nothing.
+    /* The dropped-cycle hand-off. A launch requests a cycle over every service while a run still holds the guard, and that run is walking guides for a browser
+     * whose caches the launch just cleared - so its result is worth nothing and the request must not be discarded. The assertion is the second cycle actually
+     * running, which also proves the release ordering: the hand-off has to find a free guard, or it would record the very request being handed on and arm nothing.
      */
     const gate = Promise.withResolvers<DiscoveredChannel[]>();
 
@@ -1077,6 +1097,565 @@ describe("the deferred discovery re-attempt", () => {
       assert.ok(unsettledAt < deferredAt, "the unsettled clause comes before the login-deferral clause");
     });
   });
+
+  /* A save that adds services to the precache list requests a cycle scoped to them, and only while a browser is connected, so it warms what it selected without
+   * clearing any other provider's cache and never launches a browser. The rows drive the handler the way the reconcile does - CONFIG holds the running list and
+   * the candidate the saved one while the handler runs, and the commit then assigns the saved list - and read the schedule off the row's clock: what was armed,
+   * what each fire walked, and whether a walk reached for a browser at all.
+   */
+  describe("a save's request, scoped to the services it adds", () => {
+
+    let originalEnabled: string[];
+
+    beforeEach(() => {
+
+      browserAcquisitions = 0;
+
+      // The deferred pass reads the running filter, so the filter starts empty and only the row that means to exercise it sets one.
+      originalEnabled = getEnabledServices();
+      setEnabledServices([]);
+    });
+
+    afterEach(() => {
+
+      browserConnected = true;
+      setEnabledServices(originalEnabled);
+    });
+
+    /**
+     * Saves the precache list the way the reconcile does: the handler runs while CONFIG still holds the running list and the candidate carries the saved one, and
+     * the commit then assigns the saved list as a new array.
+     * @param slugs - The saved precache list.
+     * @returns A promise that resolves once the handler has run and the list is committed.
+     */
+    async function saveList(slugs: string[]): Promise<void> {
+
+      const change: ConfigChange = { current: slugs, path: "channels.precacheServices", previous: CONFIG.channels.precacheServices };
+      const next: Config = structuredClone(CONFIG);
+
+      next.channels.precacheServices = slugs;
+
+      assert.deepEqual(await applyPrecacheConfigChanges([change], next, deps), [], "the handler refuses nothing");
+
+      CONFIG.channels.precacheServices = [...slugs];
+    }
+
+    // How many times the scheduler asked the row's clock for a delay, so a row counts the cycles and re-attempts it armed apart from the walk deadlines.
+    const armed = (delayMs: number): number => clock.requested.filter((requested) => requested === delayMs).length;
+
+    /**
+     * Counts the cycles a row's LOG.info mock saw start, read off the start line every cycle that walks anything logs.
+     * @param calls - The calls the row's LOG.info mock recorded.
+     * @returns How many of them were a cycle's start line.
+     */
+    function startLines(calls: readonly { arguments: readonly unknown[] }[]): number {
+
+      return calls.filter((call) => String(call.arguments[0]).startsWith("Starting channel lineup precaching")).length;
+    }
+
+    test("a save that adds a service beside a listed one arms one cycle that clears and walks only the added service", async () => {
+
+      mockProviders = { "save-added": deferredProvider("save-added"), "save-listed": deferredProvider("save-listed") };
+      walkResults = { "save-added": ONE_CHANNEL, "save-listed": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["save-listed"];
+
+      await saveList([ "save-listed", "save-added" ]);
+
+      assert.deepEqual(clock.requested, [PRECACHE_DELAY], "the save armed one cycle at the settle delay");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "save-added": 1 }, "only the added service's cache was cleared");
+      assert.deepEqual(walks, { "save-added": 1 }, "and only the added service was walked");
+    });
+
+    test("a save that adds a service with no browser running arms nothing and never reaches for a browser", async () => {
+
+      mockProviders = { "save-added": deferredProvider("save-added") };
+      walkResults = { "save-added": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = [];
+      browserConnected = false;
+
+      await saveList(["save-added"]);
+
+      assert.deepEqual(clock.requested, [], "the save asked the clock for nothing");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(browserAcquisitions, 0, "no walk reached for a browser");
+      assert.deepEqual(attempts, {}, "and nothing was walked");
+    });
+
+    test("with a browser connected, a save that only removes a service arms nothing, and one that replaces a service walks the replacement", async () => {
+
+      mockProviders = { "save-first": deferredProvider("save-first"), "save-replacement": deferredProvider("save-replacement"),
+        "save-second": deferredProvider("save-second") };
+      walkResults = { "save-first": ONE_CHANNEL, "save-replacement": ONE_CHANNEL, "save-second": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = [ "save-first", "save-second" ];
+
+      await saveList(["save-first"]);
+
+      assert.deepEqual(clock.requested, [], "the removal armed nothing");
+
+      await saveList(["save-replacement"]);
+
+      assert.deepEqual(clock.requested, [PRECACHE_DELAY], "the replacement armed one cycle");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(walks, { "save-replacement": 1 }, "the cycle walked the replacement alone");
+    });
+
+    test("a save inside a launch cycle's settle delay joins that cycle, so one cycle runs and no second settle delay is armed", async (t) => {
+
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "save-added": deferredProvider("save-added"), "save-listed": deferredProvider("save-listed") };
+      walkResults = { "save-added": ONE_CHANNEL, "save-listed": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["save-listed"];
+
+      startPrecaching(deps);
+
+      await saveList([ "save-listed", "save-added" ]);
+      await fire(PRECACHE_DELAY);
+
+      // The launch's cycle reads the list when it fires, so it walks the service the save added beside the one it was armed for.
+      assert.deepEqual(attempts, { "save-added": 1, "save-listed": 1 }, "the launch's cycle walked each listed service once");
+
+      // Past the cycle's release, nothing further is armed or walked.
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(armed(PRECACHE_DELAY), 1, "one settle delay was armed in all");
+      assert.equal(startLines(info.mock.calls), 1, "one cycle ran");
+      assert.deepEqual(attempts, { "save-added": 1, "save-listed": 1 }, "and nothing walked again");
+    });
+
+    test("a second launch inside the settle delay re-arms the pending cycle, so one cycle runs a full delay after the second launch", async (t) => {
+
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "launch-listed": deferredProvider("launch-listed") };
+      walkResults = { "launch-listed": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["launch-listed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY / 2);
+
+      startPrecaching(deps);
+
+      assert.deepEqual(clock.requested, [ PRECACHE_DELAY, PRECACHE_DELAY ], "the second launch re-armed the cycle for a full settle delay");
+
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(attempts, {}, "nothing walked at the first launch's deadline");
+
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(attempts, { "launch-listed": 1 }, "the cycle walked a full settle delay after the second launch");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(startLines(info.mock.calls), 1, "one cycle ran");
+      assert.deepEqual(attempts, { "launch-listed": 1 }, "and nothing walked again");
+    });
+
+    test("a save while a cycle runs yields exactly one further cycle after the release, walking only the added service", async (t) => {
+
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+      const gate = Promise.withResolvers<DiscoveredChannel[]>();
+
+      mockProviders = { "save-added": deferredProvider("save-added"),
+        "save-listed": { ...deferredProvider("save-listed"), discoverChannels: async (): Promise<DiscoveredChannel[]> => gate.promise } };
+      walkResults = { "save-added": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["save-listed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "save-listed": 1 }, "the launch's cycle is walking the listed service");
+
+      await saveList([ "save-listed", "save-added" ]);
+
+      gate.resolve(ONE_CHANNEL);
+
+      await settle(SETTLE_TURNS);
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "save-added": 1, "save-listed": 1 }, "the further cycle walked only the added service");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(armed(PRECACHE_DELAY), 2, "exactly one further cycle was armed");
+      assert.equal(startLines(info.mock.calls), 2, "and it ran once");
+    });
+
+    test("a save while a re-attempt is pending walks only the added service and leaves the re-attempt on its own delay", async () => {
+
+      mockProviders = { "retry-arrived": deferredProvider("retry-arrived"), "retry-owed": deferredProvider("retry-owed"),
+        "save-added": deferredProvider("save-added") };
+      walkResults = { "save-added": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = [ "retry-arrived", "retry-owed" ];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-arrived": 1, "retry-owed": 1 }, "the launch's cycle left each service unsettled, so a re-attempt is pending");
+
+      await saveList([ "retry-arrived", "retry-owed", "save-added" ]);
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-arrived": 1, "retry-owed": 1, "save-added": 1 }, "the save's cycle walked only the added service");
+      assert.equal(armed(PRECACHE_RETRY_DELAY), 1, "and armed no second re-attempt delay");
+
+      // One lineup arrives before the re-attempt's own deadline, a full re-attempt delay after the launch's cycle ended.
+      cachedSlugs = new Set(["retry-arrived"]);
+      walkResults = { "retry-arrived": ONE_CHANNEL, "retry-owed": ONE_CHANNEL, "save-added": ONE_CHANNEL };
+
+      await fire(PRECACHE_RETRY_DELAY - PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-arrived": 1, "retry-owed": 2, "save-added": 1 },
+        "the re-attempt skipped the service whose lineup arrived and walked the other once");
+    });
+
+    test("a save's cycle that leaves its service unsettled merges it into the pending re-attempt, which waits a full delay from that cycle", async () => {
+
+      mockProviders = { "retry-owed": deferredProvider("retry-owed"), "save-added": deferredProvider("save-added") };
+      CONFIG.channels.precacheServices = ["retry-owed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      // The launch's cycle left its service unsettled, so its re-attempt is due a full re-attempt delay after it; the save's cycle ends one settle delay later.
+      await saveList([ "retry-owed", "save-added" ]);
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-owed": 1, "save-added": 1 }, "the save's cycle walked the added service, which came back empty");
+
+      walkResults = { "retry-owed": ONE_CHANNEL, "save-added": ONE_CHANNEL };
+
+      await fire(PRECACHE_RETRY_DELAY - PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-owed": 1, "save-added": 1 }, "nothing walked at the first re-attempt's deadline");
+      assert.equal(armed(PRECACHE_RETRY_DELAY), 2, "the merge re-armed the re-attempt for a full delay");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "retry-owed": 2, "save-added": 2 }, "one pass a full delay after the save's cycle walked each owed service once");
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(attempts, { "retry-owed": 2, "save-added": 2 }, "and no further pass followed");
+    });
+
+    test("a re-attempt that fires while a save's cycle holds the guard re-arms on its own delay, and its later fire walks its service once", async () => {
+
+      mockProviders = { "retry-owed": deferredProvider("retry-owed"), "save-added": deferredProvider("save-added") };
+      walkResults = { "save-added": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["retry-owed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      // The save lands half a settle delay before the re-attempt is due, so its cycle holds the guard when the re-attempt fires.
+      await fire(PRECACHE_RETRY_DELAY - (PRECACHE_DELAY / 2));
+      await saveList([ "retry-owed", "save-added" ]);
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(attempts, { "retry-owed": 1 }, "the re-attempt walked nothing while the save's cycle held the guard");
+      assert.equal(armed(PRECACHE_RETRY_DELAY), 2, "and re-armed itself on its own delay");
+
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(attempts, { "retry-owed": 1, "save-added": 1 }, "the save's cycle then walked the added service");
+
+      walkResults = { "retry-owed": ONE_CHANNEL, "save-added": ONE_CHANNEL };
+
+      await fire(PRECACHE_RETRY_DELAY - (PRECACHE_DELAY / 2));
+
+      assert.deepEqual(attempts, { "retry-owed": 2, "save-added": 1 }, "the re-armed re-attempt walked its service once");
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(attempts, { "retry-owed": 2, "save-added": 1 }, "and no further pass followed");
+    });
+
+    test("two saves inside one settle delay, each adding a service, fire one cycle that walks each added service", async () => {
+
+      mockProviders = { "save-first": deferredProvider("save-first"), "save-listed": deferredProvider("save-listed"),
+        "save-second": deferredProvider("save-second") };
+      walkResults = { "save-first": ONE_CHANNEL, "save-listed": ONE_CHANNEL, "save-second": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["save-listed"];
+
+      await saveList([ "save-listed", "save-first" ]);
+      await fire(PRECACHE_DELAY / 2);
+      await saveList([ "save-listed", "save-first", "save-second" ]);
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(attempts, { "save-first": 1, "save-second": 1 }, "the one cycle walked each added service and left the listed one alone");
+      assert.equal(armed(PRECACHE_DELAY), 1, "the second save joined the first save's cycle on its timer");
+    });
+
+    test("a launch inside a save's settle delay re-arms the cycle for a full delay, then walks every listed service and cancels the re-attempt", async () => {
+
+      mockProviders = { "retry-owed": deferredProvider("retry-owed"), "save-added": deferredProvider("save-added") };
+      CONFIG.channels.precacheServices = ["retry-owed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      // The launch's cycle left its service unsettled, so a re-attempt is pending; the row then counts afresh from the save.
+      attempts = {};
+      browserAcquisitions = 0;
+      walks = {};
+      walkResults = { "retry-owed": ONE_CHANNEL, "save-added": ONE_CHANNEL };
+
+      const mark = clock.requested.length;
+
+      await saveList([ "retry-owed", "save-added" ]);
+      await fire(PRECACHE_DELAY / 2);
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.equal(browserAcquisitions, 0, "nothing reached for a browser at the save's deadline");
+      assert.deepEqual(walks, {}, "and nothing was walked");
+      assert.deepEqual(clock.requested.slice(mark), [ PRECACHE_DELAY, PRECACHE_DELAY ], "the launch re-armed the cycle for a second settle delay");
+
+      await fire(PRECACHE_DELAY / 2);
+
+      assert.deepEqual(walks, { "retry-owed": 1, "save-added": 1 }, "the cycle walked every listed service once, a full delay after the launch");
+
+      // The launch cancelled the pending re-attempt, so its deadline passes without a walk.
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(walks, { "retry-owed": 1, "save-added": 1 }, "the cancelled re-attempt never walked");
+    });
+
+    test("a service removed while the cycle walks an earlier one is skipped at its turn, and the service after it is walked", async (t) => {
+
+      const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
+
+      mockProviders = {
+
+        "turn-first": { ...deferredProvider("turn-first"), discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+          // The save commits while this walk runs, assigning a new array as the reconcile's commit does.
+          CONFIG.channels.precacheServices = [ "turn-first", "turn-third" ];
+
+          return ONE_CHANNEL;
+        } },
+        "turn-second": deferredProvider("turn-second"),
+        "turn-third": deferredProvider("turn-third")
+      };
+      walkResults = { "turn-second": ONE_CHANNEL, "turn-third": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = [ "turn-first", "turn-second", "turn-third" ];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "turn-first": 1, "turn-third": 1 }, "the removed service was skipped at its turn and the one after it was walked");
+
+      const skipLine = debug.mock.calls.find((call) => (call.arguments[0] === "precache") &&
+        (call.arguments[1] === "Skipping precache for %s: it left the precache list during the cycle."));
+
+      assert.ok(skipLine, "the skip is logged in the precache category");
+      assert.equal(skipLine.arguments[2], "turn-second", "and names the removed service");
+    });
+
+    test("a browser that goes while the cycle walks stops it at the next service, handing what it left unsettled to the re-attempt", async () => {
+
+      mockProviders = {
+
+        "gone-first": { ...deferredProvider("gone-first"), discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+          browserConnected = false;
+
+          return [];
+        } },
+        "gone-second": deferredProvider("gone-second")
+      };
+      walkResults = { "gone-second": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = [ "gone-first", "gone-second" ];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "gone-first": 1 }, "the cycle stopped before the service after the browser went");
+      assert.equal(browserAcquisitions, 1, "only the walk that began with a browser acquired one");
+      assert.equal(armed(PRECACHE_RETRY_DELAY), 1, "the unsettled service was handed to the re-attempt");
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(attempts, { "gone-first": 1 }, "the re-attempt, finding no browser, walked nothing");
+      assert.equal(browserAcquisitions, 1, "and reached for no browser");
+      assert.equal(clock.pending, 0, "and re-armed nothing");
+    });
+
+    test("a deferred pass skips a service removed from the list and one the filter excludes, and stops when no browser is connected", async (t) => {
+
+      const debug = t.mock.method(LOG, "debug", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "pass-filtered": deferredProvider("pass-filtered"), "pass-kept": deferredProvider("pass-kept"),
+        "pass-removed": deferredProvider("pass-removed") };
+      CONFIG.channels.precacheServices = [ "pass-removed", "pass-filtered", "pass-kept" ];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "pass-filtered": 1, "pass-kept": 1, "pass-removed": 1 }, "the cycle left each service unsettled, so the re-attempt owes each one");
+
+      // In the interval a save removes one service and the filter comes to exclude another. The filter still enables the removed service, so only the list
+      // check can skip it.
+      CONFIG.channels.precacheServices = [ "pass-filtered", "pass-kept" ];
+      setEnabledServices([ "pass-kept", "pass-removed" ]);
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(attempts, { "pass-filtered": 1, "pass-kept": 2, "pass-removed": 1 }, "the pass walked only the service still listed and enabled");
+
+      const skipLines = debug.mock.calls.filter((call) => (call.arguments[0] === "precache") &&
+        String(call.arguments[1]).startsWith("Skipping the deferred re-attempt for %s")).map((call) => [ call.arguments[1], call.arguments[2] ]);
+
+      assert.deepEqual(skipLines, [
+        [ "Skipping the deferred re-attempt for %s: it is no longer on the precache list.", "pass-removed" ],
+        [ "Skipping the deferred re-attempt for %s: not in active service filter.", "pass-filtered" ]
+      ], "each skip is logged in the precache category and names its service");
+
+      // A launch's cycle leaves the kept service unsettled again, and the browser is gone by the time its re-attempt fires.
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "pass-filtered": 1, "pass-kept": 3, "pass-removed": 1 }, "the launch's cycle walked the kept service, which came back empty");
+
+      browserConnected = false;
+      browserAcquisitions = 0;
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.equal(browserAcquisitions, 0, "the pass reached for no browser");
+      assert.deepEqual(attempts, { "pass-filtered": 1, "pass-kept": 3, "pass-removed": 1 }, "and walked nothing");
+      assert.equal(clock.pending, 0, "and re-armed nothing");
+    });
+
+    test("a browser that goes while the deferred pass walks stops it at the next service, with no further browser acquired", async () => {
+
+      mockProviders = {
+
+        "pass-gone-first": { ...deferredProvider("pass-gone-first"), discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+          walks["pass-gone-first"] = (walks["pass-gone-first"] ?? 0) + 1;
+
+          // The cycle's walk keeps the browser, so the re-attempt owes every service the cycle walked, and the re-attempt's walk is the one that takes the browser away.
+          if(walks["pass-gone-first"] === 2) {
+
+            browserConnected = false;
+          }
+
+          return [];
+        } },
+        "pass-gone-second": deferredProvider("pass-gone-second")
+      };
+      CONFIG.channels.precacheServices = [ "pass-gone-first", "pass-gone-second" ];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+
+      assert.deepEqual(attempts, { "pass-gone-first": 1, "pass-gone-second": 1 }, "the cycle left each service unsettled, so the re-attempt owes each one");
+
+      browserAcquisitions = 0;
+
+      await fire(PRECACHE_RETRY_DELAY);
+
+      assert.deepEqual(attempts, { "pass-gone-first": 2, "pass-gone-second": 1 }, "the pass stopped at the service after the walk that took the browser away");
+      assert.equal(browserAcquisitions, 1, "only the walk that began with a browser acquired one");
+      assert.equal(clock.pending, 0, "and the pass re-armed nothing");
+    });
+
+    test("a list emptied in the settle delay fires without a start line, and a later request arms a cycle", async (t) => {
+
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "empty-listed": deferredProvider("empty-listed") };
+      walkResults = { "empty-listed": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["empty-listed"];
+
+      startPrecaching(deps);
+
+      CONFIG.channels.precacheServices = [];
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(startLines(info.mock.calls), 0, "the cycle that admitted no listed service logged no start line");
+      assert.deepEqual(attempts, {}, "and walked nothing");
+
+      // A later request finds the guard free and arms. Its cycle is the positive control: the harness captures the start line a walking cycle logs.
+      CONFIG.channels.precacheServices = ["empty-listed"];
+
+      startPrecaching(deps);
+
+      assert.equal(clock.pending, 1, "the later request armed a cycle");
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(startLines(info.mock.calls), 1, "the later cycle logged its start line");
+      assert.deepEqual(attempts, { "empty-listed": 1 }, "and walked the listed service");
+    });
+
+    test("a browser that goes between the request and the fire leaves the cycle unstarted and no browser acquired", async (t) => {
+
+      const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+      mockProviders = { "gone-listed": deferredProvider("gone-listed") };
+      walkResults = { "gone-listed": ONE_CHANNEL };
+      CONFIG.channels.precacheServices = ["gone-listed"];
+
+      startPrecaching(deps);
+
+      browserConnected = false;
+
+      await fire(PRECACHE_DELAY);
+
+      assert.equal(browserAcquisitions, 0, "the cycle reached for no browser");
+      assert.equal(startLines(info.mock.calls), 0, "and stopped before its start line");
+      assert.deepEqual(attempts, {}, "and walked nothing");
+      assert.equal(clock.pending, 0, "and armed no re-attempt");
+    });
+
+    test("registering a second handler for the precache list throws, because the module registered its own at load", () => {
+
+      assert.throws(() => { registerConfigChangeHandler("channels.precacheServices", applyPrecacheConfigChanges); },
+        { message: "A config change handler is already registered for prefix \"channels.precacheServices\"." });
+    });
+
+    test("stopPrecaching disposes a save's pending cycle and a pending re-attempt alike, leaving no timer on the clock", async () => {
+
+      mockProviders = { "retry-owed": deferredProvider("retry-owed"), "save-added": deferredProvider("save-added") };
+      CONFIG.channels.precacheServices = ["retry-owed"];
+
+      startPrecaching(deps);
+
+      await fire(PRECACHE_DELAY);
+      await saveList([ "retry-owed", "save-added" ]);
+
+      assert.equal(clock.pending, 2, "the save's cycle is pending beside the re-attempt");
+
+      stopPrecaching();
+
+      assert.equal(clock.pending, 0, "the stop disposed every pending timer");
+    });
+  });
 });
 
 describe("runPrecacheCycle - deps threading through the internal precacheService call", () => {
@@ -1121,7 +1700,7 @@ describe("runPrecacheCycle - deps threading through the internal precacheService
      * module-level `deps` object the other describe blocks share, so a regression cannot hide behind a call the shared object's own getCurrentBrowser happens to
      * satisfy.
      *
-     * The cycle itself is driven off the row's own clock, which is where the scheduler arms it: advancing to the startup delay runs the callback exactly as the
+     * The cycle itself is driven off the row's own clock, which is where the scheduler arms it: advancing to the settle delay runs the callback exactly as the
      * platform would, on a timeline no other row in this file shares. The single configured service slug means the cycle's loop runs exactly once and terminates
      * on its own; no re-scheduled timer or second pass follows.
      */

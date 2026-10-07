@@ -1,20 +1,22 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the CONFIG validation layer. The merge layer (mergeConfiguration) is exercised in userConfig.merge.test.ts; here we focus on
- * the validation gate (validateInteger, validateNumber, validateConfiguration), the per-CONFIG-clone behavior of getDefaults, the parse-error
- * accessor surface, and the displayConfiguration startup block. Tests that mutate CONFIG save and restore the prior state in afterEach so they remain
- * independent of any other suite that touches CONFIG.
+ * the validation gate (validateInteger, validateNumber, validateConfiguration), the boot's capture and HTTP log level corrections through initializeConfiguration
+ * on an in-memory store, the per-CONFIG-clone behavior of getDefaults, the parse-error accessor surface, and the displayConfiguration startup block. Tests that
+ * mutate CONFIG save and restore the prior state in afterEach so they remain independent of any other suite that touches CONFIG.
  */
-import { CONFIG, STARTUP_BOUNDED_SETTINGS, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, validateConfiguration, validateInteger,
-  validateNumber } from "./index.ts";
-import { DEFAULTS, getNestedValue, getSettingByPath } from "./userConfig.ts";
+import { CONFIG, STARTUP_BOUNDED_SETTINGS, configParseError, configParseErrorMessage, displayConfiguration, getDefaults, initializeConfiguration,
+  validateConfiguration, validateInteger, validateNumber } from "./index.ts";
+import { CONFIG_METADATA, DEFAULTS, getNestedValue, getSettingByPath } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import type { Config } from "../types/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
+import type { MemoryConfigStore } from "./index.helpers.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "./presets.ts";
 import { initializeDataDir } from "./paths.ts";
+import { makeMemoryConfigStore } from "./index.helpers.ts";
 import os from "node:os";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
@@ -172,8 +174,8 @@ describe("getDefaults", () => {
 
 describe("validateConfiguration", () => {
 
-  /* Snapshot the entire CONFIG object before each test so any mutation made by a test (or by validateConfiguration's own normalization) is rolled back. The
-   * suite uses structuredClone to avoid shared references on nested objects.
+  /* Snapshot the entire CONFIG object before each test so any mutation a test makes is rolled back. The suite uses structuredClone to avoid shared references
+   * on nested objects.
    */
   let snapshot: Config;
 
@@ -231,48 +233,6 @@ describe("validateConfiguration", () => {
 
     CONFIG.playback.stallThreshold = 0.001;
     assert.throws(() => { validateConfiguration(); }, /STALL_THRESHOLD/);
-  });
-
-  test("normalizes captureCodecs to always include h264", () => {
-
-    CONFIG.streaming.captureCodecs = ["hevc"];
-    validateConfiguration();
-    assert.equal(CONFIG.streaming.captureCodecs.includes("h264"), true, "h264 is auto-prepended");
-  });
-
-  test("strips unrecognized codec identifiers from captureCodecs", () => {
-
-    CONFIG.streaming.captureCodecs = [ "h264", "wonky-codec", "hevc" ];
-    validateConfiguration();
-    assert.deepEqual(CONFIG.streaming.captureCodecs, [ "h264", "hevc" ], "wonky-codec stripped, recognized survive");
-  });
-
-  test("forces captureMode to ffmpeg even when set to native (Chrome bug guard)", () => {
-
-    /* The contract has two halves: the value mutation AND the operator-visible warning. A regression that silently swapped the value without logging would
-     * leave operators wondering why their explicit "native" choice was ignored, so we assert both sides. Spying on LOG.warn rather than capturing every log line
-     * keeps the assertion narrow - only the captureMode warning needs to fire here, not the unrelated DEFAULTS warnings other validation branches might emit.
-     */
-    const warn = mock.method(LOG, "warn", () => undefined);
-
-    try {
-
-      CONFIG.streaming.captureMode = "native";
-      validateConfiguration();
-      assert.equal(CONFIG.streaming.captureMode, "ffmpeg");
-
-      const captureModeWarning = warn.mock.calls.some((call) => {
-
-        const message = call.arguments[0];
-
-        return (typeof message === "string") && message.includes("Forcing FFmpeg capture mode");
-      });
-
-      assert.equal(captureModeWarning, true, "validateConfiguration must LOG.warn when forcing the captureMode mutation");
-    } finally {
-
-      warn.mock.restore();
-    }
   });
 
   test("rejects non-absolute chromeDataDir override", () => {
@@ -348,9 +308,236 @@ describe("validateConfiguration", () => {
     assert.doesNotThrow(() => { validateConfiguration(); }, "an out-of-range port is not read while HDHomeRun emulation is off");
 
     CONFIG.hdhr.enabled = true;
-    CONFIG.streaming.captureMode = "ffmpeg";
 
     assert.throws(() => { validateConfiguration(); }, /HDHR_PORT must be at most 65535/, "with emulation on, the same value is refused by name and bound");
+  });
+});
+
+/* The boot's capture correction, driven through initializeConfiguration on an in-memory store. Each row boots from the stored file it names on the store double
+ * of index.helpers.ts, which normalizes its held file after each mutation as the real store's write hook does, so a row reads the file a write stored. Each row
+ * starts with no environment variable the merge consults, and the suite restores the environment and boots from an empty file after each row, so CONFIG
+ * holds the defaults again for the suites below.
+ */
+describe("initializeConfiguration - the boot's capture correction", () => {
+
+  const MODE_WARNING = "Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.";
+  const UNRECOGNIZED_WARNING = "The configured capture codecs include identifiers the server does not recognize, so they are ignored.";
+  const BASELINE_WARNING = "The configured capture codecs omit the H.264 baseline, so it is restored.";
+  const CAPTURE_WARNINGS = new Set<unknown>([ BASELINE_WARNING, MODE_WARNING, UNRECOGNIZED_WARNING ]);
+  const CORRECTION_LINE = "The configuration file write carries corrected capture values.";
+  const CORRECTION_LINES = new Set<unknown>([CORRECTION_LINE]);
+  const ORIGINAL_ENV = { ...process.env };
+
+  let store: MemoryConfigStore = makeMemoryConfigStore();
+
+  /**
+   * Answers the arguments of every recorded call whose message is one of the given lines, in the order they were logged, so a row compares the whole list and
+   * a repeated, missing, or misattributed line fails it.
+   * @param calls - The mock's recorded calls.
+   * @param messages - The messages to keep.
+   * @returns Each kept call's arguments.
+   */
+  function callsNaming(calls: readonly { readonly arguments: readonly unknown[] }[], messages: ReadonlySet<unknown>): unknown[][] {
+
+    return calls.filter((call) => messages.has(call.arguments[0])).map((call) => [...call.arguments]);
+  }
+
+  beforeEach(() => {
+
+    store = makeMemoryConfigStore();
+
+    for(const setting of Object.values(CONFIG_METADATA).flat()) {
+
+      if(setting.envVar) {
+
+        Reflect.deleteProperty(process.env, setting.envVar);
+      }
+    }
+  });
+
+  afterEach(async () => {
+
+    for(const key of Object.keys(process.env)) {
+
+      Reflect.deleteProperty(process.env, key);
+    }
+
+    Object.assign(process.env, ORIGINAL_ENV);
+    store.file = {};
+
+    await initializeConfiguration(undefined, store);
+  });
+
+  test("a stored native mode boots with FFmpeg capture and one warning, and one write stores no capture mode", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { streaming: { captureMode: "native" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(CONFIG.streaming.captureMode, "ffmpeg");
+    assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), [[ MODE_WARNING, { configured: "native", using: "ffmpeg" } ]]);
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.streaming?.captureMode, undefined, "the held file stores no capture mode");
+  });
+
+  test("a stored list with an unrecognized codec boots without it and one warning, and one write stores the list in effect", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { streaming: { captureCodecs: [ "h264", "av1" ] } };
+    await initializeConfiguration(undefined, store);
+
+    assert.deepEqual(CONFIG.streaming.captureCodecs, ["h264"]);
+    assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), [[ UNRECOGNIZED_WARNING, { configured: [ "h264", "av1" ], ignored: ["av1"], using: ["h264"] } ]]);
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.deepEqual(store.file.streaming?.captureCodecs, ["h264"], "the held file stores the list in effect, which differs from the default");
+  });
+
+  test("a stored list without the baseline boots with it restored and one warning, and one write stores no codec list", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { streaming: { captureCodecs: ["hevc"] } };
+    await initializeConfiguration(undefined, store);
+
+    assert.deepEqual(CONFIG.streaming.captureCodecs, [ "h264", "hevc" ]);
+    assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), [[ BASELINE_WARNING, { configured: ["hevc"], using: [ "h264", "hevc" ] } ]]);
+    assert.equal(store.writes, 1, "the boot wrote the file once");
+    assert.equal(store.file.streaming?.captureCodecs, undefined, "the held file stores no codec list, because the list in effect holds the default's members");
+  });
+
+  test("a file a write before the boot already corrected, as a startup migration's write does, boots with no capture warning, info line or write",
+    async (t) => {
+
+      const warn = t.mock.method(LOG, "warn", () => undefined);
+      const info = t.mock.method(LOG, "info", () => undefined);
+
+      // The write a startup migration makes before the boot reads the file passes the store's write hook like every other write.
+      store.file = { streaming: { captureMode: "native" } };
+      await store.mutateConfig(() => { /* A migration's write, which changes nothing the capture correction reads. */ });
+
+      assert.deepEqual(callsNaming(info.mock.calls, CORRECTION_LINES), [[ CORRECTION_LINE, { corrections: [{ configured: "native", kind: "mode", using: "ffmpeg" }] } ]],
+        "precondition: the write before the boot stored the correction and logged it");
+      assert.deepEqual(store.file, {}, "precondition: the held file needs no further correction");
+
+      info.mock.resetCalls();
+      store.writes = 0;
+
+      await initializeConfiguration(undefined, store);
+
+      assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), [], "no capture warning");
+      assert.deepEqual(callsNaming(info.mock.calls, CORRECTION_LINES), [], "no info line");
+      assert.equal(store.writes, 0, "no boot write");
+    });
+
+  test("a stored string at the codec list boots with the default list, no warning, no throw, and no write", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { streaming: { captureCodecs: "h264" as unknown as string[] } };
+
+    await assert.doesNotReject(initializeConfiguration(undefined, store));
+    assert.deepEqual(CONFIG.streaming.captureCodecs, [ "h264", "hevc" ]);
+    assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), []);
+    assert.equal(store.writes, 0);
+  });
+
+  test("a codec list from the environment is corrected in the candidate with its warning, and the store receives no write", async (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    process.env["CAPTURE_CODECS"] = "hevc";
+    await initializeConfiguration(undefined, store);
+
+    assert.deepEqual(CONFIG.streaming.captureCodecs, [ "h264", "hevc" ]);
+    assert.deepEqual(callsNaming(warn.mock.calls, CAPTURE_WARNINGS), [[ BASELINE_WARNING, { configured: ["hevc"], using: [ "h264", "hevc" ] } ]]);
+    assert.equal(store.writes, 0, "a value the environment supplies is never written");
+  });
+
+  test("an environment codec list beside a stored native mode leaves one write that stores neither, and the info line names the mode alone", async (t) => {
+
+    t.mock.method(LOG, "warn", () => undefined);
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    process.env["CAPTURE_CODECS"] = "hevc";
+    store.file = { streaming: { captureMode: "native" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 1, "the stored mode asks for one write");
+    assert.equal(store.file.streaming?.captureMode, undefined, "the held file stores no capture mode");
+    assert.equal(store.file.streaming?.captureCodecs, undefined, "the held file stores no codec list, because the environment's is never written");
+    assert.deepEqual(callsNaming(info.mock.calls, CORRECTION_LINES), [[ CORRECTION_LINE, { corrections: [{ configured: "native", kind: "mode", using: "ffmpeg" }] } ]],
+      "the info line names the stored correction and nothing the environment supplied");
+  });
+
+  test("a file storing capture values the server can capture with causes no write", async () => {
+
+    store.file = { streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.equal(store.writes, 0);
+    assert.deepEqual(store.file, { streaming: { captureCodecs: ["h264"], captureMode: "ffmpeg" } }, "the held file is as stored");
+  });
+
+  test("a stored native mode beside a hard error causes no write, because the boot never writes a configuration it will refuse", async (t) => {
+
+    t.mock.method(LOG, "warn", () => undefined);
+
+    store.file = { paths: { logFile: "relative/prismcast.log" }, streaming: { captureMode: "native" } };
+    await initializeConfiguration(undefined, store);
+
+    assert.throws(() => { validateConfiguration(); }, /paths\.logFile must be an absolute path/, "precondition: the configuration carries a hard error");
+    assert.equal(store.writes, 0, "nothing was written");
+    assert.equal(store.file.streaming?.captureMode, "native", "the stored mode waits for the next write");
+  });
+
+  test("a monitor interval below its floor refuses the boot with a hard error naming MONITOR_INTERVAL", async () => {
+
+    process.env["MONITOR_INTERVAL"] = "499";
+    await initializeConfiguration(undefined, store);
+
+    assert.throws(() => { validateConfiguration(); }, /MONITOR_INTERVAL must be at least 500, but it is 499\./);
+  });
+
+  test("a stale page cleanup interval below its floor refuses the boot with a hard error naming STALE_PAGE_CLEANUP_INTERVAL", async () => {
+
+    process.env["STALE_PAGE_CLEANUP_INTERVAL"] = "9999";
+    await initializeConfiguration(undefined, store);
+
+    assert.throws(() => { validateConfiguration(); }, /STALE_PAGE_CLEANUP_INTERVAL must be at least 10000, but it is 9999\./);
+  });
+});
+
+describe("initializeConfiguration - the HTTP log level correction", () => {
+
+  test("an HTTP log level from the environment the server does not recognize boots as all, with one warning", async (t) => {
+
+    const LEVEL_WARNING = "The configured HTTP log level is not one the server recognizes, so every request is logged.";
+    const originalLevel = process.env["HTTP_LOG_LEVEL"];
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    // The row restores the variable and boots from an empty file afterward, so CONFIG holds the defaults again for the suites below.
+    t.after(async () => {
+
+      if(originalLevel === undefined) {
+
+        Reflect.deleteProperty(process.env, "HTTP_LOG_LEVEL");
+      } else {
+
+        process.env["HTTP_LOG_LEVEL"] = originalLevel;
+      }
+
+      await initializeConfiguration(undefined, makeMemoryConfigStore());
+    });
+
+    process.env["HTTP_LOG_LEVEL"] = "verbose";
+    await initializeConfiguration(undefined, makeMemoryConfigStore());
+
+    assert.equal(CONFIG.logging.httpLogLevel, "all");
+    assert.deepEqual(warn.mock.calls.filter((call) => call.arguments[0] === LEVEL_WARNING).map((call) => [...call.arguments]),
+      [[ LEVEL_WARNING, { configured: "verbose", using: "all" } ]]);
   });
 });
 

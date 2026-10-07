@@ -2,10 +2,11 @@
  *
  * precaching.ts: Service channel lineup precaching for PrismCast.
  */
-import type { DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
+import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
+import type { Config, DiscoveredChannel, Nullable, ProviderModule, ResolvedSiteProfile } from "../types/index.ts";
 import { LOG, extractDomain, formatError, startTimer, timeoutSignal } from "../utils/index.ts";
 import { clearDomainAuthRequirement, getDomainAuthState, markDomainAuth, markDomainAuthRequired } from "../config/health.ts";
-import { createDiscoveryPage, emulateLayoutSurface, getCurrentBrowser, isGracefulShutdown, registerManagedPage, syncWindowVisibility,
+import { createDiscoveryPage, emulateLayoutSurface, getCurrentBrowser, isBrowserConnected, isGracefulShutdown, registerManagedPage, syncWindowVisibility,
   unregisterManagedPage } from "./index.ts";
 import { getPersistedLineup, persistProviderLineup } from "../config/providerLineups.ts";
 import { getProviderBySlug, getProvidersForDomain } from "./channelSelection.ts";
@@ -16,18 +17,20 @@ import type { Clock } from "homebridge-plugin-utils";
 import type { Page } from "puppeteer-core";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
-import { getEnabledServices } from "../config/services.ts";
 import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
+import { isServiceTagEnabled } from "../config/services.ts";
+import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { startOverlayHandling } from "./consent.ts";
 
-/* Precaching discovers channel lineups for selected services at startup so that even the first tune benefits from cached lineup data. Each service is precached
- * sequentially - discovery opens a browser page in a window of its own and navigates to a heavy SPA, so running all services concurrently would stress CPU and
- * GPU on resource-constrained systems. The HTTP server starts immediately; precaching begins in the background after a brief delay.
+/* Precaching discovers channel lineups for selected services ahead of any tune, so that even the first tune benefits from cached lineup data. Each service is
+ * precached sequentially - discovery opens a browser page in a window of its own and navigates to a heavy SPA, so running all services concurrently would stress
+ * CPU and GPU on resource-constrained systems. A cycle runs in the background after a settle delay, never on a request's path.
  *
- * Precaching is triggered from launchBrowser() in browser/index.ts. This covers both initial server startup and browser crash recovery (where all caches are cleared).
- * Each service has its own try/catch - one failure does not stop the rest. The browser reference is obtained per-service via getCurrentBrowser() so that a browser
- * crash between services is handled transparently (the next service gets the relaunched browser).
+ * A cycle is requested with a scope. A browser launch requests one over every listed service, because the launched browser starts with every provider cache
+ * empty, and a settings save requests one over the services it adds to the list, so the save warms what it selected without clearing any other provider's
+ * cache. Precaching never launches the browser: a cycle or a deferred pass that finds no browser running stops, and the next launch requests its own cycle. Each
+ * service has its own try/catch - one failure does not stop the rest.
  *
  * This module also owns the discovery-outcome policy (recordDiscoveryOutcome): the single source of truth for how a completed discovery walk translates into domain
  * auth state and a persisted channel lineup, shared by the precache cycle here and the /services/:slug/channels endpoint. The routes layer never calls a health
@@ -35,11 +38,12 @@ import { startOverlayHandling } from "./consent.ts";
  * primitive both the precache cycle and that endpoint walk their guides through, and the one place the empty-walk retry policy lives, so no provider carries a
  * retry of its own.
  *
- * Every timer and deadline this module arms - the startup cycle's delay, the deferred re-attempt, and each walk's ceiling - runs on the clock its dependencies
- * carry, so one injected clock drives the whole schedule.
+ * Every timer and deadline this module arms - the settle delay before a cycle, the deferred re-attempt, and each walk's ceiling - runs on the clock its
+ * dependencies carry, so one injected clock drives the whole schedule.
  */
 
-// Delay in milliseconds before precaching begins after browser launch. This gives the browser time to settle after initialization.
+// The settle delay in milliseconds before a requested cycle walks its first guide. It gives a browser that just launched time to settle, and every request that
+// arrives inside it joins the pending cycle rather than starting another.
 const PRECACHE_DELAY = 5000;
 
 /* Delay in milliseconds before the services a cycle could not settle are re-attempted. Five minutes puts the second pass well past the contention a boot creates -
@@ -87,65 +91,136 @@ export class DiscoveryWalkTimeoutError extends Error {
   }
 }
 
-// Guard flag preventing overlapping precache cycles. Set to true before the cycle starts, cleared through releasePrecacheGuard in a finally block.
-let precacheInProgress = false;
-
-/* What the scheduler has pending: the startup cycle, or the deferred re-attempt with the services it still owes a walk. One union rather than two fields, because
- * the two are one concept - the work this module has scheduled - and never both at once: a full cycle cancels a pending re-attempt before it arms, and a
- * re-attempt is only armed once a cycle has run. Holding whichever is pending together with its handle means arming, cancelling, and firing each move the whole
- * thing at once, and "both armed" is a state the type cannot express.
+/* What a precache request asks a cycle to walk: every listed service, or the listed services among a set of slugs. A browser launch asks for every service,
+ * because its browser starts with every provider cache empty, and a save asks for the services it adds to the list. A cycle walks only the listed services its
+ * scope admits, so a save's cycle clears and walks the services that save added and leaves every other provider's warm cache alone.
  */
-type ScheduledPrecache = { readonly kind: "cycle"; readonly timer: Disposable } | { readonly kind: "deferred"; readonly slugs: string[]; readonly timer: Disposable };
-
-// The scheduler's pending work, or null when it has none.
-let scheduled: Nullable<ScheduledPrecache> = null;
-
-/* Whether a full precache cycle was requested while the single-flight guard was held. The request always comes from a browser relaunch, which cleared every
- * provider cache, so the run holding the guard is walking guides for a browser that no longer exists and its result is worth nothing - dropping the request would
- * leave the new browser with no lineups at all. Whoever releases the guard runs it; releasePrecacheGuard is where that happens, and it is the only place.
- */
-let fullCycleRequested = false;
+type PrecacheScope = { readonly kind: "all" } | { readonly kind: "services"; readonly slugs: ReadonlySet<string> };
 
 /**
- * Cancels a pending deferred re-attempt and drops its state as one unit. A no-op when nothing is pending, and equally a no-op when what is pending is a cycle -
- * only the re-attempt arm is cancelled here.
+ * Merges a new request's scope into the scope already requested, giving the one scope that answers each request, so a request that reaches a pending cycle or a
+ * held guard joins what is already requested rather than queueing behind it. A scope over every service absorbs any other, and slug scopes union their slugs.
+ * @param current - The scope already requested.
+ * @param added - The scope a new request carries.
+ * @returns The scope that answers each request.
  */
-function clearDeferredRetry(): void {
+function mergeScopes(current: PrecacheScope, added: PrecacheScope): PrecacheScope {
 
-  if(scheduled?.kind === "deferred") {
+  if(current.kind === "all") {
 
-    scheduled.timer[Symbol.dispose]();
-
-    scheduled = null;
+    return current;
   }
+
+  if(added.kind === "all") {
+
+    return added;
+  }
+
+  return { kind: "services", slugs: current.slugs.union(added.slugs) };
+}
+
+// The single-flight guard. A cycle holds it from the moment it is armed until its run ends, and a deferred re-attempt and a post-login revalidation each hold it
+// while they run, so runs never overlap. Every holder releases it through releasePrecacheGuard, and the shutdown paths clear it directly.
+let precacheInProgress = false;
+
+/* The scope requested while the guard was held, merged across every such request, or null when none arrived. The run holding the guard walks the scope it was
+ * armed with and cannot take on another, so a request is recorded rather than dropped: a launch's means every provider cache was just cleared, and a save's means
+ * services were added after that run read the list. Whoever releases the guard hands it on; releasePrecacheGuard is where that happens, and it is the only place.
+ */
+let requestedScope: Nullable<PrecacheScope> = null;
+
+/* The scheduler's pending work, one value with a slot for each kind: the cycle armed and not yet fired, with the scope it will walk, and the deferred re-attempt,
+ * with the services it still owes a walk. The slots are independent because a save's cycle and a deferred re-attempt can be pending at once - a save arms its
+ * cycle and leaves a pending re-attempt on its own delay - and updateSchedule, the one writer, ties every timer to the state that holds it.
+ *
+ * How each lifecycle event moves the slots:
+ *
+ * - A launch requests every service. It arms the cycle slot, or merges into a pending cycle and re-arms it for a full settle delay, and in each case clears the
+ *   re-attempt slot, because that cycle walks everything the re-attempt owes. With the guard held by a run, it is recorded in requestedScope and touches no slot;
+ *   the release hands it on, and that arming clears whatever re-attempt the run left behind.
+ * - A save requests the services it adds, and only while a browser is connected. It arms the cycle slot, merges into a pending cycle's scope and keeps that
+ *   cycle's timer, or is recorded in requestedScope while the guard is held. It never touches the re-attempt slot: a cycle it arms that ends with services it
+ *   could not settle merges them into a pending re-attempt, as every cycle does.
+ * - A shutdown runs stopPrecaching, which clears every slot through updateSchedule, disposing their timers, drops requestedScope and frees the guard without
+ *   honoring it. The request function and armDeferredRetry return during a shutdown, so nothing arms a slot again, and a cycle or pass already running stops at
+ *   its next shutdown check.
+ * - A browser disconnect changes no slot. A cycle that fires without a browser stops at its entry check, releases the guard through releasePrecacheGuard and arms
+ *   no re-attempt. A cycle whose browser goes during its loop breaks at the next service's check, as the shutdown check breaks, so the services it found
+ *   unsettled reach armDeferredRetry and the unwalked ones wait for the next launch. A re-attempt that fires without a browser stops and re-arms nothing, its
+ *   services waiting for that same launch. A scope recorded meanwhile fires at most one further cycle, which finds no browser and stops.
+ * - A cancelled cycle, one that ends without walking, has already cleared its slot when it fired. The shutdown return frees the guard directly and honors
+ *   nothing; the browser stop and a scope that admits no listed service release through releasePrecacheGuard, which honors requestedScope. None of them arms a
+ *   re-attempt. Only stopPrecaching cancels a pending cycle, because a merge re-arms a cycle rather than cancelling it.
+ * - A login session sends the services a cycle stood aside from to armDeferredRetry at the cycle's end, merged into a pending re-attempt or armed as one, and a
+ *   re-attempt that meets a session re-arms what remains. A post-login revalidation holds the guard, so a request during it is recorded in requestedScope and a
+ *   re-attempt that fires during it re-arms itself on its own delay; the revalidation's release hands the recorded scope on.
+ * - A process restart discards module state, and the next launch requests every service.
+ */
+interface PrecacheSchedule {
+
+  readonly cycle: Nullable<{ readonly scope: PrecacheScope; readonly timer: Disposable }>;
+  readonly retry: Nullable<{ readonly slugs: readonly string[]; readonly timer: Disposable }>;
+}
+
+// The scheduler's pending work. updateSchedule is its only writer.
+let schedule: PrecacheSchedule = { cycle: null, retry: null };
+
+/**
+ * Writes the scheduler state, and is the only code that does. It builds the next value from the current one and the change, disposes each timer the current
+ * value holds and the next value does not, compared by identity, and assigns the next value. A record replaced by one carrying the same timer keeps that
+ * timer armed, as a slug scope merged into a pending cycle does; a record cleared, or replaced by one carrying a new timer, has its timer disposed. So no path
+ * can drop a record and leave its timer armed, and none can cancel a timer the state still holds. Disposing a timer that already fired does nothing, so a fire
+ * clears its own slot through here as well.
+ * @param change - The slots to write; a slot the change leaves out keeps its record.
+ */
+function updateSchedule(change: Partial<PrecacheSchedule>): void {
+
+  const next: PrecacheSchedule = { ...schedule, ...change };
+
+  // The timers a schedule value holds, one per slot, so the current value's timers are compared against the next value's by identity.
+  const timersOf = (value: PrecacheSchedule): (Disposable | undefined)[] => [ value.cycle?.timer, value.retry?.timer ];
+  const kept = new Set(timersOf(next));
+
+  for(const timer of timersOf(schedule)) {
+
+    if(timer && !kept.has(timer)) {
+
+      timer[Symbol.dispose]();
+    }
+  }
+
+  schedule = next;
 }
 
 /**
- * Releases the single-flight guard and honors any full-cycle request that arrived while it was held.
+ * Releases the single-flight guard and hands on any scope requested while it was held.
  *
- * The order is the whole point. The flag is cleared first, so the reentrant startPrecaching below finds a free guard and schedules. Honoring first would have that
- * call see the guard still held and record the very request being honored, which is how a browser relaunch's cycle would go round forever without ever running.
- * Every path that takes the guard - the cycle, the deferred re-attempt, and the post-login revalidation - releases it here, so the hand-off has one home rather
- * than a copy at each site.
- * @param deps - The injected dependencies, handed to the cycle this may start.
+ * The order is the whole point. The guard is freed and the recorded scope taken before the hand-off, so the request below finds a free guard and arms. Handing on
+ * first would have that request see the guard still held and record the very scope being handed on, which is how a request would go round forever without ever
+ * running. Every path that takes the guard - the cycle, the deferred re-attempt, and the post-login revalidation - releases it here, so the hand-off has one home
+ * rather than a copy at each site. The scope goes to the request function rather than to startPrecaching, so it never meets the launch's empty-list gate: the
+ * cycle it arms reads the list when it fires.
+ * @param deps - The injected dependencies, handed to the cycle this may arm.
  */
 function releasePrecacheGuard(deps: PrecachingDeps): void {
 
   precacheInProgress = false;
 
-  if(!fullCycleRequested) {
+  const scope = requestedScope;
+
+  if(!scope) {
 
     return;
   }
 
-  fullCycleRequested = false;
+  requestedScope = null;
 
-  startPrecaching(deps);
+  requestPrecache(scope, deps);
 }
 
-/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors, the discovery-page creator and the
- * page bookkeeping around it, the shutdown gate, the window-visibility sync, the provider lookups, the discovery-phase overlay-poll launcher, and the
- * durable-lineup read and write the discovery-outcome policy performs.
+/* PrecachingDeps is the browser + provider-registry surface the precache cycle composes on: the shared-browser accessors, the browser-connected check that keeps
+ * the scheduler from ever launching a browser, the discovery-page creator and the page bookkeeping around it, the shutdown gate, the window-visibility sync, the
+ * provider lookups, the discovery-phase overlay-poll launcher, and the durable-lineup read and write the discovery-outcome policy performs.
  * It is injected as a default parameter threaded through the module's functions so a test can substitute stubs at the same PrecachingDeps boundary - no loader
  * mock - while production uses the real defaultPrecachingDeps built from the functions this module already imports. startOverlayHandling belongs here for the same
  * reason the browser accessors do: run for real it drives a poll against the page, so a test injects a recording stub to observe the discovery poll's phase and
@@ -157,8 +232,8 @@ function releasePrecacheGuard(deps: PrecachingDeps): void {
  */
 export interface PrecachingDeps {
 
-  // The clock the startup delay, the deferred re-attempt, each walk's deadline, and the discovery-phase overlay polls all run on. Production wires the system
-  // clock; a test wires a virtual clock and drives the whole schedule from one advance.
+  // The clock the settle delay before a cycle, the deferred re-attempt, each walk's deadline, and the discovery-phase overlay polls all run on. Production wires
+  // the system clock; a test wires a virtual clock and drives the whole schedule from one advance.
   readonly clock: Clock;
 
   readonly createDiscoveryPage: typeof createDiscoveryPage;
@@ -167,6 +242,7 @@ export interface PrecachingDeps {
   readonly getPersistedLineup: typeof getPersistedLineup;
   readonly getProviderBySlug: typeof getProviderBySlug;
   readonly getProvidersForDomain: typeof getProvidersForDomain;
+  readonly isBrowserConnected: typeof isBrowserConnected;
   readonly isGracefulShutdown: typeof isGracefulShutdown;
   readonly persistProviderLineup: typeof persistProviderLineup;
   readonly registerManagedPage: typeof registerManagedPage;
@@ -184,6 +260,7 @@ export const defaultPrecachingDeps: PrecachingDeps = {
   getPersistedLineup,
   getProviderBySlug,
   getProvidersForDomain,
+  isBrowserConnected,
   isGracefulShutdown,
   persistProviderLineup,
   registerManagedPage,
@@ -193,9 +270,90 @@ export const defaultPrecachingDeps: PrecachingDeps = {
 };
 
 /**
- * Starts the precaching cycle if services are configured. Called from launchBrowser() after the browser is ready. If no services are selected, a shutdown is in
- * progress, or a precache cycle is already in progress, returns immediately. The actual work is scheduled on the dependencies' clock to avoid blocking browser
- * launch.
+ * Arms the cycle slot for a scope on a full settle delay. The callback reads the slot's scope when it fires, never the scope armed here, so every request merged
+ * into the slot before the fire reaches the walk, and it clears the slot through updateSchedule before the cycle runs. Arming a scope over every service clears
+ * the re-attempt slot in the same write, because that cycle walks every service the re-attempt owes and a second pass over the same guides would contend with it
+ * for one browser; a slug scope leaves the re-attempt on its own delay, with its skip for a lineup that arrived meanwhile and its one pass.
+ * @param scope - The scope the cycle walks unless a later request merges into it.
+ * @param deps - The injected dependencies; the timer arms on their clock and the cycle runs with them.
+ */
+function armCycle(scope: PrecacheScope, deps: PrecachingDeps): void {
+
+  const timer = deps.clock.schedule(() => {
+
+    const armed = schedule.cycle;
+
+    updateSchedule({ cycle: null });
+
+    // A fire finds its own record in the slot, because every write that drops a cycle record disposes that record's timer first.
+    if(!armed) {
+
+      return;
+    }
+
+    void runPrecacheCycle(armed.scope, deps);
+  }, PRECACHE_DELAY);
+
+  updateSchedule((scope.kind === "all") ? { cycle: { scope, timer }, retry: null } : { cycle: { scope, timer } });
+}
+
+/**
+ * Lands a precache request, and is the one place one lands. A request carries the scope it wants walked and takes the first of these that applies: during a
+ * graceful shutdown it is dropped; with a cycle armed and not yet fired, it merges into that cycle's scope; with the guard held by a run, it merges into
+ * requestedScope, which the release hands on; otherwise it takes the guard and arms a cycle.
+ *
+ * The pending cycle is consulted ahead of the guard, which that cycle holds, because it reads the list and the browser when it fires and so serves the request
+ * whole - recording the request instead would run a second cycle after the first. A scope over every service comes from a launch, so merging one into a pending
+ * cycle re-arms that cycle for a full settle delay from the merge, the time the new browser needs, and clears the re-attempt slot as arming one does. A slug
+ * scope merged into a pending cycle keeps its timer, so a save never postpones a cycle already on its way.
+ * @param scope - The services the request wants walked.
+ * @param deps - The injected dependencies, handed to the cycle this arms.
+ */
+function requestPrecache(scope: PrecacheScope, deps: PrecachingDeps): void {
+
+  // Never arm during a graceful shutdown. A launch can be reached during teardown, and a cycle armed then would fire after teardown closed the browser.
+  if(deps.isGracefulShutdown()) {
+
+    return;
+  }
+
+  const pending = schedule.cycle;
+
+  if(pending) {
+
+    const merged = mergeScopes(pending.scope, scope);
+
+    if(scope.kind === "all") {
+
+      armCycle(merged, deps);
+    } else {
+
+      updateSchedule({ cycle: { scope: merged, timer: pending.timer } });
+    }
+
+    return;
+  }
+
+  if(precacheInProgress) {
+
+    // Record the request rather than dropping it: the run holding the guard walks the scope it was armed with, and whoever releases the guard arms this one.
+    requestedScope = requestedScope ? mergeScopes(requestedScope, scope) : scope;
+
+    LOG.debug("precache", "Precache deferred: already in progress.");
+
+    return;
+  }
+
+  // Take the guard as the cycle is armed, so every request until the cycle's run ends merges into it or is recorded for its release rather than arming another.
+  precacheInProgress = true;
+
+  armCycle(scope, deps);
+}
+
+/**
+ * Requests a precache cycle over every listed service. This is the browser launch's request, made once its browser is ready, because a launched browser starts
+ * with every provider cache empty; a save requests only the services it adds, through applyPrecacheConfigChanges. Returns at once when no service is listed, and
+ * otherwise lands the request through requestPrecache, whose cycle waits out the settle delay on the dependencies' clock, so the launch is never blocked.
  * @param deps - The injected browser and provider-registry dependencies; defaults to defaultPrecachingDeps.
  */
 export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): void {
@@ -205,60 +363,51 @@ export function startPrecaching(deps: PrecachingDeps = defaultPrecachingDeps): v
     return;
   }
 
-  // Never schedule a precache during graceful shutdown. launchBrowser() can be reached during teardown; without this guard the scheduled cycle would fire after the
-  // browser is closed and relaunch Chrome.
-  if(deps.isGracefulShutdown()) {
-
-    return;
-  }
-
-  if(precacheInProgress) {
-
-    // Record the request rather than dropping it. This call is a browser relaunch's, and the run currently holding the guard is walking guides for a browser whose
-    // caches were just cleared out from under it - so the request is the one worth keeping, and whoever releases the guard runs it.
-    fullCycleRequested = true;
-
-    LOG.debug("precache", "Precache deferred: already in progress.");
-
-    return;
-  }
-
-  // Set the guard before scheduling so that a second call during the delay window (e.g., rapid browser crash + relaunch) sees the flag and defers.
-  precacheInProgress = true;
-
-  // A full cycle supersedes any pending deferred re-attempt: it walks every configured service, the empty ones included, and letting both run would put two passes
-  // over the same guides in contention for one browser.
-  clearDeferredRetry();
-
-  // Schedule the precache cycle after a brief delay to let the browser settle. The handle is tracked so stopPrecaching() can cancel it if shutdown begins during the
-  // delay window; the ref is cleared when the timer fires since it is then spent.
-  scheduled = { kind: "cycle", timer: deps.clock.schedule(() => {
-
-    scheduled = null;
-    void runPrecacheCycle(deps);
-  }, PRECACHE_DELAY) };
+  requestPrecache({ kind: "all" }, deps);
 }
 
 /**
- * Cancels every scheduled precache - the startup cycle and the deferred re-attempt alike - and clears the in-progress guard. Called during graceful shutdown so
- * nothing scheduled can fire after the browser has been closed. Safe to call when nothing is pending.
+ * Cancels every scheduled precache - the pending cycle and the deferred re-attempt alike - drops a recorded request, and clears the in-progress guard. Called
+ * during graceful shutdown so nothing scheduled can fire after the browser has been closed. Safe to call when nothing is pending.
  *
- * The guard is cleared directly rather than through releasePrecacheGuard, and the hand-off flag with it: a shutdown must not honor a pending full-cycle request,
- * which is exactly what releasing through the hand-off would do.
+ * The slots are cleared through updateSchedule, which disposes their timers. The guard is cleared directly rather than through releasePrecacheGuard, and the
+ * recorded request with it: a shutdown must not hand on a pending request, which is exactly what releasing through the hand-off would do.
  */
 export function stopPrecaching(): void {
 
-  if(scheduled) {
+  updateSchedule({ cycle: null, retry: null });
 
-    scheduled.timer[Symbol.dispose]();
-    scheduled = null;
-  }
-
-  clearDeferredRetry();
-
-  fullCycleRequested = false;
+  requestedScope = null;
   precacheInProgress = false;
 }
+
+/**
+ * Requests a walk of the services a saved precache list adds. The candidate carries the saved list and CONFIG still holds the running one, because the reconcile
+ * commits only after its handlers run, so the services the save adds are the candidate's slugs the running list lacks. They are requested as one scope while a
+ * browser is connected, so the save precaches them without clearing any other provider's cache. A save that only removes services needs nothing here, because
+ * every reader of the list reads it when it walks, and with no browser running the save requests nothing, because a browser is never launched for a save and
+ * the next launch requests every listed service. Requesting cannot fail, so the handler refuses nothing.
+ * @param _changes - The change to the precache list; the candidate carries the list, so the handler reads that instead.
+ * @param next - The candidate running configuration.
+ * @param deps - The injected dependencies; defaults to defaultPrecachingDeps.
+ * @returns No rejections.
+ */
+export async function applyPrecacheConfigChanges(_changes: readonly ConfigChange[], next: Readonly<Config>,
+  deps: PrecachingDeps = defaultPrecachingDeps): Promise<readonly ChangeRejection[]> {
+
+  const added = new Set(next.channels.precacheServices).difference(new Set(CONFIG.channels.precacheServices));
+
+  if((added.size > 0) && deps.isBrowserConnected()) {
+
+    requestPrecache({ kind: "services", slugs: added }, deps);
+  }
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("channels.precacheServices", applyPrecacheConfigChanges);
 
 /**
  * Records the consequences of a completed channel discovery: the domain auth state it proves, and the durable lineup it produced. This is the single source of
@@ -657,7 +806,8 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
 
   const serviceElapsed = startTimer();
 
-  // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the startup delay.
+  // Clear the service's cache before discovery to ensure a complete walk, even if a tune partially warmed the cache during the settle delay. Only the walked
+  // service's cache is cleared, so a cycle scoped to the services a save added leaves every other provider's warm cache alone.
   provider.strategy.clearCache?.();
 
   return withProviderGuidePage(provider, {
@@ -679,8 +829,8 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
  *
  * Never rejects - the observer wiring voids the returned promise, so every failure is logged and absorbed here. Revalidation deliberately ignores both the
  * precacheServices and enabledServices filters: this is clearing-evidence collection for a domain the user just signed in to, not precaching, and the cycle's
- * filter skip is unchanged. While it runs it holds the same single-flight guard the precache cycle holds, so a cycle scheduled mid-revalidation (a browser crash
- * relaunch) defers instead of overlapping.
+ * filter skip is unchanged. While it runs it holds the same single-flight guard the precache cycle holds, so a cycle requested mid-revalidation, by a launch or
+ * a save, is recorded and armed once the revalidation releases the guard, instead of overlapping it.
  * @param url - The login session's URL; its extracted domain selects the providers to revalidate.
  * @returns A promise that resolves when revalidation completes or is skipped. It never rejects.
  */
@@ -710,8 +860,9 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
       return;
     }
 
-    // Defer to an in-flight precache cycle rather than overlapping it. Limitation: if the flagged provider is not in that cycle's configured service set,
-    // the flag persists until the next successful discovery or tune for the domain - an in-flight cycle cannot be retargeted.
+    // Defer to an in-flight precache run rather than overlapping it. Limitation: when the flagged provider is outside what that run walks - a cycle whose list
+    // or whose scope leaves it out - the flag persists until the next walk that reaches the provider, the next launch's cycle over every service among them, or a
+    // successful tune for the domain, because a run in flight cannot be retargeted.
     if(precacheInProgress) {
 
       LOG.info("Deferring the post-login revalidation for %s to the precache cycle already in progress.", domain);
@@ -763,20 +914,25 @@ export async function revalidateDomainAuth(url: string, deps: PrecachingDeps = d
  * Schedules the deferred re-attempt for the services a pass could not settle. Does nothing when every service came back with a lineup, and nothing during a
  * shutdown, where scheduling work against the browser is precisely what teardown is closing down. This is the one place a re-attempt is scheduled, so every
  * reason a service is still owed a walk - it ran and found nothing, it was stopped at its budget, or it never ran at all - arrives on the same schedule.
+ *
+ * A re-attempt already pending takes the new services into its own list and is re-armed for a full delay from the merge, so every service it owes waits the full
+ * delay after its last walk rather than inheriting what is left of an earlier one's wait. updateSchedule disposes the timer the merged record replaces.
  * @param slugs - The services a pass could not settle: walked without settling, or deferred because a login session was on screen.
  * @param deps - The injected dependencies, handed to the pass this schedules.
  */
-function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
+function armDeferredRetry(slugs: readonly string[], deps: PrecachingDeps): void {
 
   if((slugs.length === 0) || deps.isGracefulShutdown()) {
 
     return;
   }
 
-  LOG.debug("precache", "Scheduling one deferred discovery re-attempt for %d service%s in %d minutes.", slugs.length, (slugs.length === 1) ? "" : "s",
+  const owed = Array.from(new Set([ ...(schedule.retry?.slugs ?? []), ...slugs ]));
+
+  LOG.debug("precache", "Scheduling one deferred discovery re-attempt for %d service%s in %d minutes.", owed.length, (owed.length === 1) ? "" : "s",
     PRECACHE_RETRY_DELAY / 60000);
 
-  scheduled = { kind: "deferred", slugs, timer: deps.clock.schedule(() => void runDeferredRetry(deps), PRECACHE_RETRY_DELAY) };
+  updateSchedule({ retry: { slugs: owed, timer: deps.clock.schedule(() => void runDeferredRetry(deps), PRECACHE_RETRY_DELAY) } });
 }
 
 /**
@@ -784,35 +940,48 @@ function armDeferredRetry(slugs: string[], deps: PrecachingDeps): void {
  * per-service failure is contained the same way the cycle contains its own.
  *
  * A service whose lineup arrived in the interval - from a later full cycle, or from an on-demand discovery a user triggered - is skipped rather than re-walked,
- * because the walk it would run is the expensive part and the answer is already in hand. A login session that begins before the pass fires stops it where it
- * stands and re-arms everything still owed, so the walks resume once the user is done rather than opening a window over the one they are signing in through.
+ * because the walk it would run is the expensive part and the answer is already in hand, and so is a service that has since left the precache list or the
+ * active service filter. A login session that begins before the pass fires stops it where it stands and re-arms everything still owed, so the walks resume once
+ * the user is done rather than opening a window over the one they are signing in through.
  * @param deps - The injected browser and provider-registry dependencies.
  * @returns A promise that resolves once the pass completes or is skipped.
  */
 async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
 
-  if(scheduled?.kind !== "deferred") {
+  const pending = schedule.retry;
+
+  // Clear the slot before acting on it, through the one writer. This is the only pass there will be, so a record left standing would tell a later cancellation or
+  // merge that something is still scheduled when nothing is.
+  updateSchedule({ retry: null });
+
+  // A fire finds its own record in the slot, because every write that drops a re-attempt record disposes that record's timer first.
+  if(!pending) {
 
     return;
   }
-
-  const pending = scheduled;
-
-  // Drop the state before acting on it. This is the only pass there will be, so a handle left standing would tell a later cancellation that something is still
-  // scheduled when nothing is.
-  scheduled = null;
 
   if(deps.isGracefulShutdown()) {
 
     return;
   }
 
+  // Stop rather than walk when no browser is running, as the cycle does. The pass re-arms nothing, because the next launch requests a cycle over every listed
+  // service, the ones this pass owes among them.
+  if(!deps.isBrowserConnected()) {
+
+    LOG.debug("precache", "Skipping the deferred discovery re-attempt: no browser is running.");
+
+    return;
+  }
+
   /* A cycle or a post-login revalidation holding the guard is already walking guides, quite possibly these same ones. This pass exists to try again on a settled
-   * system, not to contend with a run in flight - and the run in flight is the better attempt of the two, so this one is dropped wholesale rather than rescheduled.
+   * system, not to contend with a run in flight, so it re-arms itself for its services on its own delay, as it does for a login session, rather than dropping
+   * them: the run in flight may walk a scope that leaves them out, and when the pass fires again it skips any service whose lineup arrived meanwhile.
    */
   if(precacheInProgress) {
 
-    LOG.debug("precache", "Skipping the deferred discovery re-attempt: a precache cycle is already in progress.");
+    LOG.debug("precache", "Deferring the discovery re-attempt: a precache run is already in progress.");
+    armDeferredRetry(pending.slugs, deps);
 
     return;
   }
@@ -836,9 +1005,31 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
         break;
       }
 
+      // Stop the same way once the browser is gone. No await lies between this check and the browser acquisition precacheService reaches through
+      // withProviderGuidePage, so a walk never acquires a browser this check found gone and the pass never launches one; an await inserted between them breaks that.
+      if(!deps.isBrowserConnected()) {
+
+        break;
+      }
+
       const provider = deps.getProviderBySlug(slug);
 
       if(!provider) {
+
+        continue;
+      }
+
+      // A service off the list or outside the running filter is owed nothing, so the pass reads the list and the filter at each service's turn, as the cycle does.
+      if(!CONFIG.channels.precacheServices.includes(slug)) {
+
+        LOG.debug("precache", "Skipping the deferred re-attempt for %s: it is no longer on the precache list.", provider.label);
+
+        continue;
+      }
+
+      if(!isServiceTagEnabled(slug)) {
+
+        LOG.debug("precache", "Skipping the deferred re-attempt for %s: not in active service filter.", provider.label);
 
         continue;
       }
@@ -909,17 +1100,21 @@ async function runDeferredRetry(deps: PrecachingDeps): Promise<void> {
 }
 
 /**
- * Executes the sequential precaching cycle. Discovers channel lineups for each configured service, clearing the service's cache first to ensure a complete walk.
- * Services not in the active service filter are silently skipped when the filter is non-empty. Services the cycle could not settle - they walked and found
+ * Executes one sequential precache cycle over the listed services its scope admits, clearing each service's cache first to ensure a complete walk. The list is
+ * read when the cycle fires, so a service removed during the settle delay is never walked, and again at each service's turn, so one removed while the cycle walks
+ * an earlier service is skipped. Services the running service filter excludes are skipped as well. Services the cycle could not settle - they walked and found
  * nothing, their walk ran past its budget, or a login session on screen kept them from walking at all - are handed to the deferred re-attempt, minutes later,
- * once whatever startup contention or user session may have starved them has passed.
+ * once whatever contention or user session may have starved them has passed.
+ * @param scope - The services the cycle walks, read from the cycle slot when the cycle fired.
+ * @param deps - The injected browser and provider-registry dependencies.
+ * @returns A promise that resolves once the cycle completes or stops.
  */
-async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
+async function runPrecacheCycle(scope: PrecacheScope, deps: PrecachingDeps): Promise<void> {
 
-  /* Bail if a graceful shutdown began while this cycle was queued. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after shutdown
-   * closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag since the
-   * early return skips the finally block below - directly rather than through the hand-off, because honoring a full-cycle request is the one thing a teardown path
-   * must not do.
+  /* Bail if a graceful shutdown began while this cycle was pending. Discovery opens browser pages via getCurrentBrowser(), which would relaunch Chrome after
+   * shutdown closed it; this guard makes the cycle a no-op during teardown regardless of how the timer-cancellation race resolves. Reset the in-progress flag
+   * since the early return skips the finally block below - directly rather than through the hand-off, because handing on a recorded request is the one thing a
+   * teardown path must not do.
    */
   if(deps.isGracefulShutdown()) {
 
@@ -928,11 +1123,29 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
     return;
   }
 
-  const slugs = CONFIG.channels.precacheServices;
+  /* Stop rather than walk when no browser is running. Discovery acquires its browser through getCurrentBrowser(), which would launch Chrome for a cycle, and the
+   * next launch requests its own cycle over every listed service. The guard is released through the hand-off, so a request recorded while this cycle was pending
+   * still arms, and that cycle stops here in turn when the browser is still gone.
+   */
+  if(!deps.isBrowserConnected()) {
 
-  // The running filter rather than the persisted list, so the cycle skips exactly the services every other filter reader hides.
-  const enabledFilter = getEnabledServices();
-  const hasFilter = enabledFilter.length > 0;
+    LOG.debug("precache", "Skipping a precache cycle: no browser is running.");
+    releasePrecacheGuard(deps);
+
+    return;
+  }
+
+  const listed = CONFIG.channels.precacheServices;
+  const slugs = (scope.kind === "all") ? listed : listed.filter((slug) => scope.slugs.has(slug));
+
+  // A scope that admits no listed service - the list was emptied, or the services a save added were removed again - walks nothing and announces nothing.
+  if(slugs.length === 0) {
+
+    releasePrecacheGuard(deps);
+
+    return;
+  }
+
   const cycleElapsed = startTimer();
 
   /* The services that walked without settling - they came back with nothing, or the walk ran past its budget and was stopped - named rather than counted, because
@@ -962,6 +1175,15 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
         break;
       }
 
+      /* Stop the same way once the browser is gone, leaving the services this cycle has not reached to the next launch's cycle. No await lies between this check
+       * and the browser acquisition precacheService reaches through withProviderGuidePage, so a walk never acquires a browser this check found gone and the
+       * scheduler never launches one; an await inserted between them breaks that guarantee.
+       */
+      if(!deps.isBrowserConnected()) {
+
+        break;
+      }
+
       const provider = deps.getProviderBySlug(slug);
 
       if(!provider) {
@@ -969,8 +1191,18 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
         continue;
       }
 
-      // Skip services not in the active service filter. Their stored config is preserved for when the filter changes back.
-      if(hasFilter && !enabledFilter.includes(slug)) {
+      // Skip a service missing from the running list. The list is read at each turn rather than once when the cycle fired, because a save commits a new list
+      // while a cycle can be walking.
+      if(!CONFIG.channels.precacheServices.includes(slug)) {
+
+        LOG.debug("precache", "Skipping precache for %s: it left the precache list during the cycle.", provider.label);
+
+        continue;
+      }
+
+      // Skip services not in the active service filter. The running filter rather than the persisted list, through the predicate every other filter reader uses,
+      // so the cycle skips exactly the services they hide. Their stored config is preserved for when the filter changes back.
+      if(!isServiceTagEnabled(slug)) {
 
         LOG.debug("precache", "Skipping precache for %s: not in active service filter.", provider.label);
         skipped++;

@@ -3,11 +3,12 @@
  * statusEmitter.test.ts: Unit tests for the SSE status emitter. statusEmitter.ts owns the singleton EventEmitter that broadcasts stream and system status to connected
  * SSE clients. The emitter maintains current state in two module-scoped Maps (streamStatuses by stream ID, cachedSystemStatus) so new clients receive a snapshot on
  * connect. The tests lock the snapshot/event contract: emit-then-snapshot reflects the latest state, removed streams stop appearing, the zombie-update guard rejects
- * status for removed streams, and the systemStatusChanged dedup logic only emits when browser.connected or streams.active changes.
+ * status for removed streams, and the systemStatusChanged dedupe emits only when a field the page header renders changes - the fields RenderedSystemStatus
+ * declares - so a status that differs only in what no client renders stays off the wire.
  */
 import type { StatusEventType, StreamStatus, SystemStatus } from "./statusEmitter.ts";
 import { createInitialStreamStatus, emitChannelUpdate, emitStreamAdded, emitStreamHealthChanged,
-  emitStreamRemoved, emitSystemStatusChanged, getStatusSnapshot, getStreamStatus, removeStreamStatus, subscribeToStatus, updateSystemStatus } from "./statusEmitter.ts";
+  emitStreamRemoved, emitSystemStatusChanged, getStatusSnapshot, getStreamStatus, removeStreamStatus, subscribeToStatus } from "./statusEmitter.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -54,7 +55,7 @@ function makeStreamStatus(overrides: Partial<StreamStatus> = {}): StreamStatus {
 }
 
 /* makeSystemStatus mirrors the SystemStatus shape used by emitSystemStatusChanged and getStatusSnapshot. We expose individual overrides so tests can tweak the
- * specific dedup-relevant fields (browser.captureImpaired, browser.connected, streams.active) without rebuilding the rest.
+ * fields the dedupe compares, the ones the page header renders, without rebuilding the rest.
  */
 function makeSystemStatus(overrides: { browser?: Partial<SystemStatus["browser"]>; streams?: Partial<SystemStatus["streams"]> } = {}): SystemStatus {
 
@@ -304,7 +305,8 @@ describe("emitSystemStatusChanged", () => {
 
   test("does NOT emit when nothing meaningful changed (dedup)", () => {
 
-    // The dedup compares browser.connected and streams.active. If both are unchanged, no event fires - this is the bandwidth optimization for periodic memory updates.
+    // The dedupe compares the fields the page header renders. A status equal to the cached one in every such field fires no event, which keeps a status that
+    // differs only in what no client renders off the wire.
     emitSystemStatusChanged(makeSystemStatus({ browser: { connected: true }, streams: { active: 1 } }));
 
     const events: { event: StatusEventType; data: unknown }[] = [];
@@ -313,7 +315,7 @@ describe("emitSystemStatusChanged", () => {
       events.push({ data, event });
     });
 
-    // Same key fields, different memory values. Dedup must suppress.
+    // The same rendered fields again. The dedupe must suppress it.
     emitSystemStatusChanged(makeSystemStatus({ browser: { connected: true }, streams: { active: 1 } }));
 
     assert.equal(events.filter((e) => e.event === "systemStatusChanged").length, 0, "no event for unchanged key fields");
@@ -359,8 +361,8 @@ describe("emitSystemStatusChanged", () => {
 
     /* The mark is broadcast on its own account. A status that differs from the cached one only in captureImpaired has the same connectivity and the same active
      * count, so a dedupe that compared only those would swallow the very transition the interface needs to render - and the repeat that follows must still be
-     * suppressed, or the periodic status updates would wake every client for the life of the mark. The clearing is asserted as well, so a dedupe that noticed only the
-     * rising edge would surface here.
+     * suppressed, or a status that differs only in what no client renders would wake every client for the life of the mark. The clearing is asserted as well, so a
+     * dedupe that noticed only the rising edge would surface here.
      */
     emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
 
@@ -384,26 +386,36 @@ describe("emitSystemStatusChanged", () => {
 
     unsubscribe();
   });
-});
 
-describe("updateSystemStatus", () => {
+  test("emits when only the stream limit changes, carrying the new limit to the snapshot, and keeps what no client renders off the wire", () => {
 
-  test("updates the cached system status without emitting an event", () => {
+    /* The header renders the limit beside the active count, so a status that changes only the limit must reach every client and the snapshot a connecting
+     * client receives. An identical repeat must not, and neither must a status that differs only in the page count, the memory figures or the uptime, which no
+     * client renders.
+     */
+    emitSystemStatusChanged(makeSystemStatus({ browser: { connected: true }, streams: { active: 1, limit: 10 } }));
 
-    // Used for periodic memory updates that should appear in snapshots but don't need to wake every SSE client.
     const events: { event: StatusEventType; data: unknown }[] = [];
     const unsubscribe = subscribeToStatus((event, data) => {
 
       events.push({ data, event });
     });
+    const limited = makeSystemStatus({ browser: { connected: true }, streams: { active: 1, limit: 11 } });
+    const systemEvents = (): unknown[] => events.filter((e) => e.event === "systemStatusChanged").map((e) => e.data);
 
-    updateSystemStatus(makeSystemStatus({ browser: { connected: true, pageCount: 5 } }));
+    emitSystemStatusChanged(limited);
 
-    assert.equal(events.filter((e) => e.event === "systemStatusChanged").length, 0, "no event from updateSystemStatus");
+    assert.deepEqual(systemEvents(), [limited], "a limit change emits one event carrying the new limit");
+    assert.equal(getStatusSnapshot().system.streams.limit, 11, "and the snapshot reads the new limit");
 
-    const snapshot = getStatusSnapshot();
+    emitSystemStatusChanged(makeSystemStatus({ browser: { connected: true }, streams: { active: 1, limit: 11 } }));
 
-    assert.equal(snapshot.system.browser.pageCount, 5, "snapshot reflects the updated cache");
+    assert.equal(systemEvents().length, 1, "an identical repeat is suppressed");
+
+    emitSystemStatusChanged({ ...makeSystemStatus({ browser: { connected: true, pageCount: 4 }, streams: { active: 1, limit: 11 } }), memory: { heapUsed: 7, rss: 9 },
+      uptime: 120 });
+
+    assert.equal(systemEvents().length, 1, "a status that differs only in what no client renders is suppressed");
 
     unsubscribe();
   });
@@ -438,9 +450,8 @@ describe("getStatusSnapshot", () => {
 
   test("returns a default system status when none has been cached yet", () => {
 
-    // The fallback default ships with active: 0 and connected: false. Provided only the snapshot side because the dedup-driven emit path may suppress emitting a
-    // first cached status. The test relies on whatever cached state exists, so we verify the shape and the field types the snapshot must hold rather than
-    // concrete numbers - other tests in this module mutate cachedSystemStatus.
+    // The snapshot falls back to a default status (disconnected, no active stream) until a first status is cached. Other rows in this module set the cache
+    // before this one runs, so the row asserts the shape and the field types every snapshot holds rather than the default's values.
     const snapshot = getStatusSnapshot();
 
     assert.ok(typeof snapshot.system.browser.captureImpaired === "boolean");
@@ -453,17 +464,17 @@ describe("getStatusSnapshot", () => {
   test("carries the browser's capture-impairment mark through to a connecting client", () => {
 
     // The snapshot is the whole state a client gets on connect, so a mark carried only by the delta events would leave a client that connected during the mark
-    // rendering a healthy header until the next transition.
-    updateSystemStatus(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
+    // rendering a healthy header until the next transition. The emit caches the status it lets through, which is how the mark reaches the snapshot.
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: true, connected: true } }));
 
     assert.equal(getStatusSnapshot().system.browser.captureImpaired, true, "the cached mark reaches the snapshot");
 
-    updateSystemStatus(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
+    emitSystemStatusChanged(makeSystemStatus({ browser: { captureImpaired: false, connected: true } }));
 
     assert.equal(getStatusSnapshot().system.browser.captureImpaired, false, "and so does its clearing");
   });
 
-  test("does not include health state in its snapshot - that responsibility moved to the route layer", () => {
+  test("does not include health state in its snapshot - the route layer composes health and the channel patch", () => {
 
     // statusEmitter owns only the stream + system snapshot. The channel-table catch-up patch is composed in routes/streams.ts by spreading getStatusSnapshot()
     // together with buildSnapshotChannelPatch(), so the streaming layer stays free of health, channel, and rendering concerns. Asserting that health and

@@ -1,15 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userConfig.test.ts: Unit tests for the pure-function surface of the user-config layer - the DEFAULTS shape, the CONFIG_METADATA structure that
- * drives the UI, and the small primitives (getNestedValue/setNestedValue/isEqualToDefault) plus the UI-tab/section accessors. The merge priority order, env
- * var handling, and filterDefaults are covered in userConfig.merge.test.ts so this file stays under the conventions' 500-line guidance.
+ * drives the UI, and the small primitives (getNestedValue/setNestedValue/isEqualToDefault) plus the capture corrections, the store's write normalization, and
+ * the UI-tab/section accessors - and for one write through the configuration store itself, which shows the store's write hook storing corrected capture
+ * values. The merge priority order, env var handling, and filterDefaults are covered in userConfig.merge.test.ts.
  */
-import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, getAdvancedSections, getNestedValue, getReactivityClass, getSettingByPath, getSettingsTabSections,
-  getUITabs, isEqualToDefault, setNestedValue } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, collectStoredCaptureCorrections, correctCaptureValues, getAdvancedSections, getNestedValue,
+  getReactivityClass, getSettingByPath, getSettingsTabSections, getUITabs, isEqualToDefault, mutateConfig, normalizeStoredConfig, readConfig,
+  setNestedValue } from "./userConfig.ts";
 import { describe, test } from "node:test";
+import { listConfigLeafPaths, withTempDir } from "../testing.helpers.ts";
+import { CONFIG } from "./index.ts";
+import { LOG } from "../utils/index.ts";
 import type { ReactivityClass } from "../types/index.ts";
 import assert from "node:assert/strict";
-import { listConfigLeafPaths } from "../testing.helpers.ts";
+import { initializeDataDir } from "./paths.ts";
+import os from "node:os";
 
 describe("DEFAULTS", () => {
 
@@ -250,6 +256,141 @@ describe("isEqualToDefault", () => {
   });
 });
 
+/* The capture corrections and the store's write normalization. Every expected answer is written out as a literal, so a row reads what the correction produces
+ * rather than what a second call of the same code produces.
+ */
+describe("capture corrections", () => {
+
+  const MODE_CORRECTION = { configured: "native", kind: "mode", using: "ffmpeg" } as const;
+  const CORRECTION_LINE = "The configuration file write carries corrected capture values.";
+
+  test("a mode other than FFmpeg is corrected to FFmpeg, carrying the configured mode", () => {
+
+    assert.deepEqual(correctCaptureValues({ captureMode: "native" }), { corrections: [MODE_CORRECTION], values: { captureMode: "ffmpeg" } });
+  });
+
+  test("a codec list drops each identifier the server does not recognize, carrying the ignored identifiers and the list in effect", () => {
+
+    assert.deepEqual(correctCaptureValues({ captureCodecs: [ "h264", "av1" ] }),
+      { corrections: [{ configured: [ "h264", "av1" ], ignored: ["av1"], kind: "unrecognizedCodecs", using: ["h264"] }], values: { captureCodecs: ["h264"] } });
+  });
+
+  test("a codec list without the H.264 baseline gains it first", () => {
+
+    assert.deepEqual(correctCaptureValues({ captureCodecs: ["hevc"] }),
+      { corrections: [{ configured: ["hevc"], kind: "baseline", using: [ "h264", "hevc" ] }], values: { captureCodecs: [ "h264", "hevc" ] } });
+  });
+
+  test("every correction a layer needs is made in order, the mode first and the baseline last, each naming the list in effect", () => {
+
+    assert.deepEqual(correctCaptureValues({ captureCodecs: ["av1"], captureMode: "native" }), {
+
+      corrections: [ MODE_CORRECTION, { configured: ["av1"], ignored: ["av1"], kind: "unrecognizedCodecs", using: ["h264"] },
+        { configured: ["av1"], kind: "baseline", using: ["h264"] } ],
+      values: { captureCodecs: ["h264"], captureMode: "ffmpeg" }
+    });
+  });
+
+  test("values that need no correction pass unchanged, and a layer that defines no capture value gains none", () => {
+
+    assert.deepEqual(correctCaptureValues({ captureCodecs: [ "hevc", "h264" ], captureMode: "ffmpeg" }),
+      { corrections: [], values: { captureCodecs: [ "hevc", "h264" ], captureMode: "ffmpeg" } });
+    assert.deepEqual(correctCaptureValues({}), { corrections: [], values: {} });
+  });
+
+  test("a stored native mode normalizes to a file with no capture mode", (t) => {
+
+    t.mock.method(LOG, "info", () => undefined);
+
+    assert.deepEqual(normalizeStoredConfig({ streaming: { captureMode: "native" } }), {});
+  });
+
+  test("a stored list with an unrecognized codec normalizes to the list in effect, which differs from the default and is kept", (t) => {
+
+    t.mock.method(LOG, "info", () => undefined);
+
+    assert.deepEqual(normalizeStoredConfig({ streaming: { captureCodecs: [ "h264", "av1" ] } }), { streaming: { captureCodecs: ["h264"] } });
+  });
+
+  test("a stored list without the baseline normalizes to a file with no codec list, because its correction holds the default's members", (t) => {
+
+    t.mock.method(LOG, "info", () => undefined);
+
+    assert.deepEqual(normalizeStoredConfig({ streaming: { captureCodecs: ["hevc"] } }), {});
+  });
+
+  test("normalizing logs one info line naming the corrections a file needed, and nothing for a file that needs none", (t) => {
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+    const native = { streaming: { captureMode: "native" } };
+    const clean = { server: { port: 6000 } };
+
+    assert.deepEqual(collectStoredCaptureCorrections(native), [MODE_CORRECTION]);
+    assert.deepEqual(collectStoredCaptureCorrections(clean), []);
+
+    normalizeStoredConfig(native);
+
+    assert.deepEqual(info.mock.calls.map((call) => call.arguments), [[ CORRECTION_LINE, { corrections: [MODE_CORRECTION] } ]]);
+
+    info.mock.resetCalls();
+    normalizeStoredConfig(clean);
+
+    assert.equal(info.mock.calls.length, 0, "a file that needs no correction logs nothing");
+  });
+
+  test("a file with no capture values normalizes with none while the environment and the running configuration hold capture values", () => {
+
+    /* The codec list chosen here needs a correction whose result, ["h264"], differs from the default, so a normalization that read it from the environment or
+     * the running configuration would store that result in the file it returns, where this row would see it.
+     */
+    const originalEnv = { ...process.env };
+    const originalStreaming = structuredClone(CONFIG.streaming);
+
+    try {
+
+      process.env["CAPTURE_CODECS"] = "h264,av1";
+      process.env["CAPTURE_MODE"] = "native";
+      CONFIG.streaming.captureCodecs = [ "h264", "av1" ];
+      CONFIG.streaming.captureMode = "native";
+
+      assert.deepEqual(normalizeStoredConfig({ server: { port: 6000 } }), { server: { port: 6000 } });
+    } finally {
+
+      for(const key of Object.keys(process.env)) {
+
+        Reflect.deleteProperty(process.env, key);
+      }
+
+      Object.assign(process.env, originalEnv);
+      Object.assign(CONFIG.streaming, originalStreaming);
+    }
+  });
+
+  test("a write through the configuration store stores corrected capture values", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+
+    // The row points the data directory at a temporary directory withTempDir removes, so once the row ends the resolver names os.tmpdir() instead, a directory
+    // that exists, as the services suite's store row leaves it.
+    t.after(() => {
+
+      initializeDataDir(os.tmpdir());
+    });
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      await mutateConfig((current) => { current.streaming = { captureCodecs: [ "h264", "av1" ] }; });
+
+      assert.deepEqual((await readConfig()).config.streaming?.captureCodecs, ["h264"], "the file holds the list in effect");
+    });
+
+    assert.deepEqual(info.mock.calls.filter((call) => call.arguments[0] === CORRECTION_LINE).map((call) => [...call.arguments]),
+      [[ CORRECTION_LINE, { corrections: [{ configured: [ "h264", "av1" ], ignored: ["av1"], kind: "unrecognizedCodecs", using: ["h264"] }] } ]],
+      "the write logged its correction once");
+  });
+});
+
 describe("getSettingByPath", () => {
 
   test("looks up a known setting by dotted path", () => {
@@ -285,6 +426,15 @@ describe("getSettingsTabSections", () => {
     const sections = getSettingsTabSections();
 
     assert.deepEqual(sections.map((s) => s.id), [ "server", "browser", "startup", "capture", "hdhr" ]);
+  });
+
+  test("the section holding the precache list carries the label the page renders, Precaching", () => {
+
+    // generateSettingsTabContent writes a section's display name into its header unchanged, so the label read here is the one the page shows.
+    const sections = getSettingsTabSections();
+
+    assert.equal(sections.find((s) => s.id === "startup")?.displayName, "Precaching", "the section whose id is startup is labelled Precaching");
+    assert.ok(!sections.some((s) => s.displayName === "Startup"), "no section is labelled Startup");
   });
 
   test("each section's settings array contains resolved SettingMetadata entries", () => {
@@ -363,10 +513,13 @@ describe("reactivity classification", () => {
   const KNOWN_SETTING_CLASSES: readonly (readonly [ ReactivityClass, readonly string[] ])[] = [
 
     // Read at each Chrome launch; a relaunch is unscheduled, so restart is the contract a user can act on.
-    [ "restart", [ "browser.executablePath", "browser.initTimeout" ] ],
+    [ "restart", ["browser.executablePath"] ],
 
-    // Read at the launch-scoped precache cycle.
-    [ "restart", ["channels.precacheServices"] ],
+    // Read at each launch's extension handshake, which a running browser has finished.
+    [ "live", ["browser.initTimeout"] ],
+
+    // The precache module's handler walks the services a save adds.
+    [ "live", ["channels.precacheServices"] ],
 
     // Read per DVR request.
     [ "live", ["channelsDvr.port"] ],
@@ -380,8 +533,11 @@ describe("reactivity classification", () => {
     // Copied into each stream's settings when the stream registers.
     [ "next-stream", ["hls.segmentDuration"] ],
 
-    // The request-log middleware is chosen and the logger sized at boot.
-    [ "restart", [ "logging.httpLogLevel", "logging.maxSize" ] ],
+    // Read per request.
+    [ "live", ["logging.httpLogLevel"] ],
+
+    // The composition root's handler resizes the open logger.
+    [ "live", ["logging.maxSize"] ],
 
     // Read at launch, teardown, and exit, which must agree, and the logger opens its file at boot.
     [ "restart", [ "paths.chromeDataDir", "paths.logFile" ] ],
@@ -394,8 +550,8 @@ describe("reactivity classification", () => {
     // Copied into each stream's settings when the stream registers.
     [ "next-stream", ["playback.monitorInterval"] ],
 
-    // The stale-page sweep is armed once.
-    [ "restart", ["recovery.stalePageCleanupInterval"] ],
+    // The browser module's handler re-arms the running stale-page sweep.
+    [ "live", ["recovery.stalePageCleanupInterval"] ],
 
     // Read per failure, per governor decision, per sweep, or per tune.
     [ "live", [ "recovery.backoffJitter", "recovery.circuitBreakerThreshold", "recovery.circuitBreakerWindow", "recovery.maxBackoffDelay",

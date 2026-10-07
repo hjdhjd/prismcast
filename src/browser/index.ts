@@ -4,6 +4,8 @@
  */
 import type { Browser, LaunchOptions, Page } from "puppeteer-core";
 import type { BrowserLifecycle, BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
+import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
+import type { Config, Nullable } from "../types/index.ts";
 import { LOG, boundedWait, evaluateWithAbort, formatError, isProcessRunning, listProcesses, setChromeUserAgent, startTimer } from "../utils/index.ts";
 import { TimerRegistry, systemClock } from "homebridge-plugin-utils";
 import { clearLoginState, isLoginModeActive, setLoginDeps } from "./login.ts";
@@ -18,7 +20,6 @@ import type { Clock } from "homebridge-plugin-utils";
 import { EXTENSION_READY_EXPRESSION } from "./tabCapture.ts";
 import type { GpuCapabilities } from "./display.ts";
 import type { LaunchGovernorPolicy } from "./launchGovernor.ts";
-import type { Nullable } from "../types/index.ts";
 import type { ProcessInfo } from "../utils/index.ts";
 import type { SystemStatus } from "../streaming/statusEmitter.ts";
 import type { WindowPlacement } from "./cdp.ts";
@@ -31,6 +32,7 @@ import fs from "node:fs";
 import { getPresetViewport } from "../config/presets.ts";
 import path from "node:path";
 import { launch as puppeteerLaunch } from "puppeteer-core";
+import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { startPrecaching } from "./precaching.ts";
 
 const { promises: fsPromises } = fs;
@@ -198,10 +200,21 @@ export function setStreamTerminator(terminator: StreamTerminator): void {
 // The identity of the periodic sweep on the stale-page owner's registry.
 const STALE_PAGE_SWEEP_KEY = "sweep";
 
-/* The stale-page owner's timers: the periodic sweep that closes browser pages no active stream is using, so a long session cannot exhaust resources. The registry
- * is built on the clock the start receives and disposed by the stop, so the sweep can never outlive the owner. Null until started, and again once stopped.
+/**
+ * The stale-page owner: the registry its periodic sweep is armed on, which closes browser pages no active stream is using so a long session cannot exhaust
+ * resources, and the clock the start received. The clock is kept beside the registry because a re-arm rebuilds the sweep's callback, which reads that clock.
  */
-let stalePageTimers: Nullable<TimerRegistry> = null;
+interface StalePageSweep {
+
+  // The clock the sweep's interval arms on and whose reading each sweep judges staleness against.
+  readonly clock: Clock;
+
+  // The registry the sweep's interval lives on, disposed by the stop so the sweep can never outlive the owner.
+  readonly timers: TimerRegistry;
+}
+
+// The running stale-page sweep. Null until started, and again once stopped.
+let stalePageSweep: Nullable<StalePageSweep> = null;
 
 /* Opportunistic browser restart state. Chrome accumulates memory pressure, GPU process issues, and general flakiness over multi-hour sessions with continuous
  * media playback. We proactively restart Chrome after it has been running for BROWSER_MAX_AGE, waiting for a quiet period with zero active streams before
@@ -1937,6 +1950,10 @@ async function launchReadyBrowser(): Promise<Browser> {
 
     LOG.debug("timing:browser", "Chrome process spawned. (+%sms)", browserElapsed());
 
+    // The init timeout is live, so it is read once per launch: the error below then names the bound the wait applied, and a save made during a handshake applies
+    // at the next launch.
+    const initTimeout = CONFIG.browser.initTimeout;
+
     // Readiness gate, handshake tier (cheap, on-suspicion). Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function
     // into its options page context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the
     // extension loads (typically 200-500ms). On failure this THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and
@@ -1947,10 +1964,10 @@ async function launchReadyBrowser(): Promise<Browser> {
 
       const extensionPage = await getExtensionPage(browser);
 
-      await extensionPage.waitForFunction(EXTENSION_READY_EXPRESSION, { timeout: CONFIG.browser.initTimeout });
+      await extensionPage.waitForFunction(EXTENSION_READY_EXPRESSION, { timeout: initTimeout });
     } catch(handshakeError) {
 
-      throw new Error("The capture extension handshake timed out after " + String(CONFIG.browser.initTimeout) + " ms.", { cause: handshakeError });
+      throw new Error("The capture extension handshake timed out after " + String(initTimeout) + " ms.", { cause: handshakeError });
     }
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
@@ -2366,23 +2383,35 @@ export async function cleanupStalePages(now: number): Promise<void> {
 }
 
 /**
+ * Arms the stale-page sweep's interval on the owner's registry: cleanupStalePages at the owner's clock reading, every interval. Arming under the sweep's key
+ * replaces an interval already armed there, so a re-arm leaves one sweep, on the new cadence from the moment it is armed.
+ * @param sweep - The running stale-page owner.
+ * @param interval - Milliseconds between sweeps.
+ */
+function armStalePageSweep(sweep: StalePageSweep, interval: number): void {
+
+  sweep.timers.setInterval(STALE_PAGE_SWEEP_KEY, () => { void cleanupStalePages(sweep.clock.now()); }, interval);
+}
+
+/**
  * Starts the periodic stale page cleanup. This should be called once during server startup, after the browser is initialized. The sweep runs indefinitely until
- * stopStalePageCleanup() is called (typically during graceful shutdown). A second start while one is running changes nothing.
+ * stopStalePageCleanup() is called (typically during graceful shutdown), and a saved interval re-arms it through applyStalePageCleanupChanges(). A second start
+ * while one is running changes nothing.
  * @param clock - The clock the sweep's interval arms on and whose reading each sweep judges staleness against, so the cadence and the judgment share one time
  * source. Defaults to the system clock.
  */
 export function startStalePageCleanup(clock: Clock = systemClock): void {
 
-  if(stalePageTimers) {
+  if(stalePageSweep) {
 
     return;
   }
 
-  const timers = new TimerRegistry({ clock });
+  const sweep: StalePageSweep = { clock, timers: new TimerRegistry({ clock }) };
 
-  timers.setInterval(STALE_PAGE_SWEEP_KEY, () => { void cleanupStalePages(clock.now()); }, CONFIG.recovery.stalePageCleanupInterval);
+  armStalePageSweep(sweep, CONFIG.recovery.stalePageCleanupInterval);
 
-  stalePageTimers = timers;
+  stalePageSweep = sweep;
 }
 
 /**
@@ -2391,9 +2420,35 @@ export function startStalePageCleanup(clock: Clock = systemClock): void {
  */
 export function stopStalePageCleanup(): void {
 
-  stalePageTimers?.dispose();
-  stalePageTimers = null;
+  stalePageSweep?.timers.dispose();
+  stalePageSweep = null;
 }
+
+/**
+ * Re-arms the running stale-page sweep at a saved cleanup interval. The re-arm restarts the cadence from the save, so the next sweep runs one full interval after
+ * it, and the grace period needs nothing here, because each sweep already reads it when it runs. The handler reads the running sweep and never creates one, so a
+ * save before the boot's start or after the stop arms nothing, and a save can never resurrect a stopped sweep. The interval comes from the candidate, because
+ * the reconcile commits CONFIG only after its handlers run. Re-arming cannot fail, so the handler refuses nothing.
+ * @param _changes - The change to the cleanup interval; the candidate carries the interval, so the handler reads that instead.
+ * @param next - The candidate running configuration.
+ * @returns No rejections.
+ */
+export async function applyStalePageCleanupChanges(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+
+  if(stalePageSweep) {
+
+    const interval = next.recovery.stalePageCleanupInterval;
+
+    armStalePageSweep(stalePageSweep, interval);
+    LOG.debug("browser:lifecycle", "Stale page cleanup re-armed at %d ms.", interval);
+  }
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("recovery.stalePageCleanupInterval", applyStalePageCleanupChanges);
 
 /* Browser restart functions. One routine performs the restart; what differs is the cause that reaches it.
  *

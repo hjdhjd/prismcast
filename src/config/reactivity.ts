@@ -127,9 +127,9 @@ const handlers = new Map<string, ConfigChangeHandler>();
 
 /**
  * Registers a handler that will receive any ConfigChange whose path starts with the given prefix. Throws if a handler is already registered for the prefix to
- * surface duplicate wiring at boot time. Prefixes are matched as plain string prefixes against the dot-separated path - by convention they end with a "."
- * ("hdhr." matches "hdhr.enabled" and "hdhr.port" but not "hdhrFoo").
- * @param prefix - Path prefix (e.g., "hdhr.").
+ * surface duplicate wiring at boot time. Prefixes are matched as plain string prefixes against the dot-separated path, so a prefix ending in "." covers a
+ * subtree ("hdhr." matches "hdhr.enabled" and "hdhr.port" but not "hdhrFoo"), and a full leaf path registers that one setting ("logging.maxSize").
+ * @param prefix - Path prefix (e.g., "hdhr.") or full leaf path (e.g., "logging.maxSize").
  * @param handler - The handler to invoke for matching changes.
  */
 export function registerConfigChangeHandler(prefix: string, handler: ConfigChangeHandler): void {

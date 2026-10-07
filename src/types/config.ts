@@ -183,8 +183,8 @@ export interface ChannelsConfig {
   // service variant are included in the playlist and guide.
   enabledServices: string[];
 
-  // Service slugs selected for precaching at startup. Empty array means no precaching (default). When non-empty, the listed services have their channel lineups
-  // discovered at startup so that even the first tune benefits from cached lineup data.
+  // Service slugs selected for precaching. Empty array means no precaching (default). When non-empty, the listed services have their channel lineups discovered
+  // each time the browser launches, and a newly selected service's lineup once a save adds it, so that even the first tune benefits from cached lineup data.
   precacheServices: string[];
 
   // Whether the user has completed the initial Service Setup flow. When false, the setup wizard auto-presents on the first visit to the channels tab.
@@ -255,6 +255,12 @@ export interface HdhrConfig {
 }
 
 /**
+ * The HTTP request log levels, in the order the settings form lists them. This array is the single definition from which the httpLogLevel type and the setting's
+ * valid values derive.
+ */
+export const HTTP_LOG_LEVELS = [ "none", "errors", "filtered", "all" ] as const;
+
+/**
  * Logging configuration controlling file-based logging behavior.
  */
 export interface LoggingConfig {
@@ -265,10 +271,10 @@ export interface LoggingConfig {
 
   // Controls HTTP request logging level. "none" disables HTTP request logging, "errors" logs only 4xx and 5xx responses, "filtered" logs important requests
   // while skipping high-frequency endpoints like /logs and /health, "all" logs all requests. Environment variable: HTTP_LOG_LEVEL. Default: "errors".
-  httpLogLevel: "all" | "errors" | "filtered" | "none";
+  httpLogLevel: typeof HTTP_LOG_LEVELS[number];
 
-  // Maximum size of the log file in bytes. When the file exceeds this size, it is trimmed to half the size keeping only complete lines. The most recent logs are
-  // preserved. Environment variable: LOG_MAX_SIZE. Default: 1048576 (1MB). Valid range: 524288-104857600.
+  // Maximum size of the log file in bytes. When the file exceeds this size, it is trimmed to at most half the size, keeping the most recent complete lines.
+  // Environment variable: LOG_MAX_SIZE. Default: 1048576 (1MB). Valid range: 524288-104857600.
   maxSize: number;
 }
 
@@ -292,8 +298,8 @@ export interface ServerConfig {
  * - "ffmpeg": Captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
  * - "native": Captures fMP4 (H264+AAC) directly from Chrome. No dependencies but may be unstable with long recordings.
  *
- * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so `config/index.ts` currently forces this value to "ffmpeg"
- * at startup and rejects a live configuration save that requests "native" rather than silently coercing it.
+ * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so every configuration the server builds, at startup and on every
+ * save, corrects "native" to "ffmpeg" with a warning, and every write of the configuration file stores the corrected value.
  */
 export type CaptureMode = "ffmpeg" | "native";
 
@@ -312,8 +318,8 @@ export interface StreamingConfig {
 
   // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
   // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
-  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Currently force-coerced to "ffmpeg" at startup and refused by a settings save when set to "native",
-  // per the ConfigCoercions handling in `config/index.ts`, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
+  // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Any other value is corrected to "ffmpeg" with a warning wherever a configuration is built, at startup
+  // and on every save, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
   captureMode: CaptureMode;
 
   // Target frame rate for video capture. Higher frame rates produce smoother video but require more CPU and bandwidth. 60fps is ideal for sports content; 30fps

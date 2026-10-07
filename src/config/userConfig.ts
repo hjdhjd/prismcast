@@ -2,6 +2,7 @@
  *
  * userConfig.ts: User configuration file management for PrismCast.
  */
+import { CAPTURE_BASELINE_CODEC, HTTP_LOG_LEVELS, RECOGNIZED_CODECS } from "../types/index.ts";
 import type { Config, Nullable, ProcessFieldReactivity, ReactivityClass } from "../types/index.ts";
 import { LOG, assertNever, sanitizeString } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
@@ -82,8 +83,9 @@ export interface SettingMetadata {
 
   /* How a saved value reaches the running process. A live setting is read at its point of use or refreshed by a config-change handler, so a save commits it to
    * the running configuration once its handler realizes it. A next-stream setting is read once when a stream starts, so a save commits it for the streams that
-   * start afterward. A restart setting is read once at boot or at a Chrome launch, so a save writes it to the file and holds it out of the running
-   * configuration until a restart reads it. The class describes the readers as they stand: a setting whose reader changes declares the class that reader earns.
+   * start afterward. A restart setting is read once at boot, or at a Chrome launch into the browser that launch keeps running, so a save writes it to the file
+   * and holds it out of the running configuration until a restart reads it. The class describes the readers as they stand: a setting whose reader changes
+   * declares the class that reader earns.
    */
   readonly reactivity: ReactivityClass;
 
@@ -123,7 +125,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 100,
       path: "browser.initTimeout",
-      reactivity: "restart",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     }
@@ -132,14 +134,15 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
   channels: [
     {
 
-      description: "Speed up your first channel tune by loading service lineups when PrismCast starts. Normally, each service's lineup is loaded on your " +
-        "first tune, which may add a few extra seconds. Enabling precaching fetches lineups at startup so even your very first tune is fast. Services not " +
-        "enabled in the Channels tab service filter are skipped at startup. Ensure you've logged into each service before enabling.",
+      description: "Speed up your first channel tune by loading service lineups ahead of time. Normally, each service's lineup is loaded on your first " +
+        "tune, which may add a few extra seconds. Precaching loads the selected services' lineups when the browser launches, and loads a newly selected " +
+        "service's lineup when you save it, so even your very first tune is fast. Services not enabled in the Channels tab service filter are skipped. " +
+        "Ensure you've logged into each service before enabling.",
       envVar: null,
       label: "Channel Lineup Precaching",
       listItemsKey: "providerModules",
       path: "channels.precacheServices",
-      reactivity: "restart",
+      reactivity: "live",
       type: "checkboxList"
     }
   ],
@@ -258,13 +261,13 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       envVar: "HTTP_LOG_LEVEL",
       label: "HTTP Log Level",
       path: "logging.httpLogLevel",
-      reactivity: "restart",
+      reactivity: "live",
       type: "string",
-      validValues: [ "none", "errors", "filtered", "all" ]
+      validValues: [...HTTP_LOG_LEVELS]
     },
     {
 
-      description: "Maximum log file size in bytes. When exceeded, the file is trimmed to half this size keeping the most recent logs.",
+      description: "Maximum log file size in bytes. When exceeded, the file is trimmed to at most half this size, keeping the most recent complete lines.",
       displayDivisor: 1048576,
       displayPrecision: 1,
       displayUnit: "MB",
@@ -273,7 +276,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 104857600,
       min: 524288,
       path: "logging.maxSize",
-      reactivity: "restart",
+      reactivity: "live",
       type: "integer",
       unit: "bytes"
     }
@@ -553,7 +556,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: TEN_MINUTES_MS,
       min: 10000,
       path: "recovery.stalePageCleanupInterval",
-      reactivity: "restart",
+      reactivity: "live",
       type: "integer",
       unit: "ms"
     },
@@ -832,7 +835,7 @@ export interface UserChannelsConfig {
   // Service tags that are enabled for filtering. Empty means no filter.
   enabledServices?: string[];
 
-  // Service slugs selected for precaching at startup. Empty means no precaching.
+  // Service slugs selected for precaching. Empty means no precaching.
   precacheServices?: string[];
 
   // Whether the Service Setup flow has been completed or skipped.
@@ -1074,12 +1077,160 @@ export function applyDvrHostNamespaceMigration(data: UserConfig): void {
   delete legacy.dvrHost;
 }
 
-// Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized: filterDefaults() runs on
-// every save so the file on disk contains only non-default values, regardless of which call site initiated the write. Schema migrations run automatically via
-// the file store framework's migration runner before the data reaches mergeConfiguration.
+// Capture corrections.
+
+/**
+ * The capture values one configuration layer holds, the running configuration's or the configuration file's own, each present only where that layer defines it.
+ */
+export interface CaptureValues {
+
+  readonly captureCodecs?: readonly string[];
+  readonly captureMode?: string;
+}
+
+/**
+ * One correction a capture value needs before the server can capture with it, tagged by the correction it makes. Each carries the value as configured and the
+ * value in effect, and the codec list's correction for unrecognized identifiers also carries the identifiers it ignores.
+ *
+ * - baseline: a codec list without the H.264 baseline gains it first, because every capture can fall back to it without GPU encoding.
+ * - mode: a capture mode other than "ffmpeg" becomes "ffmpeg", because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
+ * - unrecognizedCodecs: a codec list drops every identifier outside RECOGNIZED_CODECS, the one definition of the codecs the server can capture.
+ */
+export type CaptureCorrection =
+  { readonly configured: readonly string[]; readonly kind: "baseline"; readonly using: readonly string[] } |
+  { readonly configured: string; readonly kind: "mode"; readonly using: "ffmpeg" } |
+  { readonly configured: readonly string[]; readonly ignored: readonly string[]; readonly kind: "unrecognizedCodecs"; readonly using: readonly string[] };
+
+/**
+ * The answer correctCaptureValues() gives: the corrected values and the corrections made to reach them.
+ */
+export interface CorrectedCapture {
+
+  // The corrections made, in a fixed order: the mode, then the codec list's unrecognized identifiers, then its baseline. Empty when the values needed none.
+  readonly corrections: CaptureCorrection[];
+
+  // The corrected values, holding exactly the keys the input held, so a caller spreads them over the layer they came from.
+  readonly values: { readonly captureCodecs?: string[]; readonly captureMode?: "ffmpeg" };
+}
+
+/**
+ * Corrects capture values to ones the server can capture with. It reads nothing but its argument and changes nothing, so the candidate every boot and every
+ * save builds and the configuration file the store writes ask it the same question and get the same answer. A codec list in effect is never empty, because the
+ * baseline is restored to any list that lacks it.
+ * @param values - The capture values a configuration layer holds. A codec list is passed only when it is an array.
+ * @returns The corrected values and the corrections made.
+ */
+export function correctCaptureValues(values: CaptureValues): CorrectedCapture {
+
+  const corrections: CaptureCorrection[] = [];
+  const corrected: { captureCodecs?: string[]; captureMode?: "ffmpeg" } = {};
+
+  if(values.captureMode !== undefined) {
+
+    if(values.captureMode !== "ffmpeg") {
+
+      corrections.push({ configured: values.captureMode, kind: "mode", using: "ffmpeg" });
+    }
+
+    corrected.captureMode = "ffmpeg";
+  }
+
+  if(values.captureCodecs !== undefined) {
+
+    // Each codec correction names the list in effect once every correction is made, so that list is computed before any codec correction is recorded.
+    const configured = values.captureCodecs;
+    const recognized = new Set<string>(RECOGNIZED_CODECS);
+    const ignored = configured.filter((codec) => !recognized.has(codec));
+    const using = configured.filter((codec) => recognized.has(codec));
+    const restoresBaseline = !using.includes(CAPTURE_BASELINE_CODEC);
+
+    if(restoresBaseline) {
+
+      using.unshift(CAPTURE_BASELINE_CODEC);
+    }
+
+    if(ignored.length > 0) {
+
+      corrections.push({ configured, ignored, kind: "unrecognizedCodecs", using });
+    }
+
+    if(restoresBaseline) {
+
+      corrections.push({ configured, kind: "baseline", using });
+    }
+
+    corrected.captureCodecs = using;
+  }
+
+  return { corrections, values: corrected };
+}
+
+/**
+ * Reads the capture values a configuration file defines itself: a stored codec list with an array's shape, and a stored mode. A codec value of any other shape
+ * is left out, because the merge counts it as absent and filterDefaults() drops it, so it never needs a correction of its own.
+ * @param data - The configuration file.
+ * @returns The capture values the file defines.
+ */
+function readStoredCaptureValues(data: UserConfig): CaptureValues {
+
+  const stored = data.streaming;
+  const values: { captureCodecs?: readonly string[]; captureMode?: string } = {};
+
+  if(Array.isArray(stored?.captureCodecs)) {
+
+    values.captureCodecs = stored.captureCodecs;
+  }
+
+  if(stored?.captureMode !== undefined) {
+
+    values.captureMode = stored.captureMode;
+  }
+
+  return values;
+}
+
+/**
+ * Collects the capture corrections a configuration file needs, from the values the file itself defines. It reads nothing but its argument, so a value the
+ * environment supplies is never counted, and the boot asks it whether the file it read needs a correcting write.
+ * @param data - The configuration file.
+ * @returns The corrections the stored capture values need, empty when they need none.
+ */
+export function collectStoredCaptureCorrections(data: UserConfig): CaptureCorrection[] {
+
+  return correctCaptureValues(readStoredCaptureValues(data)).corrections;
+}
+
+/**
+ * Normalizes a configuration file into the shape every write stores: the stored capture values corrected to ones the running configuration can hold, with one
+ * info line naming the corrections when there are any, and then only the values that differ from their defaults. It reads nothing but its argument, so a value
+ * the environment supplies is never written, and it changes nothing in place.
+ * @param data - The configuration file a write is about to store.
+ * @returns The normalized file.
+ */
+export function normalizeStoredConfig(data: UserConfig): UserConfig {
+
+  const { corrections, values } = correctCaptureValues(readStoredCaptureValues(data));
+
+  if(corrections.length === 0) {
+
+    return filterDefaults(data);
+  }
+
+  LOG.info("The configuration file write carries corrected capture values.", { corrections });
+
+  return filterDefaults({ ...data, streaming: { ...data.streaming, ...values } });
+}
+
+/* Transactional store instance for config.json. The beforeWrite hook is the single chokepoint where the persisted shape is normalized, so every write - a save,
+ * the boot's correcting write, a startup migration's or a backup recovery's, and every other write the process makes - stores capture values the running
+ * configuration can hold and logs the correction it makes, and keeps only the values that differ from their defaults, whichever call site started it. The
+ * capture correction belongs here rather than in any one caller because the settings form cannot change a stored capture mode or clear the H.264 box, so a
+ * stored value the server cannot capture with would otherwise outlive every save. Schema migrations run automatically via the file store framework's migration
+ * runner before the data reaches mergeConfiguration.
+ */
 const configStore = createFileStore<UserConfig>({
 
-  beforeWrite: (data: UserConfig): UserConfig => filterDefaults(data),
+  beforeWrite: normalizeStoredConfig,
   currentSchemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
   defaultValue: (): UserConfig => ({ schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION }),
   getSchemaVersion: (data: UserConfig): number => data.schemaVersion ?? 1,
@@ -1115,12 +1266,12 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
 
 /**
  * Serialized read-modify-write operation on config.json. The mutation function receives the current config (already migrated to the latest schema version) and
- * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and filterDefaults via the framework.
+ * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and normalizeStoredConfig via the framework.
  *
  * This writes the file and nothing else. It is the write path for the leaves the process owns, the discovered DVR host and the generated DeviceID among them,
- * and for the boot's capture-coercion write-back, and each of those callers keeps the running configuration in step with its own write. A write to the
- * settings surface goes through saveConfiguration() in config/index.ts instead, which runs its mutation through this store, refuses an invalid result before
- * anything reaches disk, and reconciles the running configuration against the file it wrote.
+ * and for the boot's write of a capture correction the file needs, and each of those callers keeps the running configuration in step with its own write. A
+ * write to the settings surface goes through saveConfiguration() in config/index.ts instead, which runs its mutation through this store, refuses an invalid
+ * result before anything reaches disk, and reconciles the running configuration against the file it wrote.
  * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored. A throw inside it writes nothing.
  * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and an Error if config.json could not be read.
  */
@@ -1695,7 +1846,7 @@ const SETTINGS_TAB_SECTIONS: { displayName: string; id: string; paths: string[] 
   },
   {
 
-    displayName: "Startup",
+    displayName: "Precaching",
     id: "startup",
     paths: ["channels.precacheServices"]
   },

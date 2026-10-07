@@ -123,7 +123,7 @@ describe("generateSettingsTabContent", () => {
 
   test("renders one settings-section block per section", () => {
 
-    // The Settings tab is composed of ordered sections (Server, Browser, Startup, Capture, etc.) each emitted as a settings-section div with a
+    // The Settings tab is composed of ordered sections (Server, Browser, Precaching, Capture, etc.) each emitted as a settings-section div with a
     // header. We count the section divs to ensure none are dropped silently. The exact count depends on SETTINGS_TAB_SECTIONS but must always be
     // at least 1.
     const html = generateSettingsTabContent(NO_CONTEXT);
@@ -667,32 +667,32 @@ describe("the pending view of the gap", () => {
     }
   });
 
-  test("a restart-class save leaves one restart entry naming the running value in seconds, and the Settings tab shows it in that field's slot alone", async () => {
+  test("a restart-class save leaves one restart entry naming the running value, and the Settings tab shows it in that field's slot alone", async () => {
 
     await withTempDir(async (dir) => {
 
       initializeDataDir(dir);
 
-      assert.equal(CONFIG.browser.initTimeout, 3000, "precondition: the running value is the default");
+      assert.equal(CONFIG.server.port, 5589, "precondition: the running value is the default");
 
       await saveConfiguration((config) => {
 
-        config.browser ??= {};
-        config.browser.initTimeout = 5000;
+        config.server ??= {};
+        config.server.port = 6000;
       });
 
       const pending = collectPendingSettings();
-      const entry = pending.get("browser.initTimeout");
+      const entry = pending.get("server.port");
 
-      assert.deepEqual([...pending.keys()], ["browser.initTimeout"], "the save leaves one setting pending");
-      assert.deepEqual(entry, { kind: "restart", path: "browser.initTimeout", text: "Takes effect after PrismCast restarts. Running value: 3 seconds." },
-        "the marker names the running value in the units the form displays, not the saved one");
+      assert.deepEqual([...pending.keys()], ["server.port"], "the save leaves one setting pending");
+      assert.deepEqual(entry, { kind: "restart", path: "server.port", text: "Takes effect after PrismCast restarts. Running value: 5589." },
+        "the marker names the running value, not the saved one");
 
       const html = generateSettingsTabContent({ envOverrides: new Map(), pending });
 
-      assert.equal(slotOf(html, "browser.initTimeout"), "<div class=\"form-pending\" data-pending-path=\"browser.initTimeout\">" +
-        "Takes effect after PrismCast restarts. Running value: 3 seconds.</div>", "the pending field's slot is visible and holds the marker");
-      assert.equal(slotOf(html, "server.port"), "<div class=\"form-pending\" data-pending-path=\"server.port\" hidden></div>",
+      assert.equal(slotOf(html, "server.port"), "<div class=\"form-pending\" data-pending-path=\"server.port\">" +
+        "Takes effect after PrismCast restarts. Running value: 5589.</div>", "the pending field's slot is visible and holds the marker");
+      assert.equal(slotOf(html, "browser.initTimeout"), "<div class=\"form-pending\" data-pending-path=\"browser.initTimeout\" hidden></div>",
         "a field with nothing pending carries an empty hidden slot");
     });
   });

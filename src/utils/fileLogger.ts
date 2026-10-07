@@ -45,14 +45,16 @@ type LoggerState =
   { readonly kind: "closed"; readonly path: string } |
   { readonly kind: "off" };
 
-/* The file logger provides persistent logging to a configurable log file with automatic size-based trimming. When the log file exceeds the configured maximum
- * size, it is trimmed to half the maximum size, keeping only complete lines (the most recent logs are preserved). This approach prevents unbounded log growth while
- * maintaining recent history for troubleshooting.
+/* The file logger provides persistent logging to a configurable log file with automatic size-based trimming. When the log file's size in bytes exceeds the
+ * configured maximum, it is trimmed to at most half the maximum, keeping the most recent complete lines. The trim measures and cuts in bytes, the unit of the limit
+ * and of the size check, so a log of multi-byte text is held to the same bound an ASCII log is. This approach prevents unbounded log growth while maintaining
+ * recent history for troubleshooting.
  *
  * Design decisions:
  *
  * 1. Asynchronous buffered writes - Logs are collected in a buffer and flushed periodically to avoid blocking the event loop during high-frequency logging.
- * 2. Periodic size checking - File size is checked every N writes rather than on each write to minimize syscall overhead.
+ * 2. Size checking - File size is checked every N writes rather than on each write to minimize syscall overhead, and once more when setMaxLogSize() receives a
+ *    saved limit, so a smaller limit trims an oversized file at once. Each check starts only while the logger is open on a file that is accepting writes.
  * 3. Atomic trim operations - Trimming writes to a temp file then renames, preventing data loss if the process crashes during trim.
  * 4. Timestamps - Delegates to formatTimestamp() in utils/format.ts, which emits yyyy/mm/dd hh:mm:ss.mmm AM/PM. The same helper feeds the console method
  *    wrappers in app.ts and the Morgan HTTP request logger, so file, console, and request logs share identical timestamps.
@@ -64,8 +66,8 @@ type LoggerState =
  *    so the log file opens with the boot messages that preceded it. The window is bounded, and the initialization leaves it whether it succeeds or fails.
  */
 
-/* The file logger's module state: the lifecycle state that says where a line goes, plus the bookkeeping of the file it is open on. Every one of them is set up
- * by the initializeFileLogger() call during server startup.
+/* The file logger's module state: the lifecycle state that says where a line goes, plus the bookkeeping of the file it is open on. The initializeFileLogger()
+ * call during server startup sets up every one of them, and setMaxLogSize() replaces the size cap when a saved limit changes it.
  */
 
 // Where the logger is in its lifecycle. Only transition() assigns it, which is what gives the flush timer a single owner.
@@ -92,7 +94,8 @@ let writeChain: Promise<void> = Promise.resolve();
 // wedged filesystem operation cannot hold the process open through its own shutdown.
 const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
-// Maximum log file size, set during initialization. It is configuration the trim reads rather than lifecycle, so it stays beside the state.
+// Maximum log file size in bytes, set by initialization and by setMaxLogSize(). It is configuration the size check and the trim read rather than lifecycle, so
+// it stays beside the state.
 let maxLogSize = 1048576;
 
 /* The clock the flush interval arms on and the pause stamps read, set during initialization. It is per-run configuration the way the size cap is, so it stays
@@ -460,16 +463,35 @@ export function flushLogBufferSync(fallbackPath?: string): void {
 // Size Management.
 
 /**
- * Checks the actual file size and trims if it exceeds the maximum.
+ * Sets the maximum log file size and checks the open file against it at once, so a saved smaller limit trims an oversized file without waiting for the next
+ * periodic check. The limit is assigned before the check starts, so every check and trim from here on reads it whether or not the caller awaits the setter.
+ * The check returns when no file is open or the open file is paused, and skips the trim while debug logging is active, as the periodic check does.
+ * @param maxSize - The maximum log file size in bytes.
+ * @returns A promise that resolves once the size check, and any trim it started, completes.
+ */
+export async function setMaxLogSize(maxSize: number): Promise<void> {
+
+  maxLogSize = maxSize;
+
+  await checkAndTrimFile();
+}
+
+/**
+ * Checks the open file's size in bytes and trims it when it exceeds the maximum. The write path runs the check every SIZE_CHECK_FREQUENCY writes, and
+ * setMaxLogSize() runs it once for a saved limit.
  */
 async function checkAndTrimFile(): Promise<void> {
 
-  const targetPath = openFilePath();
-
-  if(targetPath === null) {
+  /* A check starts only while the logger is open and its file is accepting writes. A trim started while the logger is closing would land on the write chain
+   * outside the drain shutdown awaits, where its rename could replace the file under the final flush, so no check starts once shutdown has begun, from the
+   * write path or from a save. A paused file takes no size check, as the write path takes none while it drops entries.
+   */
+  if((state.kind !== "open") || (state.pausedSince !== null)) {
 
     return;
   }
+
+  const targetPath = state.path;
 
   try {
 
@@ -491,19 +513,22 @@ async function checkAndTrimFile(): Promise<void> {
 }
 
 /**
- * Pure trim logic: given the current log file content and the configured maximum size, returns the trimmed content (keeping complete lines from the file's tail)
- * or null when no trim is needed (file is already at or below half maxSize). Extracted from trimLogFile so the cut-at-newline algorithm is testable in isolation
- * without orchestrating real filesystem I/O - the surrounding read/write/rename chain is small enough to be exercised at the integration level.
+ * Pure trim logic: given the log file's bytes and the configured maximum size, returns the trimmed bytes (keeping complete lines from the file's tail) or null
+ * when no trim is needed (the file is already at or below half maxSize). Extracted from trimLogFile so the cut is testable in isolation without orchestrating
+ * real filesystem I/O - the surrounding read/write/rename chain is small enough to be exercised at the integration level.
  *
- * Algorithm: target half of maxSize as the post-trim file size, cut from (content.length - targetSize), then advance to the next newline so the trimmed file
- * begins on a complete line. If no newline exists past the cut, the cut position is taken as-is (the trim still drops earlier content even if the kept tail is
- * a single fragment line).
+ * Algorithm: the target is half of maxSize, rounded down, and the cut sits at the buffer's length minus the target, so the kept tail is at most half the limit.
+ * The kept tail starts after the first newline byte at or past the cut, so the trimmed file begins on a complete line, and that start is a whole character
+ * because a newline byte never lies inside a multi-byte sequence. With no newline past the cut, the kept tail is the end of one line, and a cut inside a
+ * multi-byte sequence advances past its continuation bytes to the next lead byte, so the kept tail never opens mid-character.
  *
- * @param content - The current log file content as a UTF-8 string.
+ * The result is a subarray of the input, so the trim writes back the bytes it read rather than decoding the file and encoding it again.
+ *
+ * @param content - The log file's content, as read from disk.
  * @param maxSize - The configured maximum log file size in bytes.
  * @returns The trimmed content, or null when no trim is needed.
  */
-export function computeTrimmedLogContent(content: string, maxSize: number): Nullable<string> {
+export function computeTrimmedLogContent(content: Buffer, maxSize: number): Nullable<Buffer> {
 
   // Calculate target size (half of max).
   const targetSize = Math.floor(maxSize / 2);
@@ -517,45 +542,53 @@ export function computeTrimmedLogContent(content: string, maxSize: number): Null
     return null;
   }
 
-  // Find the next newline after the cut position to keep complete lines.
-  let lineStart = content.indexOf("\n", cutPosition);
+  // Find the next newline at or after the cut position to keep complete lines.
+  const newlinePosition = content.indexOf("\n", cutPosition);
 
-  if(lineStart === -1) {
-
-    // No newline found after cut position, keep from cut position.
-    lineStart = cutPosition;
-  } else {
+  if(newlinePosition !== -1) {
 
     // Start after the newline.
-    lineStart += 1;
+    return content.subarray(newlinePosition + 1);
   }
 
-  return content.substring(lineStart);
+  // No newline past the cut. A continuation byte, one whose top two bits read 10, is never the first byte of a character, so the cut advances past any it lands
+  // on to the next lead byte; an advance that reaches the end keeps nothing.
+  let lineStart = cutPosition;
+
+  while((lineStart < content.length) && ((content.readUInt8(lineStart) & 0xC0) === 0x80)) {
+
+    lineStart++;
+  }
+
+  return content.subarray(lineStart);
 }
 
 /**
- * Trims the log file to half the maximum size, keeping only complete lines. The most recent logs are preserved. Pure cut logic lives in
- * computeTrimmedLogContent; this function is the I/O orchestration shell around it.
+ * Trims the log file to at most half the maximum size, keeping the most recent complete lines. Pure cut logic lives in computeTrimmedLogContent; this function
+ * is the I/O orchestration shell around it, reading the file as bytes and writing back the subarray the cut returns.
  *
  * The entire read/write/rename critical section runs inside the write-ordering chain so it is serialized against buffer flushes. This closes the trim/flush race:
  * an appendFile cannot land between this function's readFile and its rename, so the rename never overwrites freshly appended lines with a stale snapshot.
  */
 async function trimLogFile(): Promise<void> {
 
-  // The path is read once here because a shutdown can move the state under the serialized operation below, and the rename has to land on the file the read
-  // came from rather than on wherever the logger has since gone.
-  const targetPath = openFilePath();
-
-  if(targetPath === null) {
+  /* The size check made this test before its stat, and it is made again here because a shutdown or a failed flush can move the state while that stat is awaited.
+   * The test and the enqueue below run in one synchronous step, so a trim either joins the write chain a shutdown's drain awaits or never starts. The path comes
+   * from the state the test read, because a shutdown can move the state under the serialized operation, and the rename has to land on the file the read came
+   * from rather than on wherever the logger has since gone.
+   */
+  if((state.kind !== "open") || (state.pausedSince !== null)) {
 
     return;
   }
+
+  const targetPath = state.path;
 
   return serializeWrite(async (): Promise<void> => {
 
     try {
 
-      const content = await fsPromises.readFile(targetPath, "utf-8");
+      const content = await fsPromises.readFile(targetPath);
       const trimmedContent = computeTrimmedLogContent(content, maxLogSize);
 
       if(trimmedContent === null) {
@@ -566,7 +599,7 @@ async function trimLogFile(): Promise<void> {
       // Write to temp file, then rename (atomic replace).
       const tempPath = targetPath + ".tmp";
 
-      await fsPromises.writeFile(tempPath, trimmedContent, "utf-8");
+      await fsPromises.writeFile(tempPath, trimmedContent);
       await fsPromises.rename(tempPath, targetPath);
     } catch(error) {
 

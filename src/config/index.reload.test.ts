@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.reload.test.ts: Tests for saveConfiguration and the reconcile behind it, plus the persistCoercedConfig write-back. The contracts exercised:
+ * index.reload.test.ts: Tests for saveConfiguration and the reconcile behind it, plus the capture correction a boot and every save make. The contracts exercised:
  *
  *   1. Classes decide what a save commits: a restart-class value lands on disk and in the loaded snapshot and stays out of CONFIG, a live value is committed
  *      once its handler realizes it, and a value a handler refuses is never committed and is retried by every later save.
@@ -13,23 +13,28 @@
  *
  *   4. Saves are serialized: overlapping saves commit in the order their writes landed, and a refused save leaves the next one free to complete.
  *
- *   5. The loaded snapshot moves with the commit: a reader outside the reconcile queue sees CONFIG and the snapshot only as a completed reconcile left them.
+ *   5. The loaded snapshot moves with the commit: a reader outside the reconcile queue sees CONFIG and the snapshot only as a completed reconcile left them, and
+ *      a boot records it from the file it read.
  *
  *   6. The boot and the outcome line report exactly what happened: one warning naming the failure the store reported, and no outcome line for a save with
  *      nothing to report.
  *
- * config/index.ts composes its disk persistence behind the injectable ConfigStore port. Every row runs against the store double below, which holds a file in
- * memory, applies a save's mutation to a copy of it and keeps the copy only when the mutation completes - the store's own rule that a throw writes nothing - and
- * refuses the mutation, and reports the failure from its read, when a row arms a parse or read failure. Each row re-initializes CONFIG and the loaded snapshot
- * from that file through initializeConfiguration, so no row inherits another's state.
+ *   7. A capture value the server cannot capture with is corrected rather than refused: a save carrying one commits the correction with one warning per
+ *      correction, the file holds the corrected value, and a value the environment supplies is corrected in every candidate and never written.
+ *
+ * config/index.ts composes its disk persistence behind the injectable ConfigStore port. Every row runs against the in-memory store double of index.helpers.ts,
+ * built fresh for each row, whose doc comment states the store rules it keeps. Each row re-initializes CONFIG and the loaded snapshot from the stored file it
+ * names through initializeConfiguration, so no row inherits another's state.
  */
 import * as indexModule from "./index.ts";
 import { LOG, getCurrentPattern, initDebugFilter } from "../utils/index.ts";
+import { READ_FAILURE_MESSAGE, makeMemoryConfigStore } from "./index.helpers.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, flushMicrotasks } from "../testing.helpers.ts";
 import { computeConfigDiff, registerConfigChangeHandler, resetConfigChangeHandlers } from "./reactivity.ts";
 import type { ChangeRejection } from "./reactivity.ts";
 import { FileStoreParseError } from "./persistence.ts";
+import type { MemoryConfigStore } from "./index.helpers.ts";
 import type { Nullable } from "../types/index.ts";
 import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
@@ -37,73 +42,10 @@ import assert from "node:assert/strict";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// The store double's state: the file it holds, the failure a row arms, and how many reads and writes it served.
-let file: UserConfig = {};
-let armedFailure: Nullable<"parse" | "read"> = null;
-let reads = 0;
-let writes = 0;
-
-const READ_FAILURE_MESSAGE = "The configuration file /memory/config.json could not be read, so nothing was written.";
-
 // The outcome line a reconcile logs when its save reported something.
 const OUTCOME_LINE = "Configuration saved and reconciled with the running process.";
 
-/* The injected config store, typed as the production ConfigStore port so the double cannot drift from it. mutateConfig refuses on an armed failure exactly as
- * the file store does, before the callback runs, and otherwise runs the callback against a copy of the held file, keeping the copy only when the callback
- * returns, so a callback that throws writes nothing. readConfig answers an armed failure the way the file store does, with the defaults and the member that
- * names the failure.
- */
-const io: indexModule.ConfigStore = {
-
-  mutateConfig: async (fn) => {
-
-    switch(armedFailure) {
-
-      case "parse": {
-
-        throw new FileStoreParseError("configuration", "/memory/config.json", "Unexpected token.");
-      }
-
-      case "read": {
-
-        throw new Error(READ_FAILURE_MESSAGE);
-      }
-
-      default: {
-
-        break;
-      }
-    }
-
-    const working = structuredClone(file);
-
-    fn(working);
-    file = working;
-    writes++;
-  },
-  readConfig: async () => {
-
-    reads++;
-
-    switch(armedFailure) {
-
-      case "parse": {
-
-        return { config: {}, parseError: true, parseErrorMessage: "Unexpected token.", readError: false };
-      }
-
-      case "read": {
-
-        return { config: {}, parseError: false, readError: true };
-      }
-
-      default: {
-
-        return { config: structuredClone(file), parseError: false, readError: false };
-      }
-    }
-  }
-};
+let store: MemoryConfigStore = makeMemoryConfigStore();
 
 /**
  * Saves through the store double.
@@ -112,7 +54,7 @@ const io: indexModule.ConfigStore = {
  */
 async function save(mutator: (current: UserConfig) => void): Promise<Awaited<ReturnType<typeof indexModule.saveConfiguration>>> {
 
-  return indexModule.saveConfiguration(mutator, io);
+  return indexModule.saveConfiguration(mutator, store);
 }
 
 /**
@@ -146,14 +88,11 @@ function registerRefusingHandler(path: string, occupied: () => boolean): void {
 
 beforeEach(async () => {
 
-  file = {};
-  armedFailure = null;
-  reads = 0;
-  writes = 0;
+  store = makeMemoryConfigStore();
   resetConfigChangeHandlers();
   initDebugFilter("");
 
-  await indexModule.initializeConfiguration(undefined, io);
+  await indexModule.initializeConfiguration(undefined, store);
 });
 
 afterEach(() => {
@@ -168,7 +107,7 @@ describe("saveConfiguration - each class reaches the running configuration as it
 
     const result = await save((current) => { current.server = { port: 6000 }; });
 
-    assert.equal(file.server?.port, 6000, "the value is on disk");
+    assert.equal(store.file.server?.port, 6000, "the value is on disk");
     assert.equal(indexModule.getLoadedConfiguration().server.port, 6000, "the loaded snapshot holds the saved value");
     assert.equal(indexModule.CONFIG.server.port, 5589, "the running configuration keeps the port the listener is bound to");
     assert.deepEqual(paths(result.deferred), ["server.port"], "the save holds the change for a restart");
@@ -240,7 +179,7 @@ describe("saveConfiguration - a refused live change is never committed and is re
     assert.deepEqual(result.rejected.map((refusal) => refusal.change.path), ["hdhr.port"]);
     assert.equal(result.rejected[0]?.reason, "Port 5005 is occupied, so the change was not applied.", "the handler's reason is carried verbatim");
     assert.equal(indexModule.CONFIG.hdhr.port, 5004, "the running configuration keeps the bound port");
-    assert.equal(file.hdhr?.port, 5005, "the saved value stays on disk");
+    assert.equal(store.file.hdhr?.port, 5005, "the saved value stays on disk");
     assert.deepEqual(paths(indexModule.getConfigurationGap().live), ["hdhr.port"], "the gap reports the change as unrealized");
   });
 
@@ -335,8 +274,8 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
 
     const loaded = indexModule.getLoadedConfiguration();
     const running = indexModule.CONFIG;
-    const fileBefore = structuredClone(file);
-    const writesBefore = writes;
+    const fileBefore = structuredClone(store.file);
+    const writesBefore = store.writes;
 
     assert.equal(loaded.server.port, 6000, "precondition: the loaded snapshot sits apart from the defaults");
 
@@ -348,64 +287,108 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
       return true;
     });
 
-    assert.equal(writes, writesBefore, "nothing was written");
-    assert.deepEqual(file, fileBefore);
+    assert.equal(store.writes, writesBefore, "nothing was written");
+    assert.deepEqual(store.file, fileBefore);
     assert.equal(indexModule.getLoadedConfiguration(), loaded, "the loaded snapshot is the same object");
     assert.equal(indexModule.CONFIG, running, "CONFIG is the same object");
     assert.equal(indexModule.CONFIG.server.port, 5589);
   });
 
-  test("a native capture mode is refused, and a debug-filter change bundled with it never reaches the runtime filter", async () => {
+  test("a hard error is refused, and a debug-filter change bundled with it never reaches the runtime filter", async () => {
 
     await assert.rejects(save((current) => {
 
       current.logging = { debugFilter: "tuning:hulu" };
-      current.streaming = { captureMode: "native" };
-    }), /capture mode/);
+      current.server = { port: 0 };
+    }), { message: "PORT must be at least 1, but it is 0.", name: "ConfigurationRejectedError" });
 
     assert.equal(getCurrentPattern(), "", "the runtime debug filter is untouched");
-    assert.equal(indexModule.CONFIG.streaming.captureMode, "ffmpeg");
-    assert.equal(file.logging, undefined, "nothing was written");
+    assert.equal(indexModule.CONFIG.server.port, 5589);
+    assert.equal(store.file.logging, undefined, "nothing was written");
   });
 
   test("an object at a setting that takes a single value is refused by name, with nothing written and CONFIG unchanged", async () => {
 
-    const writesBefore = writes;
+    const writesBefore = store.writes;
 
     await assert.rejects(save((current) => {
 
       current.hdhr = { friendlyName: { nested: "value" } as unknown as string };
     }), { message: "hdhr.friendlyName holds an object, which this setting does not accept.", name: "ConfigurationRejectedError" });
 
-    assert.equal(writes, writesBefore, "nothing was written");
+    assert.equal(store.writes, writesBefore, "nothing was written");
     assert.equal(indexModule.CONFIG.hdhr.friendlyName, "PrismCast");
   });
 
   test("a list at a setting that takes a single value is refused by name, with nothing written and CONFIG unchanged", async () => {
 
-    const writesBefore = writes;
+    const writesBefore = store.writes;
 
     await assert.rejects(save((current) => {
 
       current.hdhr = { friendlyName: [ "Den", "Office" ] as unknown as string };
     }), { message: "hdhr.friendlyName holds a list, which this setting does not accept.", name: "ConfigurationRejectedError" });
 
-    assert.equal(writes, writesBefore, "nothing was written");
+    assert.equal(store.writes, writesBefore, "nothing was written");
     assert.equal(indexModule.CONFIG.hdhr.friendlyName, "PrismCast");
+  });
+
+  test("a monitor interval below its floor is refused by name, with nothing written and CONFIG unchanged", async () => {
+
+    const writesBefore = store.writes;
+
+    await assert.rejects(save((current) => { current.playback = { monitorInterval: 499 }; }),
+      { message: "MONITOR_INTERVAL must be at least 500, but it is 499.", name: "ConfigurationRejectedError" });
+
+    assert.equal(store.writes, writesBefore, "nothing was written");
+    assert.equal(indexModule.CONFIG.playback.monitorInterval, 2000);
+  });
+
+  test("a monitor interval above its ceiling is refused by name, with nothing written and CONFIG unchanged", async () => {
+
+    const writesBefore = store.writes;
+
+    await assert.rejects(save((current) => { current.playback = { monitorInterval: 30001 }; }),
+      { message: "MONITOR_INTERVAL must be at most 30000, but it is 30001.", name: "ConfigurationRejectedError" });
+
+    assert.equal(store.writes, writesBefore, "nothing was written");
+    assert.equal(indexModule.CONFIG.playback.monitorInterval, 2000);
+  });
+
+  test("a stale page cleanup interval below its floor is refused by name, with nothing written and CONFIG unchanged", async () => {
+
+    const writesBefore = store.writes;
+
+    await assert.rejects(save((current) => { current.recovery = { stalePageCleanupInterval: 9999 }; }),
+      { message: "STALE_PAGE_CLEANUP_INTERVAL must be at least 10000, but it is 9999.", name: "ConfigurationRejectedError" });
+
+    assert.equal(store.writes, writesBefore, "nothing was written");
+    assert.equal(indexModule.CONFIG.recovery.stalePageCleanupInterval, 60000);
+  });
+
+  test("a stale page cleanup interval above its ceiling is refused by name, with nothing written and CONFIG unchanged", async () => {
+
+    const writesBefore = store.writes;
+
+    await assert.rejects(save((current) => { current.recovery = { stalePageCleanupInterval: 600001 }; }),
+      { message: "STALE_PAGE_CLEANUP_INTERVAL must be at most 600000, but it is 600001.", name: "ConfigurationRejectedError" });
+
+    assert.equal(store.writes, writesBefore, "nothing was written");
+    assert.equal(indexModule.CONFIG.recovery.stalePageCleanupInterval, 60000);
   });
 
   test("an HDHomeRun port equal to the server port on an all-interfaces host is refused, and the next valid save completes without a second read", async () => {
 
-    const readsBefore = reads;
+    const readsBefore = store.reads;
 
     await assert.rejects(save((current) => { current.hdhr = { port: 5589 }; }), /conflicts with the main server port/);
-    assert.equal(file.hdhr, undefined, "the refused save wrote nothing");
+    assert.equal(store.file.hdhr, undefined, "the refused save wrote nothing");
 
     const result = await save((current) => { current.playback = { stallThreshold: 0.2 }; });
 
     assert.deepEqual(paths(result.applied), ["playback.stallThreshold"], "the next save completes");
-    assert.equal(file.hdhr, undefined, "the refused port never reached the file");
-    assert.equal(reads, readsBefore, "a save reconciles the candidate its mutation built, without reading the file again");
+    assert.equal(store.file.hdhr, undefined, "the refused port never reached the file");
+    assert.equal(store.reads, readsBefore, "a save reconciles the candidate its mutation built, without reading the file again");
   });
 
   test("a file that fails to parse refuses the save inside the store, with nothing written or reconciled", async () => {
@@ -417,7 +400,7 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
 
     assert.equal(loaded.server.port, 6000, "precondition: the loaded snapshot sits apart from the defaults");
 
-    armedFailure = "parse";
+    store.armedFailure = "parse";
 
     await assert.rejects(save((current) => { current.playback = { stallThreshold: 0.2 }; }), FileStoreParseError);
 
@@ -435,7 +418,7 @@ describe("saveConfiguration - a refused save writes nothing and moves nothing", 
 
     assert.equal(loaded.server.port, 6000, "precondition: the loaded snapshot sits apart from the defaults");
 
-    armedFailure = "read";
+    store.armedFailure = "read";
 
     await assert.rejects(save((current) => { current.playback = { stallThreshold: 0.2 }; }), { message: READ_FAILURE_MESSAGE });
 
@@ -496,7 +479,7 @@ describe("saveConfiguration - serialized saves", () => {
     const result = await completed;
 
     assert.deepEqual(paths(result.applied), ["playback.stallThreshold"]);
-    assert.equal(file.server, undefined, "the refused mutation never reached the file");
+    assert.equal(store.file.server, undefined, "the refused mutation never reached the file");
   });
 });
 
@@ -535,6 +518,19 @@ describe("saveConfiguration - the loaded snapshot moves with the commit", () => 
       assert.equal(indexModule.getLoadedConfiguration().playback.stallThreshold, 0.2, "the snapshot holds the saved value");
       assert.deepEqual(indexModule.getConfigurationGap(), { held: [], live: [], nextStream: [] }, "CONFIG and the snapshot agree once the commit lands");
     });
+
+  test("the boot records the loaded snapshot from the file it read, replacing the one the last reconcile recorded", async () => {
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.equal(indexModule.getLoadedConfiguration().playback.stallThreshold, 0.2, "precondition: the last reconcile recorded the saved value");
+
+    store.file = { playback: { stallThreshold: 0.3 } };
+    await indexModule.initializeConfiguration(undefined, store);
+
+    assert.equal(indexModule.getLoadedConfiguration().playback.stallThreshold, 0.3, "the snapshot holds the value the boot read");
+    assert.deepEqual(indexModule.getConfigurationGap(), { held: [], live: [], nextStream: [] }, "CONFIG and the snapshot agree after the boot");
+  });
 });
 
 describe("the boot warning and the outcome line", () => {
@@ -548,9 +544,9 @@ describe("the boot warning and the outcome line", () => {
 
       const warn = t.mock.method(LOG, "warn", () => undefined);
 
-      file = { server: { port: 6000 } };
-      armedFailure = "read";
-      await indexModule.initializeConfiguration(undefined, io);
+      store.file = { server: { port: 6000 } };
+      store.armedFailure = "read";
+      await indexModule.initializeConfiguration(undefined, store);
 
       const messages = warn.mock.calls.map((call) => call.arguments[0]);
 
@@ -564,9 +560,9 @@ describe("the boot warning and the outcome line", () => {
 
       const warn = t.mock.method(LOG, "warn", () => undefined);
 
-      file = { server: { port: 6000 } };
-      armedFailure = "parse";
-      await indexModule.initializeConfiguration(undefined, io);
+      store.file = { server: { port: 6000 } };
+      store.armedFailure = "parse";
+      await indexModule.initializeConfiguration(undefined, store);
 
       const messages = warn.mock.calls.map((call) => call.arguments[0]);
 
@@ -594,49 +590,104 @@ describe("the boot warning and the outcome line", () => {
   });
 });
 
-describe("startup coercion and persistCoercedConfig", () => {
+/* A capture value the server cannot capture with is corrected in every candidate, the boot's and each save's, and the store's write hook stores the file's own
+ * values corrected. The rows that set a capture environment variable restore the environment afterward, so the next row's boot reads none of it.
+ */
+describe("the boot's capture correction and the saves after it", () => {
 
-  test("the loaded snapshot follows the startup coercion, so a save that changes nothing reports nothing", async () => {
+  const MODE_WARNING = "Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.";
+  const UNRECOGNIZED_WARNING = "The configured capture codecs include identifiers the server does not recognize, so they are ignored.";
+  const CAPTURE_WARNINGS = new Set<unknown>([ MODE_WARNING, UNRECOGNIZED_WARNING, "The configured capture codecs omit the H.264 baseline, so it is restored." ]);
+  const ORIGINAL_ENV = { ...process.env };
+
+  /**
+   * Answers the capture warnings a mocked LOG.warn received, in the order they were logged, so a row compares the whole list and a repeated or missing warning
+   * fails it.
+   * @param calls - The mock's recorded calls.
+   * @returns The capture warnings among them.
+   */
+  function captureWarningsIn(calls: readonly { readonly arguments: readonly unknown[] }[]): unknown[] {
+
+    return calls.map((call) => call.arguments[0]).filter((message) => CAPTURE_WARNINGS.has(message));
+  }
+
+  afterEach(() => {
+
+    for(const key of Object.keys(process.env)) {
+
+      Reflect.deleteProperty(process.env, key);
+    }
+
+    Object.assign(process.env, ORIGINAL_ENV);
+  });
+
+  test("the loaded snapshot follows the boot's capture correction, so a save that changes nothing reports nothing", async () => {
 
     // The opening save shows that this row's saves report what they change, so the empty outcome at the end is a reading rather than a default.
     const opening = await save((current) => { current.playback = { stallThreshold: 0.2 }; });
 
     assert.deepEqual(paths(opening.applied), ["playback.stallThreshold"], "precondition: a save reports the setting it changed");
 
-    file = { streaming: { captureMode: "native" } };
-    await indexModule.initializeConfiguration(undefined, io);
+    store.file = { streaming: { captureMode: "native" } };
+    await indexModule.initializeConfiguration(undefined, store);
 
-    assert.equal(indexModule.getLoadedConfiguration().streaming.captureMode, "native", "precondition: the snapshot was loaded from the native file");
-
-    indexModule.validateConfiguration();
+    const loaded = indexModule.getLoadedConfiguration();
 
     assert.equal(indexModule.CONFIG.streaming.captureMode, "ffmpeg");
-    assert.equal(indexModule.getLoadedConfiguration().streaming.captureMode, "ffmpeg", "the loaded snapshot holds the coerced value");
-
-    await indexModule.persistCoercedConfig(io);
+    assert.deepEqual([ loaded.streaming.captureMode, loaded.streaming.captureCodecs ],
+      [ indexModule.CONFIG.streaming.captureMode, indexModule.CONFIG.streaming.captureCodecs ], "the loaded snapshot holds the capture values CONFIG holds");
 
     const result = await save(() => { /* A save that changes nothing. */ });
 
     assert.deepEqual(result, { applied: [], deferred: [], nextStream: [], rejected: [] });
   });
 
-  test("writes the coerced capture settings to disk when validateConfiguration coerced a value", async () => {
+  test("a save of native capture mode commits FFmpeg capture with one warning, stores no capture mode, and reports nothing rejected", async (t) => {
 
-    file = { streaming: { captureMode: "native" } };
-    await indexModule.initializeConfiguration(undefined, io);
-    indexModule.validateConfiguration();
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const result = await save((current) => { current.streaming = { captureMode: "native" }; });
 
-    await indexModule.persistCoercedConfig(io);
-
-    assert.equal(writes, 1, "the coercion is written back to disk");
-    assert.equal(file.streaming?.captureMode, "ffmpeg", "the persisted capture mode is the coerced ffmpeg value");
+    assert.equal(indexModule.CONFIG.streaming.captureMode, "ffmpeg", "the running configuration holds FFmpeg capture");
+    assert.equal(indexModule.getLoadedConfiguration().streaming.captureMode, "ffmpeg", "the loaded snapshot holds FFmpeg capture");
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [MODE_WARNING], "the correction warns once");
+    assert.equal(store.file.streaming?.captureMode, undefined, "the file holds no capture mode, because the corrected mode is the default");
+    assert.deepEqual(result.rejected, [], "nothing is rejected");
   });
 
-  test("does not write to disk when no coercion was needed", async () => {
+  test("a save after a boot that corrected the stored capture mode logs no capture warning", async (t) => {
 
-    indexModule.validateConfiguration();
-    await indexModule.persistCoercedConfig(io);
+    const warn = t.mock.method(LOG, "warn", () => undefined);
 
-    assert.equal(writes, 0, "no write-back without a coercion");
+    store.file = { streaming: { captureMode: "native" } };
+    await indexModule.initializeConfiguration(undefined, store);
+
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [MODE_WARNING], "precondition: the boot corrected the stored mode with one warning");
+    assert.equal(store.file.streaming?.captureMode, undefined, "precondition: the boot's write stored the correction");
+
+    warn.mock.resetCalls();
+
+    await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+    assert.deepEqual(captureWarningsIn(warn.mock.calls), [], "the save builds its candidate from a file that needs no correction");
   });
+
+  test("a save while the environment supplies a native mode and a list with an unrecognized codec warns once per correction and writes neither value",
+    async (t) => {
+
+      process.env["CAPTURE_MODE"] = "native";
+
+      // The list's correction, ["h264"], differs from the default and would survive filterDefaults, so a leak of the environment's list into the file shows
+      // here, where the mode cannot show one because its one correction is the default.
+      process.env["CAPTURE_CODECS"] = "h264,av1";
+      await indexModule.initializeConfiguration(undefined, store);
+
+      const warn = t.mock.method(LOG, "warn", () => undefined);
+
+      await save((current) => { current.playback = { stallThreshold: 0.2 }; });
+
+      assert.deepEqual(captureWarningsIn(warn.mock.calls), [ MODE_WARNING, UNRECOGNIZED_WARNING ],
+        "the save's candidate re-applies the environment, so each correction warns again, once");
+      assert.equal(store.file.streaming?.captureMode, undefined, "the environment's mode is never written");
+      assert.equal(store.file.streaming?.captureCodecs, undefined, "the environment's codec list is never written");
+    });
 });

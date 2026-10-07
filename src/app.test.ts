@@ -7,16 +7,33 @@
  * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
  * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
  *
- * The HTTP request-logging rules are the second surface tested here. The two skip predicates and the elapsed-time renderer are pure of the Express plumbing - they
- * take a plain record or a request object and return a decision - so the whole filtered/errors rule set is exercised without binding a port or booting the server.
+ * The HTTP request-logging rules are the second surface tested here. The skip predicates, the per-level decision and the elapsed-time renderer are pure of the
+ * Express plumbing - they take a plain record or a request object and return a decision - so every level's rule set is exercised without booting the server.
+ * The request logger itself runs on a bare Express app bound to a loopback port with a stub stream, so a level change is observed request by request.
+ *
+ * The log size handler is the third surface. Its rows open the file logger on a file of their own and hand the handler the candidate a save would, so the
+ * trim it starts and the save it never holds up are each observed on disk.
  */
-import { afterEach, beforeEach, describe, test } from "node:test";
+import type { IncomingMessage, Server } from "node:http";
+import type { PathLike, Stats } from "node:fs";
+import { TestClock, settle, waitUntil } from "homebridge-plugin-utils/testing";
+import { after, afterEach, before, beforeEach, describe, test } from "node:test";
+import { applyLogSizeChanges, createRequestLogger, elapsedMillis, releaseInstanceSlot, skipInErrorsMode, skipInFilteredMode, skipRequestLog,
+  stampRequestStart } from "./app.ts";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
-import { elapsedMillis, releaseInstanceSlot, skipInErrorsMode, skipInFilteredMode, stampRequestStart } from "./app.ts";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, promises, statSync, writeFileSync } from "node:fs";
 import { getServerPidFilePath, initializeDataDir } from "./config/paths.ts";
-import type { IncomingMessage } from "node:http";
+import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
+import type { AddressInfo } from "node:net";
+import { CONFIG } from "./config/index.ts";
+import type { Config } from "./types/index.ts";
+import type { ConfigChange } from "./config/reactivity.ts";
+import { HTTP_LOG_LEVELS } from "./types/index.ts";
 import assert from "node:assert/strict";
+import express from "express";
+import { initDebugFilter } from "./utils/debugFilter.ts";
+import { join } from "node:path";
+import { registerConfigChangeHandler } from "./config/reactivity.ts";
 import { serializeRecord } from "./utils/index.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -205,6 +222,171 @@ describe("skipInFilteredMode", () => {
   });
 });
 
+describe("skipRequestLog", () => {
+
+  /* Every pair of levels decides at least one of these requests differently, so a level routed to another level's rule fails a row. Each expected answer is a
+   * literal read from the mode rules above, never computed by calling them, and the table is keyed by every level, so a level added later cannot compile until
+   * its answers are written here.
+   */
+  const REQUESTS: readonly { readonly expected: Readonly<Record<typeof HTTP_LOG_LEVELS[number], boolean>>; readonly name: string;
+    readonly request: { readonly elapsedMs: number; readonly hasRetryAfter: boolean; readonly statusCode: number; readonly url: string }; }[] = [
+
+    {
+
+      expected: { all: false, errors: true, filtered: false, none: true },
+      name: "a fast success on a management endpoint",
+      request: { elapsedMs: 2, hasRetryAfter: false, statusCode: 200, url: "/config" }
+    },
+    {
+
+      expected: { all: false, errors: false, filtered: false, none: true },
+      name: "a fast error on a polling endpoint",
+      request: { elapsedMs: 2, hasRetryAfter: false, statusCode: 500, url: "/logs" }
+    },
+    {
+
+      expected: { all: false, errors: true, filtered: true, none: true },
+      name: "a fast success on a polling endpoint",
+      request: { elapsedMs: 2, hasRetryAfter: false, statusCode: 200, url: "/logs" }
+    },
+    {
+
+      expected: { all: false, errors: true, filtered: false, none: true },
+      name: "a 404 for a browser-initiated asset",
+      request: { elapsedMs: 2, hasRetryAfter: false, statusCode: 404, url: "/favicon.ico" }
+    }
+  ];
+
+  for(const level of HTTP_LOG_LEVELS) {
+
+    test("the " + level + " level decides each request by its own rule", () => {
+
+      for(const { expected, name, request } of REQUESTS) {
+
+        assert.equal(skipRequestLog({ ...request, level }), expected[level], name + " at the " + level + " level");
+      }
+    });
+  }
+});
+
+/* The request logger on a bare Express app with a stub stream. Each route resolves the finish signal from a listener it registers after morgan's, and morgan makes
+ * its skip decision synchronously as the response finishes, so once a row holds that signal the logger has written its line or decided not to.
+ */
+describe("createRequestLogger", () => {
+
+  const ORIGINAL_LEVEL = CONFIG.logging.httpLogLevel;
+  const lines: string[] = [];
+  let baseUrl = "";
+  let entered = Promise.withResolvers<null>();
+  let finished = Promise.withResolvers<null>();
+  let release = Promise.withResolvers<null>();
+  let server: Server;
+
+  /**
+   * Requests a path and waits until its response has finished on the server, so the logger has made its decision.
+   * @param path - The path to request.
+   */
+  async function requestAndFinish(path: string): Promise<void> {
+
+    finished = Promise.withResolvers<null>();
+
+    const response = await fetch(baseUrl + path);
+
+    await response.text();
+    await finished.promise;
+  }
+
+  before(async () => {
+
+    const app = express();
+    const listening = Promise.withResolvers<null>();
+
+    app.use(createRequestLogger({ write: (line: string): void => { lines.push(line); } }));
+
+    app.get("/ping", (_req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+      res.send("ok");
+    });
+
+    // The held route answers only once the row releases it, so a row can change the level between a request's arrival and its finish.
+    app.get("/hold", (_req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+      entered.resolve(null);
+      void release.promise.then(() => { res.send("ok"); });
+    });
+
+    server = app.listen(0, "127.0.0.1", () => { listening.resolve(null); });
+    await listening.promise;
+    baseUrl = "http://127.0.0.1:" + String((server.address() as AddressInfo).port);
+  });
+
+  beforeEach(() => {
+
+    lines.length = 0;
+    entered = Promise.withResolvers<null>();
+    release = Promise.withResolvers<null>();
+  });
+
+  afterEach(() => {
+
+    CONFIG.logging.httpLogLevel = ORIGINAL_LEVEL;
+  });
+
+  after(async () => {
+
+    const closed = Promise.withResolvers<null>();
+
+    server.closeAllConnections();
+    server.close(() => { closed.resolve(null); });
+    await closed.promise;
+  });
+
+  test("a request under none writes no line", async () => {
+
+    CONFIG.logging.httpLogLevel = "none";
+
+    await requestAndFinish("/ping");
+
+    assert.deepEqual(lines, []);
+  });
+
+  test("after the level changes to all, the next request writes one line", async () => {
+
+    CONFIG.logging.httpLogLevel = "none";
+
+    await requestAndFinish("/ping");
+
+    assert.equal(lines.length, 0, "precondition: the request under none wrote nothing");
+
+    CONFIG.logging.httpLogLevel = "all";
+
+    await requestAndFinish("/ping");
+
+    assert.equal(lines.length, 1, "the next request wrote one line");
+    assert.match(lines[0] ?? "", /^GET \/ping from \S+ responded 200 in \d+\.\d{3} ms\.\n$/, "the line carries the elapsed time the arrival stamp recorded");
+  });
+
+  test("a request that arrives under all and finishes after the level changes to none writes no line", async () => {
+
+    CONFIG.logging.httpLogLevel = "all";
+    finished = Promise.withResolvers<null>();
+
+    const response = fetch(baseUrl + "/hold");
+
+    await entered.promise;
+
+    CONFIG.logging.httpLogLevel = "none";
+    release.resolve(null);
+
+    await (await response).text();
+    await finished.promise;
+
+    assert.deepEqual(lines, []);
+  });
+});
+
 describe("elapsedMillis", () => {
 
   test("renders an empty string for a request that carries no start stamp", () => {
@@ -229,5 +411,127 @@ describe("elapsedMillis", () => {
     assert.equal(nextCalls, 1, "the stamping middleware passes the request along exactly once");
     assert.match(rendered, /^\d+\.\d{3}$/, "the rendering carries three decimals, as morgan's own timing token does");
     assert.ok(Number(rendered) >= 0, "a monotonic source cannot produce a negative elapsed reading");
+  });
+});
+
+/* The log size handler at the composition root. This suite opens no file logger, and a closed logger returns before its stat, so each row opens one on a file
+ * of its own, seeds that file above the saved limit with the debug filter cleared, and shuts the logger down before its directory goes. CONFIG holds the running
+ * limit and the candidate the saved one, so a handler that read CONFIG would trim nothing.
+ */
+describe("applyLogSizeChanges", () => {
+
+  const ORIGINAL_LIMIT = CONFIG.logging.maxSize;
+  const RUNNING_LIMIT = 1048576;
+  const SAVED_LIMIT = 524288;
+  const SEED_CONTENT = "[2026/01/01 12:00:00.000 PM] A seeded history line.\n".repeat(12000);
+  const CHANGE: ConfigChange = { current: SAVED_LIMIT, path: "logging.maxSize", previous: RUNNING_LIMIT };
+
+  // The candidate a save hands the handler: the running configuration with the saved limit applied, while CONFIG still holds the running one.
+  const makeNext = (): Config => {
+
+    const next = structuredClone(CONFIG);
+
+    next.logging.maxSize = SAVED_LIMIT;
+
+    return next;
+  };
+
+  beforeEach(() => {
+
+    CONFIG.logging.maxSize = RUNNING_LIMIT;
+    initDebugFilter("");
+  });
+
+  afterEach(() => {
+
+    CONFIG.logging.maxSize = ORIGINAL_LIMIT;
+  });
+
+  test("registering a second handler for the log size limit throws, because the module registered its own at load", () => {
+
+    assert.throws(() => { registerConfigChangeHandler("logging.maxSize", applyLogSizeChanges); },
+      { message: "A config change handler is already registered for prefix \"logging.maxSize\"." });
+  });
+
+  test("a smaller limit in the candidate trims the open file to at most half of it", async () => {
+
+    await withTempDir(async (dir) => {
+
+      const logPath = join(dir, "handler.log");
+
+      await initializeFileLogger(logPath, RUNNING_LIMIT, new TestClock());
+
+      try {
+
+        writeFileSync(logPath, SEED_CONTENT);
+
+        assert.deepEqual(await applyLogSizeChanges([CHANGE], makeNext()), [], "the handler refuses nothing");
+
+        await waitUntil(() => statSync(logPath).size <= (SAVED_LIMIT / 2),
+          { description: "the trim the handler started to bring the file to at most half the saved limit", timeoutMs: 5000 });
+      } finally {
+
+        await shutdownFileLogger();
+      }
+    });
+  });
+
+  test("the handler settles while the size check it started is still inside its stat", async (t) => {
+
+    await withTempDir(async (dir) => {
+
+      const logPath = join(dir, "unawaited.log");
+      const realStat = promises.stat;
+      const releaseStat = Promise.withResolvers<true>();
+
+      let handlerSettled = false;
+      let statReached = false;
+
+      await initializeFileLogger(logPath, RUNNING_LIMIT, new TestClock());
+
+      try {
+
+        writeFileSync(logPath, SEED_CONTENT);
+
+        // The stat reads the real file and then parks until the row releases it, so the size check holds inside its stat while the row looks at the handler.
+        t.mock.method(promises, "stat", async (file: PathLike): Promise<Stats> => {
+
+          const stats = await realStat(file);
+
+          statReached = true;
+
+          await releaseStat.promise;
+
+          return stats;
+        });
+
+        const handling = applyLogSizeChanges([CHANGE], makeNext()).then((rejections) => {
+
+          handlerSettled = true;
+
+          return rejections;
+        });
+
+        try {
+
+          // A check that never reaches its stat fails here on the wait's own deadline rather than letting the row pass on a handler that had nothing to wait for.
+          await waitUntil(() => statReached, { description: "the size check the handler started to reach its stat" });
+          await settle();
+
+          assert.equal(handlerSettled, true, "the handler settled while its size check was still inside its stat");
+        } finally {
+
+          releaseStat.resolve(true);
+        }
+
+        assert.deepEqual(await handling, [], "the handler refuses nothing");
+
+        await waitUntil(() => statSync(logPath).size <= (SAVED_LIMIT / 2),
+          { description: "the released size check's trim to bring the file to at most half the saved limit", timeoutMs: 5000 });
+      } finally {
+
+        await shutdownFileLogger();
+      }
+    });
   });
 });

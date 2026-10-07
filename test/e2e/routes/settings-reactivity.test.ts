@@ -12,6 +12,8 @@
  *   5. An import of channel display state takes effect live and schedules no restart.
  *   6. An import of the service filter and the Channels DVR host takes effect live: the running filter and the running host follow it, and nothing is held
  *      for a restart.
+ *   7. A save that changes the stream limit sends the page header one status event carrying the new limit, and a save that changes nothing the header
+ *      renders sends none.
  *
  * Each row boots its own integration context and calls initializeConfiguration() after createIntegrationContext and before initializePersistence, so CONFIG
  * and the loaded snapshot are read from that row's own data directory rather than inherited from an earlier row in the same process.
@@ -19,9 +21,11 @@
 import type { BootedApp, IntegrationContext } from "../../helpers/integration.helpers.ts";
 import { CONFIG, getConfigurationGap, initializeConfiguration } from "../../../src/config/index.ts";
 import type { SettingsSaveChanges, SettingsSaveData } from "../../../src/routes/config/settings.ts";
+import type { StatusEventType, SystemStatus } from "../../../src/streaming/statusEmitter.ts";
 import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { getAllChannels, getPredefinedChannels, isPredefinedChannelDisabled, markSetupCompleted } from "../../../src/config/userChannels.ts";
+import { getStatusSnapshot, subscribeToStatus } from "../../../src/streaming/statusEmitter.ts";
 import assert from "node:assert/strict";
 import { getDvrHost } from "../../../src/streaming/showInfo.ts";
 import { getEnabledServices } from "../../../src/config/services.ts";
@@ -263,4 +267,42 @@ describe("POST /config - the pending view the response carries and the page rend
       assert.deepEqual(cancelling.pending, [], "writing the running value back leaves nothing pending");
       assert.ok((await page()).includes("<div class=\"form-pending\" data-pending-path=\"server.port\" hidden></div>"), "the page's slot is hidden again");
     });
+});
+
+describe("POST /config - a saved stream limit reaches the page header", () => {
+
+  test("a save that changes the stream limit emits one status event carrying it, and a save that changes nothing the header renders emits none", async () => {
+
+    /* The harness publishes no browser, so each save's status composition reaches the dedupe before its first await and the save's event lands before its
+     * response: the row needs no wait. The first save seeds the status cache, whatever an earlier row in this process left there; the second changes a live
+     * setting the header does not render; the third changes the limit.
+     */
+    await using ctx = await createIntegrationContext();
+    const app = await boot(ctx);
+
+    assert.equal((await post(app, "/config", { playback: { stallThreshold: 0.2 } })).status, 200, "precondition: the seeding save succeeds");
+
+    const events: { data: unknown; event: StatusEventType }[] = [];
+    const unsubscribe = subscribeToStatus((event, data) => {
+
+      events.push({ data, event });
+    });
+
+    try {
+
+      assert.deepEqual(changesOf((await post(app, "/config", { playback: { stallThreshold: 0.3 } })).body).applied, ["playback.stallThreshold"],
+        "precondition: the unrelated save applies its value");
+
+      const limit = CONFIG.streaming.maxConcurrentStreams + 1;
+
+      assert.deepEqual(changesOf((await post(app, "/config", { streaming: { maxConcurrentStreams: limit } })).body).applied,
+        ["streaming.maxConcurrentStreams"], "precondition: the limit save applies its value");
+      assert.deepEqual(events.filter((entry) => entry.event === "systemStatusChanged").map((entry) => (entry.data as SystemStatus).streams.limit), [limit],
+        "exactly one status event reached the subscriber, carrying the new limit");
+      assert.equal(getStatusSnapshot().system.streams.limit, limit, "the snapshot a connecting client receives reads the new limit");
+    } finally {
+
+      unsubscribe();
+    }
+  });
 });

@@ -30,6 +30,7 @@
  * shared resolution labels.
  */
 import { RESOLUTION_LABELS, serializeAttrs } from "../../../utils/index.ts";
+import type { RenderedSystemStatus } from "../../../streaming/statusEmitter.ts";
 import { generateBadge } from "../../components.ts";
 
 /**
@@ -65,14 +66,11 @@ export interface StreamSummary {
 }
 
 /**
- * The shape of the system-status payload (snapshot.system and systemStatusChanged events). Subset of the server-side HealthStatus; only what updateSystemStatus
- * reads.
+ * The shape of the system-status payload (snapshot.system and systemStatusChanged events) as the page header renders it. It is the server's RenderedSystemStatus,
+ * the one statement of what the header renders, which the status dedupe compares, so a field the header starts rendering joins the dedupe's comparison by
+ * joining that type. The import is type-only and erased before the script ships.
  */
-export interface SystemSummary {
-
-  readonly browser: { readonly captureImpaired: boolean; readonly connected: boolean };
-  readonly streams: { readonly active: number; readonly limit: number };
-}
+export type SystemSummary = RenderedSystemStatus;
 
 /**
  * The shape of the snapshot SSE payload. snapshot is the only event that delivers the full state in one message; subsequent events are deltas. The channel

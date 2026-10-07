@@ -5,11 +5,11 @@
 import { LOG, isRunningAsService } from "../../utils/index.ts";
 import { NEXT_STREAM_SCOPE, REACTIVITY_BADGES, formatSettingCount } from "./vocabulary.ts";
 import type { Nullable, ProfileCategory } from "../../types/index.ts";
+import { closeBrowser, emitCurrentSystemStatus } from "../../browser/index.ts";
 import type { ApplyResult } from "../../config/reactivity.ts";
 import type { Express } from "express";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import type { UserConfig } from "../../config/userConfig.ts";
-import { closeBrowser } from "../../browser/index.ts";
 import { getStreamCount } from "../../streaming/registry.ts";
 import { saveConfiguration } from "../../config/index.ts";
 import { setupChannelRoutes } from "./channels/index.ts";
@@ -117,6 +117,9 @@ export function scheduleServerRestart(reason: string): RestartResult {
  * Rejected changes do not trigger a restart on their own - rejection means a handler refused the change after the disk write, so the value is persisted but
  * the live side-effect did not occur (e.g., a handler that refused to start a port-conflicting server). Callers should surface rejected reasons to the user so
  * they can fix the underlying cause and re-save rather than restarting blindly.
+ *
+ * Once the reconcile resolves, the save composes the current system status for the page header, so a saved stream limit reaches every connected tab without a
+ * reload; the status dedupe turns that emission into nothing when no field the header renders changed.
  * @param reason - A description of why configuration is changing, used in the restart log message when a restart is scheduled.
  * @param mutator - Applies the change to the current configuration file in place.
  * @returns Combined apply and restart result.
@@ -125,6 +128,10 @@ export function scheduleServerRestart(reason: string): RestartResult {
 export async function applyConfigurationChange(reason: string, mutator: (current: UserConfig) => void): Promise<ApplyConfigurationResult> {
 
   const apply = await saveConfiguration(mutator);
+
+  // A save can change what the page header renders, since the stream limit is live. The caller of a status change owns its emission, as every other status
+  // change's caller does, so the save composes the status here; the dedupe turns it into nothing when no field the header renders changed.
+  void emitCurrentSystemStatus();
 
   // When this save holds nothing for a restart, there is nothing for the service manager to do: what the save asked for is realized or reported refused.
   if(apply.deferred.length === 0) {

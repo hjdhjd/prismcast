@@ -6,6 +6,7 @@ import type { Nullable, StreamingMode } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { ClientTypeCount } from "./clients.ts";
 import { EventEmitter } from "node:events";
+import { isDeepStrictEqual } from "node:util";
 
 /* These interfaces define the structure of status updates sent to SSE clients. StreamStatus contains per-stream health information, while SystemStatus contains
  * overall system health.
@@ -82,6 +83,21 @@ export interface SystemStatus {
     limit: number;
   };
   uptime: number;
+}
+
+/**
+ * The fields of the system status the page header renders: the browser's connection and its relaunch mark, the active stream count, and the stream limit. This
+ * is the one statement of what the header renders. The client's system summary is this type and the status dedupe compares exactly these fields, so a field the
+ * header starts rendering joins the comparison by joining this type. The page count, the memory figures and the uptime stay out because no client renders them,
+ * so a status that differs only in them wakes no subscriber.
+ */
+export interface RenderedSystemStatus {
+
+  // Whether the browser is connected, and whether it is waiting to relaunch because it can no longer start captures.
+  readonly browser: Readonly<Pick<SystemStatus["browser"], "captureImpaired" | "connected">>;
+
+  // The active stream count and the stream limit the header shows beside it.
+  readonly streams: Readonly<Pick<SystemStatus["streams"], "active" | "limit">>;
 }
 
 /**
@@ -186,7 +202,7 @@ export function createInitialStreamStatus(options: {
 // Current status for all active streams, keyed by stream ID.
 const streamStatuses = new Map<number, StreamStatus>();
 
-// Cached system status, updated periodically and on significant events.
+// The last system status the dedupe let through, which a connecting client's snapshot carries.
 let cachedSystemStatus: Nullable<SystemStatus> = null;
 
 /**
@@ -230,27 +246,40 @@ export function emitStreamHealthChanged(status: StreamStatus): void {
 }
 
 /**
- * Reports whether two system statuses differ in anything a client renders: whether the browser is connected, whether it is waiting to relaunch because it can no
- * longer start captures, and how many streams are active. Naming the comparison here gives the fields the dedupe turns on one home, and it takes a non-nullable
- * previous so the emit's own null case stays a plain guard rather than a chain of optional accesses.
+ * Projects a system status onto the fields the page header renders. The return type is RenderedSystemStatus, so a field added to that type cannot compile until
+ * this projection fills it.
+ * @param status - The system status.
+ * @returns The fields the header renders.
+ */
+function projectRenderedStatus(status: SystemStatus): RenderedSystemStatus {
+
+  return {
+
+    browser: { captureImpaired: status.browser.captureImpaired, connected: status.browser.connected },
+    streams: { active: status.streams.active, limit: status.streams.limit }
+  };
+}
+
+/**
+ * Reports whether a status differs from the cached one in anything the page header renders, comparing their projections so the comparison reads every field the
+ * projection carries. It takes a non-nullable previous so the emit's own null case stays a plain guard rather than a chain of optional accesses.
  * @param previous - The status already cached.
  * @param next - The status about to replace it.
  * @returns True when the rendered state differs.
  */
 function isRenderedStateChanged(previous: SystemStatus, next: SystemStatus): boolean {
 
-  return (previous.browser.captureImpaired !== next.browser.captureImpaired) || (previous.browser.connected !== next.browser.connected) ||
-    (previous.streams.active !== next.streams.active);
+  return !isDeepStrictEqual(projectRenderedStatus(previous), projectRenderedStatus(next));
 }
 
 /**
- * Emits a system status changed event when browser or system state changes.
+ * Emits a system status changed event when the status changes a field the page header renders, caching it for the snapshot a connecting client receives.
  * @param status - The updated system status.
  */
 export function emitSystemStatusChanged(status: SystemStatus): void {
 
-  // The first emit has no cache to compare against, so it always fires; after that only a change a client would render is worth waking every subscriber for,
-  // which is what keeps the periodic memory updates off the wire.
+  // The first emit has no cache to compare against, so it always fires; after that only a change to a field the header renders is worth waking every subscriber
+  // for, which keeps a status that differs only in what no client renders off the wire.
   const previous = cachedSystemStatus;
 
   if(!previous || isRenderedStateChanged(previous, status)) {
@@ -258,15 +287,6 @@ export function emitSystemStatusChanged(status: SystemStatus): void {
     cachedSystemStatus = status;
     statusEmitter.emit("systemStatusChanged", status);
   }
-}
-
-/**
- * Updates the cached system status without emitting an event. Used for periodic updates that should be included in snapshots but don't need to notify clients.
- * @param status - The updated system status.
- */
-export function updateSystemStatus(status: SystemStatus): void {
-
-  cachedSystemStatus = status;
 }
 
 /**

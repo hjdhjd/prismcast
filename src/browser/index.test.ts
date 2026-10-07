@@ -25,26 +25,29 @@
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
  *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
  *   - isBrowserIdleForRestart (the pure cause-specific idleness decision both restart guards read)
+ *   - applyStalePageCleanupChanges (a saved cleanup interval re-arming the running sweep on the clock its start received, and arming nothing while it is stopped)
  *
  * Importing this module pulls in puppeteer-stream which starts a WebSocketServer at evaluation time. The test runner uses --test-force-exit so that handle does
  * not prevent the file from exiting cleanly.
  */
 import type { Browser, Page } from "puppeteer-core";
-import type { Nullable, StreamingMode } from "../types/index.ts";
+import type { Config, Nullable, StreamingMode } from "../types/index.ts";
 import { TestClock, drainClock } from "homebridge-plugin-utils/testing";
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { buildLaunchOptions, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface,
-  ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab,
-  installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement,
-  noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface,
+import { applyStalePageCleanupChanges, buildLaunchOptions, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus, emulateCaptureSurface,
+  emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath,
+  healActivatedCaptureTab, installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback,
+  mirrorPlacement, noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface,
   registerManagedPage, resolveSharedWindowCarrier, seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking, startStalePageCleanup,
   stopBrowserRestartChecking, stopStalePageCleanup, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { firstOf, withTempDir } from "../testing.helpers.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
+import type { ConfigChange } from "../config/reactivity.ts";
 import { LOG } from "../utils/index.ts";
 import type { StreamRegistryEntry } from "../streaming/registry.ts";
+import { applyConfigChanges } from "../config/reactivity.ts";
 import assert from "node:assert/strict";
 import { getPresetViewport } from "../config/presets.ts";
 import { setImmediate as immediate } from "node:timers/promises";
@@ -54,6 +57,7 @@ import { makePendingCaptureIdentity } from "../streaming/registry.ts";
 import os from "node:os";
 import path from "node:path";
 import { subscribeToStatus } from "../streaming/statusEmitter.ts";
+import { systemClock } from "homebridge-plugin-utils";
 
 /* The data directory must be initialized before buildLaunchOptions() can resolve the Chrome user-data-dir path (it derives from the data dir via getChromeDataDir).
  * We create a temp directory once for the whole file, point initializeDataDir at it, and clean it up after every test has run. The path is deterministic per test
@@ -1863,6 +1867,107 @@ describe("the lifecycle timers arm on the injected clock", () => {
     stopBrowserRestartChecking();
 
     assert.equal(clock.pending, 0, "the stop drained the check off the clock");
+  });
+});
+
+describe("applyStalePageCleanupChanges", () => {
+
+  /* The handler re-arms the running sweep on the clock its start received, so a row starts the sweep on a test clock and reads what the handler asked of it.
+   * CONFIG holds the running interval and the candidate the saved one, so a handler that read CONFIG would re-arm at the interval it replaces.
+   */
+  const RUNNING_INTERVAL = CONFIG.recovery.stalePageCleanupInterval;
+  const SAVED_INTERVAL = RUNNING_INTERVAL * 2;
+  const CHANGE: ConfigChange = { current: SAVED_INTERVAL, path: "recovery.stalePageCleanupInterval", previous: RUNNING_INTERVAL };
+
+  // The candidate a save hands the handler: the running configuration with the saved interval applied, while CONFIG still holds the running one.
+  const makeNext = (): Config => {
+
+    const next = structuredClone(CONFIG);
+
+    next.recovery.stalePageCleanupInterval = SAVED_INTERVAL;
+
+    return next;
+  };
+
+  // The timers armed on the system clock, read from the process's active resources, so a sweep a handler armed outside the row's clock shows up here.
+  const countSystemTimers = (): number => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+
+  // The sweep's owner holds a module-level binding, so a row that ended with the sweep running would leave the next row's start a no-op.
+  afterEach(() => {
+
+    stopStalePageCleanup();
+  });
+
+  test("a saved interval re-arms the running sweep at the saved cadence on the clock its start received", async () => {
+
+    const clock = new TestClock();
+
+    startStalePageCleanup(clock);
+
+    assert.deepEqual(await applyStalePageCleanupChanges([CHANGE], makeNext()), [], "the handler refuses nothing");
+    assert.deepEqual(clock.requested, [ RUNNING_INTERVAL, SAVED_INTERVAL ], "the start armed the running interval, and the save re-armed the saved one");
+    assert.equal(clock.pending, 1, "the re-arm left one sweep interval pending rather than adding a second");
+  });
+
+  test("a saved interval arms nothing before the sweep starts or after it stops", async () => {
+
+    const clock = new TestClock();
+    const systemTimers = countSystemTimers();
+
+    assert.deepEqual(await applyStalePageCleanupChanges([CHANGE], makeNext()), [], "the handler refuses nothing before a start");
+    assert.deepEqual(clock.requested, [], "a save before the start asked the row's clock for nothing");
+    assert.equal(countSystemTimers(), systemTimers, "a save before the start armed no sweep on the system clock");
+
+    startStalePageCleanup(clock);
+    stopStalePageCleanup();
+
+    assert.deepEqual(await applyStalePageCleanupChanges([CHANGE], makeNext()), [], "the handler refuses nothing after a stop");
+    assert.deepEqual(clock.requested, [RUNNING_INTERVAL], "only the start asked the row's clock for an interval");
+    assert.equal(clock.pending, 0, "the stopped sweep stays drained");
+    assert.equal(countSystemTimers(), systemTimers, "a save after the stop armed no sweep on the system clock");
+
+    // A stop returns the owner to its unstarted state, so a later start arms a fresh sweep rather than finding the stopped one still held.
+    const restarted = new TestClock();
+
+    startStalePageCleanup(restarted);
+
+    assert.equal(restarted.pending, 1, "a start after the stop armed a fresh sweep");
+  });
+
+  test("a change dispatched through the reactivity registry reaches the handler registered for the interval's path", async () => {
+
+    const clock = new TestClock();
+
+    startStalePageCleanup(clock);
+
+    assert.deepEqual(await applyConfigChanges({ held: [], live: [CHANGE], nextStream: [] }, makeNext()), { realized: [CHANGE], rejected: [] },
+      "the dispatch realized the change");
+    assert.deepEqual(clock.requested, [ RUNNING_INTERVAL, SAVED_INTERVAL ], "the handler registered for the path re-armed the sweep on the row's clock");
+  });
+
+  test("the re-armed sweep reads the clock its start received when it fires", async (t) => {
+
+    const clock = new TestClock();
+
+    startStalePageCleanup(clock);
+    await applyStalePageCleanupChanges([CHANGE], makeNext());
+
+    /* No unit row can read the instant the sweep judges staleness against, because the sweep returns before reading it while no browser is ready, so the row reads
+     * which clock the fired callback reads, that instant's one source. The test clock runs a due callback synchronously inside its advance and keeps its own time
+     * in a private field, so each spy counts the callback's reads alone.
+     */
+    const sweepReads = t.mock.method(clock, "now");
+    const systemReads = t.mock.method(systemClock, "now");
+
+    clock.advance(SAVED_INTERVAL - 1);
+
+    assert.equal(sweepReads.mock.callCount(), 0, "nothing fired before the saved cadence elapsed");
+    assert.equal(systemReads.mock.callCount(), 0, "and nothing read the system clock");
+
+    clock.advance(1);
+
+    assert.equal(sweepReads.mock.callCount(), 1, "the re-armed sweep read the clock its start received when it fired");
+    assert.equal(systemReads.mock.callCount(), 0, "and never read the system clock");
   });
 });
 

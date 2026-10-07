@@ -126,6 +126,7 @@ const stubPrecachingDeps: PrecachingDeps = {
   getPersistedLineup: (): null => null,
   getProviderBySlug: (slug: string): ProviderModule | undefined => ((slug === DRIVEN_SLUG) ? stubProvider : undefined),
   getProvidersForDomain: (): ProviderModule[] => [],
+  isBrowserConnected: (): boolean => true,
   isGracefulShutdown: (): boolean => false,
   persistProviderLineup: async (slug: string, channels: PersistedLineupChannel[]): Promise<void> => {
 
