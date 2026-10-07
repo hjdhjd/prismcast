@@ -84,16 +84,22 @@ function resolveHostname(req: Request): string {
 
 /**
  * Sets up the HDHomeRun discovery and lineup endpoints on the given Express app.
+ *
+ * Each HTTP surface advertises the port it is bound to, which is why device.xml and discover.json read no configuration value for their base URL: the provider
+ * answers with the port of the server handling the request, so the advertisement reaches that server whatever port the configuration names at that instant, an
+ * OS-assigned port included. The stream URLs in lineup.json name the main server's port from CONFIG.server.port, a restart-class setting that always holds the
+ * running value.
  * @param app - The Express application for the HDHR server.
+ * @param boundPort - Reads the port the HTTP server serving these endpoints is bound to, once per request.
  */
-export function setupHdhrEndpoints(app: Express): void {
+export function setupHdhrEndpoints(app: Express, boundPort: () => number): void {
 
   // GET /device.xml - UPnP device description. HDHR-aware clients (Plex in particular) fetch this during tuner discovery before querying discover.json.
   // Without a valid device.xml response the discovery process may abort silently on stricter clients.
   app.get("/device.xml", (req: Request, res: Response): void => {
 
     const hostname = resolveHostname(req);
-    const baseUrl = "http://" + hostname + ":" + String(CONFIG.hdhr.port);
+    const baseUrl = "http://" + hostname + ":" + String(boundPort());
     const deviceId = CONFIG.hdhr.deviceId.toUpperCase();
 
     /* Every value interpolated below is escaped, the compile-time constants included, which is the convention the launchd plist generator follows: escaping at
@@ -131,7 +137,7 @@ export function setupHdhrEndpoints(app: Express): void {
   app.get("/discover.json", (req: Request, res: Response): void => {
 
     const hostname = resolveHostname(req);
-    const baseUrl = "http://" + hostname + ":" + String(CONFIG.hdhr.port);
+    const baseUrl = "http://" + hostname + ":" + String(boundPort());
 
     // The response follows the HDHomeRun HTTP API format that Plex expects. DeviceAuth must be non-empty; we use the DeviceID since there is no DRM context.
     // Identity strings come from hdhr/identity.ts so a future model swap is a single-file edit.

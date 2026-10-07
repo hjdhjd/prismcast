@@ -6,15 +6,17 @@
  *      relying on the host's actual interface configuration.
  *
  *   2. The UdpSurface node is exercised via dgram loopback on an ephemeral port: each test creates a surface with `await using` (so its [Symbol.asyncDispose]
- *      tears the socket down at scope exit), binds the responder on 127.0.0.1:0, sends a Discover request, and asserts that a structurally valid reply comes
- *      back. The full request-reply round-trip validates the entire path - parser, dispatcher, encoder, and socket send.
+ *      tears the socket down at scope exit), binds the responder on 127.0.0.1:0 with a provider standing in for the HTTP surface's bound port, sends a Discover
+ *      request, and asserts that a structurally valid reply comes back. The full request-reply round-trip validates the entire path - parser, dispatcher,
+ *      encoder, and socket send - and the reply's BaseURL is decoded against a configured HDHR port held apart from the provider's.
  *
  *   3. Get and Set request paths are exercised similarly to confirm the transport composes the correct reply type for each parsed packet.
  *
  *   4. Negative and failure paths: a valid Upgrade request (which parses as an unsupported type) is dropped without a reply - distinct from the malformed-packet
- *      drop, which fails the parser's length/CRC check - a Discover request addressed to another device type or another device id is dropped without a reply, and
- *      a bind collision on the responder port resolves ensureUp false at warn level rather than throwing, so the HTTP HDHR surface survives a discovery-port
- *      conflict. The expected-no-reply rows pass a shortened receive bound so the wait is a fraction of a second rather than the full round-trip budget.
+ *      drop, which fails the parser's length/CRC check - a Discover request addressed to another device type or another device id is dropped without a reply, a
+ *      Discover request that arrives while the provider reports no bound HTTP port goes unanswered, and a bind collision on the responder port resolves ensureUp
+ *      false at warn level rather than throwing, so the HTTP HDHR surface survives a discovery-port conflict. The expected-no-reply rows pass a shortened receive
+ *      bound so the wait is a fraction of a second rather than the full round-trip budget.
  *
  *   5. The bind lifecycle: a second ensureUp call returns true without rebinding, ensureDown closes the socket and leaves the surface
  *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is asserted against the canonical SiliconDust value so a refactor cannot silently
@@ -24,12 +26,13 @@
  * host. `await using` disposal tears the responder down at the end of each test, so there is no afterEach to forget. Request packet builders (makeDiscoverRequest,
  * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
  */
+import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { HDHR_DISCOVERY_PORT, createUdpSurface, selectLanAddress } from "./udp.ts";
 import { PACKET_DISCOVER_REPLY, PACKET_GET_REPLY, PACKET_UPGRADE_REQUEST, TLV_BASE_URL, TLV_DEVICE_ID, TLV_DEVICE_TYPE, TLV_ERROR, TLV_GETSET_NAME,
   TLV_GETSET_VALUE, TLV_TUNER_COUNT } from "./protocol.ts";
 import { describe, test } from "node:test";
 import { makeDiscoverRequest, makeGetRequest, sealPacket } from "./protocol.helpers.ts";
-import { CONFIG } from "../config/index.ts";
+import type { ConfigStore } from "../config/index.ts";
 import { HDHR_DEVICE_TYPE_TUNER } from "./identity.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { NetworkInterfaceInfo } from "node:os";
@@ -37,6 +40,34 @@ import type { UdpSurface } from "./udp.ts";
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
+
+// The HTTP port the round-trip responders advertise. Nothing binds it: the controller hands a responder the HTTP surface's bound port through a provider, and
+// these rows hand it this value the same way.
+const HTTP_PORT = 5150;
+
+// httpPortProvider stands in for the HTTP surface's bound-port accessor, the provider every ensureUp call requires.
+function httpPortProvider(): number {
+
+  return HTTP_PORT;
+}
+
+/**
+ * Builds an in-memory config store whose file names only the given HDHomeRun port, so a row can re-initialize CONFIG and the loaded snapshot from it. Only
+ * the boot reads through it.
+ * @param port - The HDHomeRun port the file names.
+ * @returns The store.
+ */
+function storeNamingHdhrPort(port: number): ConfigStore {
+
+  return {
+
+    mutateConfig: async (): Promise<void> => {
+
+      throw new Error("The read-only store takes no writes.");
+    },
+    readConfig: async () => ({ config: { hdhr: { port } }, parseError: false, readError: false })
+  };
+}
 
 // makeIPv4 builds a synthetic NetworkInterfaceInfo entry shaped like what os.networkInterfaces() returns. Captures only the fields selectLanAddress reads;
 // other fields the runtime would populate are filled with placeholder values to satisfy the type.
@@ -140,7 +171,7 @@ describe("UdpSurface - round-trip", () => {
   test("Discover request elicits a Discover reply with the four required TLVs", async () => {
 
     await using surface = createUdpSurface();
-    const ok = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    const ok = await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.equal(ok, true);
 
@@ -170,11 +201,54 @@ describe("UdpSurface - round-trip", () => {
     assert.ok(tagsSeen.has(TLV_BASE_URL), "BASE_URL TLV present");
   });
 
+  test("the Discover reply's BaseURL names the port the provider reports, whatever port CONFIG names", async () => {
+
+    // The configured HDHR port is held apart from the provider's as the negative control: the reply must advertise the port the HTTP surface is bound to.
+    await initializeConfiguration(undefined, storeNamingHdhrPort(HTTP_PORT + 1));
+
+    assert.equal(CONFIG.hdhr.port, HTTP_PORT + 1, "precondition: CONFIG names a port other than the provider's");
+
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
+
+    const reply = await sendAndReceive(requireBoundPort(surface), wildcardDiscover());
+    const payloadLen = reply.readUInt16BE(2);
+    const payload = reply.subarray(4, 4 + payloadLen);
+    const values = new Map<number, Buffer>();
+    let offset = 0;
+
+    while(offset < payload.length) {
+
+      const tag = payload.readUInt8(offset);
+      const length = payload.readUInt8(offset + 1);
+
+      values.set(tag, payload.subarray(offset + 2, offset + 2 + length));
+      offset += 2 + length;
+    }
+
+    // encodeStringTlv null-terminates the wire value, so trim the terminator before matching. The host is whichever LAN address selectLanAddress picks.
+    const baseUrl = values.get(TLV_BASE_URL)?.toString("utf8").replace(/\0$/, "") ?? "";
+
+    assert.match(baseUrl, new RegExp("^http://[0-9.]+:" + String(HTTP_PORT) + "$"), "the BaseURL names the provider's port: " + baseUrl);
+  });
+
+  test("a Discover request goes unanswered while the HTTP port provider reports no bound port", async () => {
+
+    // The controller brings discovery down before the HTTP surface, so a provider reporting no port means the HTTP surface is going away, and a reply then would
+    // advertise a BaseURL with no listener behind it.
+    await using surface = createUdpSurface();
+
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider: () => null, port: 0 });
+
+    await assert.rejects(() => sendAndReceive(requireBoundPort(surface), wildcardDiscover(), 300), /Timed out waiting/);
+  });
+
   test("Get request for /sys/version elicits a Get reply with name and value TLVs", async () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, makeGetRequest("/sys/version"));
@@ -204,7 +278,7 @@ describe("UdpSurface - round-trip", () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, makeGetRequest("/sys/totally-not-a-real-key"));
@@ -233,7 +307,7 @@ describe("UdpSurface - round-trip", () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
 
@@ -271,7 +345,7 @@ describe("UdpSurface - round-trip", () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
     const garbage = Buffer.from([ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF ]);
@@ -293,7 +367,7 @@ describe("UdpSurface - round-trip", () => {
 
       await using surface = createUdpSurface();
 
-      await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+      await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
       const port = requireBoundPort(surface);
       const reply = await sendAndReceive(port, makeDiscoverRequest(HDHR_DEVICE_TYPE_TUNER, 0x1234ABCD));
@@ -318,7 +392,7 @@ describe("UdpSurface - round-trip", () => {
 
       await using surface = createUdpSurface();
 
-      await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+      await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
       const port = requireBoundPort(surface);
 
@@ -335,7 +409,7 @@ describe("UdpSurface - round-trip", () => {
     // is not addressed to it.
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
 
@@ -346,7 +420,7 @@ describe("UdpSurface - round-trip", () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     const port = requireBoundPort(surface);
 
@@ -361,14 +435,14 @@ describe("UdpSurface - round-trip", () => {
   test("repeat-safe ensureUp: calling it twice returns true without rebinding", async () => {
 
     await using surface = createUdpSurface();
-    const first = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    const first = await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.equal(first, true);
 
     // Capture the bound port AFTER the first call and BEFORE the second so the no-op claim is verifiable: a second ensureUp that silently rebound would land on a
     // different ephemeral port, which this baseline diff catches. Comparing the getter against itself would be tautological and could not detect a rebind.
     const firstPort = requireBoundPort(surface);
-    const second = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    const second = await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.equal(second, true, "second call is a no-op success");
     assert.equal(surface.boundPort, firstPort, "the bound port is unchanged by the second call");
@@ -378,7 +452,7 @@ describe("UdpSurface - round-trip", () => {
 
     await using surface = createUdpSurface();
 
-    await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.notEqual(surface.boundPort, null, "surface is bound after the first ensureUp");
 
@@ -387,7 +461,7 @@ describe("UdpSurface - round-trip", () => {
     assert.equal(surface.boundPort, null, "surface is down after ensureDown");
 
     // The node is owner-bounded, not scope-poisoned: a fresh ensureUp must rebind cleanly.
-    const rebound = await surface.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    const rebound = await surface.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.equal(rebound, true, "a stopped surface rebinds on the next ensureUp");
     assert.notEqual(surface.boundPort, null, "surface is bound again after the second ensureUp");
@@ -396,7 +470,7 @@ describe("UdpSurface - round-trip", () => {
   test("a bind collision on the responder port resolves ensureUp false at warn level without throwing", async () => {
 
     await using first = createUdpSurface();
-    const firstOk = await first.ensureUp({ bindAddress: "127.0.0.1", port: 0 });
+    const firstOk = await first.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port: 0 });
 
     assert.equal(firstOk, true, "the first surface binds the ephemeral port");
 
@@ -417,7 +491,7 @@ describe("UdpSurface - round-trip", () => {
     // keeps working. Binding the first surface's actual ephemeral port keeps the collision deterministic without hard-coding a port that another host process
     // might already hold.
     await using second = createUdpSurface();
-    const secondOk = await second.ensureUp({ bindAddress: "127.0.0.1", port });
+    const secondOk = await second.ensureUp({ bindAddress: "127.0.0.1", httpPortProvider, port });
 
     unsubscribe();
 

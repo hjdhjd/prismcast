@@ -37,10 +37,25 @@ import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { setupHdhrEndpoints } from "./discover.ts";
 
 /**
+ * What an HTTP surface is asked to bind: the port and host it listens on, and the DeviceID its listening line names.
+ */
+interface HttpBindRequest {
+
+  // The DeviceID the surface advertises, named in the listening line.
+  readonly deviceId: string;
+
+  // The host address to bind.
+  readonly host: string;
+
+  // The TCP port to bind. Zero asks the OS for a free port.
+  readonly port: number;
+}
+
+/**
  * A self-disposing HDHomeRun HTTP surface. The node owns exactly one express HTTP server and the entire bind state machine: bind-to-desired, no-op when already
- * there, close-and-rebind on a port change, and the prior-port concession (a failed rebind re-binds the previous port so a typo'd port cannot take down a working
- * tuner). ensureDown is exposed as [Symbol.asyncDispose]; disposal closes the current server but leaves the node reusable (a later ensureBound rebinds), because
- * this is owner-bounded, not scope-bounded, disposal.
+ * there, and make-before-break on a port change - the requested port is bound while the current server keeps answering, and the current server closes only once
+ * the new one listens, so a refused port cannot take down a working tuner. ensureDown is exposed as [Symbol.asyncDispose]; disposal closes the current server but
+ * leaves the node reusable (a later ensureBound rebinds), because this is owner-bounded, not scope-bounded, disposal.
  */
 interface HttpSurface extends AsyncDisposable {
 
@@ -48,9 +63,9 @@ interface HttpSurface extends AsyncDisposable {
   // gating decision and by the Discover reply's advertised BaseURL.
   readonly boundPort: Nullable<number>;
 
-  // Converges the surface to listening on the given port, owning the rebind and concession internally. Returns true on success, false when the desired bind
-  // failed (the caller reports the change rejected; the concession may have kept the prior port alive).
-  ensureBound(port: number, host: string): Promise<boolean>;
+  // Converges the surface to listening on the requested port, binding it before closing the bound server. Returns true on success, false when the requested bind
+  // failed (the caller reports the change rejected, and the bound server, if there is one, keeps answering on its port).
+  ensureBound(request: HttpBindRequest): Promise<boolean>;
 
   // Closes the HTTP server if one is bound, resolving only after the socket is fully released. A no-op when already down. Aliased as [Symbol.asyncDispose].
   ensureDown(): Promise<void>;
@@ -90,8 +105,8 @@ interface HdhrController extends AsyncDisposable {
 
 /**
  * Creates an HDHomeRun HTTP surface node. The returned object fully owns its server; nothing outside the closure touches it. ensureBound is the converge-up verb
- * (with the rebind + concession sealed inside it), ensureDown the converge-down verb, and [Symbol.asyncDispose] aliases ensureDown so the surface is a well-formed
- * async-disposable resource.
+ * (with the make-before-break rebind sealed inside it), ensureDown the converge-down verb, and [Symbol.asyncDispose] aliases ensureDown so the surface is a
+ * well-formed async-disposable resource.
  * @returns An HttpSurface node.
  */
 function createHttpSurface(): HttpSurface {
@@ -99,7 +114,7 @@ function createHttpSurface(): HttpSurface {
   // The bound HTTP server, owned entirely by this node. Null when the surface is down.
   let server: Nullable<Server> = null;
 
-  // currentPort resolves the live bound port from the server's address, or null when down. Internal helper so both the public getter and the bind logic read one
+  // currentPort resolves the live bound port from the server's address, or null when down. Internal helper so the public getter and ensureBound read one
   // source. Uses the resolved socket address rather than the requested port so an OS-assigned port (port 0 in tests) reports its real value.
   function currentPort(): Nullable<number> {
 
@@ -125,18 +140,17 @@ function createHttpSurface(): HttpSurface {
   }
 
   /**
-   * Opens a fresh HDHomeRun HTTP server on the given port and host, capturing it in the node's server reference on success. Returns true once the bind is
-   * confirmed listening, false on bind failure. The low-level open primitive; ensureBound layers the rebind + concession policy on top.
+   * Opens a fresh HDHomeRun HTTP server on the requested port and host. Returns the server once the bind is confirmed listening, or null on bind failure, and
+   * never touches the node's server reference. The low-level open primitive; ensureBound layers the make-before-break swap on top.
    *
    * Detects bind success or failure through the explicit "listening" and "error" events rather than express's listen callback. The listen callback fires even
    * when the bind fails (verified empirically: it resolves on EADDRINUSE and EADDRNOTAVAIL with a non-listening server), so it cannot be trusted to signal
    * success - relying on it would report a port conflict as a successful start. Exactly one of "listening" or "error" fires for a given
    * bind attempt, so the promise always settles. This mirrors the bind-vs-runtime error-handler split the UDP surface uses in udp.ts.
-   * @param port - The TCP port to bind.
-   * @param host - The host address to bind.
-   * @returns True if the server is now listening, false if the bind failed.
+   * @param request - The port and host to bind, and the DeviceID the listening line names.
+   * @returns The listening server, or null if the bind failed.
    */
-  async function bind(port: number, host: string): Promise<boolean> {
+  async function bind(request: HttpBindRequest): Promise<Nullable<Server>> {
 
     const app = express();
 
@@ -145,22 +159,26 @@ function createHttpSurface(): HttpSurface {
     // client. This complements resolveHostname in discover.ts, which prefers X-Forwarded-Host when composing the advertised BaseURL.
     app.set("trust proxy", true);
 
-    setupHdhrEndpoints(app);
+    // The port this server is bound to, read from its own address once it listens. The documents it serves advertise this value, so an OS-assigned port is
+    // advertised as bound, and because a server's port is fixed for its lifetime, a request this server answers during a make-before-break swap still names it.
+    let listeningPort = request.port;
 
-    const { promise, resolve } = Promise.withResolvers<boolean>();
-    const candidate = app.listen(port, host);
+    setupHdhrEndpoints(app, () => listeningPort);
+
+    const { promise, resolve } = Promise.withResolvers<Nullable<Server>>();
+    const candidate = app.listen(request.port, request.host);
 
     const onBindError = (error: NodeJS.ErrnoException): void => {
 
       if(error.code === "EADDRINUSE") {
 
-        LOG.warn("HDHomeRun port %s is already in use. Check for conflicting services on this port.", port);
+        LOG.warn("HDHomeRun port %s is already in use. Check for conflicting services on this port.", request.port);
       } else {
 
         LOG.warn("Failed to start the HDHomeRun HTTP server: %s.", formatError(error));
       }
 
-      resolve(false);
+      resolve(null);
     };
 
     candidate.once("error", onBindError);
@@ -175,44 +193,52 @@ function createHttpSurface(): HttpSurface {
         LOG.warn("HDHomeRun HTTP server encountered a socket error: %s.", formatError(error));
       });
 
-      server = candidate;
+      // A listening server's address is the AddressInfo of its TCP bind, for the reason currentPort states.
+      listeningPort = (candidate.address() as AddressInfo).port;
 
-      LOG.info("HDHomeRun emulation is now listening on %s:%s (DeviceID: %s).", host, currentPort() ?? port, CONFIG.hdhr.deviceId.toUpperCase());
+      LOG.info("HDHomeRun emulation is now listening on %s:%s (DeviceID: %s).", request.host, listeningPort, request.deviceId.toUpperCase());
 
-      resolve(true);
+      resolve(candidate);
     });
 
     return promise;
   }
 
-  async function ensureBound(port: number, host: string): Promise<boolean> {
+  async function ensureBound(request: HttpBindRequest): Promise<boolean> {
 
-    // Already listening on the desired port - nothing to do (covers deviceId/friendlyName-only changes, which need no rebind).
-    if(currentPort() === port) {
-
-      return true;
-    }
-
-    // Capture the prior port before closing so a failed rebind can fall back to it (the concession: a typo'd port must not take down a working tuner).
-    const priorPort = currentPort();
-
-    await ensureDown();
-
-    if(await bind(port, host)) {
+    // Already listening on the requested port - nothing to do (covers deviceId/friendlyName-only changes, which need no rebind).
+    if(currentPort() === request.port) {
 
       return true;
     }
 
-    // The desired bind failed. Concession (operator-confirmed): if we were previously listening on another port, re-bind it so the tuner keeps working; the
-    // change is still reported rejected so the operator knows it did not take. If there was no prior port (boot or already-down), there is nothing to restore.
-    if(priorPort !== null) {
+    // Make before break: the requested port is bound while the current server keeps answering, so the surface answers on one port or the other at every instant
+    // and a refused port costs one failed listen rather than the working tuner. The change is still reported rejected so the operator knows it did not take.
+    const next = await bind(request);
 
-      LOG.warn("HDHomeRun port %s is unavailable; keeping the previous port %s active. The port change was rejected.", port, priorPort);
+    if(next === null) {
 
-      await bind(priorPort, host);
+      const activePort = currentPort();
+
+      if(activePort !== null) {
+
+        LOG.warn("HDHomeRun port %s is unavailable; keeping the previous port %s active. The port change was rejected.", request.port, activePort);
+      }
+
+      return false;
     }
 
-    return false;
+    // The new server is listening: swap the reference to it first, so every reader sees the new port from here on, and only then close the previous server.
+    const previous = server;
+
+    server = next;
+
+    if(previous !== null) {
+
+      await close(previous);
+    }
+
+    return true;
   }
 
   async function ensureDown(): Promise<void> {
@@ -314,11 +340,14 @@ function createHdhrController(): HdhrController {
       return { deviceId, httpFailed: false, udpFailed: false };
     }
 
-    const httpFailed = !(await http.ensureBound(desired.port, CONFIG.server.host));
+    // The listening line names the DeviceID the surface advertises: the desired one when it passed its checksum, or the one ensureDeviceId generated into CONFIG
+    // in its place, because the desired state a save hands over still carries the id that failed.
+    const advertisedId = (deviceId === "generated") ? CONFIG.hdhr.deviceId : desired.deviceId;
+    const httpFailed = !(await http.ensureBound({ deviceId: advertisedId, host: CONFIG.server.host, port: desired.port }));
 
     // UDP is gated on the HTTP server actually being bound: a discovery responder must never advertise a BaseURL pointing at an HTTP port with no listener, so
     // when HTTP is down we stop UDP regardless of the discoveryEnabled flag. The Discover reply advertises http.boundPort (not the desired port) so it always
-    // reflects reality, including the rejected-port-change concession case where HTTP stays on the prior port.
+    // reflects reality, including a refused port change, where HTTP stays on the port it is bound to.
     let udpFailed = false;
 
     if(desired.discoveryEnabled && (http.boundPort !== null)) {

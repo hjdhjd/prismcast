@@ -1,15 +1,17 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * discover.test.ts: Unit tests for the HDHomeRun discovery endpoints. The endpoints expose Plex's tuner-discovery surface (device.xml, discover.json,
- * lineup.json, lineup_status.json, status.json), and the handler bodies are pure transforms over CONFIG, the channel map, and the stream registry. The tests
- * spin up an ephemeral-port Express server (port 0 -> OS-assigned) so route resolution, header parsing, and content negotiation are exercised end-to-end
- * without binding to the production HDHR port. A single server is shared across the suite to amortize listen/close costs; tests that mutate CONFIG always
- * restore it in a finally block.
+ * lineup.json, lineup_status.json, status.json), and the handler bodies are pure transforms over CONFIG, the bound-port provider, the channel map, and the
+ * stream registry. The tests spin up an ephemeral-port Express server (port 0 -> OS-assigned) so route resolution, header parsing, and content negotiation are
+ * exercised end-to-end without binding to the production HDHR port. A single server is shared across the suite to amortize listen/close costs; tests that
+ * mutate a CONFIG field restore it in a finally block, and the rows that hold the configured port apart from the bound one re-initialize CONFIG from an
+ * in-memory store at their start.
  */
 import type { AddressInfo, Server } from "node:net";
+import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { after, before, describe, test } from "node:test";
 import { registerStream, unregisterStream } from "../streaming/registry.ts";
-import { CONFIG } from "../config/index.ts";
+import type { ConfigStore } from "../config/index.ts";
 import assert from "node:assert/strict";
 import express from "express";
 import { firstOf } from "../testing.helpers.ts";
@@ -17,12 +19,14 @@ import { makeRegistryEntry } from "../streaming/registry.helpers.ts";
 import { setupHdhrEndpoints } from "./discover.ts";
 
 // makeServer spins up an Express app on an OS-assigned port (0 = let the kernel pick), wires the HDHR endpoints, and returns the server with its bound port.
+// The endpoints read the port the server is bound to through the provider, set from the server's own address once it listens, as the HDHomeRun surface does.
 function makeServer(): Promise<{ port: number; server: Server }> {
 
   const app = express();
+  let boundPort = 0;
 
   app.set("trust proxy", true);
-  setupHdhrEndpoints(app);
+  setupHdhrEndpoints(app, () => boundPort);
 
   return new Promise((resolve, reject) => {
 
@@ -30,11 +34,30 @@ function makeServer(): Promise<{ port: number; server: Server }> {
 
       const address = server.address() as AddressInfo;
 
+      boundPort = address.port;
       resolve({ port: address.port, server });
     });
 
     server.on("error", reject);
   });
+}
+
+/**
+ * Builds an in-memory config store whose file names only the given HDHomeRun port, so a row can re-initialize CONFIG and the loaded snapshot from it. Only
+ * the boot reads through it.
+ * @param port - The HDHomeRun port the file names.
+ * @returns The store.
+ */
+function storeNamingHdhrPort(port: number): ConfigStore {
+
+  return {
+
+    mutateConfig: async (): Promise<void> => {
+
+      throw new Error("The read-only store takes no writes.");
+    },
+    readConfig: async () => ({ config: { hdhr: { port } }, parseError: false, readError: false })
+  };
 }
 
 // closeServer wraps server.close in a promise so the after hook awaits actual socket teardown.
@@ -158,13 +181,18 @@ describe("setupHdhrEndpoints - GET /device.xml", () => {
     }
   });
 
-  test("derives URLBase from the request Host header when no X-Forwarded-Host is present", async () => {
+  test("derives URLBase from the request Host header and the port the server is bound to when no X-Forwarded-Host is present", async () => {
+
+    // The configured port is held apart from the bound one, so a URLBase built from the configuration names the wrong port and fails the match.
+    await initializeConfiguration(undefined, storeNamingHdhrPort(sharedPort + 1));
+
+    assert.equal(CONFIG.hdhr.port, sharedPort + 1, "precondition: CONFIG names a port other than the bound one");
 
     const res = await fetch(urlFor("/device.xml"));
     const body = await res.text();
 
     // The server's Host header is "127.0.0.1:<port>"; resolveHostname strips the port and leaves the bare host.
-    assert.match(body, new RegExp("<URLBase>http://127\\.0\\.0\\.1:" + String(CONFIG.hdhr.port) + "</URLBase>"));
+    assert.match(body, new RegExp("<URLBase>http://127\\.0\\.0\\.1:" + String(sharedPort) + "</URLBase>"));
   });
 
   test("resolves hostname from X-Forwarded-Host across the documented variants (proxy, comma list, bracketed IPv6)", async () => {
@@ -236,11 +264,16 @@ describe("setupHdhrEndpoints - GET /discover.json", () => {
     assert.equal(body["TunerCount"], CONFIG.streaming.maxConcurrentStreams);
   });
 
-  test("BaseURL and LineupURL are derived from the request hostname and the configured HDHR port", async () => {
+  test("BaseURL and LineupURL are derived from the request hostname and the port the server is bound to, whatever port CONFIG names", async () => {
+
+    // The configured port is held apart from the bound one as the negative control: the documents must advertise the port a client can reach.
+    await initializeConfiguration(undefined, storeNamingHdhrPort(sharedPort + 1));
+
+    assert.equal(CONFIG.hdhr.port, sharedPort + 1, "precondition: CONFIG names a port other than the bound one");
 
     const res = await fetch(urlFor("/discover.json"));
     const body = await res.json() as Record<string, string>;
-    const expectedBase = "http://127.0.0.1:" + String(CONFIG.hdhr.port);
+    const expectedBase = "http://127.0.0.1:" + String(sharedPort);
 
     assert.equal(body["BaseURL"], expectedBase);
     assert.equal(body["LineupURL"], expectedBase + "/lineup.json");

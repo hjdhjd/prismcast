@@ -32,16 +32,16 @@ import { resolveGet } from "./getHandlers.ts";
 export const HDHR_DISCOVERY_PORT = 65001;
 
 /**
- * Options for UdpSurface.ensureUp. Tests pass an ephemeral port (0) so the kernel picks a free port; production passes the httpPortProvider so Discover replies
- * advertise the real bound HTTP port.
+ * Options for UdpSurface.ensureUp. Every caller passes the httpPortProvider, so a Discover reply always advertises the port the HTTP surface is bound to; tests
+ * pass an ephemeral port (0) so the kernel picks a free port.
  */
 export interface UdpSurfaceOptions {
 
   // Address to bind the socket on. Defaults to "0.0.0.0" so the socket receives subnet broadcasts on every interface.
   readonly bindAddress?: string;
 
-  // Accessor for the HTTP server's live bound port, used to build the Discover reply's BaseURL. When absent, the reply falls back to CONFIG.hdhr.port.
-  readonly httpPortProvider?: () => Nullable<number>;
+  // Accessor for the HTTP server's live bound port, used to build the Discover reply's BaseURL. A Discover request is not answered while it returns null.
+  readonly httpPortProvider: () => Nullable<number>;
 
   // UDP port to bind. Defaults to HDHR_DISCOVERY_PORT. Tests pass 0 for an ephemeral port.
   readonly port?: number;
@@ -64,7 +64,7 @@ export interface UdpSurface extends AsyncDisposable {
 
   // Binds the responder socket, returning true on success and false on graceful bind failure (typically EADDRINUSE). Safe to call more than once: a
   // second call without an intervening ensureDown is a no-op success.
-  ensureUp(options?: UdpSurfaceOptions): Promise<boolean>;
+  ensureUp(options: UdpSurfaceOptions): Promise<boolean>;
 }
 
 /**
@@ -77,12 +77,7 @@ export function createUdpSurface(): UdpSurface {
   // The active responder socket, owned entirely by this node. Null when the surface is down.
   let socket: Nullable<Socket> = null;
 
-  // Provider for the HTTP server's live bound port, captured at ensureUp time. The Discover reply advertises this (not CONFIG.hdhr.port) so the BaseURL always
-  // reflects where the HTTP server is actually listening - which matters in the rejected-port-change case, where HTTP stays on the prior port while CONFIG holds
-  // the new one. Null until ensureUp is called with a provider; falls back to CONFIG.hdhr.port when absent (e.g. in transport tests).
-  let httpPortProvider: Nullable<() => Nullable<number>> = null;
-
-  async function ensureUp(options?: UdpSurfaceOptions): Promise<boolean> {
+  async function ensureUp(options: UdpSurfaceOptions): Promise<boolean> {
 
     // Safe to call more than once: an already-bound surface is a no-op success. Safe to invoke from both initial startup and live config-change application.
     if(socket !== null) {
@@ -90,11 +85,11 @@ export function createUdpSurface(): UdpSurface {
       return true;
     }
 
-    // Capture the HTTP-port provider for the Discover reply's BaseURL. Set before the bind attempt; harmless if the bind then fails (no socket -> no packets).
-    httpPortProvider = options?.httpPortProvider ?? null;
-
-    const bindAddress = options?.bindAddress ?? "0.0.0.0";
-    const port = options?.port ?? HDHR_DISCOVERY_PORT;
+    // The socket's message handler captures the HTTP-port provider, so every Discover reply this socket sends reads the HTTP surface's live bound port, which is
+    // where the HTTP server is actually listening whatever the configuration names.
+    const { httpPortProvider } = options;
+    const bindAddress = options.bindAddress ?? "0.0.0.0";
+    const port = options.port ?? HDHR_DISCOVERY_PORT;
 
     // We keep reuseAddr false deliberately: a competing binder on the discovery port must surface as EADDRINUSE so the bind-failure handler below can treat it as
     // graceful "discovery unavailable" fallback rather than silently double-binding. Flipping this to true (or dropping it as redundant) would defeat that
@@ -203,9 +198,10 @@ export function createUdpSurface(): UdpSurface {
  * @param socket - The bound UDP socket, used to send replies.
  * @param msg - The raw datagram bytes.
  * @param rinfo - The sender's address info, used both to address the reply and to pick a LAN-reachable BaseURL.
- * @param httpPortProvider - Accessor for the HTTP server's live bound port, used to build the Discover reply's BaseURL. Falls back to CONFIG.hdhr.port when null.
+ * @param httpPortProvider - Accessor for the HTTP server's live bound port, used to build the Discover reply's BaseURL. A Discover request is not answered while
+ *   it returns null.
  */
-function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; port: number }, httpPortProvider: Nullable<() => Nullable<number>>): void {
+function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; port: number }, httpPortProvider: () => Nullable<number>): void {
 
   const parsed = parsePacket(msg);
 
@@ -237,9 +233,19 @@ function handlePacket(socket: Socket, msg: Buffer, rinfo: { address: string; por
         break;
       }
 
-      // Advertise the HTTP server's live bound port when known, falling back to CONFIG.hdhr.port. The provider reflects reality even when a rejected port
-      // change has left HTTP on its prior port while CONFIG holds the new value.
-      const advertisedPort = httpPortProvider?.() ?? CONFIG.hdhr.port;
+      /* Advertise the port the HTTP surface is bound to, and answer nothing while it reports none. The controller brings discovery down before the HTTP surface,
+       * so a request that finds no bound port arrived in a teardown window, and a reply advertising no port is worse than silence: a client would enrol a tuner
+       * whose BaseURL leads nowhere, where an unanswered request only finds no tuner this time.
+       */
+      const advertisedPort = httpPortProvider();
+
+      if(advertisedPort === null) {
+
+        logDispatch("discover-unanswered", rinfo, { reason: "no bound HTTP port" });
+
+        break;
+      }
+
       const baseUrl = "http://" + selectLanAddress(rinfo.address) + ":" + String(advertisedPort);
       const reply = buildDiscoverReply({
 

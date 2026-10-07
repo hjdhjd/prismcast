@@ -1,9 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle and its live-apply config-change handler. Coverage spans the observable behaviors
- * of startHdhrServer / stopHdhrServer - the disabled short-circuit, automatic DeviceID generation when missing or invalid, graceful EADDRINUSE handling on
- * port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, which realizes the candidate it is handed and returns only
- * the rejections the surfaces earned, including a save to an already-occupied port driven end to end through saveConfiguration.
+ * of startHdhrServer / stopHdhrServer - the disabled short-circuit, an OS-assigned port advertised as bound, automatic DeviceID generation when missing or
+ * invalid, graceful EADDRINUSE handling on port collision, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, which realizes the
+ * candidate it is handed and returns only the rejections the surfaces earned, including a save to an already-occupied port driven end to end through
+ * saveConfiguration and a port change that binds the requested port before it closes the bound one.
  * Each test uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port; data-directory side effects are routed into a
  * per-test temp dir so persistence calls inside startHdhrServer cannot leak to the user's real ~/.prismcast directory.
  */
@@ -13,12 +14,14 @@ import { applyHdhrConfigChanges, startHdhrServer, stopHdhrServer } from "./index
 import type { Config } from "../types/index.ts";
 import type { ConfigChange } from "../config/reactivity.ts";
 import type { ConfigStore } from "../config/index.ts";
+import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Server } from "node:http";
 import type { UserConfig } from "../config/userConfig.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { generateDeviceId } from "./deviceId.ts";
 import { initializeDataDir } from "../config/paths.ts";
+import { subscribeToLogs } from "../utils/logEmitter.ts";
 import { withTempDir } from "../testing.helpers.ts";
 
 // snapshotConfig captures the specific CONFIG.hdhr fields these tests mutate (deviceId, discoveryEnabled, enabled, port) so each test can restore the prior
@@ -72,6 +75,62 @@ async function closeServer(server: Server): Promise<void> {
   server.close(() => { resolve(); });
 
   return promise;
+}
+
+/**
+ * Builds an in-memory config store whose mutations apply to the file it holds, so a row can re-initialize CONFIG from it and drive a real save through it.
+ * @param initial - The file the store starts with.
+ * @returns The store.
+ */
+function memoryStore(initial: UserConfig): ConfigStore {
+
+  let file = structuredClone(initial);
+
+  return {
+
+    mutateConfig: async (fn): Promise<void> => {
+
+      const working = structuredClone(file);
+
+      fn(working);
+      file = working;
+    },
+    readConfig: async () => ({ config: structuredClone(file), parseError: false, readError: false })
+  };
+}
+
+/**
+ * Runs an action while capturing every log entry it emits, so a row can read which servers announced a confirmed bind during it.
+ * @param action - The action to run.
+ * @returns The action's result and the captured entries.
+ */
+async function withLogCapture<T>(action: () => Promise<T>): Promise<{ entries: LogEntry[]; result: T }> {
+
+  const entries: LogEntry[] = [];
+  const unsubscribe = subscribeToLogs((entry: LogEntry) => {
+
+    entries.push(entry);
+  });
+
+  try {
+
+    return { entries, result: await action() };
+  } finally {
+
+    unsubscribe();
+  }
+}
+
+// The listening lines among captured entries: the line a server logs once its bind is confirmed, naming the host, the bound port and the DeviceID.
+function listeningLines(entries: readonly LogEntry[]): string[] {
+
+  return entries.filter((entry) => entry.message.startsWith("HDHomeRun emulation is now listening on ")).map((entry) => entry.message);
+}
+
+// The listening line a server bound on the HDHR host at the given port logs for the given DeviceID.
+function listeningLine(port: number, deviceId: string): string {
+
+  return "HDHomeRun emulation is now listening on " + CONFIG.server.host + ":" + String(port) + " (DeviceID: " + deviceId.toUpperCase() + ").";
 }
 
 describe("startHdhrServer - disabled", () => {
@@ -137,15 +196,23 @@ describe("startHdhrServer - successful start", () => {
     restoreConfig(prior);
   });
 
-  test("starts the HTTP server on an OS-assigned port without throwing", async () => {
+  test("starts the HTTP server on an OS-assigned port and advertises the port the OS assigned", async () => {
 
-    // Port 0 lets the OS pick a free port. We can't observe the chosen port from the public API (the controller's HTTP surface owns it), but we can confirm that
-    // start completes without throwing and stopHdhrServer cleanly tears it down.
-    CONFIG.hdhr.enabled = true;
-    CONFIG.hdhr.deviceId = generateDeviceId();
-    CONFIG.hdhr.port = 0;
+    // Port 0 lets the OS pick a free port. The controller's HTTP surface owns the chosen port, so the row reads it from the listening line, which names the port
+    // from the server's own address, and the documents must advertise that same port while CONFIG still names 0.
+    await initializeConfiguration(undefined, memoryStore({ hdhr: { deviceId: generateDeviceId(), discoveryEnabled: false, enabled: true, port: 0 } }));
 
-    await assert.doesNotReject(() => startHdhrServer(), "start should resolve when port is available");
+    assert.equal(CONFIG.hdhr.port, 0, "precondition: CONFIG names port 0");
+
+    const { entries } = await withLogCapture(() => startHdhrServer());
+    const [line] = listeningLines(entries);
+    const port = Number(/:(\d+) \(DeviceID/.exec(line ?? "")?.[1]);
+
+    assert.ok(port > 0, "the listening line names the port the OS assigned: " + String(line));
+
+    const body = await (await fetch("http://127.0.0.1:" + String(port) + "/discover.json")).json() as Record<string, unknown>;
+
+    assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(port), "the documents advertise the assigned port, not the port CONFIG names");
   });
 
   test("preserves a valid existing DeviceID without regenerating", async () => {
@@ -303,28 +370,6 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
   const validDeviceId = generateDeviceId();
 
   /**
-   * Builds an in-memory config store whose mutations apply to the file it holds, so a row can drive a real save through it.
-   * @param initial - The file the store starts with.
-   * @returns The store.
-   */
-  function memoryStore(initial: UserConfig): ConfigStore {
-
-    let file = structuredClone(initial);
-
-    return {
-
-      mutateConfig: async (fn): Promise<void> => {
-
-        const working = structuredClone(file);
-
-        fn(working);
-        file = working;
-      },
-      readConfig: async () => ({ config: structuredClone(file), parseError: false, readError: false })
-    };
-  }
-
-  /**
    * Builds the candidate running configuration a save would hand the handler: CONFIG with the given HDHomeRun fields applied.
    * @param hdhr - The HDHomeRun fields the candidate changes.
    * @returns The candidate.
@@ -392,7 +437,7 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     assert.equal(CONFIG.hdhr.enabled, true, "the handler committed nothing");
   });
 
-  test("a port change rebinds the HTTP surface on the candidate's port", async () => {
+  test("a port change answers on the candidate's port and advertises it, and the previous port refuses connections once the new one answers", async () => {
 
     const initialPort = await reserveFreePort();
 
@@ -400,10 +445,17 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     CONFIG.hdhr.port = initialPort;
     await startHdhrServer();
 
+    // The candidate carries a DeviceID of its own, held apart from the running one, so the listening line shows the surface names the DeviceID it is handed.
+    const candidateId = generateDeviceId();
     const newPort = await reserveFreePort();
-    const rejections = await applyHdhrConfigChanges([makeChange("hdhr.port")], candidate({ enabled: true, port: newPort }));
 
-    assert.deepEqual(rejections, []);
+    assert.notEqual(candidateId, CONFIG.hdhr.deviceId, "precondition: the candidate's DeviceID differs from the running one");
+
+    const { entries, result } = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.port")],
+      candidate({ deviceId: candidateId, enabled: true, port: newPort })));
+
+    assert.deepEqual(result, []);
+    assert.deepEqual(listeningLines(entries), [listeningLine(newPort, candidateId)], "one server announced its bind: the new one, under the candidate's DeviceID");
 
     const res = await fetch("http://127.0.0.1:" + String(newPort) + "/discover.json");
     const body = await res.json() as Record<string, unknown>;
@@ -411,6 +463,46 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     assert.equal(res.status, 200, "the rebound surface answers on the candidate's port");
     assert.equal(body["DeviceID"], CONFIG.hdhr.deviceId.toUpperCase());
     assert.equal(CONFIG.hdhr.port, initialPort, "the handler committed nothing");
+    assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(newPort), "the documents advertise the bound port, not the port CONFIG names");
+    await assert.rejects(fetch("http://127.0.0.1:" + String(initialPort) + "/discover.json"), "the previous port refuses connections once the new one answers");
+  });
+
+  test("a refused port change keeps the bound server answering and never closes it", async () => {
+
+    // Every listener this row opens binds the host the HDHR server uses, for the reason the occupied-port row below states.
+    const hdhrHost = CONFIG.server.host;
+    const boundPort = await reserveFreePort(hdhrHost);
+
+    CONFIG.hdhr.enabled = true;
+    CONFIG.hdhr.port = boundPort;
+    await startHdhrServer();
+
+    const blocker = await listenOnEphemeral(hdhrHost);
+
+    try {
+
+      const { entries, result } = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.port")],
+        candidate({ enabled: true, port: blocker.port })));
+
+      assert.deepEqual(result, [{ path: "hdhr.port", reason: "HDHomeRun could not bind port " + String(blocker.port) + ", so the change was not applied." }]);
+
+      // A surface that closed the bound server before the attempt could keep the tuner up only by binding that port again, which announces the bind; a surface
+      // that binds before it closes never lets go of the bound server, so no server announces anything during the refusal.
+      assert.deepEqual(listeningLines(entries), [], "no listening line for the bound port during the refusal");
+      assert.ok(entries.some((entry) => (entry.level === "warn") && entry.message.includes("keeping the previous port " + String(boundPort) + " active")),
+        "the warning names the requested port unavailable and the bound port still active");
+      assert.equal((await fetch("http://127.0.0.1:" + String(boundPort) + "/discover.json")).status, 200, "the bound port answers after the refusal");
+
+      // The surface must still report the bound port as bound, the value the Discover reply advertises, so a candidate asking for that port again is already
+      // realized and binds nothing. A surface that dropped its reference to the bound server would try to bind the port that server still holds, and fail.
+      const again = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.port")], candidate({ enabled: true, port: boundPort })));
+
+      assert.deepEqual(again.result, [], "the surface still reports the previous port as bound after the refusal");
+      assert.deepEqual(listeningLines(again.entries), [], "asking for the bound port again binds nothing");
+    } finally {
+
+      await closeServer(blocker.server);
+    }
   });
 
   test("the fields read where they are used, and discovery while the surface is disabled, return no rejection", async () => {
@@ -429,12 +521,14 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
       initializeDataDir(dir);
 
       const port = await reserveFreePort();
-      const rejections = await applyHdhrConfigChanges([makeChange("hdhr.deviceId")], candidate({ deviceId: "10000000", enabled: true, port }));
+      const { entries, result } = await withLogCapture(() => applyHdhrConfigChanges([makeChange("hdhr.deviceId")],
+        candidate({ deviceId: "10000000", enabled: true, port })));
 
-      assert.deepEqual(rejections, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so a newly generated DeviceID replaced it." }]);
+      assert.deepEqual(result, [{ path: "hdhr.deviceId", reason: "The saved HDHomeRun DeviceID failed its checksum, so a newly generated DeviceID replaced it." }]);
       assert.notEqual(CONFIG.hdhr.deviceId, "10000000", "the invalid id never reached CONFIG");
       assert.notEqual(CONFIG.hdhr.deviceId, validDeviceId, "a fresh id was generated in its place");
       assert.match(CONFIG.hdhr.deviceId, /^[0-9a-f]{8}$/);
+      assert.deepEqual(listeningLines(entries), [listeningLine(port, CONFIG.hdhr.deviceId)], "the listening line names the generated DeviceID the surface advertises");
     });
   });
 
