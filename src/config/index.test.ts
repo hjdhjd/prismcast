@@ -187,19 +187,14 @@ describe("validateConfiguration", () => {
 
   afterEach(() => {
 
-    /* Restore by reassigning every top-level group on the live CONFIG. We cannot reassign CONFIG itself here because it's a named import, and ES module named
-     * and namespace imports are read-only bindings - this file has no way to assign to the imported name at all, only to mutate the object it points to.
+    /* Restore by reassigning every top-level group on the live CONFIG, walking the snapshot's own groups so a group the configuration gains is restored without
+     * an edit here. We cannot reassign CONFIG itself here because it's a named import, and ES module named and namespace imports are read-only bindings - this
+     * file has no way to assign to the imported name at all, only to mutate the object it points to.
      */
-    Object.assign(CONFIG.browser, snapshot.browser);
-    Object.assign(CONFIG.channels, snapshot.channels);
-    Object.assign(CONFIG.hdhr, snapshot.hdhr);
-    Object.assign(CONFIG.hls, snapshot.hls);
-    Object.assign(CONFIG.logging, snapshot.logging);
-    Object.assign(CONFIG.paths, snapshot.paths);
-    Object.assign(CONFIG.playback, snapshot.playback);
-    Object.assign(CONFIG.recovery, snapshot.recovery);
-    Object.assign(CONFIG.server, snapshot.server);
-    Object.assign(CONFIG.streaming, snapshot.streaming);
+    for(const group of Object.keys(snapshot) as (keyof Config)[]) {
+
+      Object.assign(CONFIG[group], snapshot[group]);
+    }
   });
 
   test("passes for an unmodified default CONFIG", () => {

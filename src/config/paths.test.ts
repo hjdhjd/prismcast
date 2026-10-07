@@ -4,6 +4,7 @@
  * touches; an unverified change would silently relocate user data, so we exercise each data-directory getter it imports against a tmp-scoped data directory
  * and lock the path-builder contract for the Config-derived getters.
  */
+import type * as PathsModule from "./paths.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getDefaultLogFilePath, getHealthFilePath, getLogFilePath,
   getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath, getStartupLogFilePath,
@@ -165,13 +166,16 @@ describe("initializeDataDir", () => {
 
 describe("getDataDir", () => {
 
-  test("throws a descriptive error when called before initializeDataDir", () => {
+  test("throws a descriptive error when called before initializeDataDir", async () => {
 
-    /* The module's `resolvedDataDir` cache is set by initializeDataDir, but earlier tests in this file have already called it. The contract is "throws when
-     * the cache is unset"; without a way to reset the module's cache to undefined we cannot exercise the throw path here. Locking the contract under a skip
-     * keeps the documentation accurate.
+    /* The resolved data directory is module-level state, and earlier rows in this file have set it, so the row reaches the unset state through a fresh instance
+     * of the module: a query-suffixed specifier loads a copy of its own, whose directory nothing has initialized. The specifier is computed because the type
+     * checker refuses a literal query-suffixed one, and the copy is typed as the module it is.
      */
-    assert.doesNotThrow(() => getDataDir(), "after initialization the function returns the resolved path");
+    const fresh = await import(new URL("./paths.ts?fresh", import.meta.url).href) as typeof PathsModule;
+
+    assert.throws(() => fresh.getDataDir(), { message: "Data directory not initialized. Call initializeDataDir() first." }, "the unset directory throws");
+    assert.doesNotThrow(() => getDataDir(), "the instance the rest of the file uses still answers the directory its rows set");
   });
 
   test("returns the value last set by initializeDataDir", async () => {

@@ -30,16 +30,15 @@ describe("buildPlaylist", () => {
 
   test("formats EXTINF durations to exactly three decimal places", () => {
 
-    // Boundary: the toFixed(3) literal shapes every emitted duration. Locks the exact rendering for half-integer and whole-number inputs.
+    // Boundary: the toFixed(3) literal shapes every emitted duration. The lines are read whole and in order, so each entry's own rendering is held: a
+    // half-integer, a whole number, and a value just under a whole number that rounds up to it.
     const result = buildPlaylist({ mediaSequence: 0, version: 7 }, [
       { duration: 1.5, url: "a.m4s" },
       { duration: 2, url: "b.m4s" },
       { duration: 1.99999, url: "c.m4s" }
     ]);
 
-    assert.match(result, /#EXTINF:1\.500,/);
-    assert.match(result, /#EXTINF:2\.000,/);
-    assert.match(result, /#EXTINF:2\.000,/);
+    assert.deepEqual(result.split("\n").filter((line) => line.startsWith("#EXTINF:")), [ "#EXTINF:1.500,", "#EXTINF:2.000,", "#EXTINF:2.000," ]);
   });
 
   test("computes TARGETDURATION as the ceiling of the maximum entry duration", () => {
@@ -208,8 +207,7 @@ describe("buildPlaylist", () => {
     const result = buildPlaylist({ mediaSequence: 0, version: 7 }, [{ duration: 2, url: "a.m4s" }]);
 
     assert.doesNotMatch(result, /CUE-IN/, "no CUE-IN");
-    assert.doesNotMatch(result, /CUE-OUT/, "no CUE-OUT");
-    assert.doesNotMatch(result, /CUE-OUT-CONT/, "no CUE-OUT-CONT");
+    assert.doesNotMatch(result, /CUE-OUT/, "no CUE-OUT, which covers CUE-OUT-CONT as well");
   });
 
   test("preserves entry order across the playlist body", () => {

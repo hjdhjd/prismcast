@@ -9,6 +9,7 @@
  * file through the real store; the rows covering a save that changes the host or the port run in test/e2e/streaming/show-info.test.ts.
  */
 import { CONFIG, initializeConfiguration } from "../config/index.ts";
+import { DEFAULTS, readConfig } from "../config/userConfig.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearShowName, fetchFromDvr, getDvrHost, getShowName, matchesM3uDevice, setDvrHost } from "./showInfo.ts";
@@ -17,7 +18,6 @@ import { LOG } from "../utils/index.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
-import { readConfig } from "../config/userConfig.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -29,7 +29,7 @@ const API_TIMEOUT_MS = 5000;
 const SETTLE_TURNS = 10;
 
 // The Channels DVR port the defaults carry, which the running configuration holds in every row that does not change it.
-const DEFAULT_DVR_PORT = 8089;
+const DEFAULT_DVR_PORT = DEFAULTS.channelsDvr.port;
 
 // The most macrotask boundaries a row crosses while it waits for the logo populations a write started to complete.
 const POPULATION_TURNS = 100;
@@ -292,7 +292,7 @@ describe("fetchFromDvr", () => {
   test("constructs the URL from the host and the port it is handed, whatever port the running configuration holds", async () => {
 
     // The caller hands the port in, so a request made while a save is reconciled reaches the port the candidate names. The running configuration holds the
-    // default port throughout, which is the negative control: a URL built from CONFIG would carry 8089.
+    // default port throughout, which is the negative control: a URL built from CONFIG would carry the default port.
     let observedUrl = "";
 
     globalThis.fetch = (async (input: Request | URL | string): Promise<Response> => {

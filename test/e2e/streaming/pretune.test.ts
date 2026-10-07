@@ -184,7 +184,7 @@ describe("pretune scheduling state machine", () => {
     scheduledJobs = [{
 
       channels: ["100"],
-      id: "job-cf2e9c7",
+      id: "job-already-streaming",
       item: {},
       name: "Late Show",
       // eslint-disable-next-line camelcase -- DVR wire protocol field name.

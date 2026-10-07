@@ -26,8 +26,10 @@
  *   - healActivatedCaptureTab (the heal's report-side trigger, driven against pages enrolled through installActivationHeal with injected collaborators)
  *   - getExecutablePath (the env-var-or-search executable resolver)
  *   - emitCurrentSystemStatus (the status emitter wrapper - we drain the resulting SSE event)
+ *   - composeSystemStatus (the pure status composition the emitter wrapper calls, driven with a connected browser double)
  *   - seedProfilePreferences (the profile Preferences merge that enables Chrome's extension developer mode)
  *   - isBrowserIdleForRestart (the pure cause-specific idleness decision both restart guards read)
+ *   - decideRestartQuietPeriod (the pure maintenance quiet-period decision the restart check's tick carries out)
  *   - applyStalePageCleanupChanges (a saved cleanup interval re-arming the running sweep on the clock its start received, and arming nothing while it is stopped)
  *
  * Importing this module pulls in puppeteer-stream which starts a WebSocketServer at evaluation time. The test runner uses --test-force-exit so that handle does
@@ -37,12 +39,12 @@ import type { Browser, Page } from "puppeteer-core";
 import type { Config, Nullable, StreamingMode } from "../types/index.ts";
 import { TestClock, drainClock } from "homebridge-plugin-utils/testing";
 import { afterEach, before, beforeEach, describe, test } from "node:test";
-import { applyStalePageCleanupChanges, buildLaunchOptions, cleanStaleProfileFiles, confirmSharedWindowPlacement, createDiscoveryPage, emitCurrentSystemStatus,
-  emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile, findProfileHolder, getBrowserInstance, getCaptureImpairment,
-  getChromeVersion, getExecutablePath, healActivatedCaptureTab, installActivationHeal, isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown,
-  makeFocusReaffirmCallback, mirrorPlacement, noteSharedWindow, pickCarrierPage, reaffirmCaptureSurface, registerManagedPage, resolveSharedWindowCarrier,
-  seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup,
-  unregisterManagedPage } from "./index.ts";
+import { applyStalePageCleanupChanges, buildLaunchOptions, cleanStaleProfileFiles, composeSystemStatus, confirmSharedWindowPlacement, createDiscoveryPage,
+  decideRestartQuietPeriod, emitCurrentSystemStatus, emulateCaptureSurface, emulateLayoutSurface, ensureDataDirectory, findChromeProcessesUsingProfile,
+  findProfileHolder, getBrowserInstance, getCaptureImpairment, getChromeVersion, getExecutablePath, healActivatedCaptureTab, installActivationHeal,
+  isBrowserConnected, isBrowserIdleForRestart, isCarrierPage, isGracefulShutdown, makeFocusReaffirmCallback, mirrorPlacement, noteSharedWindow, pickCarrierPage,
+  reaffirmCaptureSurface, registerManagedPage, resolveSharedWindowCarrier, seedProfilePreferences, setGracefulShutdown, startBrowserRestartChecking,
+  startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, unregisterManagedPage } from "./index.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { firstOf, withTempDir } from "../testing.helpers.ts";
 import { CONFIG } from "../config/index.ts";
@@ -120,13 +122,16 @@ function makeCapturePage(evaluate: () => Promise<number>): { declared: DeclaredS
 }
 
 /* The readings a page can hand back that are not usable scale factors, each with the check that identifies it inside the recorded warning: NaN and a missing
- * value need a predicate rather than an equality, while zero and a negative are exact.
+ * value need a predicate rather than an equality, while zero, a negative and an infinity are exact. The infinity is the reading only the finiteness test
+ * rejects, because it passes the positivity test.
  */
 const UNUSABLE_DENSITIES: readonly { assertReported: (reported: unknown) => void; label: string; reported: number }[] = [
 
   { assertReported: (reported): void => assert.ok(Number.isNaN(reported), "the warning names the NaN reading"), label: "NaN", reported: NaN },
   { assertReported: (reported): void => assert.equal(reported, 0, "the warning names the zero reading"), label: "a density of zero", reported: 0 },
   { assertReported: (reported): void => assert.equal(reported, -1, "the warning names the negative reading"), label: "a negative density", reported: -1 },
+  { assertReported: (reported): void => assert.equal(reported, Infinity, "the warning names the infinite reading"), label: "an infinite density",
+    reported: Infinity },
   { assertReported: (reported): void => assert.equal(reported, undefined, "the warning names the missing reading"), label: "no density at all",
     reported: undefined as unknown as number }
 ];
@@ -377,6 +382,17 @@ describe("findChromeProcessesUsingProfile", () => {
 
     assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/data", 50, aliveSet(new Set([50]))), [100]);
   });
+
+  test("accepts the match when a tab follows the user-data-dir (tab boundary)", () => {
+
+    // A process table can report its arguments separated by tabs, and the boundary check accepts a tab as it does a space.
+    const processes = [
+
+      { commandLine: "/usr/bin/chrome --user-data-dir=/home/x/data\t--no-sandbox", pid: 100, ppid: 50 }
+    ];
+
+    assert.deepEqual(findChromeProcessesUsingProfile(processes, "/home/x/data", 50, aliveSet(new Set([50]))), [100]);
+  });
 });
 
 describe("findProfileHolder", () => {
@@ -460,8 +476,9 @@ describe("findProfileHolder", () => {
 describe("cleanStaleProfileFiles", () => {
 
   // Every row seeds the lock files and the DevTools port file in a profile under a fresh temp directory and hands the removal a literal process table. The
-  // removal reads our own PID and the liveness of a root's parent from the host, so the root of a tree on the profile takes our own parent as its parent, a
-  // live process that is not us, and no other PID's liveness is read.
+  // removal reads our own PID and the liveness of a root's parent from the host, so the root of a tree on the profile takes our own parent as its parent, a live
+  // process that is not us, unless the row means the tree to be ours and gives it our own PID, which marks it ours before any liveness is read. No other PID's
+  // liveness is read.
   const profileFiles = [ "DevToolsActivePort", "SingletonCookie", "SingletonLock", "SingletonSocket" ];
 
   const seedProfile = (dir: string): string => {
@@ -497,6 +514,30 @@ describe("cleanStaleProfileFiles", () => {
       for(const file of profileFiles) {
 
         assert.equal(existsSync(path.join(profileDir, file)), true, file + " is kept for the live holder");
+      }
+    });
+  });
+
+  test("removes the lock files when the only Chrome tree on the profile is this process's own", async () => {
+
+    // The scan the sweep reads before its kill loop, or the teardown's scan while its own Chrome is still exiting. The main's parent is this process, so the tree
+    // is ours to end and holds nothing against us; its helpers' parent, the main, is on the profile, so no helper reads as a root of its own. The row proves the
+    // removal hands the holder test this process's own PID: any other PID would read the main as a live holder and keep the files.
+    await withTempDir(async (dir) => {
+
+      const profileDir = seedProfile(dir);
+      const processes = [
+
+        { commandLine: "/usr/bin/chrome --remote-debugging-pipe --user-data-dir=" + profileDir, pid: 100, ppid: process.pid },
+        { commandLine: "/usr/bin/chrome --type=gpu-process --user-data-dir=" + profileDir, pid: 101, ppid: 100 },
+        { commandLine: "/usr/bin/chrome --type=renderer --user-data-dir=" + profileDir, pid: 102, ppid: 100 }
+      ];
+
+      cleanStaleProfileFiles(processes, profileDir);
+
+      for(const file of profileFiles) {
+
+        assert.equal(existsSync(path.join(profileDir, file)), false, file + " is removed");
       }
     });
   });
@@ -1814,6 +1855,28 @@ describe("emitCurrentSystemStatus", () => {
   });
 });
 
+describe("composeSystemStatus", () => {
+
+  test("a connected browser reads as connected with its page count, and a published browser whose connection dropped does not", () => {
+
+    /* The branch no unit row reaches through the emitter, because the emitter reads its browser from a supervisor no row can publish one on. The composition is
+     * asserted whole, so a composer that dropped or renamed a field fails here, and the browser double carries only the connection the composer reads. The
+     * dropped connection is the contrast that tells a read of the browser's connection apart from a composer that answers connected for any published browser.
+     */
+    const facts = { captureImpaired: true, memory: { heapUsed: 1024, rss: 4096 }, pageCount: 3, streams: { active: 2, limit: 10 }, uptime: 120 };
+
+    assert.deepEqual(composeSystemStatus({ ...facts, browser: { connected: true } }), {
+
+      browser: { captureImpaired: true, connected: true, pageCount: 3 },
+      memory: { heapUsed: 1024, rss: 4096 },
+      streams: { active: 2, limit: 10 },
+      uptime: 120
+    }, "the connected browser's status carries every fact it was composed from");
+
+    assert.equal(composeSystemStatus({ ...facts, browser: { connected: false } }).browser.connected, false, "a dropped connection reads as not connected");
+  });
+});
+
 describe("ensureDataDirectory legacy-artifact purge", () => {
 
   test("removes a pre-existing chrome.pid file (legacy artifact from PrismCast < 1.10.3)", async () => {
@@ -1960,6 +2023,43 @@ describe("seedProfilePreferences", () => {
 
     assert.equal(written.extensions.ui.developer_mode, true, "the flag was seeded into a rebuilt extensions branch");
     assert.equal(written.profile.name, "Person 1", "unrelated branches still survive");
+  });
+
+  test("replaces an array extensions branch rather than descending into it", () => {
+
+    // An array is an object to typeof, so a test that stopped there would hand the seed an array to write a named key into, a key JSON.stringify then drops.
+    // The branch is rebuilt as an object instead.
+    const profileDir = path.join(tempDataDir, "array-branch-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, JSON.stringify({ extensions: [], profile: { name: "Person 1" } }));
+
+    assert.doesNotThrow(() => seedProfilePreferences(profileDir));
+
+    const written = JSON.parse(readFileSync(preferencesPath, "utf8")) as { extensions: { ui: { developer_mode: boolean } }; profile: { name: string } };
+
+    assert.equal(written.extensions.ui.developer_mode, true, "the flag was seeded into a rebuilt extensions branch");
+    assert.equal(written.profile.name, "Person 1", "unrelated branches still survive");
+  });
+
+  test("replaces a null ui branch one level down while keeping its siblings", () => {
+
+    // A null is an object to typeof as well, and this one sits at the second level, so the row covers the descent into extensions.ui as well as the top level.
+    const profileDir = path.join(tempDataDir, "null-branch-profile");
+    const preferencesPath = path.join(profileDir, "Default", "Preferences");
+
+    mkdirSync(path.join(profileDir, "Default"), { recursive: true });
+    writeFileSync(preferencesPath, JSON.stringify({ extensions: { settings: { abcdef: { state: 1 } }, ui: null } }));
+
+    assert.doesNotThrow(() => seedProfilePreferences(profileDir));
+
+    const written = JSON.parse(readFileSync(preferencesPath, "utf8")) as {
+      extensions: { settings: { abcdef: { state: number } }; ui: { developer_mode: boolean } };
+    };
+
+    assert.equal(written.extensions.ui.developer_mode, true, "the flag was seeded into a rebuilt ui branch");
+    assert.equal(written.extensions.settings.abcdef.state, 1, "the sibling branch inside extensions survives");
   });
 });
 
@@ -2158,9 +2258,34 @@ describe("isBrowserIdleForRestart", () => {
   });
 });
 
+describe("decideRestartQuietPeriod", () => {
+
+  // BROWSER_MAX_AGE is module-private, so the rows state its value rather than reaching for the constant, and go red against a threshold that moves without them.
+  const MAX_AGE = 6 * 60 * 60 * 1000;
+
+  test("a browser younger than the maximum age leaves the countdown as it stands, whatever the registry holds", () => {
+
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE - 1, quietPending: false, streamCount: 0 }), "skip", "an idle young browser starts no countdown");
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE - 1, quietPending: true, streamCount: 1 }), "skip", "and a busy one cancels nothing");
+  });
+
+  test("an old browser with an empty registry starts the countdown once", () => {
+
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE, quietPending: false, streamCount: 0 }), "arm", "the threshold itself is old enough");
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE, quietPending: true, streamCount: 0 }), "skip", "a countdown already running is left to run");
+  });
+
+  test("an old browser with streams registered cancels a running countdown and starts none", () => {
+
+    // A stream that starts during the quiet period resets the countdown, so the next empty tick starts it afresh rather than resuming one that had partly elapsed.
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE, quietPending: true, streamCount: 1 }), "cancel", "a running countdown is cancelled");
+    assert.equal(decideRestartQuietPeriod({ age: MAX_AGE, quietPending: false, streamCount: 1 }), "skip", "with none running there is nothing to cancel");
+  });
+});
+
 /* Not exercised by any automated suite, because each path below requires Puppeteer/Chrome integration and the integration tier under test/ never launches Chrome:
  *
- * - getCurrentBrowser, launchReadyBrowser, launchWithCustomArgs, detectBrowserCapabilities (every step here drives Puppeteer or executes JS in a real browser context).
+ * - getCurrentBrowser, launchReadyBrowser, detectBrowserCapabilities (every step here drives Puppeteer or executes JS in a real browser context).
  *
  * - closeBrowser (sends SIGTERM/SIGKILL to a real Chrome ChildProcess and waits for the exit event).
  *
@@ -2175,7 +2300,9 @@ describe("isBrowserIdleForRestart", () => {
  *
  * - handleBrowserDisconnect (the disconnect handler is wired into Puppeteer's "disconnected" event - exercising it requires the event firing on a real browser).
  *
- * - emitCurrentSystemStatus's connected-browser branch (where browser.pages() returns a non-empty list).
+ * - emitCurrentSystemStatus's page-count read against a connected browser (browser.pages() on a published browser). The status it composes from that read is
+ *   covered through composeSystemStatus.
  *
- * - The opportunistic-restart timing flow including the quiet-period countdown.
+ * - The restart check's tick reaching its quiet-period branch, which needs a published browser past the maximum age. The decision the tick carries out is covered
+ *   through decideRestartQuietPeriod.
  */

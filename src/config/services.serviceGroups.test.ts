@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * services.serviceGroups.test.ts: Unit tests for service-group construction in services.ts - buildServiceGroups (passes 1, 2, 3 across canonical/variant/override
- * scenarios) and resolveServiceKey's no-fallback outcomes. Predicates, lookups, and label dispatchers live in services.test.ts; sort-key computation lives in
- * channelSort.test.ts.
+ * scenarios) and resolveServiceKey's filter-fallback paths, the outcomes with no fallback and each fallback with its arm. Predicates, lookups, and label
+ * dispatchers live in services.test.ts; sort-key computation lives in channelSort.test.ts.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { buildServiceGroups, getEnabledServices, getServiceGroup, getServiceSelections, hasPredefinedSuffix, resolveServiceKey, setEnabledServices,
@@ -116,8 +116,10 @@ describe("buildServiceGroups: user-override scenarios A and B", () => {
 
   test("Scenario B (predefined override on different domain): emits Custom + :predefined variants", () => {
 
-    /* Same setup as Scenario A but the user's override URL is on a foreign domain. Scenario B emits two entries: { key: nbc, label: 'Custom (<domain>)' } and
-     * the :predefined synthetic with the original service's label.
+    /* Same setup as Scenario A but the user's override URL is on a foreign domain. Scenario B emits the custom canonical, the :predefined synthetic with the
+     * original service's label, and then the real variants. The expected entries are known answers read from the site table: the custom label carries the
+     * concise domain extractDomain gives ("example.test" for "foreign.example.test"), a domain the table does not know tags "direct", nbc.com is "NBC.com" with
+     * no service tag, and hulu.com is "Hulu" tagged "hulu".
      */
     const nbcPredefined = PREDEFINED_CHANNELS["nbc"];
 
@@ -128,9 +130,6 @@ describe("buildServiceGroups: user-override scenarios A and B", () => {
 
     setServiceSelections({});
 
-    /* extractDomain returns the concise domain (e.g., "example.test" for "foreign.example.test"), and the label uses that concise form. The row asserts only the
-     * "Custom (...)" shape of the label, so it does not tell the concise domain from the full hostname.
-     */
     const userOverride = makeChannel({ ...nbcPredefined, name: "NBC Custom", url: "https://foreign.example.test/feed" });
     const huluVariant = makeChannel({ canonicalKey: "nbc", url: "https://www.hulu.com/live" });
     const channels: ResolvedChannelMap = { nbc: userOverride, "nbc-hulu": huluVariant };
@@ -140,16 +139,12 @@ describe("buildServiceGroups: user-override scenarios A and B", () => {
     const group = getServiceGroup("nbc");
 
     assert.ok(group, "nbc group exists");
+    assert.deepEqual(group.variants, [
 
-    const variantKeys = group.variants.map((v) => v.key).toSorted();
-
-    assert.ok(variantKeys.includes("nbc"), "canonical entry exists with custom URL");
-    assert.ok(variantKeys.includes("nbc:predefined"), "Scenario B emits the :predefined synthetic variant pointing at the original predefined service");
-
-    const customVariant = group.variants.find((v) => v.key === "nbc");
-
-    assert.ok(customVariant, "custom variant entry exists");
-    assert.match(customVariant.label, /^Custom \(.+\)$/, "label has 'Custom (...)' shape (concise domain)");
+      { key: "nbc", label: "Custom (example.test)", tag: "direct" },
+      { key: "nbc:predefined", label: "NBC.com", tag: "direct" },
+      { key: "nbc-hulu", label: "Hulu", tag: "hulu" }
+    ], "the custom canonical, then the path back to the original service, then the real variant");
   });
 });
 
@@ -242,10 +237,11 @@ describe("resolveServiceKey: filter-fallback paths", () => {
 
   /* The filter fallback fires when the user has an active service filter and the resolved selection (or canonical) is filtered out. Two branches:
    *
-   *   - No selection: `enabledServices.length > 0 && !isServiceTagEnabled(canonicalServiceTag)` -> findFirstEnabledVariant.
-   *   - Valid selection but its tag is filtered out: same fallback.
+   *   - No selection: `enabledServices.length > 0 && !isServiceTagEnabled(canonicalServiceTag)` -> findFirstEnabledVariant, else the canonical.
+   *   - Valid selection but its tag is filtered out: findFirstEnabledVariant, else the selection.
    *
-   * The rows below cover the no-fallback outcomes only: each resolves a channel whose canonical or selected service is enabled, so neither fallback branch runs.
+   * The first rows cover the no-fallback outcomes, each resolving a channel whose canonical or selected service is enabled. The last two reach each fallback and
+   * its arm for a filter that enables no variant, on a channel with no predefined entry, so its group holds the canonical and its variants and nothing else.
    */
 
   let originalSelections: Record<string, string>;
@@ -316,5 +312,39 @@ describe("resolveServiceKey: filter-fallback paths", () => {
     buildServiceGroups(channels);
 
     assert.equal(resolveServiceKey("abc"), "abc-hulu");
+  });
+
+  // A canonical on hulu.com with variants on Sling TV and YouTube TV, tagged hulu, sling and yttv by the site table. No predefined channel carries the key.
+  const fallbackChannels: ResolvedChannelMap = {
+
+    testcanon: makeChannel({ name: "Test Canonical", url: "https://www.hulu.com/live" }),
+    "testcanon-sling": makeChannel({ canonicalKey: "testcanon", url: "https://watch.sling.com/x" }),
+    "testcanon-yttv": makeChannel({ canonicalKey: "testcanon", url: "https://tv.youtube.com/x" })
+  };
+
+  test("no selection with the canonical's service filtered out falls back to the first enabled variant, and to the canonical when none is enabled", () => {
+
+    buildServiceGroups(fallbackChannels);
+    setServiceSelections({});
+    setEnabledServices(["sling"]);
+
+    assert.equal(resolveServiceKey("testcanon"), "testcanon-sling", "the first variant whose service the filter enables");
+
+    setEnabledServices(["spectrum"]);
+
+    assert.equal(resolveServiceKey("testcanon"), "testcanon", "no variant is enabled, so the canonical stands");
+  });
+
+  test("a selection whose service is filtered out falls back to the first enabled variant, and to the selection when none is enabled", () => {
+
+    buildServiceGroups(fallbackChannels);
+    setServiceSelections({ testcanon: "testcanon-yttv" });
+    setEnabledServices(["sling"]);
+
+    assert.equal(resolveServiceKey("testcanon"), "testcanon-sling", "the first variant whose service the filter enables");
+
+    setEnabledServices(["spectrum"]);
+
+    assert.equal(resolveServiceKey("testcanon"), "testcanon-yttv", "no variant is enabled, so the selection stands");
   });
 });

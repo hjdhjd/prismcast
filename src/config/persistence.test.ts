@@ -17,7 +17,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { Migration } from "./persistence.ts";
 import assert from "node:assert/strict";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as immediate } from "node:timers/promises";
 import path from "node:path";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 import { withTempDir } from "../testing.helpers.ts";
@@ -433,65 +433,60 @@ describe("FileStore.mutate - core paths", () => {
   });
 });
 
-/* mutateThen holds the store's queue through the follow-up its callback returns, so the next queued operation reads the file only once the follow-up has
- * settled. The store's read, write and readback are file I/O that microtask turns never complete, so the row that holds a follow-up open while another mutate
- * is queued waits a bounded real-time interval before it reads whether that mutate ran, and it opens the gate in a finally so a failed row leaves nothing
- * waiting on the queue.
- */
 describe("FileStore.mutateThen - the follow-up runs while the queue is held", () => {
-
-  // The real time a row gives a queued operation to reach its callback were the queue free: the read, write and readback of a small file, with room to spare.
-  const FILE_IO_SETTLE_MS = 300;
 
   test("a mutate queued while a mutateThen follow-up is gated does not run its callback until the gate opens", async () => {
 
-    await withTempDir(async (dir) => {
+    /* The row runs on the memory backend, whose every operation settles in microtasks, so a queue the follow-up failed to hold would let the queued mutate read,
+     * call back, write and read back entirely within one drain of the microtask queue. One setImmediate turn runs only after that drain, which makes it the
+     * bound on whether the queued callback ran while the gate was shut. The gate opens in a finally so a failed row leaves nothing waiting on the queue.
+     */
+    const backend = makeMemoryStorageBackend();
+    const filePath = "/data/held.json";
+    const store = makeMemoryStore<{ value: number }>(backend, filePath, {
 
-      const store = makeStore<{ value: number }>(dir, "held.json", {
-
-        defaultValue: () => ({ value: 0 })
-      });
-      const entered = Promise.withResolvers<null>();
-      const gate = Promise.withResolvers<null>();
-      let queuedRan = false;
-      let ranWhileHeld = true;
-
-      const held = store.mutateThen((data) => {
-
-        data.value = 1;
-
-        return async (): Promise<void> => {
-
-          entered.resolve(null);
-          await gate.promise;
-        };
-      });
-
-      await entered.promise;
-
-      const queued = store.mutate((data) => {
-
-        queuedRan = true;
-        data.value = 2;
-      });
-
-      try {
-
-        await delay(FILE_IO_SETTLE_MS);
-        ranWhileHeld = queuedRan;
-      } finally {
-
-        gate.resolve(null);
-      }
-
-      await Promise.all([ held, queued ]);
-
-      const parsed = JSON.parse(await readFile(path.join(dir, "held.json"), "utf-8")) as { value: number };
-
-      assert.equal(ranWhileHeld, false, "the queued mutate's callback did not run while the follow-up held the queue");
-      assert.equal(queuedRan, true, "the queued mutate ran once the gate opened");
-      assert.equal(parsed.value, 2, "the queued mutate's write landed after the held one");
+      defaultValue: () => ({ value: 0 })
     });
+    const entered = Promise.withResolvers<null>();
+    const gate = Promise.withResolvers<null>();
+    let queuedRan = false;
+    let ranWhileHeld = true;
+
+    const held = store.mutateThen((data) => {
+
+      data.value = 1;
+
+      return async (): Promise<void> => {
+
+        entered.resolve(null);
+        await gate.promise;
+      };
+    });
+
+    await entered.promise;
+
+    const queued = store.mutate((data) => {
+
+      queuedRan = true;
+      data.value = 2;
+    });
+
+    try {
+
+      await immediate();
+      ranWhileHeld = queuedRan;
+    } finally {
+
+      gate.resolve(null);
+    }
+
+    await Promise.all([ held, queued ]);
+
+    const parsed = JSON.parse(backend.files.get(filePath) ?? "null") as { value: number };
+
+    assert.equal(ranWhileHeld, false, "the queued mutate's callback did not run while the follow-up held the queue");
+    assert.equal(queuedRan, true, "the queued mutate ran once the gate opened");
+    assert.equal(parsed.value, 2, "the queued mutate's write landed after the held one");
   });
 
   test("a follow-up that rejects rejects its caller, leaves the write on disk, and releases the queue", async () => {

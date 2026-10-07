@@ -929,8 +929,9 @@ export interface UserConfigLoadResult {
  * the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
-/* Current schema version for config.json. Migrations are declared in configMigrations below; the framework runs them in order from the file's stored version
- * up to this constant, stamps the new version after each, and records the audit trail in migrationsApplied.
+/**
+ * Current schema version for config.json, the version every file this build writes carries. Migrations are declared in configMigrations below; the framework
+ * runs them in order from the file's stored version up to this constant, stamps the new version after each, and records the audit trail in migrationsApplied.
  *
  * Version history:
  *   1 - Original. Provider-themed channel field names ("enabledProviders", "precacheProviders") and "foxcom" service tag still present.
@@ -939,7 +940,7 @@ export interface UserConfigLoadResult {
  *   3 - DVR connection namespace. Moves the top-level `dvrHost` field into `channelsDvr.host`, splitting any legacy `host:port` value so the host portion
  *       lands at `channelsDvr.host` (host-only) and the port portion lands at `channelsDvr.port` only when the user has not already customized the port.
  */
-const CURRENT_CONFIG_SCHEMA_VERSION = 3;
+export const CURRENT_CONFIG_SCHEMA_VERSION = 3;
 
 /* Declarative schema migrations. The file store framework runs these in order from the file's stored schemaVersion up to CURRENT_CONFIG_SCHEMA_VERSION,
  * stamping the new version and recording the description in migrationsApplied after each application. Apply functions mutate the data in place.

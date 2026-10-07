@@ -345,8 +345,8 @@ describe("LOG.withStreamId bound logger", () => {
 describe("LOG sentence normalization (info / warn / error)", () => {
 
   /* The logger guarantees that every non-debug sentence ends with exactly one terminator, and a trailing context object follows that terminator rather than
-   * taking one of its own. This suite asserts every branch of the normalizer that a non-empty message reaches, so a future regression in the helper (or a
-   * removal of the call from logWithLevel) surfaces immediately. Debug bypasses the normalizer, and the rows asserting that bypass sit in this suite too.
+   * taking one of its own. This suite asserts every branch of the normalizer, the empty message's included, so a future regression in the helper (or a removal
+   * of the call from logWithLevel) surfaces immediately. Debug bypasses the normalizer, and the rows asserting that bypass sit in this suite too.
    */
   let captured: LogEntry[];
   let unsubscribe: () => void;
@@ -368,6 +368,13 @@ describe("LOG sentence normalization (info / warn / error)", () => {
     LOG.info("plain");
 
     assert.equal(captured[0]?.message, "plain.");
+  });
+
+  test("leaves an empty message empty rather than forcing a bare period into it", () => {
+
+    LOG.info("");
+
+    assert.equal(captured[0]?.message, "");
   });
 
   test("leaves a single trailing period unchanged", () => {
@@ -441,7 +448,7 @@ describe("LOG sentence normalization (info / warn / error)", () => {
   test("works with %s interpolation: format-string period + value period collapses to one", () => {
 
     // A format string ending in a period plus a value ending in a period would assemble ".." - the normalizer collapses it to one.
-    LOG.info("startup failed: %s", "Invalid URL.");
+    LOG.info("startup failed: %s.", "Invalid URL.");
 
     assert.equal(captured[0]?.message, "startup failed: Invalid URL.");
   });

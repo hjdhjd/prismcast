@@ -18,9 +18,10 @@
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { generateChannelsPanel, generateTagFilterContent, generateTagManagerBody } from "../../../src/routes/config/channels/table.ts";
+import { mutateChannelDisplayPrefs, setTagRegistry } from "../../../src/config/userChannels.ts";
+import { PREDEFINED_TAGS } from "../../../src/channels/index.ts";
 import assert from "node:assert/strict";
 import { generateCustomProfilesPanel } from "../../../src/routes/config/services.ts";
-import { mutateChannelDisplayPrefs } from "../../../src/config/userChannels.ts";
 import { mutateEnabledServices } from "../../../src/config/services.ts";
 
 describe("empty-state rendering across tabs", () => {
@@ -87,6 +88,25 @@ describe("empty-state rendering across tabs", () => {
 
     assert.ok(managerBody.length > 0, "tag manager body is non-empty (predefined tags present)");
     assert.match(managerBody, /<div class="tag-manager-item" data-tag="[^"]+">/, "manager body carries at least one tag-manager-item");
+    assert.doesNotMatch(managerBody, /id="tag-manager-deleted"/, "no deleted section when nothing is deleted");
+  });
+
+  test("with every predefined tag deleted and no user tag, the tag manager shows the empty-vocabulary message and the filter drops Show None", async () => {
+
+    /* With every predefined tag deleted and no user tag created, the active vocabulary is empty. The tag manager renders its documented "No tags defined."
+     * message beside the deleted section that lists the predefined tags for restore, and the filter content omits the Show None toggle, which it renders only
+     * for a non-empty vocabulary.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await initializePersistence(ctx);
+    await setTagRegistry({ deletedTags: [...PREDEFINED_TAGS], tags: [] });
+
+    const managerBody = generateTagManagerBody();
+
+    assert.match(managerBody, /<div class="empty-state-text">No tags defined\.<\/div>/, "the empty-vocabulary message is rendered");
+    assert.match(managerBody, /id="tag-manager-deleted"/, "the deleted section lists the predefined tags for restore");
+    assert.doesNotMatch(generateTagFilterContent(), /id="tag-filter-toggle"/, "no Show None toggle for an empty vocabulary");
   });
 
   test("GET /streams with no active streams returns the documented empty envelope", async () => {

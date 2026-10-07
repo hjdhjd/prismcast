@@ -9,7 +9,7 @@
  * harness runs with a 120s timeout). They run in the same e2e batch as the suites they support.
  */
 import { access, readFile, writeFile } from "node:fs/promises";
-import { createIntegrationContext, pathInDataDir, readPersistedJson, writePersistedJson } from "./integration.helpers.ts";
+import { bootStubServer, createIntegrationContext, pathInDataDir, postJson, readPersistedJson, writePersistedJson } from "./integration.helpers.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDataDir } from "../../src/config/paths.ts";
@@ -290,6 +290,32 @@ describe("readPersistedJson / writePersistedJson", () => {
     await writeFile(pathInDataDir(ctx, "broken.json"), "{ this is not valid json", "utf8");
 
     await assert.rejects(() => readPersistedJson(ctx, "broken.json"), /JSON/i, "JSON.parse failure should propagate");
+  });
+});
+
+describe("postJson", () => {
+
+  test("answers the status beside the parsed body of a JSON response", async () => {
+
+    await using ctx = await createIntegrationContext();
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.post("/json", (_req, res) => { res.status(201).json({ ok: true }); });
+    });
+
+    assert.deepEqual(await postJson(stub, "/json", { value: 1 }), { body: { ok: true }, status: 201 });
+  });
+
+  test("a response that is not JSON fails with a sentence naming the route, the status and the opening of the body", async () => {
+
+    await using ctx = await createIntegrationContext();
+    const stub = await bootStubServer(ctx, (app) => {
+
+      app.post("/html", (_req, res) => { res.status(500).type("html").send("<!DOCTYPE html><p>Internal failure</p>"); });
+    });
+
+    await assert.rejects(postJson(stub, "/html", {}),
+      { message: "POST /html answered status 500 with a body that is not JSON, opening \"<!DOCTYPE html><p>Internal failure</p>\"." });
   });
 });
 

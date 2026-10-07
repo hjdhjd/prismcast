@@ -15,7 +15,7 @@
  * and that the binary is the one the injected resolver answers: its path when it finds one, the bare name the PATH lookup takes when it finds none, and no spawn
  * and no capture at all when the resolution rejects.
  */
-import type { Browser, CDPSession, Page } from "puppeteer-core";
+import type { Browser, Page } from "puppeteer-core";
 import { beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
@@ -92,10 +92,7 @@ function makeStubPage(): Page {
 
   return {
 
-    browser: (): Browser => ({ connected: false } as unknown as Browser),
     close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
-    createCDPSession: async (): Promise<CDPSession> => ({ send: async (): Promise<unknown> => ({}) } as unknown as CDPSession),
-    evaluate: async (): Promise<never> => { throw new Error("The stub page has no live DOM to evaluate against."); },
     evaluateOnNewDocument: async (): Promise<void> => { /* The injected video-selector helper needs no real document on a stub. */ },
     goto: async (): Promise<void> => { /* The static branch navigates once and takes the page as-is. */ },
     isClosed: (): boolean => false,

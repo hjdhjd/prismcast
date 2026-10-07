@@ -240,7 +240,7 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
     });
   });
 
-  test("warns and keeps running when the log file is removed mid-flight (ENOENT at the size check)", async () => {
+  test("warns and keeps running when the log file is removed mid-flight (ENOENT at the size check)", { timeout: 5000 }, async () => {
 
     // Boundary: the size-check stat call can fail with ENOENT if the log file was removed externally (rotation by an outside process, accidental deletion, etc).
     // The implementation catches the error and emits a console.warn; the next append recreates the file, so logging continues into an empty one.
@@ -250,13 +250,24 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
 
       await initializeFileLogger(logPath, 1024);
 
-      // Stub console.warn so the expected warning isn't printed during the test run.
+      // Stub console.warn so the expected warning isn't printed during the test run, and so the stub's signal is what the row waits on: the check runs as a voided
+      // promise whose stat does not go through the write chain, so only the warning itself marks the moment it has decided. A check that never warns leaves the
+      // signal unresolved, and the row's timeout fails it.
       // eslint-disable-next-line no-console
       const originalWarn = console.warn;
+      const warned = Promise.withResolvers<true>();
       const warnCalls: unknown[][] = [];
 
       // eslint-disable-next-line no-console
-      console.warn = (...args: unknown[]): void => { warnCalls.push(args); };
+      console.warn = (...args: unknown[]): void => {
+
+        warnCalls.push(args);
+
+        if((typeof args[0] === "string") && args[0].includes("Error checking log file size")) {
+
+          warned.resolve(true);
+        }
+      };
 
       try {
 
@@ -273,19 +284,9 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
           writeLogEntry("info", "Post-removal entry " + String(i) + ".", null);
         }
 
-        // The check fires on the write whose count is a multiple of SIZE_CHECK_FREQUENCY, as a voided promise whose stat does not go through the write chain.
-        // Awaiting the flush is a settling point only: it drains the write chain, not the check, so the row relies on the check's stat settling within it.
-        await flushLogBuffer();
+        await warned.promise;
 
-        // The console.warn should have fired with an "Error checking log file size" message reporting the ENOENT.
-        const warningWasEmitted = warnCalls.some((call) => {
-
-          const message = typeof call[0] === "string" ? call[0] : "";
-
-          return message.includes("Error checking log file size");
-        });
-
-        assert.equal(warningWasEmitted, true, "console.warn fired with the ENOENT recovery message");
+        assert.ok(warnCalls.some((call) => String(call[1]).includes("ENOENT")), "the size-check warning reports the ENOENT");
       } finally {
 
         // eslint-disable-next-line no-console
@@ -299,7 +300,7 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
 
   /* The pure cut algorithm is tested by computeTrimmedLogContent. The orchestration shell (read + temp-write + atomic rename) is exercised here by writing
    * enough content to push past maxSize, triggering a trim via the size-check counter, and asserting the on-disk file shrinks below the seed and ends at or
-   * below maxSize.
+   * below half maxSize, the size the trim cuts to. The logger runs on a test clock, so no interval flush appends the buffered entries after the trim's rename.
    */
 
   afterEach(async () => {
@@ -308,7 +309,7 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
     initDebugFilter("");
   });
 
-  test("the on-disk file is trimmed below maxSize when writeCount % SIZE_CHECK_FREQUENCY fires past the threshold", async () => {
+  test("the on-disk file is trimmed to at most half maxSize when writeCount % SIZE_CHECK_FREQUENCY fires past the threshold", async () => {
 
     // Set debug off so the debug-active gate doesn't suppress the trim.
     initDebugFilter("");
@@ -328,7 +329,7 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
 
       assert.ok(seedContent.length > maxSize, "seed content (" + String(seedContent.length) + ") exceeds maxSize (" + String(maxSize) + ")");
 
-      await initializeFileLogger(logPath, maxSize);
+      await initializeFileLogger(logPath, maxSize, new TestClock());
 
       // Write 100 entries to fire the size-check modulo gate. The buffered entries stay in memory (no flush in this test) so the trim race is isolated -
       // checkAndTrimFile reads the pre-seeded on-disk content, fires trim, and rewrites the file to half maxSize.
@@ -361,7 +362,8 @@ describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim
 
       assert.ok(postTrimSize < seedContent.length, "post-trim file size dropped below the seeded content size (" + String(postTrimSize) +
         " < " + String(seedContent.length) + ")");
-      assert.ok(postTrimSize <= maxSize, "post-trim file size is at or below maxSize (" + String(postTrimSize) + " <= " + String(maxSize) + ")");
+      assert.ok(postTrimSize <= Math.floor(maxSize / 2), "post-trim file size is at or below half maxSize (" + String(postTrimSize) + " <= " +
+        String(Math.floor(maxSize / 2)) + ")");
     });
   });
 });

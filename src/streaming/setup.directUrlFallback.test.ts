@@ -12,7 +12,7 @@
  * pointed at a temp data directory so nothing is written outside it.
  */
 import type { Browser, Page } from "puppeteer-core";
-import { DirectUrlEstablishmentError, createPageWithCapture, setupStream } from "./setup.ts";
+import { DirectUrlEstablishmentError, StreamSetupError, createPageWithCapture, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { evictPersistedWatchUrl, persistProviderLineup } from "../config/providerLineups.ts";
 import { CONFIG } from "../config/index.ts";
@@ -41,6 +41,9 @@ const PERSISTED_WATCH_URL = "https://play.hbomax.com/channel/watch/persisted-hin
 // attempt an observed behavior rather than a spy count: the first attempt navigates to the hint, the second to the guide.
 let gotoFailure: Error = new Error("navigation refused");
 let gotoUrls: string[] = [];
+
+// How many times a case's establishments handed a failure to the capture verdict.
+let verdictCalls = 0;
 
 // The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses, so setupStream's computed
 // interception skip is false and nothing about encryption influences the path under test.
@@ -80,8 +83,14 @@ const deps: CreatePageWithCaptureDeps = {
   acquireCaptureStream: async (): Promise<CaptureStream> => Object.assign(new Readable({ read: (): void => { /* Nothing is read from the stub capture. */ } }),
     { stop: async (): Promise<void> => undefined, stopped: Promise.resolve() }),
 
-  // Every failure these rows drive happens past acquisition, where the verdict is started and never waited on, so the stub answers with no verdict.
-  awaitCaptureVerdict: async (): Promise<null> => null,
+  // Every failure these rows drive happens past acquisition, where the verdict is started and never waited on, so the stub answers with no verdict. It counts
+  // each hand-off, so the fallback row can read how many of its establishments handed a failure on.
+  awaitCaptureVerdict: async (): Promise<null> => {
+
+    verdictCalls++;
+
+    return null;
+  },
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
   getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
@@ -127,6 +136,7 @@ beforeEach(async () => {
 
   gotoFailure = new Error("navigation refused");
   gotoUrls = [];
+  verdictCalls = 0;
 
   // Reseed the hint each case, because a case that reaches the coordinator's eviction removes it.
   await persistProviderLineup("hbomax", [{ channelSelector: "HBO", name: "HBO", watchUrl: PERSISTED_WATCH_URL }]);
@@ -193,17 +203,27 @@ describe("createPageWithCapture - direct watch URL failure classification", () =
 
 describe("setupStream - the guide fallback", () => {
 
+  /**
+   * Builds the validator each fallback row's rejection must pass: the setup error setupStream raises for a failure that is not capture infrastructure, status 500,
+   * carrying the failure the row drove as its cause. A row whose tune failed some other way - an invalid URL's 400, a thrown TypeError - fails the validator.
+   * @param cause - Text the setup error's cause must carry.
+   * @returns The validator.
+   */
+  const isSetupFailure = (cause: string): ((error: unknown) => boolean) => (error: unknown): boolean => (error instanceof StreamSetupError) &&
+    (error.statusCode === 500) && ((error.cause as Error | undefined)?.message.includes(cause) ?? false);
+
   test("retries once through the guide after a typed direct-URL failure", async () => {
 
     /* The whole point of typing the error: the first attempt burns the stale hint, and rather than handing the client a failed request, the tune gets the one
      * guide attempt it would have had if the hint had never existed. The navigation list is the assertion - two attempts, the hint then the guide - so removing the
-     * fallback leaves a single entry.
+     * fallback leaves a single entry. The typed attempt classifies nothing, so across both establishments exactly one failure, the guide's, reaches the verdict.
      */
     await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
       startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
-    "the fallback's own failure surfaces to the caller");
+    isSetupFailure("navigation refused"), "the fallback's own failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [ PERSISTED_WATCH_URL, GUIDE_URL ], "exactly two establishments ran: the hint, then the guide");
+    assert.equal(verdictCalls, 1, "and only the guide attempt's failure was handed to the capture verdict");
   });
 
   test("does not retry when the failure was not evidence against the URL", async () => {
@@ -214,7 +234,7 @@ describe("setupStream - the guide fallback", () => {
 
     await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
       startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
-    "the untyped failure surfaces to the caller");
+    isSetupFailure("detached Frame"), "the untyped failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [PERSISTED_WATCH_URL], "only the first establishment ran");
   });
@@ -226,7 +246,7 @@ describe("setupStream - the guide fallback", () => {
 
     await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
       startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
-    "the guide failure surfaces to the caller");
+    isSetupFailure("navigation refused"), "the guide failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [GUIDE_URL], "a tune with no hint makes exactly one attempt");
   });

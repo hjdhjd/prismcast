@@ -24,7 +24,8 @@
  *      so the table sweep does not reach it, and its drift check derives the paths from the metadata, so a list setting added later fails until it gets a
  *      seed.
  */
-import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
+import { CONFIG_METADATA, CURRENT_CONFIG_SCHEMA_VERSION, DEFAULTS, PROCESS_FIELDS, getNestedValue, mutateConfig,
+  setNestedValue } from "../../../src/config/userConfig.ts";
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { SEEDED_DEVICE_ID } from "../../../src/config/index.helpers.ts";
@@ -208,7 +209,7 @@ const SEED_VALUES: Record<string, unknown> = {
   "hdhr.deviceId": SEEDED_DEVICE_ID,
   "logging.debugFilter": "browser:*",
   "migrationsApplied": ["test-suite-17-marker"],
-  "schemaVersion": 3
+  "schemaVersion": CURRENT_CONFIG_SCHEMA_VERSION
 };
 
 describe("POST /config - parameterized preservation sweep over PROCESS_FIELDS", () => {

@@ -13,11 +13,13 @@
 import type { ApplyConfigurationResult, RestartResult } from "./index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { categorizeProfiles, describeConfigurationOutcome, scheduleServerRestart, setupConfigEndpoint } from "./index.ts";
+import { registerStream, unregisterStream } from "../../streaming/registry.ts";
 import type { ConfigChange } from "../../config/reactivity.ts";
 import { PROFILE_CATEGORIES } from "../../types/index.ts";
 import type { ProfileInfo } from "../../config/profiles.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../../testing.helpers.ts";
+import { makeRegistryEntry } from "../../streaming/registry.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -211,25 +213,31 @@ describe("scheduleServerRestart", () => {
     assert.match(result.message, /Server is restarting/, "message indicates immediate restart");
   });
 
-  test("returns the deferred result when running as a service AND active streams exist", () => {
+  test("returns the deferred result and schedules no exit when running as a service with an active stream", () => {
 
-    /* Note: we cannot deterministically inject an active stream count without coupling to streaming/registry internals or mocking modules, so the
-     * active-streams (deferred) branch is not exercised here or anywhere else in the suite. Here we lock the no-streams branch shape and document that the
-     * deferred branch is meant to follow the same return-value contract: deferred=true, willRestart=true, activeStreams=N>0, message includes the stream
-     * count. The synchronous return shape for the no-streams case is the only assertion this test actually verifies.
-     */
-    mock.timers.enable({ apis: ["setTimeout"] });
+    // A stream registered through the registry's own helpers is the active stream the restart waits for; the finally unregisters it so no later row sees it.
     process.env["PRISMCAST_SERVICE"] = "1";
 
-    const result = scheduleServerRestart("for unit test");
+    const setTimeoutSpy = mock.method(globalThis, "setTimeout", () => 0 as unknown as NodeJS.Timeout);
+    const entry = makeRegistryEntry();
 
-    // Lock that the result matches RestartResult's shape regardless of which branch produced it. We have already verified the manual and immediate
-    // branches directly; this exact shape verifies the immediate branch's return contract a second time, which is the guarantee callers rely on when
-    // branching on result.deferred.
-    assert.equal(typeof result.activeStreams, "number");
-    assert.equal(typeof result.deferred, "boolean");
-    assert.equal(typeof result.message, "string");
-    assert.equal(typeof result.willRestart, "boolean");
+    registerStream(entry);
+
+    try {
+
+      assert.deepEqual(scheduleServerRestart("for unit test"), {
+
+        activeStreams: 1,
+        deferred: true,
+        message: "Configuration saved. 1 stream(s) are active.",
+        willRestart: true
+      });
+      assert.equal(setTimeoutSpy.mock.callCount(), 0, "a deferred restart schedules no exit");
+    } finally {
+
+      unregisterStream(entry.id);
+      setTimeoutSpy.mock.restore();
+    }
   });
 
   test("schedules a setTimeout with delay >= 500ms when running as a service with no active streams", () => {

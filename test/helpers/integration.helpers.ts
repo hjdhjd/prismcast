@@ -329,6 +329,42 @@ export async function bootApp(ctx: IntegrationContext): Promise<BootedApp> {
 }
 
 /**
+ * The status and the parsed body of a JSON request sent to a booted app.
+ */
+export interface JsonResponse {
+
+  /** The response body parsed as JSON. Callers narrow its members at the assertion site. */
+  readonly body: Record<string, unknown>;
+
+  /** The HTTP status code. */
+  readonly status: number;
+}
+
+/**
+ * Posts a JSON body to a route of a booted app and answers the status beside the parsed body. The body is read as text before it is parsed, so an answer that
+ * is not JSON - an Express HTML error page, a stub's plain text - fails with a sentence naming the route, the status and the body's opening rather than a bare
+ * parse error that hides the status the row would have asserted.
+ * @param app - The booted app.
+ * @param route - The route to post to, starting with "/".
+ * @param body - The value to send as the JSON body.
+ * @returns The status code and the parsed response body.
+ * @throws An Error naming the route, the status and the opening of the body when the response body does not parse as JSON.
+ */
+export async function postJson(app: BootedApp, route: string, body: unknown): Promise<JsonResponse> {
+
+  const response = await fetch(app.urlFor(route), { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" });
+  const text = await response.text();
+
+  try {
+
+    return { body: JSON.parse(text) as Record<string, unknown>, status: response.status };
+  } catch {
+
+    throw new Error("POST " + route + " answered status " + String(response.status) + " with a body that is not JSON, opening \"" + text.slice(0, 200) + "\".");
+  }
+}
+
+/**
  * Wait long enough for the health module's debounced flush timer to fire and the file-store write that follows it to settle on disk. Health writes are
  * fire-and-forget through markChannelSuccess / markChannelFailure / markDomainAuth, which schedule the actual disk update on a 2-second debounce (`FLUSH_DELAY`
  * in `src/config/health.ts`). Tests that need to verify on-disk health state - or, contrapositively, that need to confirm an unrelated mutation did NOT

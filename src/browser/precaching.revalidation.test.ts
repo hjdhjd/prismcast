@@ -820,6 +820,41 @@ describe("the deferred discovery re-attempt", () => {
     hang.resolve([]);
   });
 
+  test("a walk that throws is reported once and not queued, and the cycle goes on to walk the next service", async (t) => {
+
+    /* A walk that throws has a standing problem another walk will not solve, unlike one that came back empty or ran past its budget, so the cycle reports it
+     * and moves on rather than queuing it for the re-attempt. The failing service is listed first, so the row also proves the containment: the service after it
+     * is still walked.
+     */
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+
+    mockProviders = {
+
+      "deferred-full": deferredProvider("deferred-full"),
+      "deferred-throws": { ...deferredProvider("deferred-throws"), discoverChannels: async (): Promise<DiscoveredChannel[]> => {
+
+        throw new Error("The guide failed to render.");
+      } }
+    };
+
+    walkResults = { "deferred-full": ONE_CHANNEL };
+    CONFIG.channels.precacheServices = [ "deferred-throws", "deferred-full" ];
+
+    startPrecaching(deps);
+
+    await fire(PRECACHE_DELAY);
+
+    assert.deepEqual(attempts, { "deferred-full": 1, "deferred-throws": 1 }, "the cycle attempted each service once");
+    assert.equal(walks["deferred-full"], 1, "the service after the failing one was walked");
+
+    const naming = warn.mock.calls.filter((call) => call.arguments.map((argument) => String(argument)).includes("deferred-throws"));
+
+    assert.equal(naming.length, 1, "one warning names the failing service");
+    assert.ok(String(naming[0]?.arguments[0]).startsWith("Failed to precache"), "and it is the general failure line rather than the lapse line");
+    assert.ok(!clock.requested.includes(PRECACHE_RETRY_DELAY), "no re-attempt was armed for the failing service");
+    assert.equal(clock.pending, 0, "nothing stays pending once the cycle ends");
+  });
+
   /* A walk opens a browser window at the shared window's placement, which during a login session is the window the user is signing in through - and a second
    * window over it would take their clicks. So the automatic walks stand aside while a session is on screen and come back for the services afterwards, on the
    * same deferred schedule the rows above drive. The user-initiated browse endpoint is deliberately not gated: the user asked for that window.

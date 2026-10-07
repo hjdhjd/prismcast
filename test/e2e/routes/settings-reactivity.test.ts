@@ -22,7 +22,7 @@ import type { BootedApp, IntegrationContext } from "../../helpers/integration.he
 import { CONFIG, getConfigurationGap, initializeConfiguration } from "../../../src/config/index.ts";
 import type { SettingsSaveChanges, SettingsSaveData } from "../../../src/routes/config/settings.ts";
 import type { StatusEventType, SystemStatus } from "../../../src/streaming/statusEmitter.ts";
-import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
+import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, postJson, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import { getAllChannels, getPredefinedChannels, isPredefinedChannelDisabled, markSetupCompleted } from "../../../src/config/userChannels.ts";
 import { getStatusSnapshot, subscribeToStatus } from "../../../src/streaming/statusEmitter.ts";
@@ -46,20 +46,6 @@ async function boot(ctx: IntegrationContext): Promise<BootedApp> {
 }
 
 /**
- * Posts a JSON body to a route and returns the status and the parsed body.
- * @param app - The booted app.
- * @param route - The route to post to.
- * @param body - The JSON body.
- * @returns The status code and the response body.
- */
-async function post(app: BootedApp, route: string, body: unknown): Promise<{ body: Record<string, unknown>; status: number }> {
-
-  const response = await fetch(app.urlFor(route), { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" });
-
-  return { body: await response.json() as Record<string, unknown>, status: response.status };
-}
-
-/**
  * Reads the outcome by setting a save or import answered with.
  * @param body - The response body.
  * @returns The body's changes member.
@@ -69,22 +55,6 @@ function changesOf(body: Record<string, unknown>): SettingsSaveChanges {
   return body["changes"] as SettingsSaveChanges;
 }
 
-/**
- * Reads the configuration file's raw bytes, or null when the file does not exist yet.
- * @param ctx - The row's integration context.
- * @returns The file's contents, or null.
- */
-async function readConfigBytes(ctx: IntegrationContext): Promise<string | null> {
-
-  try {
-
-    return await readFile(pathInDataDir(ctx, "config.json"), "utf8");
-  } catch {
-
-    return null;
-  }
-}
-
 describe("POST /config - each class reaches the running process as its rule states", () => {
 
   test("a restart-class save leaves CONFIG unchanged with the value on disk, answers its path as deferred, and stays pending", async () => {
@@ -92,7 +62,7 @@ describe("POST /config - each class reaches the running process as its rule stat
     await using ctx = await createIntegrationContext();
     const app = await boot(ctx);
 
-    const { body, status } = await post(app, "/config", { server: { port: 6000 } });
+    const { body, status } = await postJson(app, "/config", { server: { port: 6000 } });
 
     assert.equal(status, 200);
     assert.deepEqual(changesOf(body).deferred, ["server.port"], "the save holds the change for a restart");
@@ -107,7 +77,7 @@ describe("POST /config - each class reaches the running process as its rule stat
     await using ctx = await createIntegrationContext();
     const app = await boot(ctx);
 
-    const { body, status } = await post(app, "/config", { playback: { stallThreshold: 0.2 } });
+    const { body, status } = await postJson(app, "/config", { playback: { stallThreshold: 0.2 } });
 
     assert.equal(status, 200);
     assert.deepEqual(changesOf(body).applied, ["playback.stallThreshold"]);
@@ -122,15 +92,15 @@ describe("POST /config - each class reaches the running process as its rule stat
       await using ctx = await createIntegrationContext();
       const app = await boot(ctx);
 
-      assert.deepEqual(changesOf((await post(app, "/config", { server: { port: 6000 } })).body).deferred, ["server.port"],
+      assert.deepEqual(changesOf((await postJson(app, "/config", { server: { port: 6000 } })).body).deferred, ["server.port"],
         "precondition: the port is held for a restart");
 
-      const unrelated = await post(app, "/config", { playback: { stallThreshold: 0.2 } });
+      const unrelated = await postJson(app, "/config", { playback: { stallThreshold: 0.2 } });
 
       assert.deepEqual(changesOf(unrelated.body).deferred, [], "the unrelated save schedules no restart");
       assert.deepEqual(getConfigurationGap().held.map((change) => change.path), ["server.port"], "the earlier change is still pending");
 
-      const cancelling = await post(app, "/config", { server: { port: 5589 } });
+      const cancelling = await postJson(app, "/config", { server: { port: 5589 } });
 
       assert.deepEqual(changesOf(cancelling.body).deferred, [], "writing the running value back schedules no restart");
       assert.deepEqual(getConfigurationGap().held, [], "nothing is pending any more");
@@ -141,19 +111,18 @@ describe("POST /config - each class reaches the running process as its rule stat
     await using ctx = await createIntegrationContext();
     const app = await boot(ctx);
 
-    assert.equal((await post(app, "/config", { playback: { stallThreshold: 0.2 } })).status, 200, "precondition: a valid save wrote the file");
+    assert.equal((await postJson(app, "/config", { playback: { stallThreshold: 0.2 } })).status, 200, "precondition: a valid save wrote the file");
 
-    const bytesBefore = await readConfigBytes(ctx);
+    // A direct read rejects on any failure, so the comparison below always reads the file the valid save wrote.
+    const bytesBefore = await readFile(pathInDataDir(ctx, "config.json"), "utf8");
     const running = structuredClone(CONFIG);
 
-    assert.notEqual(bytesBefore, null, "precondition: the file exists");
-
     // HDHomeRun emulation is on by default and the server binds every interface, so an HDHomeRun port equal to the server port is a conflict.
-    const { body, status } = await post(app, "/config", { hdhr: { port: CONFIG.server.port } });
+    const { body, status } = await postJson(app, "/config", { hdhr: { port: CONFIG.server.port } });
 
     assert.equal(status, 400);
     assert.match(String(body["error"]), /conflicts with the main server port/);
-    assert.equal(await readConfigBytes(ctx), bytesBefore, "the refused save wrote nothing");
+    assert.equal(await readFile(pathInDataDir(ctx, "config.json"), "utf8"), bytesBefore, "the refused save wrote nothing");
     assert.deepEqual(CONFIG, running, "the running configuration is unchanged");
   });
 });
@@ -169,10 +138,10 @@ describe("POST /config - a leaf the process writes keeps its running value", () 
 
     assert.equal(getNestedValue(await readPersistedJson(ctx, "config.json"), "channels.setupCompleted"), true, "the setup flag is on disk");
     assert.equal(CONFIG.channels.setupCompleted, true, "precondition: the flag is set in CONFIG");
-    assert.deepEqual(changesOf((await post(app, "/config", { server: { port: 6000 } })).body).deferred, ["server.port"],
+    assert.deepEqual(changesOf((await postJson(app, "/config", { server: { port: 6000 } })).body).deferred, ["server.port"],
       "precondition: a restart-class save answers its path as deferred");
 
-    const { body, status } = await post(app, "/config", {});
+    const { body, status } = await postJson(app, "/config", {});
 
     assert.equal(status, 200);
     assert.deepEqual(changesOf(body).deferred, []);
@@ -192,7 +161,7 @@ describe("POST /config/import - channel display state takes effect live", () => 
     assert.ok(key !== undefined, "precondition: a predefined channel is listed");
     assert.equal(isPredefinedChannelDisabled(key), false, "precondition: the channel starts enabled");
 
-    const { body, status } = await post(app, "/config/import", { channels: { disabledPredefined: [key] } });
+    const { body, status } = await postJson(app, "/config/import", { channels: { disabledPredefined: [key] } });
 
     assert.equal(status, 200);
     assert.deepEqual(changesOf(body).applied, ["channels.disabledPredefined"], "the disabled list is realized live");
@@ -217,7 +186,7 @@ describe("POST /config/import - the service filter and the DVR host take effect 
     assert.deepEqual(getEnabledServices(), [], "precondition: no service filter is running");
     assert.equal(getDvrHost(), null, "precondition: no DVR host is known");
 
-    const { body, status } = await post(app, "/config/import", { channels: { enabledServices: ["hulu"] }, channelsDvr: { host: "settings-dvr.example.invalid" } });
+    const { body, status } = await postJson(app, "/config/import", { channels: { enabledServices: ["hulu"] }, channelsDvr: { host: "settings-dvr.example.invalid" } });
 
     assert.equal(status, 200);
     assert.deepEqual(changesOf(body).applied, [ "channels.enabledServices", "channelsDvr.host" ], "the filter and the host are realized live");
@@ -240,7 +209,7 @@ describe("POST /config - the pending view the response carries and the page rend
       const labelStart = (html: string): number => html.indexOf("<label class=\"form-label\" for=\"server-port\">");
       const portLabel = (html: string): string => html.slice(labelStart(html), html.indexOf("</label>", labelStart(html)));
 
-      const saved = await post(app, "/config", { server: { port: 6000 } });
+      const saved = await postJson(app, "/config", { server: { port: 6000 } });
       const savedData = saved.body as unknown as SettingsSaveData & { message: string };
 
       assert.equal(saved.status, 200);
@@ -256,13 +225,13 @@ describe("POST /config - the pending view the response carries and the page rend
       assert.ok(marked.includes("<div class=\"form-pending\" data-pending-path=\"server.port\">" + marker + "</div>"), "the page shows the port's marker");
       assert.ok(portLabel(marked).includes("class=\"badge badge-restart\""), "the port's own label carries the restart badge");
 
-      const unrelated = (await post(app, "/config", { playback: { stallThreshold: 0.2 } })).body as unknown as SettingsSaveData;
+      const unrelated = (await postJson(app, "/config", { playback: { stallThreshold: 0.2 } })).body as unknown as SettingsSaveData;
 
       assert.deepEqual(unrelated.changes.applied, ["playback.stallThreshold"], "the unrelated save applies its own value");
       assert.deepEqual(unrelated.changes.deferred, [], "and holds nothing of its own");
       assert.deepEqual(unrelated.pending.map((entry) => entry.path), ["server.port"], "the earlier save's entry is still pending");
 
-      const cancelling = (await post(app, "/config", { server: { port: CONFIG.server.port } })).body as unknown as SettingsSaveData;
+      const cancelling = (await postJson(app, "/config", { server: { port: CONFIG.server.port } })).body as unknown as SettingsSaveData;
 
       assert.deepEqual(cancelling.pending, [], "writing the running value back leaves nothing pending");
       assert.ok((await page()).includes("<div class=\"form-pending\" data-pending-path=\"server.port\" hidden></div>"), "the page's slot is hidden again");
@@ -280,7 +249,7 @@ describe("POST /config - a saved stream limit reaches the page header", () => {
     await using ctx = await createIntegrationContext();
     const app = await boot(ctx);
 
-    assert.equal((await post(app, "/config", { playback: { stallThreshold: 0.2 } })).status, 200, "precondition: the seeding save succeeds");
+    assert.equal((await postJson(app, "/config", { playback: { stallThreshold: 0.2 } })).status, 200, "precondition: the seeding save succeeds");
 
     const events: { data: unknown; event: StatusEventType }[] = [];
     const unsubscribe = subscribeToStatus((event, data) => {
@@ -290,12 +259,12 @@ describe("POST /config - a saved stream limit reaches the page header", () => {
 
     try {
 
-      assert.deepEqual(changesOf((await post(app, "/config", { playback: { stallThreshold: 0.3 } })).body).applied, ["playback.stallThreshold"],
+      assert.deepEqual(changesOf((await postJson(app, "/config", { playback: { stallThreshold: 0.3 } })).body).applied, ["playback.stallThreshold"],
         "precondition: the unrelated save applies its value");
 
       const limit = CONFIG.streaming.maxConcurrentStreams + 1;
 
-      assert.deepEqual(changesOf((await post(app, "/config", { streaming: { maxConcurrentStreams: limit } })).body).applied,
+      assert.deepEqual(changesOf((await postJson(app, "/config", { streaming: { maxConcurrentStreams: limit } })).body).applied,
         ["streaming.maxConcurrentStreams"], "precondition: the limit save applies its value");
       assert.deepEqual(events.filter((entry) => entry.event === "systemStatusChanged").map((entry) => (entry.data as SystemStatus).streams.limit), [limit],
         "exactly one status event reached the subscriber, carrying the new limit");

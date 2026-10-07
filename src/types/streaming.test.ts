@@ -1,12 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * streaming.test.ts: Unit tests for the runtime exports of streaming.ts. The module's only runtime export is RECOGNIZED_CODECS - a readonly tuple that drives
- * the CaptureCodec union, the MIME type lookup in codec.ts, and the captureCodecs allowlist validation in CONFIG. The tests assert literal membership, ordering,
- * and disjointness, plus the type-level relationship between the array and the derived CaptureCodec union via @ts-expect-error.
+ * streaming.test.ts: Unit tests for the runtime exports of streaming.ts. RECOGNIZED_CODECS is a readonly tuple that drives the CaptureCodec union, the MIME type
+ * lookup in codec.ts, and the captureCodecs allowlist validation in CONFIG; the tests assert its literal membership, ordering, and disjointness, plus the
+ * type-level relationship between the array and the derived CaptureCodec union via @ts-expect-error. CAPTURE_BASELINE_CODEC is held to its value and to the
+ * literal type the Exclude consumers read, and CAPTURE_SOURCE_UNAVAILABLE_MESSAGE to the wording Chrome reports, the one place a test fixes that wording.
  */
+import { CAPTURE_BASELINE_CODEC, CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, RECOGNIZED_CODECS } from "./streaming.ts";
 import { describe, test } from "node:test";
 import type { CaptureCodec } from "./streaming.ts";
-import { RECOGNIZED_CODECS } from "./streaming.ts";
 import assert from "node:assert/strict";
 
 describe("RECOGNIZED_CODECS", () => {
@@ -86,5 +87,39 @@ describe("CaptureCodec (type-level)", () => {
     }
 
     assert.deepEqual(collected, [ "h264", "hevc" ], "iterated codecs match the array contents");
+  });
+});
+
+describe("CAPTURE_BASELINE_CODEC", () => {
+
+  test("is h264, a recognized codec", () => {
+
+    assert.equal(CAPTURE_BASELINE_CODEC, "h264", "the baseline is the universally encodable codec");
+    assert.ok(RECOGNIZED_CODECS.includes(CAPTURE_BASELINE_CODEC), "and it is one of the recognized codecs");
+  });
+
+  test("keeps its literal type, so a type can exclude the baseline by name", () => {
+
+    /* The codec module and the settings form key their GPU-gated tables by Exclude<CaptureCodec, typeof CAPTURE_BASELINE_CODEC>. That only names the accelerated
+     * codecs while the constant keeps its literal type: widened to CaptureCodec, the Exclude collapses to never and the accelerated assignment below stops compiling,
+     * which is the line that catches the widening. The directive on the baseline assignment cannot catch it, because "h264" is no more assignable to never than to
+     * the accelerated codecs...that directive asserts the baseline is excluded by name, and it stays in use whether the constant is literal or widened.
+     */
+    const accelerated: Exclude<CaptureCodec, typeof CAPTURE_BASELINE_CODEC> = "hevc";
+
+    // @ts-expect-error - the baseline is excluded by name.
+    const baseline: Exclude<CaptureCodec, typeof CAPTURE_BASELINE_CODEC> = "h264";
+
+    assert.equal(accelerated, "hevc");
+    assert.equal(baseline, "h264", "the runtime string still exists");
+  });
+});
+
+describe("CAPTURE_SOURCE_UNAVAILABLE_MESSAGE", () => {
+
+  test("is the wording Chrome reports when a capture source cannot start", () => {
+
+    // The capture path and the classifier match this text in errors Chrome raises, so a change here has to follow a change in Chrome's own wording.
+    assert.equal(CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, "Could not start video source");
   });
 });

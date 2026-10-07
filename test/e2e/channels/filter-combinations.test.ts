@@ -15,10 +15,10 @@
  *
  * The fixtures are the Hulu service filter chip and the predefined channel catalog the panel renders; no user channels are seeded.
  */
+import { OPTIONAL_COLUMNS, generateChannelsPanel } from "../../../src/routes/config/channels/table.ts";
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { generateChannelsPanel } from "../../../src/routes/config/channels/table.ts";
 import { mutateChannelDisplayPrefs } from "../../../src/config/userChannels.ts";
 import { mutateEnabledServices } from "../../../src/config/services.ts";
 
@@ -171,15 +171,17 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
     const html = await response.text();
 
-    // Every optional column must carry its hide class. The loop below asserts each optional column's hide class against the rendered table classes, from a
-    // list copied by hand from OPTIONAL_COLUMNS, so a column added there needs its hide class added here.
+    // Every optional column must carry its hide class. The loop walks OPTIONAL_COLUMNS itself and matches each hide class as a whole token of the rendered
+    // table classes, so a column added there is checked here without an edit.
     const tableClassMatch = /<table class="([^"]+)"/.exec(html);
 
     assert.ok(tableClassMatch, "table element must be present even when visibleColumns is empty");
 
-    const tableClasses = tableClassMatch[1] ?? "";
+    const tableClasses = (tableClassMatch[1] ?? "").split(" ");
 
-    for(const cssClass of [ "hide-col-chnum", "hide-col-hdhr", "hide-col-stationid", "hide-col-profile", "hide-col-selector", "hide-col-tags" ]) {
+    for(const column of OPTIONAL_COLUMNS) {
+
+      const cssClass = "hide-" + column.cssClass;
 
       assert.ok(tableClasses.includes(cssClass), cssClass + " must be present when its column is hidden");
     }

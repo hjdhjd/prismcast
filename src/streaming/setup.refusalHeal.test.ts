@@ -15,7 +15,7 @@
  * This file is separate from setup.captureLock.test.ts because that file's header scopes it to the lock's closed-page recursion, while these rows are about the
  * refusal recovery that runs outside the lock.
  */
-import type { Browser, CDPSession, Page } from "puppeteer-core";
+import type { Browser, Page } from "puppeteer-core";
 import type { CaptureProbeOutcome, CreatePageWithCaptureDeps } from "./setup.ts";
 import { beforeEach, describe, test } from "node:test";
 import { BrowserCaptureImpairedError } from "../browser/index.ts";
@@ -67,10 +67,7 @@ function makeStubPage(): Page {
 
   return {
 
-    browser: (): Browser => ({ connected: false } as unknown as Browser),
     close: async (): Promise<void> => { timeline.push("page:close"); },
-    createCDPSession: async (): Promise<CDPSession> => ({ send: async (): Promise<unknown> => ({}) } as unknown as CDPSession),
-    evaluate: async (): Promise<never> => { throw new Error("The stub page has no live DOM to evaluate against."); },
     evaluateOnNewDocument: async (): Promise<void> => { /* The injected video-selector helper needs no real document on a stub. */ },
     goto: async (): Promise<void> => { /* The static branch's one navigation needs no real destination. */ },
     isClosed: (): boolean => false,

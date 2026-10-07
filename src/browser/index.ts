@@ -576,6 +576,48 @@ export async function syncWindowVisibility(page?: Page): Promise<void> {
 setLoginDeps({ getBrowserInstance, syncWindowVisibility });
 
 /**
+ * The facts a system status is composed from: the browser and capture state, and the process and registry readings taken beside them. One shape, read by
+ * emitCurrentSystemStatus and composed by composeSystemStatus, so the payload is a pure function of stated facts.
+ */
+interface SystemStatusFacts {
+
+  // The published browser, or null when the supervisor is not in its ready state. Its connectivity is read when the status is composed.
+  readonly browser: Nullable<Pick<Browser, "connected">>;
+
+  // Whether the published browser carries the capture-impairment mark.
+  readonly captureImpaired: boolean;
+
+  // The process's memory readings.
+  readonly memory: Pick<NodeJS.MemoryUsage, "heapUsed" | "rss">;
+
+  // How many pages the browser has open, zero when it was not connected or the count could not be read.
+  readonly pageCount: number;
+
+  // How many streams the registry holds, and how many it admits.
+  readonly streams: SystemStatus["streams"];
+
+  // The process's uptime, in seconds.
+  readonly uptime: number;
+}
+
+/**
+ * Composes the system status the SSE bus carries. A browser reads as connected only when one is published and its connection is live, and the memory readings
+ * carry only the figures the status reports.
+ * @param facts - The browser and capture state and the process and registry readings, read at the moment the status is composed.
+ * @returns The system status.
+ */
+export function composeSystemStatus(facts: SystemStatusFacts): SystemStatus {
+
+  return {
+
+    browser: { captureImpaired: facts.captureImpaired, connected: facts.browser?.connected ?? false, pageCount: facts.pageCount },
+    memory: { heapUsed: facts.memory.heapUsed, rss: facts.memory.rss },
+    streams: { active: facts.streams.active, limit: facts.streams.limit },
+    uptime: facts.uptime
+  };
+}
+
+/**
  * Computes the current system status and emits it to SSE subscribers. Called when browser state changes significantly or when streams are added/removed.
  */
 export async function emitCurrentSystemStatus(): Promise<void> {
@@ -599,35 +641,13 @@ export async function emitCurrentSystemStatus(): Promise<void> {
     // Ignore errors getting page count.
   }
 
-  const memUsage = process.memoryUsage();
-
-  const status: SystemStatus = {
-
-    browser: {
-
-      /* Read at compose time, beside the connectivity read below rather than as a snapshot taken before the page-count await. This function is called un-awaited
-       * from many sites, so two calls can be in flight around the instant a mark lands; a pre-mark snapshot settling after the mark's own emit would broadcast
-       * false over the cached true and the dedupe would honor it. Reading here makes every emit describe the state at the moment consumers receive it, so the
-       * later of two racing emits is also the truer one.
-       */
-      captureImpaired: supervisor.captureImpairment() !== null,
-      connected: !!browser && browser.connected,
-      pageCount
-    },
-    memory: {
-
-      heapUsed: memUsage.heapUsed,
-      rss: memUsage.rss
-    },
-    streams: {
-
-      active: getStreamCount(),
-      limit: CONFIG.streaming.maxConcurrentStreams
-    },
-    uptime: process.uptime()
-  };
-
-  emitSystemStatusChanged(status);
+  /* The capture-impairment mark is read here, at compose time, beside the connectivity the composer reads, rather than as a snapshot taken before the page-count
+   * await. This function is called un-awaited from many sites, so two calls can be in flight around the instant a mark lands; a pre-mark snapshot settling after
+   * the mark's own emit would broadcast false over the cached true and the dedupe would honor it. Reading here makes every emit describe the state at the moment
+   * consumers receive it, so the later of two racing emits is also the truer one.
+   */
+  emitSystemStatusChanged(composeSystemStatus({ browser, captureImpaired: supervisor.captureImpairment() !== null, memory: process.memoryUsage(), pageCount,
+    streams: { active: getStreamCount(), limit: CONFIG.streaming.maxConcurrentStreams }, uptime: process.uptime() }));
 }
 
 /**
@@ -2578,6 +2598,48 @@ function readRestartFacts(): RestartFacts {
 }
 
 /**
+ * The facts the maintenance quiet period is decided from. One shape, read by the restart check's tick and judged by decideRestartQuietPeriod, so the decision is
+ * a pure function of stated facts in the way the idleness decision is.
+ */
+interface QuietPeriodFacts {
+
+  // How long the published browser has been running, in milliseconds, measured on the restart check's own clock.
+  readonly age: number;
+
+  // Whether a quiet-period countdown is already armed.
+  readonly quietPending: boolean;
+
+  // How many entries the registry holds, pending ones included.
+  readonly streamCount: number;
+}
+
+// What a restart check's tick does about the maintenance quiet period: arm a fresh countdown, cancel the pending one, or leave the countdown as it stands.
+export type QuietPeriodAction = "arm" | "cancel" | "skip";
+
+/**
+ * Decides what a restart check's tick does about the maintenance quiet period. A browser younger than BROWSER_MAX_AGE needs no maintenance, so the tick leaves
+ * the countdown as it stands. An old browser with streams registered waits for them: a countdown already running is cancelled, so a stream that starts during
+ * the quiet period resets it, and with no countdown running there is nothing to do. An old browser with an empty registry starts the countdown, unless one is
+ * already running.
+ * @param facts - The browser's age, the registry's size and the countdown's state, read at the tick.
+ * @returns The action the tick takes.
+ */
+export function decideRestartQuietPeriod(facts: QuietPeriodFacts): QuietPeriodAction {
+
+  if(facts.age < BROWSER_MAX_AGE) {
+
+    return "skip";
+  }
+
+  if(facts.streamCount > 0) {
+
+    return facts.quietPending ? "cancel" : "skip";
+  }
+
+  return facts.quietPending ? "skip" : "arm";
+}
+
+/**
  * Relaunches a browser that can no longer start captures, as soon as nothing depends on it. Every trigger routes here - the mark itself, each stream termination,
  * and the periodic restart check as the backstop for a moment when the other two could not act (login mode above all) - so the decision lives in one place rather
  * than being re-derived by each. Idleness rather than age is the condition, because the mark makes the browser useless for new tunes immediately while its running
@@ -2609,12 +2671,12 @@ export async function restartBrowserIfImpairedAndIdle(): Promise<void> {
 /**
  * Checks whether the browser qualifies for a restart. Called periodically by the restart check interval. The check skips when any of these conditions hold:
  * graceful shutdown in progress, login mode active, browser not ready. A marked browser is handed to the impairment path and the tick ends there. Otherwise the
- * tick drives the supervisor's health-gated governor reset and applies the maintenance rules: skip below the age threshold, cancel any pending quiet timer while
- * active streams exist (streams started during the quiet period reset the countdown), and otherwise start a quiet timer if one is not already running.
+ * tick drives the supervisor's health-gated governor reset and carries out what decideRestartQuietPeriod decides about the maintenance quiet period.
  * @param timers - The restart owner's registry, whose quiet period this check arms and reads. Handed in by the interval closure, so the check never reads the
  * nullable module binding and needs no null branch of its own.
+ * @param clock - The clock the check was started with, which the browser's age is measured on.
  */
-function checkBrowserRestart(timers: TimerRegistry): void {
+function checkBrowserRestart(timers: TimerRegistry, clock: Clock): void {
 
   // Skip if the server is shutting down or login mode is active.
   if(gracefulShutdownInProgress || isLoginModeActive()) {
@@ -2622,8 +2684,7 @@ function checkBrowserRestart(timers: TimerRegistry): void {
     return;
   }
 
-  // Read the ready browser and its launch time from the supervisor. Both are non-null only in the ready state, so a single guard covers "no ready browser." The
-  // launch time is read from the supervisor's clock (systemClock.now), so age is measured against that same clock rather than against any other time source.
+  // Read the ready browser and its launch time from the supervisor. Both are non-null only in the ready state, so a single guard covers "no ready browser."
   const browser = supervisor.current();
   const launchTime = supervisor.currentLaunchTime();
 
@@ -2651,37 +2712,39 @@ function checkBrowserRestart(timers: TimerRegistry): void {
     LOG.info("Browser capture readiness has been sustained; the relaunch governor has reset to its normal state.");
   }
 
-  // Skip if the browser has not exceeded the maximum age.
-  const age = systemClock.now() - launchTime;
+  /* The age is measured on the clock this check was started with. The supervisor stamps the launch time on the system clock, which is the clock production
+   * starts the check with, so in production the launch time and the reading it is subtracted from come from the same source.
+   */
+  const action = decideRestartQuietPeriod({ age: clock.now() - launchTime, quietPending: timers.has(RESTART_QUIET_KEY), streamCount: getStreamCount() });
 
-  if(age < BROWSER_MAX_AGE) {
+  switch(action) {
 
-    return;
-  }
+    case "arm": {
 
-  // If there are active streams, cancel any pending quiet timer and return. Streams that start during the quiet period reset the countdown.
-  if(getStreamCount() > 0) {
+      LOG.debug("browser:lifecycle", "Browser uptime exceeds threshold. Quiet period started - restart will proceed if no streams start within %s minutes.",
+        Math.round(BROWSER_RESTART_QUIET_PERIOD / 60000));
 
-    if(timers.has(RESTART_QUIET_KEY)) {
+      timers.setTimeout(RESTART_QUIET_KEY, () => {
 
-      LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled - streams are active.");
+        void executeBrowserRestart("maintenance");
+      }, BROWSER_RESTART_QUIET_PERIOD);
+
+      break;
     }
 
-    cancelRestartQuietTimer();
+    case "cancel": {
 
-    return;
-  }
+      LOG.debug("browser:lifecycle", "Browser restart quiet period cancelled - streams are active.");
 
-  // No active streams and the browser is old enough. Start the quiet timer if one is not already running.
-  if(!timers.has(RESTART_QUIET_KEY)) {
+      cancelRestartQuietTimer();
 
-    LOG.debug("browser:lifecycle", "Browser uptime exceeds threshold. Quiet period started - restart will proceed if no streams start within %s minutes.",
-      Math.round(BROWSER_RESTART_QUIET_PERIOD / 60000));
+      break;
+    }
 
-    timers.setTimeout(RESTART_QUIET_KEY, () => {
+    case "skip": {
 
-      void executeBrowserRestart("maintenance");
-    }, BROWSER_RESTART_QUIET_PERIOD);
+      break;
+    }
   }
 }
 
@@ -2776,7 +2839,7 @@ async function executeBrowserRestart(cause: BrowserRestartCause): Promise<void> 
 /**
  * Starts the periodic browser restart eligibility check. This should be called once during server startup, after the browser is initialized. The check runs
  * indefinitely until stopBrowserRestartChecking() is called (typically during graceful shutdown). A second start while one is running changes nothing.
- * @param clock - The clock the check's interval and the quiet period it arms both run on. Defaults to the system clock.
+ * @param clock - The clock the check's interval and the quiet period it arms both run on, and the browser's age is measured on. Defaults to the system clock.
  */
 export function startBrowserRestartChecking(clock: Clock = systemClock): void {
 
@@ -2787,7 +2850,7 @@ export function startBrowserRestartChecking(clock: Clock = systemClock): void {
 
   const timers = new TimerRegistry({ clock });
 
-  timers.setInterval(RESTART_CHECK_KEY, () => { checkBrowserRestart(timers); }, BROWSER_RESTART_CHECK_INTERVAL);
+  timers.setInterval(RESTART_CHECK_KEY, () => { checkBrowserRestart(timers, clock); }, BROWSER_RESTART_CHECK_INTERVAL);
 
   restartTimers = timers;
 }

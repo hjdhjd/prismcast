@@ -1253,6 +1253,7 @@ describe("channels.ts: window.createTag", () => {
 
     assert.equal(errorDiv?.textContent, "Already exists.");
     assert.notEqual(getDisplay(ctx, "tag-manager-error"), "none", "error div must be visible after a server validation error");
+    assert.equal(ctx.document.querySelector("#toast-container .toast"), null, "a server validation error must not raise a toast");
   });
 });
 

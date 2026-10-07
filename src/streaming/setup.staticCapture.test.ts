@@ -190,12 +190,14 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     // (the stub has no live DOM), not in channel selection, which the default "none" strategy skips. So no startOverlayHandling call is recorded through the
     // injected collaborators - and specifically none under the staticCapture phase. The tune path's own overlay poll runs through video.ts's real collaborators,
     // not this test's injected collaborators, so it never reaches overlayCalls. If the static poll were launched unconditionally rather than gated on
-    // profile.staticCapture, this run would record a staticCapture call regardless.
+    // profile.staticCapture, this run would record a staticCapture call regardless. The recorded navigation is what proves the run reached the branch point at
+    // all: a failure before it would also leave the static poll unlaunched, and would satisfy the last assertion for the wrong reason.
     const profile = makeProfile({ staticCapture: false });
 
     await assert.rejects(createPageWithCapture({ profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "tune-test",
-      url: "https://tune.example/live" }, deps), "the tune path fails against the stub page rather than reaching a static poll");
+      url: "https://tune.example/live" }, deps), (error: unknown): boolean => error instanceof Error, "the tune path fails against the stub page");
 
+    assert.deepEqual(pageGotos, ["https://tune.example/live"], "the tune path reached its navigation of the requested URL");
     assert.equal(overlayCalls.filter((call) => call.phase === "staticCapture").length, 0, "no staticCapture poll runs for a non-static profile");
   });
 });

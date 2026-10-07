@@ -171,7 +171,9 @@ describe("loadResumeState", () => {
     }
 
     assertEqual(postLoadFileExists, false, "file deleted after read");
-    assertEqual(getResumePosition("cnn", BASE_TIME_MS)?.segmentIndex ?? null, 1234, "entry available in memory after load");
+
+    // The whole position is read, so a load that dropped or changed the count it defaults for an entry written without one fails here beside the index.
+    assert.deepEqual(getResumePosition("cnn", BASE_TIME_MS), { discontinuityCount: 0, segmentIndex: 1234 }, "entry available in memory after load");
   });
 
   test("discards an entry past the TTL at load time and keeps the fresh one", async (t: TestContext) => {
@@ -200,20 +202,6 @@ describe("loadResumeState", () => {
     assert(loadLine, "the load reported a count");
     assertEqual(loadLine.split("|")[1], "1,", "one channel loaded - the expired entry was discarded at load, not deferred to the read-time check");
     assertEqual(getResumePosition("fresh", BASE_TIME_MS)?.segmentIndex ?? null, 11, "the fresh entry reads back");
-  });
-
-  test("loads a recent entry and exposes it via getResumePosition", async () => {
-
-    await makeResumeFile(tempDir, {
-
-
-      espn: { initVersion: 0, segmentIndex: 42, timestamp: BASE_TIME_MS, trackTimestamps: {} }
-    });
-
-    loadResumeState(BASE_TIME_MS);
-
-    assert(typeof getResumePosition !== "undefined");
-    assertEqual(getResumePosition("espn", BASE_TIME_MS)?.segmentIndex ?? null, 42, "loaded segment index for espn");
   });
 
   test("discards entries older than the 90-second TTL", async () => {
@@ -528,19 +516,6 @@ describe("getResumePosition", () => {
   test("returns null for an unknown channel", () => {
 
     assertEqual(getResumePosition("nope", BASE_TIME_MS)?.segmentIndex ?? null, null);
-  });
-
-  test("returns the segment index for a recent entry", async () => {
-
-    await makeResumeFile(tempDir, {
-
-
-      ok: { initVersion: 0, segmentIndex: 17, timestamp: BASE_TIME_MS, trackTimestamps: {} }
-    });
-
-    loadResumeState(BASE_TIME_MS);
-
-    assertEqual(getResumePosition("ok", BASE_TIME_MS)?.segmentIndex ?? null, 17);
   });
 
   test("returns null when the TTL check fails (read-time staleness check)", async () => {

@@ -2407,76 +2407,47 @@ describe("config.ts: dependent fields wiring (data-depends-on)", () => {
 
   test("unchecking a parent checkbox adds .depends-disabled to elements with data-depends-on=<parent>", async () => {
 
-    /* updateDependentFields runs on parent checkbox change. We seed a parent + dependent fixture, flip the parent unchecked, dispatch change, and assert the
-     * dependent gains .depends-disabled.
-     *
-     * config.ts attaches the change listener to each checkbox only when the page initializes, so a checkbox injected afterward carries none until the test
-     * wires one below.
+    /* updateDependentFields runs on parent checkbox change, through the listener config.ts attaches to each server-rendered checkbox when the page initializes.
+     * The settings page renders a parent with its dependents, so the row drives the production pair: the dependent starts enabled, gains .depends-disabled
+     * when the parent unchecks, and loses it again when the parent re-checks. A page that renders no pair fails the row as a broken precondition.
      */
     await using ctx = await setupConfigRuntime();
 
-    ctx.evaluate(
-      "const f = document.getElementById('settings-form');" +
-      "f.insertAdjacentHTML('beforeend', " +
-      "'<input id=\"udf-parent\" type=\"checkbox\" checked>' + " +
-      "'<div data-depends-on=\"udf-parent\"><input id=\"udf-child\" type=\"text\"></div>');"
-    );
-
-    /* The form's IIFE-init loop wired listeners for inputs that existed at script-eval time. The freshly-injected checkbox does NOT have the listener. Wire it
-     * by hand to mirror what production wiring does for a server-rendered checkbox.
-     */
-    ctx.evaluate(
-      "document.getElementById('udf-parent').addEventListener('change', function() {" +
-      "  const dep = document.querySelectorAll('[data-depends-on=\"udf-parent\"]');" +
-      "  const isChecked = this.checked;" +
-      "  for(const d of dep) {" +
-      "    if(isChecked) { d.classList.remove('depends-disabled'); } else { d.classList.add('depends-disabled'); }" +
-      "    const inputs = d.querySelectorAll('input:not([type=\"hidden\"]), select');" +
-      "    for(const i of inputs) { i.tabIndex = isChecked ? 0 : -1; }" +
-      "  }" +
-      "});"
-    );
-
-    /* Note: the above wiring is the very logic config.ts implements. We replicate it here only because the production listener on freshly-injected DOM is not
-     * attached. For tests of the wiring contract proper, we exercise updateDependentFields indirectly via a production-rendered parent checkbox below.
-     *
-     * Pick a server-rendered checkbox with at least one [data-depends-on] sibling. If none exist, we skip this assertion path, and only the synthetic fixture's
-     * check below runs, which exercises the test's replica rather than config.ts.
-     */
     const productionParent = ctx.evaluate(
       "(() => {" +
       "  const cbs = document.querySelectorAll('#settings-form input[type=\"checkbox\"]');" +
       "  for(const cb of cbs) {" +
-      "    if(cb.id && document.querySelector('[data-depends-on=\"' + cb.id + '\"]')) return cb.id;" +
+      "    if(cb.id && cb.checked && document.querySelector('[data-depends-on=\"' + cb.id + '\"]')) return cb.id;" +
       "  }" +
       "  return null;" +
       "})()"
     ) as string | null;
 
-    if(productionParent) {
+    if(!productionParent) {
+
+      assert.fail("settings page must render a checked parent checkbox with a data-depends-on dependent for this wiring test (test infrastructure precondition)");
+    }
+
+    const dependentSelector = "[data-depends-on=\"" + productionParent + "\"]";
+    const dependentDisabled = (): boolean => ctx.evaluate("document.querySelector('" + dependentSelector + "').classList.contains('depends-disabled')") as boolean;
+    const toggle = (checked: boolean): void => {
 
       ctx.evaluate(
         "const cb = document.getElementById('" + productionParent + "');" +
-        "cb.checked = false;" +
+        "cb.checked = " + String(checked) + ";" +
         "cb.dispatchEvent(new Event('change', { bubbles: true }));"
       );
+    };
 
-      const dep = ctx.evaluate("document.querySelector('[data-depends-on=\"" + productionParent + "\"]').classList.contains('depends-disabled')") as boolean;
+    assert.equal(dependentDisabled(), false, "precondition: the dependent of a checked parent starts enabled");
 
-      assert.equal(dep, true, "production-rendered dependent must gain .depends-disabled when parent unchecks");
-    }
+    toggle(false);
 
-    /* Synthetic fixture: this checks only the test's own replica of updateDependentFields wired above, not config.ts. When the page renders no depends-on pair,
-     * this block is the only assertion that runs and the production wiring goes unexercised.
-     */
-    ctx.evaluate(
-      "const cb = document.getElementById('udf-parent');" +
-      "cb.checked = false;" +
-      "cb.dispatchEvent(new Event('change'));"
-    );
+    assert.equal(dependentDisabled(), true, "production-rendered dependent must gain .depends-disabled when parent unchecks");
 
-    assert.equal(ctx.evaluate("document.querySelector('[data-depends-on=\"udf-parent\"]').classList.contains('depends-disabled')"), true,
-      "synthesized dependent must gain .depends-disabled");
+    toggle(true);
+
+    assert.equal(dependentDisabled(), false, "the dependent loses .depends-disabled when the parent re-checks");
   });
 });
 

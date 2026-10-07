@@ -10,11 +10,11 @@ import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, collectStoredCaptureCorrecti
   normalizeStoredConfig, readConfig, setNestedValue } from "./userConfig.ts";
 import type { Config, ReactivityClass } from "../types/index.ts";
 import { LOG, validateDeviceId } from "../utils/index.ts";
+import type { ProcessFieldPath, UserConfig } from "./userConfig.ts";
 import { describe, test } from "node:test";
 import { listConfigLeafPaths, withTempDir } from "../testing.helpers.ts";
 import { CONFIG } from "./index.ts";
 import { SEEDED_DEVICE_ID } from "./index.helpers.ts";
-import type { UserConfig } from "./userConfig.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "./paths.ts";
 import os from "node:os";
@@ -745,5 +745,22 @@ describe("reactivity classification", () => {
   test("an inherited key is never read as a field, so it carries no class", () => {
 
     assert.throws(() => getReactivityClass("toString"), { message: "The configuration path toString carries no reactivity class." });
+  });
+
+  test("a state field type-checks as a process field path, and a schema field or a setting does not", () => {
+
+    const state: ProcessFieldPath = "channels.setupCompleted";
+
+    // @ts-expect-error - a schema field exists only in the file, so no process write answers it.
+    const schemaVersion: ProcessFieldPath = "schemaVersion";
+
+    // @ts-expect-error - the migration trail is a schema field too.
+    const migrationsApplied: ProcessFieldPath = "migrationsApplied";
+
+    // @ts-expect-error - a setting belongs to the settings surface, which a process write never writes.
+    const setting: ProcessFieldPath = "server.port";
+
+    assert.deepEqual([ state, schemaVersion, migrationsApplied, setting ], [ "channels.setupCompleted", "schemaVersion", "migrationsApplied", "server.port" ],
+      "the rows above are compile-time assertions; this keeps the bindings read");
   });
 });

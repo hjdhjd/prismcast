@@ -13,11 +13,12 @@
  * Each row seeds its own data directory and calls initializeConfiguration() after createIntegrationContext and before initializePersistence, so CONFIG and the
  * loaded snapshot are read from that row's file rather than inherited from an earlier row in the same process.
  */
-import type { BootedApp, IntegrationContext } from "../../helpers/integration.helpers.ts";
 import { CONFIG, initializeConfiguration, saveConfiguration } from "../../../src/config/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson, writePersistedJson } from "../../helpers/integration.helpers.ts";
+import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, postJson, readPersistedJson,
+  writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { getEnabledServices, isServiceTagEnabled, setEnabledServices } from "../../../src/config/services.ts";
+import type { IntegrationContext } from "../../helpers/integration.helpers.ts";
 import type { LogEntry } from "../../../src/utils/logEmitter.ts";
 import type { SettingsSaveChanges } from "../../../src/routes/config/settings.ts";
 import assert from "node:assert/strict";
@@ -26,7 +27,7 @@ import { readFile } from "node:fs/promises";
 import { runConsistencyProbeAtStartup } from "../../../src/config/consistencyProbe.ts";
 import { subscribeToLogs } from "../../../src/utils/logEmitter.ts";
 
-// Every log entry emitted during a row, so a row can count the warnings that name a tag the restriction ignored.
+// Every log entry emitted during a row, so a row can select the warnings the restriction logged.
 let captured: LogEntry[];
 
 let unsubscribe: () => void;
@@ -64,28 +65,17 @@ async function persistedServices(ctx: IntegrationContext): Promise<unknown> {
   return getNestedValue(await readPersistedJson(ctx, "config.json"), "channels.enabledServices");
 }
 
-/**
- * Counts the warnings that name a tag.
- * @param tag - The tag a warning must name.
- * @returns How many captured warnings name it.
- */
-function warningsNaming(tag: string): number {
-
-  return captured.filter((entry) => (entry.level === "warn") && entry.message.includes(tag)).length;
-}
+// The opening of the sentence the restriction warns with. The rows select that warning by it, so one selector serves the rows that expect the warning and the
+// row that expects none, and a reworded warning fails the positive rows rather than passing the absence row.
+const RESTRICTION_WARNING_OPENING = "Ignoring unrecognized service tags in configuration: ";
 
 /**
- * Posts a JSON body to a route and returns the status and the parsed body.
- * @param app - The booted app.
- * @param route - The route to post to.
- * @param body - The JSON body.
- * @returns The status code and the response body.
+ * Selects the warnings the restriction logged by the opening of their sentence.
+ * @returns The message of each captured restriction warning, in the order logged.
  */
-async function post(app: BootedApp, route: string, body: unknown): Promise<{ body: Record<string, unknown>; status: number }> {
+function restrictionWarnings(): string[] {
 
-  const response = await fetch(app.urlFor(route), { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" });
-
-  return { body: await response.json() as Record<string, unknown>, status: response.status };
+  return captured.filter((entry) => (entry.level === "warn") && entry.message.startsWith(RESTRICTION_WARNING_OPENING)).map((entry) => entry.message);
 }
 
 describe("the running service filter is the saved list restricted to the known tags", () => {
@@ -101,17 +91,17 @@ describe("the running service filter is the saved list restricted to the known t
     assert.deepEqual(getEnabledServices(), [ "hulu", "sling", "spectrum" ], "the running filter keeps the known tags in their saved order");
     assert.deepEqual(CONFIG.channels.enabledServices, saved, "the running configuration holds the list as saved");
     assert.deepEqual(await persistedServices(ctx), saved, "the file keeps the user's list");
-    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "one warning names the ignored tag");
+    assert.deepEqual(restrictionWarnings(), [RESTRICTION_WARNING_OPENING + "unknown-tag-xyz."], "one warning names the ignored tag");
 
     // The probe reports only what an operator must act on, so it neither warns about the tag again nor rewrites the file.
     await runConsistencyProbeAtStartup();
 
-    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "the probe adds no warning about the tag");
+    assert.deepEqual(restrictionWarnings(), [RESTRICTION_WARNING_OPENING + "unknown-tag-xyz."], "the probe adds no warning about the tag");
     assert.deepEqual(await persistedServices(ctx), saved, "the probe leaves the file's list as saved");
 
     // The file and CONFIG agree on the list, so a save of an unrelated live value finds nothing to hold for the restart and leaves the filter as it is.
     const app = await bootApp(ctx);
-    const { body, status } = await post(app, "/config", { playback: { stallThreshold: 0.2 } });
+    const { body, status } = await postJson(app, "/config", { playback: { stallThreshold: 0.2 } });
 
     assert.equal(status, 200);
     assert.deepEqual((body["changes"] as SettingsSaveChanges).applied, ["playback.stallThreshold"], "precondition: the unrelated live value is applied");
@@ -139,7 +129,7 @@ describe("the running service filter is the saved list restricted to the known t
     assert.deepEqual(getEnabledServices(), [ "hulu", "sling" ], "the running filter excludes the unknown tag");
     assert.deepEqual(CONFIG.channels.enabledServices, saved, "the running configuration holds the list as saved");
     assert.deepEqual(await persistedServices(ctx), saved, "the file keeps the user's list");
-    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "one warning names the ignored tag");
+    assert.deepEqual(restrictionWarnings(), [RESTRICTION_WARNING_OPENING + "unknown-tag-xyz."], "one warning names the ignored tag");
   });
 
   test("a file of known tags boots with the running filter equal to it and no restriction warning, and the probe leaves the file as it was", async () => {
@@ -155,7 +145,7 @@ describe("the running service filter is the saved list restricted to the known t
     await runConsistencyProbeAtStartup();
 
     assert.equal(await readFile(pathInDataDir(ctx, "config.json"), "utf8"), before, "the probe leaves the file byte-for-byte as it was");
-    assert.equal(warningsNaming("Ignoring unrecognized service tags"), 0, "the restriction ignores nothing, so it warns about nothing");
+    assert.deepEqual(restrictionWarnings(), [], "the restriction ignores nothing, so it warns about nothing");
   });
 
   test("an empty list boots with no filter, so every service is enabled", async () => {

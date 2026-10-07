@@ -38,6 +38,8 @@ import { createIntegrationContext, initializePersistence, readPersistedJson, wri
 import { getAllChannels, getChannelListing, getChannelStationId } from "../../../src/config/userChannels.ts";
 import { getDvrHost, getShowName, setDvrHost, startShowInfoPolling, stopShowInfoPolling, triggerShowNameUpdate } from "../../../src/streaming/showInfo.ts";
 import { registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
+import { LOG } from "../../../src/utils/index.ts";
+import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { delay } from "../../../src/utils/delay.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
@@ -870,6 +872,126 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       assert.ok(matching, "at least one captured channelUpdate payload must carry the tier-2 logo");
       assert.equal(matching.logos?.[targetEntry.key], "https://tms-images.example.test/tier2-logo.png?h=48",
         "the TMS search result's logo URL is normalized to the height-only sizing parameter");
+    });
+
+    /**
+     * Runs one tier-2 sweep for the first listed channel with a station id, the only channel left without a tier-1 logo, against a TMS search seeded for it, and
+     * answers what the population reported once both tiers completed. Every other channel carries the baseline tier-1 logo, so the population always emits its
+     * one channelUpdate, and a row reads what that update holds for the target rather than waiting on silence. The completion line's tier-2 count is read beside
+     * it, which is what tells a search that found a logo apart from one that found none.
+     * @param t - The row's test context, whose mock captures the completion line.
+     * @param options - The fixture device's id and DVR host, and what the search answers for the target given its station id.
+     * @param options.deviceId - The device id the sweep's fixture serves.
+     * @param options.host - The DVR host the sweep runs against.
+     * @param options.seed - The search results for the target channel's name.
+     * @returns The target's key, the emitted logos, and the tier-2 count the completion line reported.
+     */
+    async function runTierTwoSweep(t: TestContext, { deviceId, host, seed }: { deviceId: string; host: string; seed: (stationId: string) => FixtureTmsResult[] }):
+    Promise<{ key: string; logos: Record<string, string>; tierTwoCount: unknown }> {
+
+      await using ctx = await createIntegrationContext();
+
+      await initializeConfiguration();
+      await initializePersistence(ctx);
+
+      const state = createDvrStubState();
+
+      installDvrFetchStub(state);
+
+      const targetEntry = getChannelListing().find((entry) => getChannelStationId(entry.key) !== undefined);
+      const targetStationId = targetEntry ? getChannelStationId(targetEntry.key) : undefined;
+
+      assert.ok(targetEntry && targetStationId, "at least one listing entry must carry a station id");
+
+      const { device } = buildFullDevice(deviceId, { excludeLogoFor: new Set([targetEntry.key]) });
+
+      state.devices = [device];
+      state.tmsByName.set(targetEntry.channel.name ?? targetEntry.key, seed(targetStationId));
+
+      const completions: unknown[][] = [];
+      const updates: Record<string, string>[] = [];
+
+      t.mock.method(LOG, "debug", (category: string, format: string, ...args: unknown[]): void => {
+
+        if((category === "streaming:logos") && format.startsWith("Logo population complete")) {
+
+          completions.push(args);
+        }
+      });
+
+      unsubscribeStatus = subscribeToStatus((event, data) => {
+
+        const logos = (event === "channelUpdate") ? (data as { logos?: Record<string, string> }).logos : undefined;
+
+        if(logos) {
+
+          updates.push(logos);
+        }
+      });
+
+      await setDvrHost(host);
+
+      await waitFor(() => updates.some((logos) => Object.keys(logos).some((key) => key !== targetEntry.key)), 15000,
+        "the population emitted its channelUpdate once both tiers completed");
+
+      return { key: targetEntry.key, logos: updates.find((logos) => Object.keys(logos).some((key) => key !== targetEntry.key)) ?? {},
+        tierTwoCount: completions[0]?.[1] };
+    }
+
+    test("an exact station match beats an earlier result with a URI, and the first exact match stands", async (t) => {
+
+      const { key, logos } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C3", host: "showinfo-test-c3.example.invalid", seed: (stationId) => [
+        { preferredImage: { uri: "https://tms-images.example.test/fallback.png?w=360" }, stationId: "other-station" },
+        { preferredImage: { uri: "https://tms-images.example.test/exact.png?w=360" }, stationId },
+        { preferredImage: { uri: "https://tms-images.example.test/later-exact.png?w=360" }, stationId }
+      ] });
+
+      assert.equal(logos[key], "https://tms-images.example.test/exact.png?h=48", "the first exact match is the logo, ahead of the earlier fallback and the later match");
+    });
+
+    test("the first result with a URI wins when no result matches the station", async (t) => {
+
+      const { key, logos } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C4", host: "showinfo-test-c4.example.invalid", seed: () => [
+        { preferredImage: { uri: "https://tms-images.example.test/first.png?w=360" }, stationId: "other-station-a" },
+        { preferredImage: { uri: "https://tms-images.example.test/second.png?w=360" }, stationId: "other-station-b" }
+      ] });
+
+      assert.equal(logos[key], "https://tms-images.example.test/first.png?h=48", "the same brand's first regional variant stands in for the station");
+    });
+
+    test("a result with no URI is skipped, even when it matches the station", async (t) => {
+
+      const { key, logos } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C5", host: "showinfo-test-c5.example.invalid", seed: (stationId) => [
+        { preferredImage: {}, stationId },
+        { preferredImage: { uri: "https://tms-images.example.test/after-skip.png?w=360" }, stationId: "other-station" }
+      ] });
+
+      assert.equal(logos[key], "https://tms-images.example.test/after-skip.png?h=48", "the URI-less match is passed over for the next result with a URI");
+    });
+
+    test("an empty search sets no logo for the station", async (t) => {
+
+      const { key, logos, tierTwoCount } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C6", host: "showinfo-test-c6.example.invalid", seed: () => [] });
+
+      assert.equal(logos[key], undefined, "the emitted update carries no logo for the target");
+      assert.equal(tierTwoCount, 0, "and the search reported finding none");
+    });
+
+    test("a search whose results all lack a URI sets no logo for the station", async (t) => {
+
+      const { key, logos, tierTwoCount } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C7", host: "showinfo-test-c7.example.invalid",
+        seed: (stationId) => [ { stationId }, { preferredImage: {}, stationId: "other-station" } ] });
+
+      assert.equal(logos[key], undefined, "the emitted update carries no logo for the target");
+      assert.equal(tierTwoCount, 0, "and the search reported finding none");
+    });
+
+    test("a logo URI that does not parse is stored unchanged", async (t) => {
+
+      const { key, logos } = await runTierTwoSweep(t, { deviceId: "M3U-Prism-Test-C8", host: "showinfo-test-c8.example.invalid",
+        seed: (stationId) => [{ preferredImage: { uri: "not a url" }, stationId }] });
+
+      assert.equal(logos[key], "not a url", "normalization leaves a URI it cannot parse as it found it");
     });
   });
 });

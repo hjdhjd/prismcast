@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { applyConfigChanges, computeConfigDiff, partitionConfigChanges, registerConfigChangeHandler, resetConfigChangeHandlers } from "./reactivity.ts";
 import { DEFAULTS } from "./userConfig.ts";
 import assert from "node:assert/strict";
+import { setImmediate as immediate } from "node:timers/promises";
 
 // The candidate running configuration the dispatch rows hand the primitive. Its contents are opaque to the primitive, which forwards it to each handler.
 const NEXT: Config = structuredClone(DEFAULTS);
@@ -301,12 +302,15 @@ describe("applyConfigChanges", () => {
     assert.equal(result.rejected.length, 0, "the foreign rejection for a.x was ignored");
   });
 
-  test("dispatches parallel handlers independently", async () => {
+  test("dispatches handlers in parallel, entering the second handler while the first is still gated", async () => {
 
+    /* The first handler blocks on a gate the test holds shut, and the second records that it entered. The flag is read after one settle turn and before the gate
+     * opens, so a dispatcher that awaited each handler before calling the next fails the row rather than hanging it, and the gate opens in a finally.
+     */
     const aGate = Promise.withResolvers<null>();
-    const bGate = Promise.withResolvers<null>();
+    let bEntered = false;
+    let enteredWhileAHeld = false;
 
-    // Both handlers block until the test releases them. Promise.allSettled in applyConfigChanges holds open until both resolve.
     registerConfigChangeHandler("a.", async () => {
 
       await aGate.promise;
@@ -315,32 +319,51 @@ describe("applyConfigChanges", () => {
     });
     registerConfigChangeHandler("b.", async () => {
 
-      await bGate.promise;
+      bEntered = true;
 
       return [];
     });
 
     const dispatch = applyConfigChanges(livePartition([ { current: 1, path: "a.x", previous: 0 }, { current: 1, path: "b.y", previous: 0 } ]), NEXT);
 
-    // Release the handlers in reverse registration order to prove independence: nothing serializes their execution.
-    bGate.resolve(null);
-    aGate.resolve(null);
+    try {
 
+      await immediate();
+      enteredWhileAHeld = bEntered;
+    } finally {
+
+      aGate.resolve(null);
+    }
+
+    assert.equal(enteredWhileAHeld, true, "the second handler entered while the first was still gated");
     assert.equal((await dispatch).realized.length, 2);
   });
 
-  test("keeps the partition's order, live changes before next-stream changes, whatever order handlers settle in", async () => {
+  test("keeps the partition's order in the realized and rejected lists when interleaved buckets settle in the reverse order", async () => {
 
-    registerConfigChangeHandler("x.", async () => []);
+    /* The partition alternates the changes of the "a." and "b." prefixes across its live and next-stream lists, and each handler refuses its first change. The
+     * "a." handler settles a macrotask later than the "b." handler, so the buckets settle in the reverse of their order. The realized changes run a, b, a in the
+     * partition, so a realized list built in settle order leads with the "b." change and one built in bucket order puts the "a." changes together, each failing
+     * the first assertion; a rejected list built in settle order leads with the "b." refusal and fails the second. Only the fold over the partition yields the
+     * lists below.
+     */
+    registerConfigChangeHandler("a.", async () => {
 
-    const partition: ConfigChangePartition = {
+      await immediate();
 
-      held: [],
-      live: [ { current: 1, path: "x.c", previous: 0 }, { current: 1, path: "x.a", previous: 0 } ],
-      nextStream: [{ current: 1, path: "x.b", previous: 0 }]
-    };
+      return [{ path: "a.v", reason: "Refused by a." }];
+    });
+    registerConfigChangeHandler("b.", async () => [{ path: "b.w", reason: "Refused by b." }]);
 
-    assert.deepEqual((await applyConfigChanges(partition, NEXT)).realized.map((c) => c.path), [ "x.c", "x.a", "x.b" ]);
+    const av = { current: 1, path: "a.v", previous: 0 };
+    const bw = { current: 1, path: "b.w", previous: 0 };
+    const ax = { current: 1, path: "a.x", previous: 0 };
+    const by = { current: 1, path: "b.y", previous: 0 };
+    const az = { current: 1, path: "a.z", previous: 0 };
+    const result = await applyConfigChanges({ held: [], live: [ av, bw, ax ], nextStream: [ by, az ] }, NEXT);
+
+    assert.deepEqual(result.realized, [ ax, by, az ], "The realized changes keep the partition's order.");
+    assert.deepEqual(result.rejected, [ { change: av, reason: "Refused by a." }, { change: bw, reason: "Refused by b." } ], "The rejections keep the partition's order.");
   });
 
   test("never hands a held change to a handler and never reports it", async () => {
