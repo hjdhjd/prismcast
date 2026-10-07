@@ -4,28 +4,38 @@
  * with the PID liveness primitives (pid.ts) into a discriminated-union state machine. Every caller that needs to decide "is another instance running?" or "is
  * this stale state I can overwrite?" goes through inspect() or claim() here - no other module makes ad-hoc PID-only judgments.
  *
- * On-disk file format. The format is line-oriented and backwards-compatible. The first line is the bare PID as an integer so external tools that grep the
- * integer (the universal pidfile convention) still work. Subsequent lines are key=value pairs holding the boot session identifier (the field a mismatch or
- * downgrade depends on) and informational fields (startedAt, version). The parser is defensive: any line that does not match the format is ignored; missing
- * required fields downgrade the state to "stale-malformed", which is safely overwritten on claim().
+ * On-disk file format. The format is line-oriented, with no escaping. The first line is the writer's PID as a bare positive integer, so external tools that grep
+ * the integer (the universal pidfile convention) still work. Subsequent lines are key=value pairs: the boot session identifier (the field a mismatch or
+ * downgrade depends on), commandHash, the fingerprint of the command line the OS process table reported for the writer at its claim, and informational fields
+ * (startedAt, version). The fingerprint is a sha256 digest rather than the command line itself, because a command line can carry a newline, which in a format
+ * with no escaping would read as a key line of its own. A writer whose command line the table could not report writes no commandHash line, the form a record
+ * that a release before the field wrote also takes. The parser is defensive: a line that does not match the format is ignored and an unknown key is skipped,
+ * so a reader tolerates the fields a newer writer adds, and a commandHash that is not 64 lowercase hex digits reads as absent. The PID and the boot session are
+ * the required fields: a first line that is not a positive integer, or a boot session that is missing or empty, makes the record malformed, and
+ * "stale-malformed" is safely overwritten on claim().
  *
  * State machine.
  *   - free                  : No file on disk. claim writes a fresh record.
- *   - held-live             : File exists, boot session matches, the PID is alive, and the process-identity probe does not positively identify the live process
- *                             as a non-PrismCast program (it is genuinely the same process). claim refuses and returns the holder's record.
+ *   - held-live             : File exists, boot session matches, the PID is alive, and nothing shows the live process to be another program: its command line
+ *                             fingerprints as the record's, the record carries no fingerprint, or the table reports no command line for the PID. claim refuses
+ *                             and returns the holder's record.
  *   - stale-different-boot  : File exists but boot session differs. The writing process cannot still exist; safe to overwrite.
- *   - stale-dead-pid        : File exists, boot session matches, but the PID is no longer alive OR the PID has been recycled to an unrelated process within the
- *                             same boot (the process-identity probe finds a non-PrismCast command line at that PID). Both are "the writer is gone"; safe to overwrite.
- *   - stale-malformed       : File exists but cannot be parsed (unrecognized format, partial write, corruption). Safe to overwrite.
+ *   - stale-dead-pid        : File exists, boot session matches, but the PID is no longer alive OR the live process at that PID reports a command line whose
+ *                             fingerprint differs from the record's, another program that inherited the PID within the same boot. Each means "the writer is
+ *                             gone"; safe to overwrite.
+ *   - stale-malformed       : File exists but cannot be parsed (unrecognized format, partial write, corruption, a PID line that is not a positive integer, a
+ *                             missing or empty boot session). Safe to overwrite.
  *
  * Same-boot PID reuse. The bootId check alone catches the cross-reboot case (a reboot mints a new boot session, so a recycled PID classifies as
  * stale-different-boot regardless of liveness). It cannot catch the same-boot residual: a SIGKILL of PrismCast followed by the kernel reassigning the freed PID
- * to an unrelated process within the same boot session leaves bootId matching and the PID alive, which would falsely read as held-live. We close this with a
- * process-identity probe (isPidOurProcess) that consults the OS process table - via the processInspector port - and asks whether the live process at that PID is
- * genuinely a PrismCast instance or some unrelated program that inherited the recycled PID. When the table confirms a non-PrismCast command line at that PID, we
- * classify the slot as stale rather than held-live. When identity cannot be determined (the process table is unavailable on the platform, or the PID is absent
- * from it), we conservatively retain the held-live verdict: failing to confirm identity must never downgrade a possibly-live holder to "free", since that is the
- * only branch that risks two concurrent instances.
+ * to an unrelated process within the same boot session leaves bootId matching and the PID alive, which would falsely read as held-live. The record therefore
+ * names its writer by the fingerprint of the command line the OS process table reported for it at its claim, read through the processInspector port rather
+ * than rebuilt from process.argv, which differs from what the table reports. A live same-boot PID whose command line fingerprints differently is another
+ * program that inherited the PID, and the slot is stale. When identity cannot be determined - a record with no fingerprint, or a PID whose command line the
+ * table cannot report because the table is unavailable on the platform or the PID is absent from it - we keep the held-live verdict: failing to confirm identity
+ * must never downgrade a possibly-live holder to "free", since that is the only branch that risks two concurrent instances. The fingerprint holds only while the
+ * table reports the command line the claim read, so a process that rewrote its title after its claim would read its own record as stale, which is why the server
+ * sets no title.
  *
  * Concurrency note. claim() is not atomic against simultaneous startups - two callers racing on the same file may both pass inspect() and both write. Service
  * managers serialize startup so this is not a production concern; if a user manually launches two instances at once, the port-bind step (EADDRINUSE) catches
@@ -35,6 +45,7 @@
 import type { Nullable } from "../types/index.ts";
 import { clearPidFile } from "./pid.ts";
 import { createDefaultRuntimeIdentityContext } from "./runtimeIdentity.context.ts";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 
 /**
@@ -44,6 +55,10 @@ export interface IdentityRecord {
 
   // The boot session identifier at the moment the record was written. Compared for equality against the current boot session on read.
   readonly bootId: string;
+
+  // The fingerprint of the writer's command line as the OS process table reported it at the claim, from fingerprintCommandLine. Null when the table could not
+  // report it, and for a record a release before this field wrote.
+  readonly commandHash: Nullable<string>;
 
   // The process ID of the writer. Combined with bootId, identifies the writing process uniquely across reboots and container restarts.
   readonly pid: number;
@@ -79,16 +94,13 @@ export type ClaimResult =
  */
 export interface RuntimeIdentityContext {
 
+  // Returns the command line the OS process table reports for a PID, exactly as reported, or null when the table has no row for it. It does no normalization:
+  // the claim and inspect fingerprint what it returns through fingerprintCommandLine in this module, which applies one rule to each. Conventionally backed by
+  // the processInspector port.
+  readonly commandLineOf: (pid: number) => Nullable<string>;
+
   // Returns the current boot session identifier. Conventionally proxies getBootSessionId() from bootSession.ts.
   readonly getBootSessionId: () => string;
-
-  // Resolves the process-identity question for a PID whose liveness and boot session have already matched the record: is the live process at this PID genuinely
-  // a PrismCast instance, or an unrelated process that inherited a recycled PID within the same boot session? Returns true when the process table confirms a
-  // PrismCast command line at that PID, false when it confirms a different (non-PrismCast) command line, and null when identity cannot be determined - the
-  // process table is unavailable on the platform, the PID is absent from it, or the marker is empty. The null case is deliberately conservative: callers retain
-  // the held-live verdict rather than risk downgrading a possibly-live holder to "free". Conventionally backed by the processInspector port plus a PrismCast
-  // command-line marker.
-  readonly isPidOurProcess: (pid: number) => Nullable<boolean>;
 
   // Returns whether a given PID belongs to a process that is currently alive. Conventionally proxies isProcessRunning() from pid.ts.
   readonly isProcessRunning: (pid: number) => boolean;
@@ -142,12 +154,15 @@ export function inspect(filePath: string, ctx: RuntimeIdentityContext = createDe
     return { kind: "stale-dead-pid", record };
   }
 
-  // The PID is alive and the boot session matches, but within a single boot the kernel can reassign a freed PID to an unrelated process after PrismCast was
-  // SIGKILLed. We confirm process identity through the processInspector port: a verdict of false means the process table positively identified a non-PrismCast
-  // command line at this PID, so the original writer is gone and the slot is stale. A verdict of true (confirmed PrismCast) or null (cannot determine) both
-  // keep the held-live verdict - we only downgrade on positive proof of a different process. We classify the recycled case as stale-dead-pid rather than a
-  // new branch because the operational meaning is identical - the writing process is gone - and callers already overwrite that state.
-  if(ctx.isPidOurProcess(record.pid) === false) {
+  // The PID is alive and the boot session matches, but within a single boot the kernel can reassign a freed PID to another program after PrismCast was
+  // SIGKILLed. The record carries the fingerprint of its writer's command line, so a live process at that PID whose command line fingerprints differently is
+  // another program, the writer is gone, and the slot is stale. We classify that case as stale-dead-pid rather than a new branch because the operational meaning
+  // is identical and callers already overwrite that state. Only that positive proof downgrades the slot: a record with no fingerprint reads no process table, and
+  // a PID whose command line the table cannot report keeps the held-live verdict, because downgrading a possibly-live holder is the only path to two concurrent
+  // instances.
+  const liveHash = (record.commandHash === null) ? null : fingerprintCommandLine(ctx.commandLineOf(record.pid));
+
+  if((liveHash !== null) && (liveHash !== record.commandHash)) {
 
     return { kind: "stale-dead-pid", record };
   }
@@ -176,6 +191,7 @@ export function claim(filePath: string, metadata: { version: string }, ctx: Runt
   const record: IdentityRecord = {
 
     bootId: ctx.getBootSessionId(),
+    commandHash: fingerprintCommandLine(ctx.commandLineOf(process.pid)),
     pid: process.pid,
     startedAt: new Date(ctx.now()).toISOString(),
     version: metadata.version
@@ -218,8 +234,28 @@ export function forceRelease(filePath: string): void {
 }
 
 /**
+ * Fingerprints a command line as the identity record stores it: the lowercase hex sha256 digest of the trimmed text. It is the one normalization of a command
+ * line, applied at the claim and at inspect alike, which is why it lives here rather than in the context: the platforms report surrounding whitespace
+ * differently, and trimming the claim's reading and inspect's reading alike keeps a holder's command line matching its own record.
+ * @param commandLine - The command line as the process table reported it, or null when the table had no row for the process.
+ * @returns The fingerprint, or null when there is no command line to fingerprint.
+ */
+export function fingerprintCommandLine(commandLine: Nullable<string>): Nullable<string> {
+
+  const text = commandLine?.trim() ?? "";
+
+  if(text === "") {
+
+    return null;
+  }
+
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/**
  * Serializes a record to its on-disk representation. The first line is the bare PID for backwards compatibility with shell tooling; subsequent lines are
- * key=value pairs in deterministic order. The trailing newline keeps the file well-formed for POSIX text-file tools.
+ * key=value pairs in deterministic order, the commandHash line written only when the record carries a fingerprint. The trailing newline keeps the file
+ * well-formed for POSIX text-file tools.
  * @param record - The identity record to serialize.
  * @returns The serialized payload.
  */
@@ -227,13 +263,15 @@ export function serializeRecord(record: IdentityRecord): string {
 
   return String(record.pid) + "\n" +
     "bootId=" + record.bootId + "\n" +
+    ((record.commandHash === null) ? "" : "commandHash=" + record.commandHash + "\n") +
     "startedAt=" + record.startedAt + "\n" +
     "version=" + record.version + "\n";
 }
 
 /**
- * Parses the on-disk representation of an identity record. Returns null when the payload cannot be interpreted as a complete record (missing or non-integer
- * pid, missing bootId). Unknown key=value pairs are silently ignored so future fields can be added without breaking older readers.
+ * Parses the on-disk representation of an identity record. Returns null when the payload cannot be interpreted as a complete record: a first line that is not a
+ * positive integer PID, or a boot session that is missing or empty. A commandHash that is not a well-formed fingerprint reads as absent rather than refusing the
+ * record, and unknown key=value pairs are silently ignored so future fields can be added without breaking older readers.
  * @param raw - The raw file contents.
  * @returns The parsed record, or null when the payload is unusable.
  */
@@ -255,14 +293,18 @@ export function parseRecord(raw: string): Nullable<IdentityRecord> {
     return null;
   }
 
-  const pid = parseInt(firstLine.trim(), 10);
+  // The PID is a required field, so a first line that is not all digits, or whose value is zero, names no process and the record is malformed. Reading the line
+  // whole, rather than by its leading digits, keeps a corrupt line from naming whatever PID its digits happen to spell.
+  const pidText = firstLine.trim();
+  const pid = Number(pidText);
 
-  if(Number.isNaN(pid)) {
+  if(!/^\d+$/.test(pidText) || (pid <= 0)) {
 
     return null;
   }
 
   let bootId: Nullable<string> = null;
+  let commandHash: Nullable<string> = null;
   let startedAt = "";
   let version = "";
 
@@ -301,6 +343,14 @@ export function parseRecord(raw: string): Nullable<IdentityRecord> {
         break;
       }
 
+      // Only a sha256 digest in lowercase hex is a fingerprint fingerprintCommandLine could have written, so any other value reads as no fingerprint at all.
+      case "commandHash": {
+
+        commandHash = /^[0-9a-f]{64}$/.test(value) ? value : null;
+
+        break;
+      }
+
       case "startedAt": {
 
         startedAt = value;
@@ -322,14 +372,14 @@ export function parseRecord(raw: string): Nullable<IdentityRecord> {
     }
   }
 
-  // bootId is the only required metadata field. A file without one was written by a pre-runtimeIdentity PrismCast (or by an external tool) and is treated as
-  // malformed for state-machine purposes.
-  if(bootId === null) {
+  // The boot session is the other required field. A file without one, or with an empty one, gives the state machine nothing to compare against the current
+  // boot, whether an external tool or a PrismCast that predates the identity record wrote it or it is corrupt, so it is treated as malformed.
+  if((bootId === null) || (bootId === "")) {
 
     return null;
   }
 
-  return { bootId, pid, startedAt, version };
+  return { bootId, commandHash, pid, startedAt, version };
 }
 
 /**

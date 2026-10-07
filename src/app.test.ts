@@ -1,11 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * app.test.ts: Unit tests for the Express application builder module. Almost everything in app.ts is wired into a process-level lifecycle - the HTTP server,
- * the Chrome browser, the file logger, the SIGINT/SIGTERM handlers, the polling intervals - so the surface that can be exercised in isolation is small. The
- * module exports only two symbols: releaseInstanceSlot and startServer. startServer cannot be invoked safely from a unit test (it spawns Chrome, binds the
- * port, registers signal handlers, and calls process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised here against the
- * critical-correctness path: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
- * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
+ * the Chrome browser, the file logger, the SIGINT/SIGTERM handlers, the polling intervals - so the lifecycle is the first surface, driven only where a unit row
+ * can reach it. startServer itself cannot be invoked safely from a unit test (it spawns Chrome, binds the port, registers signal handlers, and calls
+ * process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised on its ownership path, the critical-correctness case: a process
+ * that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file record and refuses to remove a file whose
+ * PID does not match this process), and that guarantee holds no matter how the module graph was loaded. startBootServices, the boot's tail, is driven through its
+ * injected steps, so each of its shutdown checks is observed at its own boundary with recording stubs standing in for the services, the listener and HDHomeRun,
+ * and closeMainServer, shutdown's step for the listener, is driven after such a boot, so the server the boot binds is the one shutdown closes.
  *
  * The HTTP request-logging rules are the second surface tested here. The skip predicates, the per-level decision and the elapsed-time renderer are pure of the
  * Express plumbing - they take a plain record or a request object and return a decision - so every level's rule set is exercised without booting the server.
@@ -15,26 +17,32 @@
  * trim it starts and the save it never holds up are each observed on disk.
  */
 import type { IncomingMessage, Server } from "node:http";
+import { LOG, serializeRecord } from "./utils/index.ts";
 import type { PathLike, Stats } from "node:fs";
 import { TestClock, settle, waitUntil } from "homebridge-plugin-utils/testing";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
-import { applyLogSizeChanges, createRequestLogger, elapsedMillis, releaseInstanceSlot, skipInErrorsMode, skipInFilteredMode, skipRequestLog,
-  stampRequestStart } from "./app.ts";
+import { applyLogSizeChanges, closeMainServer, createRequestLogger, defaultBootServicesDeps, elapsedMillis, releaseInstanceSlot, skipInErrorsMode,
+  skipInFilteredMode, skipRequestLog, stampRequestStart, startBootServices } from "./app.ts";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
 import { existsSync, promises, statSync, writeFileSync } from "node:fs";
 import { getServerPidFilePath, initializeDataDir } from "./config/paths.ts";
 import { initializeFileLogger, shutdownFileLogger } from "./utils/fileLogger.ts";
+import { isGracefulShutdown, setGracefulShutdown } from "./browser/index.ts";
 import type { AddressInfo } from "node:net";
+import type { BootServicesDeps } from "./app.ts";
 import { CONFIG } from "./config/index.ts";
 import type { Config } from "./types/index.ts";
 import type { ConfigChange } from "./config/reactivity.ts";
+import type { Express } from "express";
 import { HTTP_LOG_LEVELS } from "./types/index.ts";
 import assert from "node:assert/strict";
+import { attachCdpUpgradeHandler } from "./routes/cdp.ts";
+import { createServer } from "node:http";
 import express from "express";
 import { initDebugFilter } from "./utils/debugFilter.ts";
 import { join } from "node:path";
 import { registerConfigChangeHandler } from "./config/reactivity.ts";
-import { serializeRecord } from "./utils/index.ts";
+import { startHdhrServer } from "./hdhr/index.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -106,7 +114,7 @@ describe("releaseInstanceSlot", () => {
       // The fixed bootId "any-boot" never equals this process's real boot session id, so release() classifies the record as not ours - a boot-session or PID
       // mismatch - and leaves the file untouched regardless of which branch of the state machine the record lands in. The fixed sentinel PID (99999, or
       // 99998 when this process happens to be 99999) keeps the record unambiguously not-this-process on the PID axis as well.
-      writeFileSync(pidPath, serializeRecord({ bootId: "any-boot", pid: otherPid, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }), "utf-8");
+      writeFileSync(pidPath, serializeRecord({ bootId: "any-boot", commandHash: null, pid: otherPid, startedAt: "2026-05-17T00:00:00Z", version: "1.10.3" }), "utf-8");
 
       assert.equal(existsSync(pidPath), true, "sentinel record exists before the call");
 
@@ -131,10 +139,200 @@ describe("releaseInstanceSlot", () => {
   });
 });
 
-/* startServer is intentionally not tested here. It launches Chrome via puppeteer-core, binds the configured port, registers process-level signal handlers,
- * spawns ffmpeg children, and may call process.exit on failure - any of which is incompatible with a unit-test context. The integration tier covers it via the
- * test/e2e/ harness.
+/* startServer is not run here. It launches Chrome via puppeteer-core, binds the configured port, registers process-level signal handlers, spawns ffmpeg
+ * children, and may call process.exit on failure - any of which is incompatible with a unit-test context - so the integration tier covers it via the test/e2e/
+ * harness. Its tail, startBootServices, takes its steps as injected dependencies, and the rows below drive the boot's tail through them: each step is a
+ * recording stub, the shutdown check reads the browser module's own state, which a row sets through setGracefulShutdown, and the listen stub returns an
+ * http.Server that never listens, so no row binds a port, starts a background service or reaches the CDP module's process-wide upgrade server.
  */
+describe("startBootServices", () => {
+
+  const SKIP_LINE = "Shutdown began during startup, so the remaining startup steps are skipped.";
+
+  /**
+   * A row's boot: the steps it hands startBootServices, the app the build step returns, the server the listen step returns, the error a rejecting step throws, and
+   * each step the stubs recorded, in the order the boot took them, with the argument the step received.
+   */
+  interface RecordedBoot {
+
+    readonly app: Express;
+    readonly deps: BootServicesDeps;
+    readonly failure: Error;
+    readonly httpServer: Server;
+    readonly steps: { readonly name: string; readonly received: unknown }[];
+  }
+
+  /**
+   * Builds a row's recording steps over the browser module's own shutdown reader. The step a row names sets the graceful-shutdown state, or rejects, before it
+   * returns, which is how a signal or a failure lands while the boot awaits that step.
+   * @param options - Which step sets the shutdown state, and which step rejects.
+   * @param options.rejectAt - The step that rejects with the boot's failure in place of returning.
+   * @param options.shutdownAt - The step that sets the graceful-shutdown state before it returns.
+   * @returns The row's boot.
+   */
+  function recordBoot({ rejectAt, shutdownAt }: { rejectAt?: "build" | "listen"; shutdownAt?: "build" | "listen" } = {}): RecordedBoot {
+
+    const app = express();
+    const failure = new Error("The startup step failed.");
+    const httpServer = createServer();
+    const steps: { name: string; received: unknown }[] = [];
+
+    const settleStep = (name: "build" | "listen"): void => {
+
+      if(shutdownAt === name) {
+
+        setGracefulShutdown(true);
+      }
+
+      if(rejectAt === name) {
+
+        throw failure;
+      }
+    };
+
+    const deps: BootServicesDeps = {
+
+      attachCdpUpgradeHandler: (listener: Server): void => {
+
+        steps.push({ name: "attach", received: listener });
+      },
+      buildApp: async (): Promise<Express> => {
+
+        steps.push({ name: "build", received: null });
+        settleStep("build");
+
+        return app;
+      },
+      isGracefulShutdown,
+      listenMainServer: async (built: Express): Promise<Server> => {
+
+        steps.push({ name: "listen", received: built });
+        settleStep("listen");
+
+        return httpServer;
+      },
+      startBackgroundServices: (): void => {
+
+        steps.push({ name: "background", received: null });
+      },
+      startHdhrServer: async (): Promise<void> => {
+
+        steps.push({ name: "hdhr", received: null });
+      }
+    };
+
+    return { app, deps, failure, httpServer, steps };
+  }
+
+  // The names of the steps a row's boot took, in order.
+  const stepNames = (boot: RecordedBoot): string[] => boot.steps.map((step) => step.name);
+
+  // How many skip lines a row's LOG.info mock recorded.
+  const skipLines = (calls: readonly { arguments: readonly unknown[] }[]): number => calls.filter((call) => call.arguments[0] === SKIP_LINE).length;
+
+  afterEach(() => {
+
+    setGracefulShutdown(false);
+  });
+
+  test("with no shutdown, every step runs once in the boot's order, each receiving what the step before it returned", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+
+    await startBootServices(boot.deps);
+
+    assert.deepEqual(stepNames(boot), [ "background", "build", "listen", "attach", "hdhr" ], "every step ran once, in order");
+    assert.equal(boot.steps.find((step) => step.name === "listen")?.received, boot.app, "the listen received the app the build returned");
+    assert.equal(boot.steps.find((step) => step.name === "attach")?.received, boot.httpServer, "the attach received the server the listen returned");
+    assert.equal(skipLines(info.mock.calls), 0, "the skip line never logged");
+  });
+
+  test("a shutdown that began before the boot's tail arms nothing", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+
+    setGracefulShutdown(true);
+
+    await startBootServices(boot.deps);
+
+    assert.deepEqual(stepNames(boot), [], "no step ran, the background services among them");
+    assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
+  });
+
+  test("a shutdown that begins during the build stops the boot before the bind", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const boot = recordBoot({ shutdownAt: "build" });
+
+    await startBootServices(boot.deps);
+
+    assert.deepEqual(stepNames(boot), [ "background", "build" ], "neither the listen, the attach nor HDHomeRun ran");
+    assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
+  });
+
+  test("a shutdown that begins during the bind stops the boot before HDHomeRun starts", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const boot = recordBoot({ shutdownAt: "listen" });
+
+    await startBootServices(boot.deps);
+
+    assert.deepEqual(stepNames(boot), [ "background", "build", "listen", "attach" ], "every step but HDHomeRun ran");
+    assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
+  });
+
+  test("a build that rejects rejects the boot's tail with its error, and nothing after the build runs", async (t) => {
+
+    t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+
+    const boot = recordBoot({ rejectAt: "build" });
+
+    await assert.rejects(startBootServices(boot.deps), (error: unknown): boolean => error === boot.failure, "the boot's tail rejected with the build's error");
+
+    assert.deepEqual(stepNames(boot), [ "background", "build" ], "neither the listen, the attach nor HDHomeRun ran");
+  });
+
+  test("a bind that rejects rejects the boot's tail with its error, and nothing after the bind runs", async (t) => {
+
+    t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+
+    const boot = recordBoot({ rejectAt: "listen" });
+
+    await assert.rejects(startBootServices(boot.deps), (error: unknown): boolean => error === boot.failure, "the boot's tail rejected with the bind's error");
+
+    assert.deepEqual(stepNames(boot), [ "background", "build", "listen" ], "neither the attach nor HDHomeRun ran");
+  });
+
+  test("the default steps' shutdown reader, CDP attach and HDHomeRun start are the functions their own modules export", () => {
+
+    assert.equal(defaultBootServicesDeps.isGracefulShutdown, isGracefulShutdown, "the shutdown check reads the browser module's own state");
+    assert.equal(defaultBootServicesDeps.attachCdpUpgradeHandler, attachCdpUpgradeHandler, "the attach is the CDP module's own");
+    assert.equal(defaultBootServicesDeps.startHdhrServer, startHdhrServer, "the HDHomeRun start is the HDHomeRun module's own");
+  });
+
+  test("the server the boot's tail binds is the one shutdown's close step closes", async (t) => {
+
+    t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    const boot = recordBoot();
+
+    // The listen step's server never listens, so the row mocks its close with one that answers its callback with no error and returns the server, as a close
+    // with no open connection does.
+    const close = t.mock.method(boot.httpServer, "close", (callback?: (error?: Error) => void): Server => {
+
+      callback?.();
+
+      return boot.httpServer;
+    });
+
+    await startBootServices(boot.deps);
+    await closeMainServer();
+
+    assert.equal(close.mock.callCount(), 1, "shutdown's close step closed the server the listen step returned");
+  });
+});
 
 describe("skipInErrorsMode", () => {
 
@@ -317,6 +515,42 @@ describe("createRequestLogger", () => {
       void release.promise.then(() => { res.send("ok"); });
     });
 
+    // The status route answers with the status its path names, and with a Retry-After header when its query asks for one, so a row varies the status or the
+    // header alone.
+    app.get("/status/:code", (req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+
+      if(req.query["retryAfter"] !== undefined) {
+
+        res.setHeader("Retry-After", "5");
+      }
+
+      res.sendStatus(Number(req.params.code));
+    });
+
+    // A polling endpoint, which the filtered level skips when it succeeds fast.
+    app.get("/logs", (_req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+      res.send("ok");
+    });
+
+    // A polling endpoint held as /hold is, so a row can move the elapsed reading between the request's arrival and its finish.
+    app.get("/health", (_req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+      entered.resolve(null);
+      void release.promise.then(() => { res.send("ok"); });
+    });
+
+    // Every other path answers 404, so a row varies the URL of a not-found response alone.
+    app.use((_req, res) => {
+
+      res.once("finish", () => { finished.resolve(null); });
+      res.sendStatus(404);
+    });
+
     server = app.listen(0, "127.0.0.1", () => { listening.resolve(null); });
     await listening.promise;
     baseUrl = "http://127.0.0.1:" + String((server.address() as AddressInfo).port);
@@ -384,6 +618,84 @@ describe("createRequestLogger", () => {
     await finished.promise;
 
     assert.deepEqual(lines, []);
+  });
+
+  test("a request that arrives under none and finishes after the level changes to all writes no line", async () => {
+
+    CONFIG.logging.httpLogLevel = "none";
+    finished = Promise.withResolvers<null>();
+
+    const response = fetch(baseUrl + "/hold");
+
+    await entered.promise;
+
+    CONFIG.logging.httpLogLevel = "all";
+    release.resolve(null);
+
+    await (await response).text();
+    await finished.promise;
+
+    assert.deepEqual(lines, []);
+  });
+
+  test("under errors, a 503 that carries Retry-After writes no line and one without it writes one", async () => {
+
+    CONFIG.logging.httpLogLevel = "errors";
+
+    await requestAndFinish("/status/503?retryAfter=1");
+    await requestAndFinish("/status/503");
+
+    assert.equal(lines.length, 1, "one of the requests wrote a line");
+    assert.match(lines[0] ?? "", /^GET \/status\/503 from /, "the line is the request without Retry-After");
+  });
+
+  test("under errors, a success writes no line and a server error writes one", async () => {
+
+    CONFIG.logging.httpLogLevel = "errors";
+
+    await requestAndFinish("/status/200");
+    await requestAndFinish("/status/500");
+
+    assert.equal(lines.length, 1, "one of the requests wrote a line");
+    assert.match(lines[0] ?? "", /^GET \/status\/500 from /, "the line is the server error");
+  });
+
+  test("under errors, a 404 for a browser asset writes no line and a 404 for any other path writes one", async () => {
+
+    CONFIG.logging.httpLogLevel = "errors";
+
+    await requestAndFinish("/favicon.ico");
+    await requestAndFinish("/missing");
+
+    assert.equal(lines.length, 1, "one of the requests wrote a line");
+    assert.match(lines[0] ?? "", /^GET \/missing from /, "the line is the 404 for the path the browser did not ask for on its own");
+  });
+
+  test("under filtered, a fast success on a polling endpoint writes no line and a slow one writes one", async (t) => {
+
+    // The arrival stamp and the finish reading each come from process.hrtime.bigint(), so the row holds that reading, through its own context so no other row
+    // reads the held clock, and moves it past the slow threshold between the held request's arrival and its finish.
+    let reading = 0n;
+
+    t.mock.method(process.hrtime, "bigint", (): bigint => reading);
+    CONFIG.logging.httpLogLevel = "filtered";
+
+    await requestAndFinish("/logs");
+
+    finished = Promise.withResolvers<null>();
+
+    const response = fetch(baseUrl + "/health");
+
+    await entered.promise;
+
+    reading += 1001000000n;
+    release.resolve(null);
+
+    await (await response).text();
+    await finished.promise;
+
+    assert.equal(lines.length, 1, "one of the requests wrote a line");
+    assert.match(lines[0] ?? "", /^GET \/health from \S+ responded 200 in 1001\.000 ms\.\n$/, "the line is the slow request, timed by the held reading");
   });
 });
 

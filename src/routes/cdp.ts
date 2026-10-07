@@ -1032,7 +1032,7 @@ export function setupCdpEndpoint(app: Express): void {
 }
 
 /**
- * Attaches the WebSocket upgrade handler for /cdp/devtools/* paths to the given HTTP server. Called from startServer after app.listen() returns the server.
+ * Attaches the WebSocket upgrade handler for /cdp/devtools/* paths to the given HTTP server. Called from startBootServices once listenMainServer() returns the server.
  * Upgrades for paths outside /cdp/devtools/ are ignored (left to any other upgrade handler).
  * @param server - The Node HTTP server.
  */

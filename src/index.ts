@@ -428,6 +428,17 @@ if(subcommand === "service") {
 
   startServer(parsedArgs).catch((error: unknown): void => {
 
+    /* A startup failure that lands once shutdown has begun is one shutdown caused, such as the browser warm-up's launch that shutdown superseded, so it is
+     * shutdown's to end. Shutdown owns the exit, and a second exit racing it here would cut its drain short with the wrong code, so this catch logs the
+     * superseded startup and leaves the exit to it. The unhandled-rejection handler above reads the same state for the same reason.
+     */
+    if(isGracefulShutdown()) {
+
+      LOG.info("Startup was superseded by shutdown, so the process exits through shutdown.");
+
+      return;
+    }
+
     LOG.error("Fatal startup error occurred: %s.", formatError(error));
 
     process.exit(1);

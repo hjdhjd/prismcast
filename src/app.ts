@@ -9,7 +9,7 @@ import type { Express, NextFunction, Request, RequestHandler, Response } from "e
 import type { IncomingMessage, Server } from "node:http";
 import { LOG, assertNever, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release,
   resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
-import { closeBrowser, ensureDataDirectory, getCurrentBrowser, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
+import { closeBrowser, ensureDataDirectory, getCurrentBrowser, isGracefulShutdown, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
@@ -60,8 +60,8 @@ let server: Nullable<Server> = null;
 const SERVER_CLOSE_BOUND_MS = 5000;
 
 /* The background-service teardown stack. Each long-lived background service (stale-page sweep, browser-restart watchdog, idle cleanup, show-info/pretune polling,
- * update check) registers its stop here at the moment it starts in startServer(); graceful shutdown disposes the stack wholesale, so a future service cannot be
- * started without also being torn down. An AsyncDisposableStack is used (rather than the synchronous DisposableStack) so the teardown awaits each registered stop -
+ * update check) registers its stop here at the moment it starts in startBackgroundServices(); graceful shutdown disposes the stack wholesale, so a future service cannot
+ * be started without also being torn down. An AsyncDisposableStack is used (rather than the synchronous DisposableStack) so the teardown awaits each registered stop -
  * today's registered stops are all synchronous, but a future service whose stop must complete (e.g. flushing to disk) would be silently fire-and-forgotten by a
  * sync stack.
  */
@@ -100,11 +100,50 @@ function stopIdleCleanup(): void {
   }
 }
 
-/* When the process receives a termination signal, we close all active streams and the browser before exiting. This ensures resources are released cleanly.
+/**
+ * Closes the main HTTP server, graceful shutdown's step for the listener the boot's tail bound. Connections are destroyed first because the status and log SSE
+ * streams (routes/streams.ts and routes/logs.ts) hold their sockets open with a heartbeat, and the close waits on every one of them; the CDP proxy's WebSocket
+ * clients have already closed themselves with 1001 in response to the browser disconnect shutdown awaits before this step. An in-flight request ends with the
+ * process, because the exit follows immediately.
+ * @returns A promise that resolves once the server closes or its bound lapses, and at once when the boot bound no server.
  */
+export async function closeMainServer(): Promise<void> {
+
+  try {
+
+    if(server) {
+
+      const { promise: closed, resolve } = Promise.withResolvers<boolean>();
+
+      server.close((error?: Error): void => {
+
+        if(error) {
+
+          LOG.error("Error closing server during shutdown: %s.", formatError(error));
+        } else {
+
+          LOG.info("HTTP server closed successfully.");
+        }
+
+        resolve(true);
+      });
+
+      server.closeAllConnections();
+
+      if((await boundedWait(closed, SERVER_CLOSE_BOUND_MS)) === null) {
+
+        LOG.warn("The HTTP server did not close within %sms. Continuing the shutdown.", SERVER_CLOSE_BOUND_MS);
+      }
+    }
+  } catch(error) {
+
+    LOG.error("Error closing server during shutdown: %s.", formatError(error));
+  }
+}
 
 /**
- * Sets up signal handlers for graceful shutdown. When SIGINT or SIGTERM is received, we close all streams, the browser, and the HTTP server before exiting.
+ * Sets up signal handlers for graceful shutdown. When SIGINT or SIGTERM is received, we close all active streams, the browser and the HTTP server before exiting,
+ * so every resource is released cleanly.
  */
 function setupGracefulShutdown(): void {
 
@@ -176,41 +215,8 @@ function setupGracefulShutdown(): void {
     // Release the server instance slot so the next startup does not see a stale identity file.
     releaseInstanceSlot();
 
-    /* Close the HTTP server. The close is awaited so its own line lands while the file logger is still open, which the shutdown below ends. Connections are
-     * destroyed first because the status and log SSE streams (routes/streams.ts and routes/logs.ts) hold their sockets open with a heartbeat, and the close
-     * waits on every one of them; the CDP proxy's WebSocket clients have already closed themselves with 1001 in response to the browser disconnect above. An
-     * in-flight request ends with the process either way, because the exit follows immediately.
-     */
-    try {
-
-      if(server) {
-
-        const { promise: closed, resolve } = Promise.withResolvers<boolean>();
-
-        server.close((error?: Error): void => {
-
-          if(error) {
-
-            LOG.error("Error closing server during shutdown: %s.", formatError(error));
-          } else {
-
-            LOG.info("HTTP server closed successfully.");
-          }
-
-          resolve(true);
-        });
-
-        server.closeAllConnections();
-
-        if((await boundedWait(closed, SERVER_CLOSE_BOUND_MS)) === null) {
-
-          LOG.warn("The HTTP server did not close within %sms. Continuing the shutdown.", SERVER_CLOSE_BOUND_MS);
-        }
-      }
-    } catch(error) {
-
-      LOG.error("Error closing server during shutdown: %s.", formatError(error));
-    }
+    // Close the HTTP server, awaited so its own line lands while the file logger is still open, which the step after it ends.
+    await closeMainServer();
 
     // Shut down file logger if in use. Awaited because shutdown drains the outstanding write chain before its final synchronous flush, and the process exit below
     // would otherwise cut that drain short.
@@ -451,12 +457,9 @@ export function createRequestLogger(stream: StreamOptions): RequestHandler {
   };
 }
 
-/* The buildApp function creates and configures the Express application with all middleware and routes. This is separated from the server startup to allow for
- * testing and flexibility in deployment.
- */
-
 /**
- * Creates and configures the Express application with all middleware and routes.
+ * Creates and configures the Express application with all middleware and routes. It is a step of its own, so the boot's tail takes it as an injected step and a
+ * test substitutes a stub for it.
  * @returns The configured Express application.
  */
 async function buildApp(): Promise<Express> {
@@ -636,13 +639,158 @@ export async function applyLogSizeChanges(_changes: readonly ConfigChange[], nex
 // the reconcile.
 registerConfigChangeHandler("logging.maxSize", applyLogSizeChanges);
 
-/* The startServer function initializes and starts the HTTP server. It validates configuration, cleans up stale processes, warms up the browser, and starts the
- * Express application.
- */
+// The boot's tail.
 
 /**
- * Initializes and starts the HTTP server. Before accepting connections, we validate configuration, clean up stale Chrome processes, and warm up the browser
- * instance.
+ * Starts the background services, each on the teardown stack graceful shutdown disposes. The boot's tail calls it through its injected steps, so a test records
+ * its place in the boot's order without starting a real service.
+ */
+function startBackgroundServices(): void {
+
+  // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
+  // and a future service cannot be started without also being torn down. These are order-independent background loops/timers, so LIFO disposal order is immaterial.
+  // HDHR is intentionally not a member (it is torn down first in shutdown so its sockets release before the rest), and the precache scheduler stays off the stack
+  // as well: browser launches and saves request its cycles, and shutdown stops it separately.
+  backgroundServices = new AsyncDisposableStack();
+
+  startStalePageCleanup();
+  backgroundServices.defer(stopStalePageCleanup);
+
+  startBrowserRestartChecking();
+  backgroundServices.defer(stopBrowserRestartChecking);
+
+  startIdleCleanup();
+  backgroundServices.defer(stopIdleCleanup);
+
+  startShowInfoPolling();
+  backgroundServices.defer(stopShowInfoPolling);
+
+  startPretunePolling();
+  backgroundServices.defer(stopPretunePolling);
+
+  startUpdateChecking(getPackageVersion());
+  backgroundServices.defer(stopUpdateChecking);
+}
+
+/* BootServicesDeps is the boot's tail as steps: arming the background services, building the Express application, binding its listener, attaching the CDP
+ * upgrade handler, starting HDHomeRun emulation, and the shutdown read that decides whether the boot goes on. It is injected as a default parameter, so a test
+ * substitutes recording stubs at this boundary with no loader mock, while production runs defaultBootServicesDeps, built from the real functions. The CDP attach
+ * is a step of its own so a test records its place in the order without reaching the CDP module's process-wide upgrade server. The members carry explicit
+ * function types, so the exported interface states each step's contract without naming a private function's type.
+ */
+export interface BootServicesDeps {
+
+  readonly attachCdpUpgradeHandler: (server: Server) => void;
+  readonly buildApp: () => Promise<Express>;
+  readonly isGracefulShutdown: () => boolean;
+  readonly listenMainServer: (app: Express) => Promise<Server>;
+  readonly startBackgroundServices: () => void;
+  readonly startHdhrServer: () => Promise<void>;
+}
+
+export const defaultBootServicesDeps: BootServicesDeps = {
+
+  attachCdpUpgradeHandler,
+  buildApp,
+  isGracefulShutdown,
+  listenMainServer,
+  startBackgroundServices,
+  startHdhrServer
+};
+
+/**
+ * Reports whether shutdown has begun, logging the skip line when it has. It reads the graceful-shutdown state the browser module holds, which the signal handler
+ * sets before its first await and nothing in production clears, and keeps no flag of its own. Each caller returns when it answers true, so the line logs at most
+ * once per boot.
+ *
+ * Shutdown never waits on the boot, so the boot reaches a check only while shutdown is still awaiting its own steps, and where the signal lands decides what the boot has
+ * armed. A signal before setupGracefulShutdown(), the data directory creation included, meets no handler of ours, and the platform's default
+ * action ends the process with nothing armed. A signal during the release boot coordinator, the configuration load, the logger, the FFmpeg check,
+ * the stores or the consistency probe runs shutdown while the stack and the listener are absent, so its disposal and its close have nothing to
+ * act on, and with no browser to wait for, its exit ends the boot before the first check. A signal during the browser warm-up makes shutdown's
+ * closeBrowser() supersede the launch in flight: the launch rejects when it settles, the warm-up rethrows, and the entry's catch, finding shutdown begun, leaves the exit
+ * to shutdown, whose own exit usually comes first because the launch has seconds of work left, so the boot reaches no check whichever exit lands first. A signal during
+ * the preroll or the window sync finds a ready browser, so shutdown waits for Chrome's exit, within the browser module's BROWSER_TEARDOWN_DRAIN_BOUND_MS; the window sync
+ * returns at once when shutdown has begun, so a boot whose preroll finishes inside that wait reaches the first check, which stops it before the stack is armed, and a
+ * boot whose preroll outlasts the wait is ended by the exit. A signal during the build or the bind reaches a handler only under a packaged build or a hostname host,
+ * because elsewhere neither crosses an event-loop turn: during the build, shutdown disposes the armed stack and the check after the build stops the boot before the bind;
+ * during a hostname bind, shutdown reads the listener only after its own awaits, so the bind completes and shutdown closes the listener, and the check after the bind
+ * stops the boot before HDHomeRun starts. A signal during the HDHomeRun start lets shutdown's stop run before the start finishes binding, and the sockets it binds last
+ * until the exit. A signal after the boot finished meets no check and shutdown tears everything down; a repeated signal is absorbed by the handler's own guard; and a
+ * process restart discards the state, so the next boot starts with it unset.
+ * @param deps - The boot's steps, whose shutdown reader the check calls.
+ * @returns True when shutdown has begun, so the caller arms nothing further.
+ */
+function shutdownBegan(deps: BootServicesDeps): boolean {
+
+  if(!deps.isGracefulShutdown()) {
+
+    return false;
+  }
+
+  LOG.info("Shutdown began during startup, so the remaining startup steps are skipped.");
+
+  return true;
+}
+
+/**
+ * Arms what the server runs for the life of the process, in order: the background services, the Express application and its listener, the CDP upgrade handler,
+ * and HDHomeRun emulation. The signal handlers are installed well before the boot reaches this point, so a signal can run shutdown against a background stack, a
+ * listener and an HDHomeRun surface that do not exist yet, and a boot that armed them afterwards would leave them running in a process that is shutting down. The
+ * boot therefore reads the shutdown state before it arms the stack, and again after the build and after the bind, the awaits a later arming step follows, and
+ * arms nothing once shutdown has begun. The checks after the build and the bind decide only where those awaits yield to the event loop - a packaged build's
+ * extension preparation or a hostname host's lookup - and elsewhere the first check decides. The limit is an await already in flight when the signal lands: it
+ * completes, and the process exit at the end of shutdown ends whatever it started.
+ * @param deps - The boot's steps: the real ones in production, and recording stubs in a test.
+ * @returns A promise that resolves once the boot's tail completes or stops for a shutdown, and rejects when the build or the bind fails.
+ */
+export async function startBootServices(deps: BootServicesDeps = defaultBootServicesDeps): Promise<void> {
+
+  if(shutdownBegan(deps)) {
+
+    return;
+  }
+
+  deps.startBackgroundServices();
+
+  // Build and start Express application.
+  try {
+
+    const app = await deps.buildApp();
+
+    if(shutdownBegan(deps)) {
+
+      return;
+    }
+
+    // Bind the main HTTP server, detecting bind success or failure through explicit events rather than the unreliable listen callback. A bind failure throws out
+    // of here so the catch below surfaces it and the process exits cleanly rather than lingering with no HTTP surface.
+    server = await deps.listenMainServer(app);
+
+    // Attach the CDP proxy upgrade handler once the underlying http.Server exists. The handler is gated on the `cdp` debug category at request time, so it sits
+    // dormant until the user enables CDP via /debug. We attach unconditionally so the toggle takes effect without requiring a restart.
+    deps.attachCdpUpgradeHandler(server);
+  } catch(error) {
+
+    // Covers both a buildApp failure and a listenMainServer bind failure; the latter already logged the precise, operator-actionable line before rejecting.
+    LOG.error("Failed to build or start the HTTP server: %s.", formatError(error));
+
+    throw error;
+  }
+
+  if(shutdownBegan(deps)) {
+
+    return;
+  }
+
+  // Start HDHomeRun emulation server if enabled. This runs independently of the main server and handles EADDRINUSE gracefully without affecting PrismCast's
+  // primary functionality.
+  await deps.startHdhrServer();
+}
+
+/**
+ * Initializes the server and starts it: we validate configuration, clean up stale Chrome processes and warm up the browser instance, then hand the rest of the
+ * boot to startBootServices, which arms the background services, builds the Express application and binds its listener, and starts HDHomeRun emulation.
  * @param parsedArgs - Parsed command-line arguments containing flags and override values.
  */
 export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
@@ -689,6 +837,19 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
     }
   }
 
+  /* Claim the server instance slot before the boot touches anything a running instance owns: the stores the release coordinator snapshots and migrates, the
+   * configuration file the configuration load corrects, the Chrome profile and the port. Without the claim first, a second start against a data directory a live
+   * instance holds writes those stores before its claim refuses it, and a newer release started beside an older one migrates the older one's files out from
+   * under it. The claim depends on nothing the configuration produces, since the data directory's path is fixed before the server starts, so it can stand this
+   * early. The directory is created first because the identity file lives there, and creating it also removes the artifacts retired releases left behind,
+   * which no release since their retirement writes. The signal handlers follow the claim directly, so the boot never holds the slot without the shutdown that
+   * releases it on a signal; shutdown skips each surface the boot has not built yet. A failure later in the boot, the coordinator's or the configuration's
+   * included, exits through the exit handler, whose releaseInstanceSlot() removes the identity file only when this process wrote it.
+   */
+  await ensureDataDirectory();
+  claimInstanceSlot();
+  setupGracefulShutdown();
+
   // Release boot coordinator: snapshot every persistence-managed file before any reads or migrations run, then apply any pending schema migrations across all
   // stores. Both operations are safe to run more than once within a release (snapshots skip when the labeled copy already exists; ensureMigrated skips when the
   // file is at the current schema version). Running them up front guarantees a restore point exists for every file at the start of every release boot, even if a
@@ -719,16 +880,6 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
     process.exit(1);
   }
-
-  setupGracefulShutdown();
-
-  // Ensure the data directory exists before any operations that depend on it.
-  await ensureDataDirectory();
-
-  // Claim the server instance slot before launching Chrome or binding the port. This must come after ensureDataDirectory() since the identity file lives there.
-  // claimInstanceSlot() exits with a precise diagnostic when a live holder is detected; on success the identity file holds our PID and boot session ID. If
-  // startup subsequently fails, the exit handler calls releaseInstanceSlot() to remove the stale file.
-  claimInstanceSlot();
 
   // Initialize file logger if not using console logging. Initialization follows configuration loading, which resolves the log file path and the size cap, and
   // ensureDataDirectory(), which creates the parent directory. Every line logged before this point is held by the logger and written by its first flush, so
@@ -823,51 +974,6 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // launch left it.
   await syncWindowVisibility();
 
-  // Start the background services and register each one's stop on an AsyncDisposableStack the moment it starts, so graceful shutdown can dispose them all wholesale
-  // and a future service cannot be started without also being torn down. These are order-independent background loops/timers, so LIFO disposal order is immaterial.
-  // HDHR is intentionally not a member (it is torn down first in shutdown so its sockets release before the rest), and the precache scheduler stays off the stack
-  // as well: browser launches and saves request its cycles, and shutdown stops it separately.
-  backgroundServices = new AsyncDisposableStack();
-
-  startStalePageCleanup();
-  backgroundServices.defer(stopStalePageCleanup);
-
-  startBrowserRestartChecking();
-  backgroundServices.defer(stopBrowserRestartChecking);
-
-  startIdleCleanup();
-  backgroundServices.defer(stopIdleCleanup);
-
-  startShowInfoPolling();
-  backgroundServices.defer(stopShowInfoPolling);
-
-  startPretunePolling();
-  backgroundServices.defer(stopPretunePolling);
-
-  startUpdateChecking(getPackageVersion());
-  backgroundServices.defer(stopUpdateChecking);
-
-  // Build and start Express application.
-  try {
-
-    const app = await buildApp();
-
-    // Bind the main HTTP server, detecting bind success or failure through explicit events rather than the unreliable listen callback. A bind failure throws out
-    // of here so the catch below surfaces it and the process exits cleanly rather than lingering with no HTTP surface.
-    server = await listenMainServer(app);
-
-    // Attach the CDP proxy upgrade handler once the underlying http.Server exists. The handler is gated on the `cdp` debug category at request time, so it sits
-    // dormant until the user enables CDP via /debug. We attach unconditionally so the toggle takes effect without requiring a restart.
-    attachCdpUpgradeHandler(server);
-  } catch(error) {
-
-    // Covers both a buildApp failure and a listenMainServer bind failure; the latter already logged the precise, operator-actionable line before rejecting.
-    LOG.error("Failed to build or start the HTTP server: %s.", formatError(error));
-
-    throw error;
-  }
-
-  // Start HDHomeRun emulation server if enabled. This runs independently of the main server and handles EADDRINUSE gracefully without affecting PrismCast's
-  // primary functionality.
-  await startHdhrServer();
+  // The boot's tail arms what runs for the life of the process: the background services, the HTTP server and HDHomeRun emulation.
+  await startBootServices();
 }
