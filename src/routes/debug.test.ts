@@ -5,13 +5,15 @@
  * mutates the runtime filter via initDebugFilter and persists through the validated save, whose reconcile commits the pattern to CONFIG and the loaded
  * snapshot. Tests run against an Express server with a temp data directory so the save has a concrete file to write, and each POST row re-initializes CONFIG
  * and the loaded snapshot to the defaults through an in-memory store, so the pattern a row asserts reached CONFIG through the reconcile. The HTML structure is
- * verified by checking for the documented sections and section headers. A save the validation refuses is covered in test/e2e/routes/debug-filter.test.ts.
+ * verified by checking for the documented sections and section headers. A save the validation refuses is covered in test/e2e/routes/debug-filter.test.ts; a
+ * save a handler partly refuses and a save whose write fails are covered here.
  */
 import type { AddressInfo, Server } from "node:net";
 import { CONFIG, getLoadedConfiguration, initializeConfiguration } from "../config/index.ts";
 import { DEBUG_CATEGORIES, LOG, initDebugFilter } from "../utils/index.ts";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { ChangeRejection } from "../config/reactivity.ts";
 import type { ConfigStore } from "../config/index.ts";
 import { SEEDED_DEVICE_ID } from "../config/index.helpers.ts";
 import assert from "node:assert/strict";
@@ -20,6 +22,7 @@ import express from "express";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
+import { registerConfigChangeHandler } from "../config/reactivity.ts";
 import { setupDebugEndpoint } from "./debug.ts";
 
 function makeServer(): Promise<{ port: number; server: Server }> {
@@ -381,6 +384,52 @@ describe("setupDebugEndpoint - POST /debug (filter persistence)", () => {
 
     assert.equal(info.mock.calls.filter((call) => call.arguments[0] === "Configuration saved. 1 setting applied live.").length, 1,
       "the outcome of the save is logged once");
+  });
+
+  test("logs each change a handler refused at warn with its path and reason, the outcome sentence staying at info", async (t) => {
+
+    /* A hand edit leaves a live playback value in the file, so the debug save picks it up beside the filter, and the handler this row registers refuses it. No
+     * other row changes the playback category, so the handler, registered once for this file's process, is never dispatched again.
+     */
+    const reason = "The playback setting cannot be applied.";
+
+    registerConfigChangeHandler("playback.", async (changes): Promise<readonly ChangeRejection[]> => changes.map((change) => ({ path: change.path, reason })));
+    await writeFile(path.join(tempDataDir, "config.json"), JSON.stringify({ playback: { stallThreshold: 0.2 } }) + "\n");
+
+    const info = t.mock.method(LOG, "info", () => undefined);
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    await (await fetch(urlFor("/debug"), { body: new URLSearchParams({ pattern: "tuning:hulu" }), method: "POST", redirect: "manual" })).text();
+
+    const refusals = warn.mock.calls.filter((call) => call.arguments[0] === "A configuration handler refused a change in the debug filter save.");
+
+    assert.deepEqual(refusals.map((call) => call.arguments[1]), [{ path: "playback.stallThreshold", reason }], "one warning per refusal, carrying its path and reason");
+    assert.equal(info.mock.calls.filter((call) => call.arguments[0] === "Configuration saved, but 1 change was rejected: " + reason).length, 1,
+      "the outcome sentence is logged at info");
+  });
+
+  test("logs a save that fails for a reason other than a refusal at error, as the fault it is", async (t) => {
+
+    // A data directory the process cannot write to fails the store's write itself, which is neither a store refusal nor a validation refusal.
+    const error = t.mock.method(LOG, "error", () => undefined);
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+    const NOT_PERSISTED = "The debug filter is applied but was not persisted.";
+
+    await chmod(tempDataDir, 0o555);
+
+    try {
+
+      await (await fetch(urlFor("/debug"), { body: new URLSearchParams({ pattern: "tuning:hulu" }), method: "POST", redirect: "manual" })).text();
+    } finally {
+
+      await chmod(tempDataDir, 0o755);
+    }
+
+    const faults = error.mock.calls.filter((call) => call.arguments[0] === NOT_PERSISTED);
+
+    assert.equal(faults.length, 1, "the fault is logged once at error");
+    assert.match(String((faults[0]?.arguments[1] as { error?: unknown } | undefined)?.error), /EACCES/, "the log carries the formatted write error");
+    assert.equal(warn.mock.calls.filter((call) => call.arguments[0] === NOT_PERSISTED).length, 0, "the fault is not logged at warn");
   });
 
   test("accepts an empty pattern (clears the filter)", async () => {

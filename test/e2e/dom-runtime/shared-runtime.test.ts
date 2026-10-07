@@ -240,7 +240,7 @@ describe("shared.ts: persistDisplayPrefs", () => {
       "window.fetch = (url, opts) => { " +
       "  const ct = opts && opts.headers && opts.headers['Content-Type']; " +
       "  window.harnessFetchCalls.push({ url, method: opts && opts.method, body: opts && opts.body, contentType: ct }); " +
-      "  return { catch() {} }; " +
+      "  return Promise.resolve({ json: () => Promise.resolve({ success: true }) }); " +
       "};"
     );
 
@@ -1149,7 +1149,7 @@ describe("shared.ts: window.channelTable namespace", () => {
     ctx.evaluate(
       "window.harnessFetchCalls = []; " +
       "window.fetch = (url, opts) => { " +
-      "  window.harnessFetchCalls.push({ url, body: opts && opts.body }); return { catch() {} }; " +
+      "  window.harnessFetchCalls.push({ url, body: opts && opts.body }); return Promise.resolve({ json: () => Promise.resolve({ success: true }) }); " +
       "};"
     );
 

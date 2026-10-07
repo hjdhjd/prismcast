@@ -20,7 +20,7 @@
  * expressible against any durable store that offers stat/read/write/copy/rename/unlink with a path namespace. The abstraction surface is StorageBackend below;
  * the default fs-backed adapter lives in persistence.context.ts. Production stores get the shared default backend when options.backend is omitted.
  */
-import { LOG, stringifySorted } from "../utils/index.ts";
+import { LOG, formatError, stringifySorted } from "../utils/index.ts";
 import { createDefaultStorageBackend } from "./persistence.context.ts";
 import { getDataDir } from "./paths.ts";
 import path from "node:path";
@@ -80,16 +80,54 @@ const defaultStorageBackend = createDefaultStorageBackend();
 // Types.
 
 /**
- * Error thrown by `mutate()` and `mutateThen()` when the backing file contains invalid JSON and no usable .bak exists. Route handlers can catch this specifically to
- * return 400 instead of 500. Background code paths that swallow errors via try/catch will handle it like any other Error.
+ * The error `mutate()` and `mutateThen()` throw when the store refuses to write over a file it could not use: one that fails to parse with no usable .bak, or
+ * one that exists but could not be read. Each such read answers with the default value, which says nothing about what the file holds, so writing the mutation
+ * would replace the file's contents with defaults; nothing is written. A caller answering a refusal branches on this class, because the request did nothing
+ * wrong and the file stays unusable until someone repairs it, whichever read failed; the subclass names the failure. Background code paths that swallow errors
+ * via try/catch handle it like any other Error.
  */
-export class FileStoreParseError extends Error {
+export class FileStoreRefusalError extends Error {
 
-  override name = "FileStoreParseError";
+  // The path of the file the store refused to write over.
+  public readonly filePath: string;
+
+  // The store's label, the name its log lines and messages give the file.
+  public readonly label: string;
+
+  constructor(message: string, options: ErrorOptions & { readonly filePath: string; readonly label: string }) {
+
+    super(message, options);
+
+    this.filePath = options.filePath;
+    this.label = options.label;
+    this.name = "FileStoreRefusalError";
+  }
+}
+
+/**
+ * The refusal thrown when the backing file contains invalid JSON and no usable .bak exists (the corruption guard).
+ */
+export class FileStoreParseError extends FileStoreRefusalError {
 
   constructor(label: string, filePath: string, parseMessage: string) {
 
-    super("Cannot modify " + label + " (" + filePath + "): file contains invalid JSON. " + parseMessage);
+    super("Cannot modify " + label + " (" + filePath + "): file contains invalid JSON. " + parseMessage, { filePath, label });
+
+    this.name = "FileStoreParseError";
+  }
+}
+
+/**
+ * The refusal thrown when the backing file exists but could not be read for a reason other than its absence, a permission or I/O failure (the read-failure
+ * guard). The read's error is its cause, and its formatted reason is part of the message.
+ */
+export class FileStoreReadError extends FileStoreRefusalError {
+
+  constructor(label: string, filePath: string, readError: unknown) {
+
+    super("The " + label + " file " + filePath + " could not be read (" + formatError(readError) + "), so nothing was written.", { cause: readError, filePath, label });
+
+    this.name = "FileStoreReadError";
   }
 }
 
@@ -163,14 +201,14 @@ export interface FileStoreReadResult<T> {
 }
 
 /**
- * What a load() observed, including the message text the public read result leaves out. read() composes its warnings from that text: the parse failure a
- * successful backup recovery swallowed, and the reason a main file could not be read for something other than being absent. None of it is data a caller acts
- * on - it is text for the log - so this type stays inside the module and read() answers with the public shape.
+ * What a load() observed, including what the public read result leaves out: the parse failure a successful backup recovery swallowed, and the error a main
+ * file that could not be read for something other than being absent threw. The read's announcement composes its warnings from them and the read-failure guard
+ * refuses with that error as its cause, neither of which leaves the store, so this type stays inside the module and read() answers with the public shape.
  */
 interface FileStoreLoadResult<T> extends FileStoreReadResult<T> {
 
-  // The failure of a main-file read that failed for some reason other than the file being absent. Present only on that path.
-  readErrorMessage?: string;
+  // What a main-file read that failed for some reason other than the file being absent threw. Present only when readError is true.
+  readFailure?: unknown;
 
   // The parse failure of a corrupt main file whose .bak supplied the data instead. Present only when recoveredFromBackup is true.
   recoveredParseMessage?: string;
@@ -252,9 +290,9 @@ export interface FileStore<T> {
    * Serialized read-modify-write operation. The mutation function receives the current data (already migrated to the latest schema version) and modifies it in
    * place. The store handles atomicity, serialization, corruption guard, backup, validation, and beforeWrite transforms.
    * @param fn - Mutation function. Receives current data. Modify in place; return value is ignored.
-   * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard).
-   * @throws Error if the main file exists but could not be read (read-failure guard), if the post-write integrity check finds the file does not match the
-   * write, or if the write or its readback fails with an I/O error.
+   * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard), and FileStoreReadError if the main file
+   * exists but could not be read (read-failure guard), each a FileStoreRefusalError.
+   * @throws Error if the post-write integrity check finds the file does not match the write, or if the write or its readback fails with an I/O error.
    */
   mutate(fn: (current: T) => void): Promise<void>;
 
@@ -268,9 +306,9 @@ export interface FileStore<T> {
    * and never settle.
    * @param fn - Mutation function. Receives current data, modifies it in place, and returns the follow-up to run once the write has landed.
    * @returns The follow-up's result.
-   * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard), and whatever the follow-up rejects with.
-   * @throws Error if the main file exists but could not be read (read-failure guard), if the post-write integrity check finds the file does not match the
-   * write, or if the write or its readback fails with an I/O error.
+   * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard), and FileStoreReadError if the main file
+   * exists but could not be read (read-failure guard), each a FileStoreRefusalError; and whatever the follow-up rejects with.
+   * @throws Error if the post-write integrity check finds the file does not match the write, or if the write or its readback fails with an I/O error.
    */
   mutateThen<R>(fn: (current: T) => () => Promise<R>): Promise<R>;
 
@@ -329,8 +367,9 @@ export async function ensureAllMigrated(): Promise<void> {
  *   Concurrent callers queue behind the active operation.
  * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if the main file is unparseable and no usable `.bak` exists (missing or itself
  *   unparseable), preventing save-over-corrupt cascades.
- * - **Read-failure guard:** `mutate()` throws when the main file exists but could not be read, because the read then answers with defaults, and writing over
- *   the file would replace its contents with them. `readError` on the read result marks that outcome for a caller reading on its own.
+ * - **Read-failure guard:** `mutate()` throws `FileStoreReadError`, the read's error as its cause, when the main file exists but could not be read, because
+ *   the read then answers with defaults, and writing over the file would replace its contents with them. `readError` on the read result marks that outcome
+ *   for a caller reading on its own. Each guard throws a `FileStoreRefusalError`, the one class a caller answering a refusal branches on.
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
  * - **Auto-recovery:** when the main file fails to parse, `read()` transparently recovers the `.bak` rotation's contents in memory and surfaces
  *   `recoveredFromBackup` on the result so callers can surface the event. The recovery is announced by the read that performed it, once per read; the
@@ -549,7 +588,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     let parsed: { data: T; recoveredFromBackup: boolean } | null = null;
     let parseError: { message: string } | null = null;
-    let readErrorMessage: string | undefined;
+    let readFailure: { error: unknown } | null = null;
     let recoveredParseMessage: string | undefined;
 
     try {
@@ -586,8 +625,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
         parsed = { data: options.defaultValue(), recoveredFromBackup: false };
       } else {
 
-        // Other read errors - fall back to defaults and carry the reason out for the caller to report.
-        readErrorMessage = (error instanceof Error) ? error.message : String(error);
+        // Other read errors - fall back to defaults and carry the error out, for the announcement to report and for the read-failure guard to refuse with.
+        readFailure = { error };
         parsed = { data: options.defaultValue(), recoveredFromBackup: false };
       }
     }
@@ -614,8 +653,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
       data: parsed.data,
       migrationResult,
       parseError: false,
-      readError: readErrorMessage !== undefined,
-      readErrorMessage,
+      readError: readFailure !== null,
+      readFailure: readFailure?.error,
       recoveredFromBackup: parsed.recoveredFromBackup,
       recoveredParseMessage
     };
@@ -624,10 +663,10 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
   /**
    * Reads the file from disk through load() and announces what that read found: a backup recovery, a read failure, a file with no usable copy anywhere, a file
    * from a newer build, and a schema upgrade. Every one of those lines describes a repair or a limit the caller is about to act on, so it belongs to the read
-   * that performed it and is emitted once per read. The result is the public shape, built from load()'s public fields alone so the message text load() carries
-   * for these lines stays inside the store.
+   * that performed it and is emitted once per read. It answers load()'s whole result, so the write path refuses with the error of the same read that announced
+   * it, and read() narrows that result to the public shape.
    */
-  async function read(): Promise<FileStoreReadResult<T>> {
+  async function loadAndAnnounce(): Promise<FileStoreLoadResult<T>> {
 
     const result = await load();
 
@@ -638,9 +677,9 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
       LOG.warn("Recovered %s from backup; main file was corrupt: %s.", options.label, result.recoveredParseMessage);
     }
 
-    if(result.readErrorMessage !== undefined) {
+    if(result.readError) {
 
-      LOG.warn("Failed to read %s file %s: %s. Using defaults.", options.label, options.path(), result.readErrorMessage);
+      LOG.warn("Failed to read %s file %s: %s. Using defaults.", options.label, options.path(), formatError(result.readFailure));
     }
 
     /* A file with no usable copy anywhere is the one outcome that answers with defaults rather than the file's own data, so it leaves here with the parse
@@ -650,15 +689,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
       LOG.warn("Invalid JSON in %s file %s and no usable backup available: %s. Using defaults.", options.label, options.path(), result.parseErrorMessage ?? "");
 
-      return {
-
-        data: result.data,
-        migrationResult: result.migrationResult,
-        parseError: true,
-        parseErrorMessage: result.parseErrorMessage,
-        readError: false,
-        recoveredFromBackup: false
-      };
+      return result;
     }
 
     /* A file written by a newer build passes through unmigrated, which the migration result reports as a fromVersion above the store's own schema version. The
@@ -675,6 +706,31 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
       LOG.info("Migrated %s schema from v%d to v%d (%d migration(s) applied: %s).", options.label, result.migrationResult.fromVersion,
         result.migrationResult.toVersion, result.migrationResult.applied.length, result.migrationResult.applied.join(", "));
+    }
+
+    return result;
+  }
+
+  /**
+   * Reads the file through loadAndAnnounce() and answers the public shape, built from load()'s public fields alone, so the message text and the read error
+   * load() carries for the announcement and the write path's refusal stay inside the store.
+   */
+  async function read(): Promise<FileStoreReadResult<T>> {
+
+    const result = await loadAndAnnounce();
+
+    // A file with no usable copy anywhere answers with defaults and the parse message the caller reports.
+    if(result.parseError) {
+
+      return {
+
+        data: result.data,
+        migrationResult: result.migrationResult,
+        parseError: true,
+        parseErrorMessage: result.parseErrorMessage,
+        readError: false,
+        recoveredFromBackup: false
+      };
     }
 
     return {
@@ -814,9 +870,9 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     const filePath = options.path();
 
-    // Read the current file state. read() will transparently recover from .bak when the main file is corrupt and run any pending migrations; only when the
+    // Read the current file state. The read transparently recovers from .bak when the main file is corrupt and runs any pending migrations; only when the
     // main file is unparseable and no usable .bak exists (missing or itself unparseable) does parseError surface here.
-    const result = await read();
+    const result = await loadAndAnnounce();
 
     // Corruption guard: refuse to modify a file that cannot be parsed and could not be recovered from backup. Prevents the cascade where a corrupt file gets
     // overwritten with nearly-empty data.
@@ -826,10 +882,11 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
     }
 
     // Read-failure guard: a file that exists but could not be read answered with the default value, and writing the mutation over it would replace whatever the
-    // file holds with defaults the moment a transient permission or I/O failure hid it. Refused for the same reason a file that fails to parse is.
+    // file holds with defaults the moment a transient permission or I/O failure hid it. Refused for the same reason a file that fails to parse is, with the
+    // read's own error as the refusal's cause.
     if(result.readError) {
 
-      throw new Error("The " + options.label + " file " + filePath + " could not be read, so nothing was written.");
+      throw new FileStoreReadError(options.label, filePath, result.readFailure);
     }
 
     // Capture pre-mutation state for the validator. Skip the clone when no validator is configured to avoid the overhead.
@@ -857,7 +914,7 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     // Backup: copy the current file to .bak before overwriting. Swallow ENOENT (file does not exist yet on first write).
     //
-    // We skip the rotation entirely when read() recovered the in-memory state from .bak. recoveredFromBackup being true means the main file on disk is
+    // We skip the rotation entirely when the read recovered the in-memory state from .bak. recoveredFromBackup being true means the main file on disk is
     // unparseable and the good copy is the existing .bak, so rotating would copy the corrupt main over the only good copy there is. Leaving .bak untouched
     // keeps the prior good state while the atomic write below replaces the corrupt main with the mutated good data, which is the pair we want: main holds the
     // new state and .bak holds the one before it.

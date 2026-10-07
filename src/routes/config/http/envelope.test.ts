@@ -2,12 +2,15 @@
  *
  * envelope.test.ts: Unit tests for the response envelope helpers. The envelope is the SSOT for the /config/* endpoint response shape - every endpoint
  * routes its success/failure path through here, so the tests assert the contract: success bodies always carry success: true, error bodies always carry
- * success: false, reserved fields override caller-supplied data on collision, the playlistHint append fires only when both message and the flag are present, and
- * the FileStoreParseError branch produces a 400 with the parse details rather than a generic 500.
+ * success: false, reserved fields override caller-supplied data on collision, the playlistHint append fires only when both message and the flag are present,
+ * every store refusal answers 409 with its own message and no log, and a configuration the validation rejects answers 400 rather than a generic 500.
  */
+import { FileStoreParseError, FileStoreReadError } from "../../../config/persistence.ts";
+import { UNSAVED_CHANGE_WARNING, sendConflictError, sendError, sendErrorResponse, sendFormErrors, sendNotFoundError, sendSuccess,
+  sendValidationError } from "./envelope.ts";
 import { describe, test } from "node:test";
-import { sendConflictError, sendError, sendErrorResponse, sendFormErrors, sendNotFoundError, sendSuccess, sendValidationError } from "./envelope.ts";
-import { FileStoreParseError } from "../../../config/persistence.ts";
+import { ConfigurationRejectedError } from "../../../config/index.ts";
+import { LOG } from "../../../utils/index.ts";
 import { PLAYLIST_HINT } from "../channels/http/playlistHint.ts";
 import assert from "node:assert/strict";
 import { makeReqRes } from "../../express.helpers.ts";
@@ -92,6 +95,18 @@ describe("sendSuccess", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.deepEqual(body["serviceWarning"], { serviceLabel: "Hulu", serviceTag: "hulu" });
+  });
+
+  test("attaches the unsaved-change sentence as persistenceWarning when provided, and no such field when it is absent", () => {
+
+    const warned = makeReqRes();
+    const plain = makeReqRes();
+
+    sendSuccess(warned.res, { persistenceWarning: UNSAVED_CHANGE_WARNING });
+    sendSuccess(plain.res, { persistenceWarning: undefined });
+
+    assert.deepEqual(warned.json.mock.calls[0]?.arguments[0], { persistenceWarning: UNSAVED_CHANGE_WARNING, success: true });
+    assert.deepEqual(plain.json.mock.calls[0]?.arguments[0], { success: true });
   });
 
   test("uses an explicit patch when provided rather than computing from affectedKeys", () => {
@@ -279,25 +294,51 @@ describe("sendFormErrors", () => {
 
 describe("sendErrorResponse", () => {
 
-  /* sendErrorResponse calls LOG.error on the non-FileStoreParseError branch. Tests in this group accept that the production logger will emit to stderr -
-   * the noise is harmless to the assertions and silencing it would require either mock.module() (which would couple us to the LOG export shape) or a
-   * stderr spy whose type cast trips the lint rule. The two side-effect tests pass cleanly without suppression.
+  /* sendErrorResponse calls LOG.error on its 500 branch. The rows on that branch accept that the production logger will emit to stderr - the noise is harmless
+   * to the assertions. The refusal rows replace LOG.error with a recorder, because logging nothing is part of what they assert: the store's read has already warned
+   * once for the file.
    */
 
-  test("returns a 400 with the parse details when the error is a FileStoreParseError", () => {
+  test("answers a parse refusal 409 with its message, carrying the parse details, and logs nothing", (t) => {
 
+    const error = t.mock.method(LOG, "error", () => undefined);
     const { json, res, status } = makeReqRes();
     const err = new FileStoreParseError("channels", "/tmp/channels.json", "Unexpected token");
 
     sendErrorResponse(res, err, "save channel");
 
-    assert.equal(status.mock.calls[0]?.arguments[0], 400, "FileStoreParseError must produce a 400");
+    assert.equal(status.mock.calls[0]?.arguments[0], 409, "a store refusal is a conflict with the file's state");
 
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
-    assert.equal(body["success"], false);
     assert.match(body["error"] as string, /channels/, "body should include the parse error message");
     assert.match(body["error"] as string, /Unexpected token/, "body should preserve the underlying parse detail");
+    assert.deepEqual(body, { error: err.message, success: false });
+    assert.equal(error.mock.callCount(), 0, "the refusal is not logged again");
+  });
+
+  test("answers a read refusal 409 with its message, carrying the read's reason, and logs nothing", (t) => {
+
+    const error = t.mock.method(LOG, "error", () => undefined);
+    const { json, res, status } = makeReqRes();
+    const err = new FileStoreReadError("channels", "/tmp/channels.json", new Error("EACCES: permission denied"));
+
+    sendErrorResponse(res, err, "save channel");
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 409, "a read refusal answers the status a parse refusal does");
+    assert.deepEqual(json.mock.calls[0]?.arguments[0],
+      { error: "The channels file /tmp/channels.json could not be read (EACCES: permission denied), so nothing was written.", success: false });
+    assert.equal(error.mock.callCount(), 0, "the refusal is not logged again");
+  });
+
+  test("answers a configuration the validation rejects 400 with its reason", () => {
+
+    const { json, res, status } = makeReqRes();
+
+    sendErrorResponse(res, new ConfigurationRejectedError("PORT must be at least 1, but it is 0."), "save configuration");
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 400);
+    assert.deepEqual(json.mock.calls[0]?.arguments[0], { error: "PORT must be at least 1, but it is 0.", success: false });
   });
 
   test("returns a 500 with a formatted error message for a non-parse Error", () => {

@@ -7,6 +7,7 @@ import type { Channel, ChannelMap, Config, ResolvedChannel, ServiceGroup } from 
 import { LOG, extractDomain } from "../utils/index.ts";
 import { DOMAIN_CONFIG } from "./sites.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
+import type { ProcessWriteResult } from "./index.ts";
 import { getDomainConfig } from "./profiles.ts";
 import { getUserDomains } from "./userProfiles.ts";
 import { pickIdentity } from "./channelIdentity.ts";
@@ -334,17 +335,19 @@ export function applyServiceFilter(tags: readonly string[]): void {
 }
 
 /**
- * Writes a new enabled-services list through one process write, so the file and CONFIG hold the list as given before this resolves. The write dispatches the
- * registered handler, which makes the list the running filter restricted to the tags known at that moment, as the boot and an import restrict it, so the route's
- * same-request counts read the new filter; it dispatches the handler even when the list equals the persisted one, which re-derives a running filter left
- * narrower than the list. Empty array means "no filter" (all services shown).
+ * Writes a new enabled-services list through one process write, so CONFIG holds the list as given before this resolves, and the file does too unless the store
+ * refuses the write, which the answer reports and leaves the list in effect until the next restart. The write dispatches the registered handler, which makes
+ * the list the running filter restricted to the tags known at that moment, as the boot and an import restrict it, so the route's same-request counts read the
+ * new filter; it dispatches the handler even when the list equals the persisted one, which re-derives a running filter left narrower than the list. Empty
+ * array means "no filter" (all services shown).
  * @param tags - The new enabled service tags.
+ * @returns Whether the file took the write.
  */
-export async function mutateEnabledServices(tags: readonly string[]): Promise<void> {
+export async function mutateEnabledServices(tags: readonly string[]): Promise<ProcessWriteResult> {
 
   const list = [...tags];
 
-  await writeProcessFields(() => ({ "channels.enabledServices": list }));
+  return writeProcessFields(() => ({ "channels.enabledServices": list }));
 }
 
 /**

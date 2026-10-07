@@ -2,13 +2,15 @@
  *
  * service.test.ts: Tests for the service-selection and service-filter endpoints. The endpoints validate input shape and route to setServiceSelection /
  * mutateEnabledServices / mutateServiceSelections helpers. Each endpoint describe builds the real channel store in a temp data directory, and we drive the
- * validation paths and the success responses with mock req/res against it; one bulk-assign row asserts which variant a bulk assign picks.
+ * validation paths and the success responses with mock req/res against it; one bulk-assign row asserts which variant a bulk assign picks, and one filter row
+ * the unsaved-change warning a success carries when the configuration file refuses the write.
  */
 import type { Express, RequestHandler } from "express";
 import { PREDEFINED_SUFFIX, getServiceGroup, getServiceSelection } from "../../../../config/services.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { initializeUserChannels, mutateChannels } from "../../../../config/userChannels.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { UNSAVED_CHANGE_WARNING } from "../../http/envelope.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { makeReqRes } from "../../../express.helpers.ts";
@@ -228,6 +230,24 @@ describe("POST /config/service-filter", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], undefined, "a write the file took carries no unsaved-change warning");
+  });
+
+  test("answers its success with the unsaved-change warning when the configuration file refuses the write", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the process write applies to the running configuration alone. Any
+    // file the boot already wrote there is removed first. The row writes the list the row above left running, so the describes after it keep that filter.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const { json, req, res } = makeReqRes({ body: { enabledServices: ["hulu"] } });
+
+    await filter(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], UNSAVED_CHANGE_WARNING);
   });
 });
 

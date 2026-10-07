@@ -8,9 +8,9 @@
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
+import { UNSAVED_CHANGE_WARNING, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { getServiceTagForChannel, hasAlternativeService } from "../../../../config/services.ts";
 import { isPredefinedChannel, mutateChannels, updatePredefinedChannels, validateChannelUrl } from "../../../../config/userChannels.ts";
-import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
 import type { UserChannel } from "../../../../config/userChannels.ts";
 import { buildServiceFilterWarning } from "../http/serviceWarning.ts";
@@ -273,7 +273,7 @@ export function registerBrowseRoutes(app: Express): void {
       .filter((e): e is typeof e & { canonicalKey: string } => (e.action === "enable") && Boolean(e.canonicalKey?.trim()))
       .map((e) => e.canonicalKey.trim());
 
-    await updatePredefinedChannels({ disable: [...keysToDisable], enable: enableKeys });
+    const { persisted } = await updatePredefinedChannels({ disable: [...keysToDisable], enable: enableKeys });
 
     for(const disabledKey of keysToDisable) {
 
@@ -311,6 +311,7 @@ export function registerBrowseRoutes(app: Express): void {
 
       affectedKeys: [...affectedKeys],
       message: hasChanges ? parts.join(" ") : "No changes made.",
+      persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING,
       playlistHint: hasChanges,
       serviceWarning
     });

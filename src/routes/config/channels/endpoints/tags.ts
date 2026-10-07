@@ -9,7 +9,7 @@
 import type { Express, Request, Response } from "express";
 import { getActiveTagVocabulary, getPredefinedChannel, getTagRegistry, isInVocabulary, setTagRegistry, tagsMatch,
   transformChannelTags } from "../../../../config/userChannels.ts";
-import { sendConflictError, sendError, sendNotFoundError, sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { sendConflictError, sendNotFoundError, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { LOG } from "../../../../utils/index.ts";
 import { PREDEFINED_TAGS } from "../../../../channels/index.ts";
 import { route } from "../http/handler.ts";
@@ -151,17 +151,10 @@ export function registerTagRoutes(app: Express): void {
     await setTagRegistry(registry);
 
     // Cascade: strip the deleted tag from every channel that has it. transformChannelTags handles loading, delta normalization, and persistence.
-    const { affectedKeys, error } = await transformChannelTags(
+    const { affectedKeys } = await transformChannelTags(
       (entry) => entry.channel.tags?.some((t) => tagsMatch(t, tag)) === true,
       (tags) => tags.filter((t) => !tagsMatch(t, tag))
     );
-
-    if(error) {
-
-      sendError(res, 400, { error });
-
-      return;
-    }
 
     LOG.info("Deleted tag '%s' from vocabulary and %d channel assignments.", tag, affectedKeys.length);
 
@@ -200,7 +193,7 @@ export function registerTagRoutes(app: Express): void {
 
     // Cascade-restore: add the tag back to predefined channels whose definition includes it but whose current resolved tags don't (stripped during cascade
     // delete). The normalizer strips the tags delta when the result matches the predefined definition, reverting the channel to its default state.
-    const { affectedKeys, error } = await transformChannelTags(
+    const { affectedKeys } = await transformChannelTags(
       (entry) => {
 
         const predefined = getPredefinedChannel(entry.key);
@@ -210,13 +203,6 @@ export function registerTagRoutes(app: Express): void {
       },
       (tags) => [ ...tags, canonicalTag ]
     );
-
-    if(error) {
-
-      sendError(res, 400, { error });
-
-      return;
-    }
 
     LOG.info("Restored predefined tag '%s' on %d channels.", tag, affectedKeys.length);
 
@@ -291,17 +277,10 @@ export function registerTagRoutes(app: Express): void {
 
     await setTagRegistry(registry);
 
-    const { affectedKeys, error } = await transformChannelTags(
+    const { affectedKeys } = await transformChannelTags(
       (entry) => entry.channel.tags?.some((t) => tagsMatch(t, oldTag)) === true,
       (tags) => tags.map((t) => tagsMatch(t, oldTag) ? newTag : t)
     );
-
-    if(error) {
-
-      sendError(res, 400, { error });
-
-      return;
-    }
 
     LOG.info("Renamed tag '%s' to '%s' across %d channels.", oldTag, newTag, affectedKeys.length);
 

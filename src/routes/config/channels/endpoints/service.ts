@@ -6,10 +6,10 @@
  * service tags participate in the playlist and table. Bulk assign/restore operate on all channels at once for fast switching across a provider.
  */
 import type { Express, Request, Response } from "express";
+import { UNSAVED_CHANGE_WARNING, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel, getServiceGroup, getServiceSelection,
   getServiceTagForChannel, hasPredefinedSuffix, mutateEnabledServices } from "../../../../config/services.ts";
 import { getChannelListing, mutateServiceSelections, setServiceSelection } from "../../../../config/userChannels.ts";
-import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { LOG } from "../../../../utils/index.ts";
 import type { Nullable } from "../../../../types/index.ts";
 import { buildChannelTableState } from "../table.ts";
@@ -103,14 +103,14 @@ export function registerServiceRoutes(app: Express): void {
       }
     }
 
-    await mutateEnabledServices(tags);
+    const { persisted } = await mutateEnabledServices(tags);
 
     LOG.info("Service filter updated: %s.", tags.length > 0 ? tags.join(", ") : "all services");
 
     // Counts-only patch - the client applies CSS visibility changes itself and only needs updated summary counters.
     const { counts, scopeCounts } = buildChannelTableState();
 
-    sendSuccess(res, { patch: { counts, rows: [], scopeCounts } });
+    sendSuccess(res, { patch: { counts, rows: [], scopeCounts }, persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING });
   }));
 
   // POST /config/service-bulk-assign - Set all multi-service channels to a specific service tag, where available.

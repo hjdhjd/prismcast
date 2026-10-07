@@ -35,6 +35,7 @@
 import type { DisposableDomTestContext, DomTestContextOptions } from "../../helpers/dom.helpers.ts";
 import { describe, test } from "node:test";
 import type { SettingsSaveData } from "../../../src/routes/config/settings.ts";
+import { UNSAVED_CHANGE_WARNING } from "../../../src/routes/config/http/envelope.ts";
 import assert from "node:assert/strict";
 import { createDomTestContext } from "../../helpers/dom.helpers.ts";
 
@@ -1124,6 +1125,22 @@ describe("config.ts: window.togglePredefinedChannel and bulkTogglePredefined", (
     const body = JSON.parse(calls[0]!.body ?? "{}") as { enabled: boolean; scope: string };
 
     assert.deepEqual(body, { enabled: true, scope: "pacific" });
+  });
+
+  test("togglePredefinedChannel shows the unsaved-change warning a success carries as a warning toast after its success toast", async () => {
+
+    await using ctx = await setupConfigRuntime();
+
+    installFetchSpy(ctx, { persistenceWarning: UNSAVED_CHANGE_WARNING, success: true });
+    ctx.evaluate("window.togglePredefinedChannel('nbc', true)");
+    await ctx.flushAsync();
+
+    // The type is read as a class token, because a toast whose auto-dismiss fires during a slow run also carries the exit class.
+    const toasts = ctx.evaluateJson("Array.from(document.querySelectorAll('#toast-container .toast')).map((toast) => ({ text: toast.firstChild.textContent, " +
+      "type: [ 'success', 'warning' ].find((type) => toast.classList.contains(type)) }))") as { text: string; type: string }[];
+
+    assert.deepEqual(toasts.map((toast) => toast.type), [ "success", "warning" ], "the warning follows the success toast");
+    assert.equal(toasts[1]?.text, UNSAVED_CHANGE_WARNING, "the warning toast carries the sentence the server sent");
   });
 });
 

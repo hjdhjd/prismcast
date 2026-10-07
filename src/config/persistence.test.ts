@@ -3,14 +3,14 @@
  * persistence.test.ts: Core unit tests for the transactional file store framework. The framework is the SSOT for atomic writes, serialized mutations, declarative
  * schema migrations, post-write integrity verification, and snapshot management - every persisted file goes through it.
  *
- * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization - plus the
- * write-ownership rule that ties reads and mutates together: a read recovers a corrupt main from .bak in memory and writes nothing, the corrupt-main rotation
- * guard keeps the good backup, and the durable restore lands under the queue at the boot step or through the next mutate. Sibling files
+ * This file owns the framework's CORE behaviors - the refusal error classes, construction validation, read happy paths, mutate happy paths, queue
+ * serialization - plus the write-ownership rule that ties reads and mutates together: a read recovers a corrupt main from .bak in memory and writes nothing,
+ * the corrupt-main rotation guard keeps the good backup, and the durable restore lands under the queue at the boot step or through the next mutate. Sibling files
  * (persistence.snapshots.test.ts, persistence.integrity.test.ts, persistence.migrations.test.ts) own the snapshot system, the remaining integrity-and-recovery
  * branches, and the migration runner respectively. The split is by concern, not alphabet, so each file's title corresponds directly to a section of the
  * framework's contract.
  */
-import { FileStoreParseError, createFileStore } from "./persistence.ts";
+import { FileStoreParseError, FileStoreReadError, FileStoreRefusalError, createFileStore } from "./persistence.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { makeMemoryStorageBackend, makeMemoryStore, makeStore } from "./persistence.helpers.ts";
 import { readFile, writeFile } from "node:fs/promises";
@@ -53,11 +53,14 @@ describe("FileStoreParseError", () => {
     assert.equal(err.name, "FileStoreParseError");
   });
 
-  test("is a subclass of Error so callers can catch with instanceof", () => {
+  test("is a store refusal carrying its label and path, so a caller answering a refusal catches it with one instanceof", () => {
 
-    const err = new FileStoreParseError("x", "y", "z");
+    const err = new FileStoreParseError("channels", "/tmp/x.json", "z");
 
+    assert.ok(err instanceof FileStoreRefusalError);
     assert.ok(err instanceof Error);
+    assert.equal(err.label, "channels");
+    assert.equal(err.filePath, "/tmp/x.json");
   });
 
   test("the name override survives a throw/catch round-trip and remains queryable on the caught instance", () => {
@@ -83,6 +86,22 @@ describe("FileStoreParseError", () => {
 
     assert.equal((wrapper.cause as Error).name, "FileStoreParseError", ".name preserved through cause-chain wrapping");
     assert.equal(wrapper.name, "Error", "wrapper carries its own name; the override is scoped to the inner instance");
+  });
+});
+
+describe("FileStoreReadError", () => {
+
+  test("is a store refusal whose message carries the read's formatted reason and whose cause is the read's own error", () => {
+
+    const readError = new Error("EACCES: permission denied.");
+    const err = new FileStoreReadError("configuration", "/tmp/config.json", readError);
+
+    assert.equal(err.message, "The configuration file /tmp/config.json could not be read (EACCES: permission denied), so nothing was written.");
+    assert.equal(err.cause, readError, "the read's error is the cause, the same object");
+    assert.equal(err.name, "FileStoreReadError");
+    assert.equal(err.label, "configuration");
+    assert.equal(err.filePath, "/tmp/config.json");
+    assert.ok(err instanceof FileStoreRefusalError);
   });
 });
 

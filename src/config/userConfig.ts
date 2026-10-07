@@ -1336,7 +1336,7 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
  * aside, goes through config/index.ts instead, by saveConfiguration() for the settings surface or writeProcessFields() for the fields the process owns, and by
  * the boot's correcting write, each through mutateConfigThen(), so the file and the running configuration move together.
  * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored. A throw inside it writes nothing.
- * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and an Error if config.json could not be read.
+ * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and FileStoreReadError if config.json could not be read.
  */
 export async function mutateConfig(fn: (current: UserConfig) => void): Promise<void> {
 
@@ -1352,8 +1352,8 @@ export async function mutateConfig(fn: (current: UserConfig) => void): Promise<v
  * @param fn - Mutation function. Receives current config, modifies it in place, and returns the follow-up. A throw inside it writes nothing and runs no
  *   follow-up.
  * @returns The follow-up's result.
- * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, an Error if config.json could not be read, and whatever the
- *   follow-up rejects with.
+ * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, FileStoreReadError if config.json could not be read, and
+ *   whatever the follow-up rejects with.
  */
 export async function mutateConfigThen<R>(fn: (current: UserConfig) => () => Promise<R>): Promise<R> {
 

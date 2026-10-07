@@ -18,6 +18,7 @@
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { makeMemoryStorageBackend, makeMemoryStore } from "./persistence.helpers.ts";
+import { FileStoreReadError } from "./persistence.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { ValidationIssue } from "./persistence.ts";
 import assert from "node:assert/strict";
@@ -196,19 +197,17 @@ describe("FileStore.read - non-ENOENT file read error", () => {
 
     /* read() distinguishes "file does not exist" (ENOENT, normal first-run path) from "any other read failure" (permission denied, I/O error). The non-ENOENT
      * branch logs a warn and returns defaults rather than throwing, and marks the result readError so a caller can tell the defaults from an empty file. A
-     * mutation refuses the same outcome, because writing over a file the read could not open would replace its contents with those defaults.
+     * mutation refuses the same outcome, because writing over a file the read could not open would replace its contents with those defaults, and its refusal
+     * carries the read's own error as its cause and that error's reason in its message.
      */
     let renames = 0;
     let mutatorRan = false;
+    const readError = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     const backend = makeMemoryStorageBackend({
 
       readFile: async (): Promise<string> => {
 
-        const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
-
-        err.code = "EACCES";
-
-        throw err;
+        throw readError;
       },
       rename: async (): Promise<void> => {
 
@@ -228,8 +227,14 @@ describe("FileStore.read - non-ENOENT file read error", () => {
     assert.equal(result.parseError, false, "parseError stays false (the file was unreadable, not corrupt)");
     assert.equal(result.recoveredFromBackup, false, "no backup recovery attempted - the failure is at the file-read layer");
 
-    await assert.rejects(store.mutate(() => { mutatorRan = true; }),
-      { message: "The test-mem-permission-denied.json file " + filePath + " could not be read, so nothing was written." });
+    await assert.rejects(store.mutate(() => { mutatorRan = true; }), (error: unknown) => {
+
+      assert.ok(error instanceof FileStoreReadError, "the refusal is the read-failure guard's typed error");
+      assert.equal(error.message, "The test-mem-permission-denied.json file " + filePath + " could not be read (EACCES: permission denied), so nothing was written.");
+      assert.equal(error.cause, readError, "the refusal's cause is the error the read threw, the same object");
+
+      return true;
+    });
 
     assert.equal(mutatorRan, false, "the mutation never ran against the defaults");
     assert.equal(renames, 0, "nothing was written over the file");

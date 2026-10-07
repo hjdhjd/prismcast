@@ -6,9 +6,9 @@
  * state mutation and persistence lives in the config layer.
  */
 import type { Express, Request, Response } from "express";
+import { UNSAVED_CHANGE_WARNING, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { VALID_OPTIONAL_COLUMNS, buildChannelTableState } from "../table.ts";
 import { markSetupCompleted, mutateChannelDisplayPrefs } from "../../../../config/userChannels.ts";
-import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import type { ChannelSortField } from "../../../../types/index.ts";
 import { VALID_SORT_FIELDS } from "../../../../config/channelSort.ts";
 import { route } from "../http/handler.ts";
@@ -21,7 +21,7 @@ export function registerPrefsRoutes(app: Express): void {
 
   // POST /config/channels/display-prefs - Update channel table display preferences (visible columns, sort field, sort direction). Every field is optional;
   // mutateChannelDisplayPrefs writes only the supplied fields, so a field the request leaves out keeps the value the file holds, and the supplied ones reach
-  // the file and the running configuration before the route answers.
+  // the running configuration before the route answers, and the file too unless it refuses the write, which the answer's unsaved-change warning reports.
   app.post("/config/channels/display-prefs", route("update display preferences", async (req: Request, res: Response) => {
 
     const body = req.body as { sortDirection?: string; sortField?: string; visibleColumns?: string[] };
@@ -79,9 +79,9 @@ export function registerPrefsRoutes(app: Express): void {
       update.visibleColumns = body.visibleColumns;
     }
 
-    await mutateChannelDisplayPrefs(update);
+    const { persisted } = await mutateChannelDisplayPrefs(update);
 
-    sendSuccess(res);
+    sendSuccess(res, { persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING });
   }));
 
   // POST /config/channels/setup-completed - Mark the Service Setup flow as completed. Called when the wizard finishes or the user explicitly skips. Returns a
@@ -89,10 +89,10 @@ export function registerPrefsRoutes(app: Express): void {
   // may reveal previously-filtered channels).
   app.post("/config/channels/setup-completed", route("save setup state", async (_req: Request, res: Response) => {
 
-    await markSetupCompleted();
+    const { persisted } = await markSetupCompleted();
 
     const { counts, scopeCounts } = buildChannelTableState();
 
-    sendSuccess(res, { patch: { counts, rows: [], scopeCounts } });
+    sendSuccess(res, { patch: { counts, rows: [], scopeCounts }, persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING });
   }));
 }

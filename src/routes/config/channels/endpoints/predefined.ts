@@ -7,9 +7,9 @@
  * record itself (a predefined channel has no mutable record to toggle).
  */
 import type { Express, Request, Response } from "express";
+import { UNSAVED_CHANGE_WARNING, sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { disablePredefinedChannels, enablePredefinedChannels, getEastWithPacificPredefinedKeys, getPacificPredefinedKeys, getPredefinedChannels,
   isPredefinedChannel } from "../../../../config/userChannels.ts";
-import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { LOG } from "../../../../utils/index.ts";
 import { route } from "../http/handler.ts";
 
@@ -49,17 +49,11 @@ export function registerPredefinedRoutes(app: Express): void {
       return;
     }
 
-    if(enabled) {
-
-      await enablePredefinedChannels([key]);
-    } else {
-
-      await disablePredefinedChannels([key]);
-    }
+    const { persisted } = await (enabled ? enablePredefinedChannels([key]) : disablePredefinedChannels([key]));
 
     LOG.info("Predefined channel '%s' %s.", key, enabled ? "enabled" : "disabled");
 
-    sendSuccess(res, { affectedKeys: [key] });
+    sendSuccess(res, { affectedKeys: [key], persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING });
   }));
 
   // POST /config/channels/bulk-toggle-predefined - Toggle predefined channels by scope (all, pacific, east).
@@ -112,18 +106,12 @@ export function registerPredefinedRoutes(app: Express): void {
 
     // Route through the shared enable/disable helpers so every path that mutates the disabled-predefined list goes through the same implementation. No separate
     // inline branches - the helpers handle the subtractive/additive set manipulation and the CONFIG sync.
-    if(enabled) {
-
-      await enablePredefinedChannels(targetKeys);
-    } else {
-
-      await disablePredefinedChannels(targetKeys);
-    }
+    const { persisted } = await (enabled ? enablePredefinedChannels(targetKeys) : disablePredefinedChannels(targetKeys));
 
     const scopeLabel = (scope === "all") ? "All" : (scope === "pacific") ? "Pacific" : "East";
 
     LOG.info("%s predefined channels %s (%d affected).", scopeLabel, enabled ? "enabled" : "disabled", targetKeys.length);
 
-    sendSuccess(res, { affectedKeys: targetKeys });
+    sendSuccess(res, { affectedKeys: targetKeys, persistenceWarning: persisted ? undefined : UNSAVED_CHANGE_WARNING });
   }));
 }

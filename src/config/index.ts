@@ -293,6 +293,15 @@ export async function saveConfiguration(mutator: (current: UserConfig) => void, 
 export type ProcessFieldValues = Readonly<Partial<Record<ProcessFieldPath, unknown>>>;
 
 /**
+ * What a process write answers: whether the file took the write. The running configuration holds the leaves whatever the file did, so persisted false means
+ * the change is in effect but reverts when the process restarts, which a caller acting for the user reports to them.
+ */
+export interface ProcessWriteResult {
+
+  readonly persisted: boolean;
+}
+
+/**
  * The operation for every field the process owns, the leaves the settings form never writes: the setup flag, the disabled predefined channels, the display
  * preferences, the service list, and the discovered DVR host. Inside the store's own mutation it answers the leaves from the file the store just read and sets
  * each on that file, and once the write has landed its follow-up commits exactly those leaves: their handlers are dispatched whatever CONFIG held before, and
@@ -301,8 +310,9 @@ export type ProcessFieldValues = Readonly<Partial<Record<ProcessFieldPath, unkno
  * for the next settings save to reconcile and report.
  *
  * When the store refuses the write - it could not read or parse the file, or the callback, the write, or its readback failed - the leaves are answered again
- * from the running configuration and committed to CONFIG alone with one warning naming them, and the operation resolves, because the process owns the value
- * and the file is only its record. A readback that fails is such a refusal though the file may hold the leaves, and the loaded snapshot takes them at the
+ * from the running configuration, one warning names them with the store's error, and they are committed to CONFIG alone; the operation resolves with persisted
+ * false, because the process owns the value and the file is only its record. The warning comes before the commit so a commit that throws propagates with the
+ * store's error already on record. A readback that fails is such a refusal though the file may hold the leaves, and the loaded snapshot takes them at the
  * next settings save that lands. A rejection that arrives once the follow-up has begun is rethrown instead, because that write has landed: committing and
  * dispatching the leaves a second time would log a refusal the file never made.
  *
@@ -311,9 +321,14 @@ export type ProcessFieldValues = Readonly<Partial<Record<ProcessFieldPath, unkno
  * because the commit it runs inside holds the store's queue; a handler that refuses a process leaf leaves it committed regardless.
  * @param fields - Answers the leaves to write, keyed by path, from the stored configuration it is handed.
  * @param io - The config store the write goes through.
- * @throws Whatever a follow-up that has begun rejects with, such as the class resolver's error for a leaf no setting or state entry classifies.
+ * @returns Whether the file took the write: persisted is true once the write has landed and false when the store refused it.
+ * @throws Whatever a follow-up that has begun rejects with, such as the class resolver's error for a leaf no setting or state entry classifies, and whatever
+ *   the refused path's commit throws once its warning is logged.
  */
-export async function writeProcessFields(fields: (stored: Readonly<UserConfig>) => ProcessFieldValues, io: ConfigStore = defaultConfigStore): Promise<void> {
+export async function writeProcessFields(
+  fields: (stored: Readonly<UserConfig>) => ProcessFieldValues,
+  io: ConfigStore = defaultConfigStore
+): Promise<ProcessWriteResult> {
 
   // Set by the follow-up's first statement and local to this call, so the catch below tells a write the store refused, which committed nothing, from a landed
   // write whose commit rejected. The flag is a field rather than a bare local because a closure sets it, which the compiler's narrowing of a local cannot see.
@@ -356,11 +371,15 @@ export async function writeProcessFields(fields: (stored: Readonly<UserConfig>) 
 
     const values = fields(structuredClone(CONFIG));
 
-    await commitProcessFields(values);
-
     LOG.warn("The configuration file refused a process write, so the new value applies to the running configuration alone.",
       { error: formatError(error), paths: Object.keys(values) });
+
+    await commitProcessFields(values);
+
+    return { persisted: false };
   }
+
+  return { persisted: true };
 }
 
 /**

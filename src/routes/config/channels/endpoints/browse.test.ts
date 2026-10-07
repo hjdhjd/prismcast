@@ -1,11 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * browse.test.ts: Tests for the browse-channels modal endpoint. Every supported action ('add', 'enable', 'switch', 'remove') is dispatched from a single
- * batch. Coverage focuses on the validation surface, the no-op response, and the per-entry error reporting (missing fields, invalid URLs).
+ * batch. Coverage focuses on the validation surface, the no-op response, the per-entry error reporting (missing fields, invalid URLs), and the unsaved-change
+ * warning a success carries when the configuration file refuses the predefined-list write.
  */
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { UNSAVED_CHANGE_WARNING } from "../../http/envelope.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { initializeUserChannels } from "../../../../config/userChannels.ts";
@@ -157,6 +159,38 @@ describe("POST /config/channels/modify", () => {
 
     assert.equal(body["success"], true);
     assert.match(body["message"] as string, /Switched 1 channel/);
+  });
+
+  test("an enable whose predefined-list write the configuration file refuses answers its success with the unsaved-change warning", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the enable applies to the running configuration alone, while the
+    // selection the enable also sets lands in the channels file, which the refusal does not touch. Any file the boot already wrote there is removed first.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const channels = [{ action: "enable", canonicalKey: "abc", channelSelector: "ABC", serviceSlug: "hulu", url: "https://www.hulu.com/live" }];
+    const { json, req, res } = makeReqRes({ body: { channels } });
+
+    await modify(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.match(body["message"] as string, /Switched 1 channel/);
+    assert.equal(body["persistenceWarning"], UNSAVED_CHANGE_WARNING);
+  });
+
+  test("an enable whose predefined-list write lands answers its success with no unsaved-change warning", async () => {
+
+    const channels = [{ action: "enable", canonicalKey: "abc", channelSelector: "ABC", serviceSlug: "hulu", url: "https://www.hulu.com/live" }];
+    const { json, req, res } = makeReqRes({ body: { channels } });
+
+    await modify(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], undefined);
   });
 
   test("rejects a switch entry that is missing canonicalKey but still returns 200 with no changes", async () => {

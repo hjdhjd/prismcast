@@ -2,11 +2,12 @@
  *
  * predefined.test.ts: Tests for the predefined channel toggle endpoints. These endpoints validate input shape, route to enable/disable helpers, and return a
  * patch-style success envelope. We exercise the validation paths with mock req/res objects since the success path delegates entirely to helpers in
- * userChannels.ts that are tested in their own file.
+ * userChannels.ts that are tested in their own file, and the unsaved-change warning a success carries when the configuration file refuses the write.
  */
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { UNSAVED_CHANGE_WARNING } from "../../http/envelope.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { initializeUserChannels } from "../../../../config/userChannels.ts";
@@ -145,6 +146,24 @@ describe("POST /config/channels/toggle-predefined", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], undefined, "a write the file took carries no unsaved-change warning");
+  });
+
+  test("answers its success with the unsaved-change warning when the configuration file refuses the write", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the process write applies to the running configuration alone. Any
+    // file the boot already wrote there is removed first.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const { json, req, res } = makeReqRes({ body: { enabled: true, key: "abc" } });
+
+    await toggle(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], UNSAVED_CHANGE_WARNING);
   });
 });
 
@@ -241,5 +260,23 @@ describe("POST /config/channels/bulk-toggle-predefined", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], undefined, "a write the file took carries no unsaved-change warning");
+  });
+
+  test("answers its success with the unsaved-change warning when the configuration file refuses the write", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the process write applies to the running configuration alone. Any
+    // file the boot already wrote there is removed first.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const { json, req, res } = makeReqRes({ body: { enabled: true, scope: "east" } });
+
+    await bulkToggle(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], UNSAVED_CHANGE_WARNING);
   });
 });

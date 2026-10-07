@@ -186,13 +186,16 @@ export function generateSharedUtilitiesScript(): string {
 
     /* Persist channel table display preferences to the server. Single source of truth for POSTs to /config/channels/display-prefs so every call site (sort,
      * column visibility, and any future preference) shares one fetch path and one error-handling decision. Fire-and-forget - the caller does not await the
-     * round-trip because the client state is already updated and the persist is a best-effort sync to the server.
+     * round-trip because the client state is already updated and the persist is a best-effort sync to the server. The response is read for one thing alone, the
+     * unsaved-change warning a success carries when the configuration file refused the write, shown as a warning toast.
      */
     "  window.persistDisplayPrefs = (body) => {",
     "    fetch('/config/channels/display-prefs', {",
     "      body: JSON.stringify(body),",
     "      headers: { 'Content-Type': 'application/json' },",
     "      method: 'POST'",
+    "    }).then((res) => res.json()).then((result) => {",
+    "      if(result.persistenceWarning) { showToast(result.persistenceWarning, 'warning'); }",
     "    }).catch((err) => { console.warn('Display preferences failed to persist.', err); });",
     "  };",
 

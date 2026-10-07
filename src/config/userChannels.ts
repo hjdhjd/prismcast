@@ -6,7 +6,6 @@ import { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEY
 import { CONFIG, writeProcessFields } from "./index.ts";
 import type { Channel, ChannelDelta, ChannelListingEntry, ChannelMap, ChannelSortField, CustomizableField, ResolvedChannel, ResolvedChannelMap,
   SortDirection, StoredChannel, StoredChannelMap } from "../types/index.ts";
-import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { LOG, containsNonPrintable, extractDomain, sanitizeString } from "../utils/index.ts";
 import type { Migration, ValidationIssue } from "./persistence.ts";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
@@ -14,6 +13,8 @@ import { applyServiceFilter, buildServiceGroups, getResolvedChannel, isChannelAv
   setServiceSelections } from "./services.ts";
 import { pickBindingFields, pickIdentity, pickIdentityFields } from "./channelIdentity.ts";
 import type { ProcessFieldPath } from "./userConfig.ts";
+import type { ProcessWriteResult } from "./index.ts";
+import { createFileStore } from "./persistence.ts";
 import fs from "node:fs";
 import { getChannelsFilePath } from "./paths.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -2229,56 +2230,46 @@ export function isInVocabulary(tag: string): boolean {
  * @param filter - Predicate selecting which listing entries to transform. Receives each ChannelListingEntry from getChannelListing().
  * @param transform - Pure function mapping a channel's current resolved tags to its new tags. Receives the channel's current tags array (may be empty, ordering
  *   not guaranteed). Must return the desired tags array (may be empty to clear all tags). The returned array is sorted before storage.
- * @returns Object with the affected channel keys and success status. On parse error, returns an error message and empty affected keys.
+ * @returns Object with the affected channel keys.
+ * @throws FileStoreRefusalError if the channels file could not be parsed or read, with nothing written, which a route answers through its error envelope.
  */
 export async function transformChannelTags(
   filter: (entry: ChannelListingEntry) => boolean,
   transform: (tags: string[]) => string[]
-): Promise<{ affectedKeys: string[]; error?: string }> {
+): Promise<{ affectedKeys: string[] }> {
 
   const affectedKeys: string[] = [];
 
-  try {
+  await mutateChannels((data) => {
 
-    await mutateChannels((data) => {
+    for(const entry of getChannelListing()) {
 
-      for(const entry of getChannelListing()) {
+      if(!filter(entry)) {
 
-        if(!filter(entry)) {
-
-          continue;
-        }
-
-        const currentTags = entry.channel.tags ?? [];
-
-        // Route both the transform result and the "no change" comparison through sortTags so tag storage shares one canonical ordering with the rest of the
-        // system. sortTags is non-mutating, which matters here because for predefined-only listing entries, entry.channel is the PREDEFINED_CHANNELS reference
-        // directly - a raw .sort() on entry.channel.tags would rearrange the predefined array in process memory.
-        const newTags = sortTags(transform(currentTags));
-
-        if(isDeepStrictEqual(newTags, sortTags(currentTags))) {
-
-          continue;
-        }
-
-        // Set the new tags on the stored entry. Callers use null uniformly for "clear/empty" - the normalizer in mutateChannels() handles the storage
-        // conventions: delta normalization for predefined channels (comparing against raw definitions), null-stripping for user channels.
-        const existing = data.channels[entry.key] ?? {};
-
-        (existing as Record<string, unknown>)["tags"] = (newTags.length > 0) ? newTags : null;
-        data.channels[entry.key] = existing;
-        affectedKeys.push(entry.key);
+        continue;
       }
-    });
-  } catch(error) {
 
-    if(error instanceof FileStoreParseError) {
+      const currentTags = entry.channel.tags ?? [];
 
-      return { affectedKeys: [], error: "Cannot update tags: channels file contains invalid JSON." };
+      // Route both the transform result and the "no change" comparison through sortTags so tag storage shares one canonical ordering with the rest of the
+      // system. sortTags is non-mutating, which matters here because for predefined-only listing entries, entry.channel is the PREDEFINED_CHANNELS reference
+      // directly - a raw .sort() on entry.channel.tags would rearrange the predefined array in process memory.
+      const newTags = sortTags(transform(currentTags));
+
+      if(isDeepStrictEqual(newTags, sortTags(currentTags))) {
+
+        continue;
+      }
+
+      // Set the new tags on the stored entry. Callers use null uniformly for "clear/empty" - the normalizer in mutateChannels() handles the storage
+      // conventions: delta normalization for predefined channels (comparing against raw definitions), null-stripping for user channels.
+      const existing = data.channels[entry.key] ?? {};
+
+      (existing as Record<string, unknown>)["tags"] = (newTags.length > 0) ? newTags : null;
+      data.channels[entry.key] = existing;
+      affectedKeys.push(entry.key);
     }
-
-    throw error;
-  }
+  });
 
   return { affectedKeys };
 }
@@ -2501,24 +2492,26 @@ export function getDisabledPredefinedChannels(): string[] {
 
 /**
  * Writes the disabledPredefined list through one process write: the stored list with the enabled keys removed and then the disabled keys added, sorted, so a
- * key named in each list ends disabled. The list lands in the file and in CONFIG before this resolves, so a route's same-request patches read the new list. A
- * call with no key to enable or disable writes nothing and dispatches nothing, because the browse route calls this on every request and most have nothing to
- * change, and the stored list is read only when it is an array, the shape rule mergeConfiguration keeps. disablePredefinedChannels, enablePredefinedChannels
- * and updatePredefinedChannels all delegate here, so the list's write lives in exactly one place.
+ * key named in each list ends disabled. The list lands in CONFIG before this resolves, so a route's same-request patches read the new list, and in the file
+ * too unless the store refuses the write, which the answer reports while the list stays in effect until the next restart. A call with no key to enable or
+ * disable writes nothing and dispatches nothing, because the browse route calls this on every request and most have nothing to change; it answers persisted,
+ * because nothing was left unsaved. The stored list is read only when it is an array, the shape rule mergeConfiguration keeps. disablePredefinedChannels,
+ * enablePredefinedChannels and updatePredefinedChannels all delegate here, so the list's write lives in exactly one place.
  * @param keys - The predefined channel keys to change.
  * @param keys.disable - The keys to add to the disabled list.
  * @param keys.enable - The keys to remove from the disabled list.
+ * @returns Whether the file took the write.
  */
-async function mutateDisabledPredefined(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<void> {
+async function mutateDisabledPredefined(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<ProcessWriteResult> {
 
   const { disable, enable } = keys;
 
   if((disable.length === 0) && (enable.length === 0)) {
 
-    return;
+    return { persisted: true };
   }
 
-  await writeProcessFields((stored) => {
+  return writeProcessFields((stored) => {
 
     const list = stored.channels?.disabledPredefined;
     const disabledSet = new Set(Array.isArray(list) ? list : []).difference(new Set(enable)).union(new Set(disable));
@@ -2531,19 +2524,21 @@ async function mutateDisabledPredefined(keys: { readonly disable: readonly strin
  * Disables one or more predefined channels by adding their keys to the disabledPredefined list in user config. Safe to call again with the same keys.
  * @param keys - The predefined channel keys to disable. Duplicates within the input array and pre-existing disabled entries are handled without producing
  * duplicate list entries.
+ * @returns Whether the file took the write; when it did not, the channels are disabled until the next restart.
  */
-export async function disablePredefinedChannels(keys: readonly string[]): Promise<void> {
+export async function disablePredefinedChannels(keys: readonly string[]): Promise<ProcessWriteResult> {
 
-  await mutateDisabledPredefined({ disable: keys, enable: [] });
+  return mutateDisabledPredefined({ disable: keys, enable: [] });
 }
 
 /**
  * Enables one or more predefined channels by removing their keys from the disabledPredefined list in user config. Safe to call again with the same keys.
  * @param keys - The predefined channel keys to enable. Entries that aren't in the disabled list are ignored.
+ * @returns Whether the file took the write; when it did not, the channels are enabled until the next restart.
  */
-export async function enablePredefinedChannels(keys: readonly string[]): Promise<void> {
+export async function enablePredefinedChannels(keys: readonly string[]): Promise<ProcessWriteResult> {
 
-  await mutateDisabledPredefined({ disable: [], enable: keys });
+  return mutateDisabledPredefined({ disable: [], enable: keys });
 }
 
 /**
@@ -2552,23 +2547,26 @@ export async function enablePredefinedChannels(keys: readonly string[]): Promise
  * @param keys - The predefined channel keys to change.
  * @param keys.disable - The keys to add to the disabled list.
  * @param keys.enable - The keys to remove from the disabled list.
+ * @returns Whether the file took the write; when it did not, the change holds until the next restart.
  */
-export async function updatePredefinedChannels(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<void> {
+export async function updatePredefinedChannels(keys: { readonly disable: readonly string[]; readonly enable: readonly string[] }): Promise<ProcessWriteResult> {
 
-  await mutateDisabledPredefined(keys);
+  return mutateDisabledPredefined(keys);
 }
 
 /**
  * Writes a partial update of the channel-table display preferences (sort field, sort direction, visible columns) through one process write. Only the fields
- * present in `prefs` are written, onto the file the store just read, so a field the request leaves out keeps the file's value; the supplied fields land in the
- * file and in CONFIG before this resolves. A call that supplies no field writes nothing and dispatches nothing, as the predefined writer's call with no key does.
+ * present in `prefs` are written, onto the file the store just read, so a field the request leaves out keeps the file's value; the supplied fields land in
+ * CONFIG before this resolves, and in the file too unless the store refuses the write, which the answer reports while they stay in effect until the next
+ * restart. A call that supplies no field writes nothing and dispatches nothing, as the predefined writer's call with no key does, and answers persisted.
  * @param prefs - Subset of display preferences to update.
+ * @returns Whether the file took the write.
  */
 export async function mutateChannelDisplayPrefs(prefs: {
   channelSortDirection?: SortDirection;
   channelSortField?: ChannelSortField;
   visibleColumns?: readonly string[];
-}): Promise<void> {
+}): Promise<ProcessWriteResult> {
 
   const supplied: Partial<Record<ProcessFieldPath, unknown>> = {};
 
@@ -2589,22 +2587,24 @@ export async function mutateChannelDisplayPrefs(prefs: {
 
   if(Object.keys(supplied).length === 0) {
 
-    return;
+    return { persisted: true };
   }
 
-  await writeProcessFields(() => supplied);
+  return writeProcessFields(() => supplied);
 }
 
 /**
- * Marks the first-run Service Setup wizard as completed through one process write of the flag, which lands in the file and in CONFIG before this resolves. The
- * operation is a one-way transition: it moves setupCompleted from false or absent to true, and no process writer moves it back.
+ * Marks the first-run Service Setup wizard as completed through one process write of the flag, which lands in CONFIG before this resolves, and in the file too
+ * unless the store refuses the write, which the answer reports while the flag holds until the next restart. The operation is a one-way transition: it moves
+ * setupCompleted from false or absent to true, and no process writer moves it back.
  *
  * Persistence note: setupCompleted is a state field in PROCESS_FIELDS in userConfig.ts, so the true value written here survives filterDefaults and comes back
  * into the running configuration at the next boot. No process writer clears the flag, because the wizard it records cannot be un-completed.
+ * @returns Whether the file took the write.
  */
-export async function markSetupCompleted(): Promise<void> {
+export async function markSetupCompleted(): Promise<ProcessWriteResult> {
 
-  await writeProcessFields(() => ({ "channels.setupCompleted": true }));
+  return writeProcessFields(() => ({ "channels.setupCompleted": true }));
 }
 
 /**

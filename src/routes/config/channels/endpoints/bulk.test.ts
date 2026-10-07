@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * bulk.test.ts: Tests for the bulk channel-operation endpoints (auto-number, hdhr-bulk, bulk-tags). The endpoints validate input shape, derive the visible
- * channel set, and route to the shared mutation helpers. We exercise the validation paths and the no-op paths with mock req/res; the success-with-changes paths
- * delegate to helpers tested in their own files.
+ * channel set, and route to the shared mutation helpers. We exercise the validation paths, the no-op paths and the store's read and parse refusals with mock
+ * req/res; the success-with-changes paths delegate to helpers tested in their own files.
  */
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { PLAYLIST_HINT } from "../http/playlistHint.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
@@ -275,5 +275,48 @@ describe("POST /config/channels/bulk-tags", () => {
 
     assert.equal(body["success"], true);
     assert.ok((body["message"] as string).endsWith(PLAYLIST_HINT), "the success message carries the reload hint");
+  });
+
+  test("answers a channels file the store cannot read 409 with the store's refusal, writing nothing", async () => {
+
+    // A directory standing where the channels file belongs fails the store's read for a reason other than absence, so the tag cascade's write is refused. Any
+    // file the boot already wrote there is removed first.
+    await rm(path.join(dir, "channels.json"), { force: true });
+    await mkdir(path.join(dir, "channels.json"));
+
+    const { json, req, res, status } = makeReqRes({ body: { action: "add", tag: "Sports" } });
+
+    await bulkTags(req, res, () => undefined);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 409, "a store refusal is a conflict with the file's state");
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], false);
+    assert.match(body["error"] as string, /^The channels file .+ could not be read \(EISDIR.*\), so nothing was written\.$/, "the body carries the refusal's sentence");
+  });
+
+  test("answers a channels file that does not parse 409 with the store's refusal, writing nothing", async () => {
+
+    // Invalid JSON where the channels file belongs, with no backup to recover from, fails the store's parse, so the tag cascade's write is refused. A parse
+    // refusal reaches the route wrapper as a read refusal does, so it answers the same status with the store's own sentence. Any backup the boot wrote is removed
+    // first, and the boot's file is overwritten.
+    const channelsPath = path.join(dir, "channels.json");
+    const corrupt = "{ \"channels\": ";
+
+    await rm(channelsPath + ".bak", { force: true });
+    await writeFile(channelsPath, corrupt);
+
+    const { json, req, res, status } = makeReqRes({ body: { action: "add", tag: "Sports" } });
+
+    await bulkTags(req, res, () => undefined);
+
+    assert.equal(status.mock.calls[0]?.arguments[0], 409, "A parse refusal answers the status a read refusal does.");
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], false);
+    assert.match(body["error"] as string, /^Cannot modify channels \(.+\): file contains invalid JSON\. .+$/, "The body carries the parse refusal's sentence.");
+    assert.equal(await readFile(channelsPath, "utf8"), corrupt, "The channels file keeps the bytes the store refused to write over.");
   });
 });

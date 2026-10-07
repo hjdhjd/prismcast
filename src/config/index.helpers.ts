@@ -4,8 +4,8 @@
  * and composes its default from the file store. Consumed by the suites that boot and save through that port. Excluded from the build emit by the
  * *.helpers.ts pattern in tsconfig.build.json.
  */
+import { FileStoreParseError, FileStoreReadError } from "./persistence.ts";
 import type { ConfigStore } from "./index.ts";
-import { FileStoreParseError } from "./persistence.ts";
 import type { Nullable } from "../types/index.ts";
 import type { UserConfig } from "./userConfig.ts";
 import { normalizeStoredConfig } from "./userConfig.ts";
@@ -17,9 +17,10 @@ import { normalizeStoredConfig } from "./userConfig.ts";
 export const SEEDED_DEVICE_ID = "e2370904";
 
 /**
- * The error message the double's read failure throws from a mutation, the file store's own wording for a file it could not read.
+ * The error message the double's read failure throws from a mutation, the file store's own wording for a file it could not read, carrying the reason the
+ * double's permission failure gives. It is written out rather than composed, so a change to the store's wording reddens the rows that match it.
  */
-export const READ_FAILURE_MESSAGE = "The configuration file /memory/config.json could not be read, so nothing was written.";
+export const READ_FAILURE_MESSAGE = "The configuration file /memory/config.json could not be read (EACCES: permission denied), so nothing was written.";
 
 /**
  * The error message the double's write failure throws from a mutation once its callback has run and before its follow-up, standing in for a write or a readback
@@ -73,7 +74,7 @@ export function makeMemoryConfigStore(file: UserConfig = {}): MemoryConfigStore 
 
         case "read": {
 
-          throw new Error(READ_FAILURE_MESSAGE);
+          throw new FileStoreReadError("configuration", "/memory/config.json", new Error("EACCES: permission denied"));
         }
 
         default: {

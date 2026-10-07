@@ -9,7 +9,7 @@ import type { Express, Request, Response } from "express";
 import { VALID_SORT_FIELDS, compareChannelSort } from "../../../../config/channelSort.ts";
 import { applyChannelDelta, getEffectiveHdhrEnabled, getVisibleChannels, isInVocabulary, isVisibleChannel, mutateChannels, tagsMatch,
   transformChannelTags } from "../../../../config/userChannels.ts";
-import { sendError, sendSuccess, sendValidationError } from "../../http/envelope.ts";
+import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import type { ChannelSortField } from "../../../../types/index.ts";
 import { LOG } from "../../../../utils/index.ts";
 import { route } from "../http/handler.ts";
@@ -175,19 +175,12 @@ export function registerBulkRoutes(app: Express): void {
 
     // Use tagsMatch for case-insensitive membership so submitting "News" doesn't duplicate an existing "news" entry and removing "News" also clears a "news" entry.
     // Tag identity is case-insensitive throughout the system (per tagsMatch); mutation paths must honor that.
-    const { affectedKeys, error } = await transformChannelTags(
+    const { affectedKeys } = await transformChannelTags(
       isVisibleChannel,
       (tags) => (action === "add") ?
         (tags.some((t) => tagsMatch(t, tag)) ? tags : [ ...tags, tag ]) :
         tags.filter((t) => !tagsMatch(t, tag))
     );
-
-    if(error) {
-
-      sendError(res, 400, { error });
-
-      return;
-    }
 
     if(affectedKeys.length === 0) {
 

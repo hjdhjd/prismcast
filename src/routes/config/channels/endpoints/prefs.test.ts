@@ -2,11 +2,12 @@
  *
  * prefs.test.ts: Tests for the channel display-preferences and setup-completed endpoints. The endpoints validate input shape and route to mutateChannelDisplayPrefs
  * / markSetupCompleted helpers - the validation logic lives at the HTTP boundary, the persistence lives in config/userChannels.ts. We test the validation
- * branches with mock req/res and confirm the success path returns the expected envelope shape.
+ * branches with mock req/res and confirm the success path returns the expected envelope shape, with the unsaved-change warning when the file refuses the write.
  */
 import type { Express, RequestHandler } from "express";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { UNSAVED_CHANGE_WARNING } from "../../http/envelope.ts";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
 import { initializeUserChannels } from "../../../../config/userChannels.ts";
@@ -147,6 +148,21 @@ describe("POST /config/channels/display-prefs", () => {
     const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
 
     assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], undefined, "a write the file took carries no unsaved-change warning");
+  });
+
+  test("answers its success with the unsaved-change warning when the configuration file refuses the write", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the process write applies to the running configuration alone. Any
+    // file the boot already wrote there is removed first.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const { json, req, res } = makeReqRes({ body: { sortField: "name" } });
+
+    await prefs(req, res, () => undefined);
+
+    assert.deepEqual(json.mock.calls[0]?.arguments[0], { persistenceWarning: UNSAVED_CHANGE_WARNING, success: true });
   });
 
   test("accepts an empty body and returns success (every field is optional)", async () => {
@@ -211,5 +227,23 @@ describe("POST /config/channels/setup-completed", () => {
     assert.ok(patch["counts"], "counts must be present");
     assert.deepEqual(patch["rows"], [], "rows must be empty (counts-only)");
     assert.ok(patch["scopeCounts"], "scopeCounts must be present");
+    assert.equal(body["persistenceWarning"], undefined, "a write the file took carries no unsaved-change warning");
+  });
+
+  test("answers its success with the unsaved-change warning when the configuration file refuses the write", async () => {
+
+    // A directory standing where the configuration file belongs fails the store's read, so the process write applies to the running configuration alone. Any
+    // file the boot already wrote there is removed first.
+    await rm(path.join(dir, "config.json"), { force: true });
+    await mkdir(path.join(dir, "config.json"));
+
+    const { json, req, res } = makeReqRes({});
+
+    await setup(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+
+    assert.equal(body["success"], true);
+    assert.equal(body["persistenceWarning"], UNSAVED_CHANGE_WARNING);
   });
 });

@@ -13,7 +13,7 @@ import { LOG, formatError } from "../../../utils/index.ts";
 import { buildChannelTablePatch, generateTagFilterContent, generateTagManagerBody } from "../channels/table.ts";
 import { getActiveTagVocabulary, getTagRegistry } from "../../../config/userChannels.ts";
 import { ConfigurationRejectedError } from "../../../config/index.ts";
-import { FileStoreParseError } from "../../../config/persistence.ts";
+import { FileStoreRefusalError } from "../../../config/persistence.ts";
 import { PLAYLIST_HINT } from "../channels/http/playlistHint.ts";
 import type { Response } from "express";
 import { getProfiles } from "../../../config/profiles.ts";
@@ -26,6 +26,9 @@ export interface ChannelTableCountsOnlyPatch {
   rows: readonly never[];
   scopeCounts: ChannelTablePatch["scopeCounts"];
 }
+
+// The sentence a route answers beside a success when a process write it made applies to the running configuration but the file refused it.
+export const UNSAVED_CHANGE_WARNING = "This change is in effect, but the configuration file could not be saved, so it will revert when PrismCast restarts.";
 
 /**
  * Input to sendSuccess describing the response payload. Fields not provided are omitted from the response.
@@ -40,7 +43,7 @@ export interface SuccessPayload {
   affectedKeys?: readonly string[];
 
   // Additional endpoint-specific fields merged into the response body before the reserved envelope fields. Reserved fields (success, message, patch, active,
-  // filterContent, modalBody, registry, serviceWarning) always win if keys collide, so this is safe to pass arbitrary extras through.
+  // filterContent, modalBody, registry, serviceWarning, persistenceWarning) always win if keys collide, so this is safe to pass arbitrary extras through.
   data?: Record<string, unknown>;
 
   // User-facing success message. Appended with PLAYLIST_HINT when `playlistHint` is true.
@@ -48,6 +51,10 @@ export interface SuccessPayload {
 
   // Pre-built patch. Use this when affectedKeys isn't the right input (e.g., counts-only patches from service-filter, or a patch the caller built directly).
   patch?: ChannelTablePatch | ChannelTableCountsOnlyPatch;
+
+  // The unsaved-change sentence, UNSAVED_CHANGE_WARNING, which a route sets when the file refused a process write it made. The client shows it as a warning
+  // toast after its own success handling.
+  persistenceWarning?: string;
 
   // When true, the response message has PLAYLIST_HINT appended. Ignored when message is absent.
   playlistHint?: boolean;
@@ -101,6 +108,11 @@ export function sendSuccess(res: Response, payload: SuccessPayload = {}): void {
   if(payload.serviceWarning !== undefined) {
 
     body["serviceWarning"] = payload.serviceWarning;
+  }
+
+  if(payload.persistenceWarning !== undefined) {
+
+    body["persistenceWarning"] = payload.persistenceWarning;
   }
 
   res.json(body);
@@ -193,9 +205,10 @@ export function sendFormErrors(res: Response, errors: Record<string, string>): v
  * Sends an error response. Two call shapes:
  *
  *   1. `sendErrorResponse(res, error, action)` - caught-exception form. The error (anything thrown, typed `unknown` to accept the result of `catch(error)`)
- *      is logged via LOG.error and shipped as `{ error: "Failed to <action>: <details>", success: false }` at 500. FileStoreParseError (corrupt JSON) and
- *      ConfigurationRejectedError (a save refusing a configuration that fails validation) are the special cases that produce a 400 carrying their message.
- *      This is the form used by the route wrapper in handler.ts so every endpoint handles exceptions uniformly.
+ *      is logged via LOG.error and shipped as `{ error: "Failed to <action>: <details>", success: false }` at 500. The refusals ship their own message instead:
+ *      a FileStoreRefusalError (the store refused to write over a file it could not parse or read) answers 409 without a log, and a
+ *      ConfigurationRejectedError (a save refusing a configuration that fails validation) answers 400. This is the form used by the route wrapper in
+ *      handler.ts so every endpoint handles exceptions uniformly.
  *
  *   2. `sendErrorResponse(res, payload, status)` - rich-payload form. The payload is shipped verbatim at the given status with `success: false` appended.
  *      No log is emitted - the caller has already decided what message and status to ship. Use this when an endpoint needs to attach extension fields
@@ -221,12 +234,21 @@ export function sendErrorResponse(res: Response, input: unknown, actionOrStatus:
     return;
   }
 
-  // Form 1 (caught-exception): FileStoreParseError surfaces parse details at 400, and a ConfigurationRejectedError is the validation error it is - a save
-  // refused the configuration it would have written - so its reason ships at 400 as the message. All other throwables route through formatError and ship at
-  // 500 with the action label embedded for log correlation.
-  if((input instanceof FileStoreParseError) || (input instanceof ConfigurationRejectedError)) {
+  /* Form 1 (caught-exception). A store refusal is a conflict with the file's current state: the request is valid, the file is unusable until someone repairs
+   * it, and whichever read failed the answer is the same, so it ships at 409 carrying the refusal's message. It logs nothing here, because the store's read has
+   * already warned once for the file. A ConfigurationRejectedError is the validation error it is - a save refused the configuration it would have written - so
+   * its reason ships at 400 as the message. All other throwables route through formatError and ship at 500 with the action label embedded for log correlation.
+   */
+  if(input instanceof FileStoreRefusalError) {
 
-    sendError(res, 400, { error: input.message });
+    sendConflictError(res, input.message);
+
+    return;
+  }
+
+  if(input instanceof ConfigurationRejectedError) {
+
+    sendValidationError(res, input.message);
 
     return;
   }

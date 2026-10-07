@@ -806,12 +806,13 @@ describe("writeProcessFields - the process write", () => {
   const MODE_WARNING = "Native capture mode is unavailable because of a Chrome fMP4 MediaRecorder defect, so FFmpeg capture is in use.";
 
   /**
-   * Writes one process leaf through the store double.
+   * Writes process leaves through the store double.
    * @param fields - Answers the leaves to write from the stored configuration it is handed.
+   * @returns Whether the double took the write.
    */
-  async function write(fields: (stored: Readonly<UserConfig>) => indexModule.ProcessFieldValues): Promise<void> {
+  async function write(fields: (stored: Readonly<UserConfig>) => indexModule.ProcessFieldValues): Promise<indexModule.ProcessWriteResult> {
 
-    await indexModule.writeProcessFields(fields, store);
+    return indexModule.writeProcessFields(fields, store);
   }
 
   /**
@@ -830,8 +831,7 @@ describe("writeProcessFields - the process write", () => {
     // The hand edit lands in the file once the boot has read it, so CONFIG and the loaded snapshot hold the port the boot read and the edit is in neither.
     store.file = { ...store.file, server: { port: 6000 } };
 
-    await write(() => ({ "channels.channelSortField": "channelNumber" }));
-
+    assert.deepEqual(await write(() => ({ "channels.channelSortField": "channelNumber" })), { persisted: true }, "the write answers that the file took it");
     assert.equal(store.file.server?.port, 6000, "the held file keeps the hand edit");
     assert.equal(store.file.channels?.channelSortField, "channelNumber", "the held file carries the written leaf beside it");
     assert.equal(indexModule.CONFIG.channels.channelSortField, "channelNumber", "CONFIG holds the written leaf");
@@ -875,12 +875,28 @@ describe("writeProcessFields - the process write", () => {
 
     store.armedFailure = "read";
 
-    await write(() => ({ "channels.channelSortField": "channelNumber" }));
-
+    assert.deepEqual(await write(() => ({ "channels.channelSortField": "channelNumber" })), { persisted: false }, "the write answers that the file refused it");
     assert.equal(indexModule.CONFIG.channels.channelSortField, "channelNumber", "the running configuration holds the leaf");
     assert.equal(indexModule.getLoadedConfiguration().channels.channelSortField, "name", "the loaded snapshot keeps the file's value");
     assert.equal(calls, 1, "the leaf's handler was dispatched");
     assert.equal(countOf(warn.mock.calls, REFUSED_WRITE), 1, "the refusal is logged once");
+  });
+
+  test("a refused write whose commit throws rejects with the commit's error once the refusal warning is on record with the store's error", async (t) => {
+
+    // A path no setting or state entry classifies makes the class resolver throw inside the refused path's commit, after the store refused at the read.
+    const warn = t.mock.method(LOG, "warn", () => undefined);
+
+    store.armedFailure = "read";
+
+    await assert.rejects(write(() => ({ "channels.unclassified": 1 }) as unknown as indexModule.ProcessFieldValues),
+      { message: "The configuration path channels.unclassified carries no reactivity class." });
+
+    const refusals = warn.mock.calls.filter((call) => call.arguments[0] === REFUSED_WRITE);
+
+    assert.equal(refusals.length, 1, "the refusal warning was logged before the commit threw");
+    assert.deepEqual(refusals[0]?.arguments[1], { error: READ_FAILURE_MESSAGE.replace(/\.$/, ""), paths: ["channels.unclassified"] },
+      "the warning carries the store's error and the paths the write tried to set");
   });
 
   test("a write the store refuses once its callback ran answers its leaves again from a clone of CONFIG and commits that answer to CONFIG alone",

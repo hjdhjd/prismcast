@@ -67,13 +67,13 @@ describe("POST /debug - the filter applies at once and persists through the vali
 
     const warn = t.mock.method(LOG, "warn", () => undefined);
     const response = await postToggle(app, "tuning:hulu, recovery");
-    const notPersisted = warn.mock.calls.filter((call) => call.arguments[0] === "The debug filter is applied but was not persisted: %s.");
+    const notPersisted = warn.mock.calls.filter((call) => call.arguments[0] === "The debug filter is applied but was not persisted.");
 
     assert.equal(response.status, 303, "the redirect answers");
     assert.equal(response.headers.get("location"), "/debug");
     assert.equal(getCurrentPattern(), "tuning:hulu,recovery", "the filter is applied at once");
     assert.equal(notPersisted.length, 1, "one warning says the filter was not persisted");
-    assert.equal(notPersisted[0]?.arguments[1], "PORT must be at least 1, but it is 0", "the warning carries the reason the save was refused");
+    assert.deepEqual(notPersisted[0]?.arguments[1], { error: "PORT must be at least 1, but it is 0" }, "the warning carries the reason the save was refused");
     assert.deepEqual(await readPersistedJson(ctx, "config.json"), { server: { port: 0 } }, "the refused save wrote nothing");
     assert.equal(CONFIG.logging.debugFilter, "", "the refused save never reached CONFIG");
   });

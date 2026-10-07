@@ -1065,6 +1065,7 @@ export function generateChannelsSubtabScript(): string {
     "          showToast(data.message || 'Channels added.', 'success');",
     "          if(data.patch) { channelTable.applyPatch(data.patch); }",
     "          if(data.serviceWarning && typeof showServiceFilterWarning === 'function') { showServiceFilterWarning(data.serviceWarning); }",
+    "          if(data.persistenceWarning) { showToast(data.persistenceWarning, 'warning'); }",
     "        } else {",
     "          btn.disabled = false;",
     "          updateBrowseCount();",
@@ -1097,11 +1098,13 @@ export function generateChannelsSubtabScript(): string {
     "      setupWizard.state.selectedServices = selected;",
     "      setupWizard.state.authIndex = 0;",
     "      try {",
-    "        await fetch('/config/service-filter', {",
+    "        const res = await fetch('/config/service-filter', {",
     "          body: JSON.stringify({ enabledServices: selected }),",
     "          headers: { 'Content-Type': 'application/json' },",
     "          method: 'POST'",
     "        });",
+    "        const result = await res.json();",
+    "        if(result.persistenceWarning) { showToast(result.persistenceWarning, 'warning'); }",
     "        return '';",
     "      } catch(e) { return 'Failed to save service selection.'; }",
     "    }",
@@ -1132,11 +1135,13 @@ export function generateChannelsSubtabScript(): string {
     "    setupWizard.open();",
     "  };",
 
-    // Skip the entire setup flow and mark as completed.
+    // Skip the entire setup flow and mark as completed. The response is read for the unsaved-change warning, shown once the wizard has closed.
     "  window.skipSetup = async () => {",
-    "    try { await fetch('/config/channels/setup-completed', { headers: { 'Content-Type': 'application/json' }, method: 'POST' }); }",
+    "    let result = null;",
+    "    try { result = await (await fetch('/config/channels/setup-completed', { headers: { 'Content-Type': 'application/json' }, method: 'POST' })).json(); }",
     "    catch(e) { console.warn('Setup completion failed to persist on skip.', e); }",
     "    setupWizard.close();",
+    "    if(result && result.persistenceWarning) { showToast(result.persistenceWarning, 'warning'); }",
     "  };",
 
     // Authenticate the current service in step 2. Opens the browser and shows a waiting prompt.
@@ -1186,6 +1191,7 @@ export function generateChannelsSubtabScript(): string {
     "      const data = await res.json();",
     "      setupWizard.close();",
     "      if(data.patch) { channelTable.applyPatch(data.patch); }",
+    "      if(data.persistenceWarning) { showToast(data.persistenceWarning, 'warning'); }",
     "    } catch(err) { console.error('Setup finish request failed.', err); setupWizard.close(); }",
     "  };",
 

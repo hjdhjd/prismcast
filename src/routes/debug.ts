@@ -6,7 +6,9 @@ import { DEBUG_CATEGORIES, LOG, escapeHtml, formatError, getCurrentPattern, init
 import type { Express, Request, Response } from "express";
 import { applyConfigurationChange, describeConfigurationOutcome } from "./config/index.ts";
 import { generateBaseStyles, generatePageWrapper } from "./ui.ts";
+import { ConfigurationRejectedError } from "../config/index.ts";
 import type { DebugCategory } from "../utils/index.ts";
+import { FileStoreRefusalError } from "../config/persistence.ts";
 import { getDebugEnv } from "../config/paths.ts";
 
 /* This module provides a hidden (undocumented) web page at /debug for runtime control of debug logging categories. Toggling a category enables or disables its
@@ -582,8 +584,10 @@ export function setupDebugEndpoint(app: Express): void {
 
     /* Persist through the validated save every writer of the settings surface takes. Its reconcile commits the pattern to CONFIG and re-applies it when no
      * launch source owns the filter, and a change the save picks up from the file - a hand-edited restart-class value, a live value a handler refuses - earns
-     * the restart and the report a settings save would. The page's redirect has no response body to carry that outcome, so it is logged. A save the validation
-     * or the store refuses leaves the runtime filter applied and unsaved, and the redirect answers whatever the save's outcome.
+     * the restart and the report a settings save would. The page's redirect has no response body to carry that outcome, so it is logged: the outcome sentence
+     * at info, and each change a handler refused at warn with its reason, because a scheduled restart's sentence stands alone and would drop the refusals. A
+     * save the validation or the store refuses leaves the runtime filter applied and unsaved, an expected outcome logged at warn, while any other failure is a
+     * fault logged at error; the redirect answers whatever the save's outcome.
      */
     try {
 
@@ -594,9 +598,20 @@ export function setupDebugEndpoint(app: Express): void {
       });
 
       LOG.info(describeConfigurationOutcome(outcome));
+
+      for(const rejection of outcome.apply.rejected) {
+
+        LOG.warn("A configuration handler refused a change in the debug filter save.", { path: rejection.change.path, reason: rejection.reason });
+      }
     } catch(error) {
 
-      LOG.warn("The debug filter is applied but was not persisted: %s.", formatError(error));
+      if((error instanceof FileStoreRefusalError) || (error instanceof ConfigurationRejectedError)) {
+
+        LOG.warn("The debug filter is applied but was not persisted.", { error: formatError(error) });
+      } else {
+
+        LOG.error("The debug filter is applied but was not persisted.", { error: formatError(error) });
+      }
     }
 
     res.redirect(303, "/debug");
