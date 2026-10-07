@@ -93,8 +93,8 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
   test("changing column visibility after a service filter is set leaves the filter active in the rendered panel", async () => {
 
-    /* Symmetric to the sort-change test. visibleColumns is a different shape (array vs. scalar) and a different shouldPreserve predicate (isNonEmptyArray vs.
-     * differsFromStringDefault), so the persistence path is independently exercised - a regression in only the array branch of mutateChannelDisplayPrefs would
+    /* Symmetric to the sort-change test. visibleColumns is a different shape (array vs. scalar), which its PROCESS_FIELDS state rule compares by its members
+     * rather than as a string, so the persistence path is independently exercised - a regression in only the array branch of mutateChannelDisplayPrefs would
      * surface here, not in the prior test.
      */
     await using ctx = await createIntegrationContext();

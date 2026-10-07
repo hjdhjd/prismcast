@@ -1584,7 +1584,7 @@ async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
   // extension files instead.
   if(process.pkg) {
 
-    const extensionPath = getExtensionDir(CONFIG);
+    const extensionPath = getExtensionDir();
 
     // Remove any existing extension arguments and add our own pointing to the extracted extension.
     opts.args = (opts.args ?? [])
@@ -2717,7 +2717,7 @@ export async function prepareExtension(): Promise<void> {
   try {
 
     // The extension files are extracted to the extension directory within the data directory (ensured to exist before this function is called).
-    const out = getExtensionDir(CONFIG);
+    const out = getExtensionDir();
 
     // Create the extension directory if it doesn't exist.
     try {

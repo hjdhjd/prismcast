@@ -62,8 +62,6 @@ function makeConfig(paths: Partial<Config["paths"]> = {}): Config {
     paths: {
 
       chromeDataDir: null,
-      chromeProfileName: "chromedata",
-      extensionDirName: "extension",
       logFile: null,
       ...paths
     }
@@ -289,7 +287,7 @@ describe("getChromeDataDir", () => {
     });
   });
 
-  test("falls back to dataDir + chromeProfileName when override is null", async () => {
+  test("falls back to dataDir + chromedata when override is null", async () => {
 
     await withTempDir((dir) => {
 
@@ -303,15 +301,15 @@ describe("getChromeDataDir", () => {
     });
   });
 
-  test("uses the configured profile name in the fallback path", async () => {
+  test("the fallback name is fixed, so the path follows only the data directory", async () => {
 
     await withTempDir((dir) => {
 
-      initializeDataDir(dir);
+      initializeDataDir(path.join(dir, "elsewhere"));
 
-      const config = makeConfig({ chromeProfileName: "alt-profile" });
+      const config = makeConfig();
 
-      assert.equal(getChromeDataDir(config), path.join(dir, "alt-profile"));
+      assert.equal(getChromeDataDir(config), path.join(dir, "elsewhere", "chromedata"));
 
       return Promise.resolve();
     });
@@ -320,29 +318,25 @@ describe("getChromeDataDir", () => {
 
 describe("getExtensionDir", () => {
 
-  test("returns dataDir + extensionDirName", async () => {
+  test("returns dataDir + extension", async () => {
 
     await withTempDir((dir) => {
 
       initializeDataDir(dir);
 
-      const config = makeConfig();
-
-      assert.equal(getExtensionDir(config), path.join(dir, "extension"));
+      assert.equal(getExtensionDir(), path.join(dir, "extension"));
 
       return Promise.resolve();
     });
   });
 
-  test("uses the configured extension dir name", async () => {
+  test("the extension directory name is fixed, so the path follows only the data directory", async () => {
 
     await withTempDir((dir) => {
 
-      initializeDataDir(dir);
+      initializeDataDir(path.join(dir, "elsewhere"));
 
-      const config = makeConfig({ extensionDirName: "custom-ext" });
-
-      assert.equal(getExtensionDir(config), path.join(dir, "custom-ext"));
+      assert.equal(getExtensionDir(), path.join(dir, "elsewhere", "extension"));
 
       return Promise.resolve();
     });

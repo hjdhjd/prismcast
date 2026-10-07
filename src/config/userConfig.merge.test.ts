@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * userConfig.merge.test.ts: Unit tests for the env- and CLI-aware portions of the user-config layer - mergeConfiguration, getEnvOverrides, filterDefaults, and the
- * boot-time hydration registry (the PRESERVED_FIELDS / HYDRATED_FIELDS / PERSISTENCE_ONLY_FIELDS partition and channelsDvr.host hydration into runtime CONFIG).
- * Split out from userConfig.test.ts to keep both files under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the
- * pure-function tests in the sibling suite.
+ * save and restore rules of the fields the process writes (the PROCESS_FIELDS table, and channelsDvr.host hydration into runtime CONFIG). Split out from
+ * userConfig.test.ts to keep each file under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the pure-function tests in
+ * the sibling suite.
  */
-import { CONFIG_METADATA, DEFAULTS, HYDRATED_FIELDS, PERSISTENCE_ONLY_FIELDS, PRESERVED_FIELDS, filterDefaults, getEnvOverrideValue, getEnvOverrides,
-  getNestedValue, mergeConfiguration } from "./userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, filterDefaults, getEnvOverrideValue, getEnvOverrides, getNestedValue, mergeConfiguration,
+  setNestedValue } from "./userConfig.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { LOG } from "../utils/index.ts";
 import type { UserConfig } from "./userConfig.ts";
@@ -126,8 +126,8 @@ describe("mergeConfiguration", () => {
 
   test("non-string sortField values are ignored (defensive)", () => {
 
-    // channelSortField is hydrated via the HYDRATED_FIELDS registry using the isNonEmptyString predicate, which rejects non-string (and empty-string) values.
-    // A non-string value fails the predicate and the default is preserved.
+    // channelSortField is brought back by its PROCESS_FIELDS state rule, which takes only a value with its default's shape that is not the empty string. A
+    // non-string value fails the rule and the default is preserved.
     const userConfig = { channels: { channelSortField: 123 as unknown as string } } as UserConfig;
     const result = mergeConfiguration(userConfig);
 
@@ -501,8 +501,8 @@ describe("filterDefaults", () => {
 
   test("preserves non-empty array fields even when all entries match defaults set elsewhere", () => {
 
-    // disabledPredefined is not in CONFIG_METADATA, so the metadata loop never compares it; it is preserved by the isNonEmptyArray predicate in PRESERVED_FIELDS,
-    // which keeps a non-empty user list while letting an empty list (identical to the empty-array default) collapse.
+    // disabledPredefined is not in CONFIG_METADATA, so the metadata loop never compares it; it is kept by its PROCESS_FIELDS state rule, which keeps a
+    // non-empty user list while letting an empty list (identical to the empty-array default) collapse.
     const filtered = filterDefaults({ channels: { disabledPredefined: ["nbc"] } });
 
     assert.deepEqual(getNestedValue(filtered, "channels.disabledPredefined"), ["nbc"]);
@@ -519,7 +519,7 @@ describe("filterDefaults", () => {
 
     /* The rule enforced after the v3 schema migration: channelsDvr.host is host-only, never host:port. The fixture reflects that rule. The migration
      * itself (which splits any legacy host:port into host + port) is covered in userConfig.migrations.test.ts; this test is about preservation through
-     * filterDefaults's allow-list - the auto-discovered host is not in CONFIG_METADATA so the standard metadata loop would drop it without explicit handling.
+     * filterDefaults's PROCESS_FIELDS loop - the auto-discovered host is not in CONFIG_METADATA so the standard metadata loop would drop it without that loop.
      */
     const filtered = filterDefaults({ channelsDvr: { host: "192.168.1.5" } });
 
@@ -611,9 +611,9 @@ describe("filterDefaults", () => {
 
   test("filterDefaults preserves a non-empty array preserved field while still stripping default-equal sibling fields in the same nested group", () => {
 
-    /* Asserts the interaction between PRESERVED_FIELDS and the metadata-driven loop: a single channels group can contain both a preserved non-empty array
-     * (channels.disabledPredefined) and a default-equal scalar (channels.channelSortField). The output must keep the array and drop the scalar; the parent
-     * group survives because the array kept it non-empty.
+    /* Asserts that one nested group keeps what its PROCESS_FIELDS rules keep and nothing else: a single channels group can contain both a non-empty array
+     * the rules keep (channels.disabledPredefined) and a default-equal scalar (channels.channelSortField). The output must keep the array and drop the scalar;
+     * the parent group survives because the array kept it non-empty.
      */
     const filtered = filterDefaults({
 
@@ -632,44 +632,24 @@ describe("filterDefaults", () => {
   });
 });
 
-describe("hydration registry parity", () => {
+describe("process field hydration", () => {
 
-  /* The architectural rule: every PRESERVED_FIELDS entry has a declared destination. Either it hydrates into the runtime CONFIG on boot (HYDRATED_FIELDS)
-   * or it lives only on the persisted UserConfig shape with no runtime counterpart (PERSISTENCE_ONLY_FIELDS - currently schemaVersion / migrationsApplied,
-   * owned by the file-store framework). The two registries partition PRESERVED_FIELDS exactly: every preserved path appears in one set or the other, and the
-   * sets are disjoint. A new preservation entry added without an explicit hydration classification fails this single assertion before any per-field test runs.
-   *
-   * This is the read-side analogue of the drift check on PRESERVED_FIELDS itself: if filterDefaults preserves a value but mergeConfiguration never brings it
-   * back, the persisted bytes are wasted (or worse, the runtime CONFIG silently drifts from the on-disk state, as channelsDvr.host did before this registry
-   * existed).
+  /* Every field the process writes is declared once in PROCESS_FIELDS, so the rule that keeps it on disk and the rule that brings it back at boot derive from
+   * the same entry: a state field's rules from its default, and a schema field, which has no runtime counterpart, from its predicate alone. The rows below hold
+   * the restore half for the auto-discovered host and the setup flag, and the known answers further down hold the save and the restore half for every field.
    */
-  test("PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS and PERSISTENCE_ONLY_FIELDS, with no overlap", () => {
-
-    const preservedPaths = PRESERVED_FIELDS.map((entry) => entry.path);
-    const hydratedPaths = HYDRATED_FIELDS.map((entry) => entry.path);
-    const persistenceOnlyPaths = [...PERSISTENCE_ONLY_FIELDS];
-    const classifiedPaths = [ ...hydratedPaths, ...persistenceOnlyPaths ];
-
-    assert.deepEqual(preservedPaths.toSorted(), classifiedPaths.toSorted(),
-      "every PRESERVED_FIELDS path must appear in either HYDRATED_FIELDS or PERSISTENCE_ONLY_FIELDS");
-
-    const overlap = hydratedPaths.filter((path) => persistenceOnlyPaths.includes(path));
-
-    assert.deepEqual(overlap, [], "HYDRATED_FIELDS and PERSISTENCE_ONLY_FIELDS must be disjoint - no path can be both runtime-hydrated and persistence-only");
-  });
-
-  test("no PRESERVED_FIELDS path is a metadata path, so the metadata loop alone decides every setting", () => {
+  test("no PROCESS_FIELDS key is a metadata path, so the metadata loop alone decides every setting", () => {
 
     const metadataPaths = new Set(Object.values(CONFIG_METADATA).flat().map((setting) => setting.path));
 
-    assert.deepEqual(PRESERVED_FIELDS.map((entry) => entry.path).filter((path) => metadataPaths.has(path)), [], "the registry holds only paths outside the metadata");
+    assert.deepEqual(Object.keys(PROCESS_FIELDS).filter((fieldPath) => metadataPaths.has(fieldPath)), [], "the table holds only paths outside the metadata");
   });
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* channelsDvr.host is discovered by the show-info module, which writes it into CONFIG and persists it through showInfo.persistDvrHost, and PRESERVED_FIELDS
-     * keeps it on disk. This test asserts that HYDRATED_FIELDS brings it back into runtime CONFIG on boot, which is where the show-info module and pretune read
-     * the host, so it is known from the first poll rather than after the next discovery.
+    /* channelsDvr.host is discovered by the show-info module, which writes it into CONFIG and persists it through showInfo.persistDvrHost, and its
+     * PROCESS_FIELDS state entry keeps it on disk. This test asserts that the same entry brings it back into runtime CONFIG on boot, which is where the
+     * show-info module and pretune read the host, so it is known from the first poll rather than after the next discovery.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };
     const result = mergeConfiguration(userConfig);
@@ -680,8 +660,8 @@ describe("hydration registry parity", () => {
 
   test("channels.setupCompleted survives a save and hydrates back into runtime CONFIG, and only its true state is written or restored", () => {
 
-    /* The setup flag is a one-way fact with a false default, so the file carries it only once it is true and the boot brings back only a true value. One
-     * seeded document drives the write-side registry, which keeps it, and the read-side registry, which restores it.
+    /* The setup flag is a one-way fact with a false default, so the file carries it only once it is true, and a stored value that is not a boolean leaves the
+     * running configuration at the default. One seeded document drives the save rule, which keeps it, and the restore rule, which brings it back.
      */
     const userConfig: UserConfig = { channels: { setupCompleted: true } };
 
@@ -692,15 +672,120 @@ describe("hydration registry parity", () => {
       "a value that is not the boolean true leaves runtime CONFIG at the default");
   });
 
-  test("hydration leaves runtime CONFIG at defaults when the disk value fails the predicate", () => {
+  test("hydration leaves runtime CONFIG at defaults when the disk value fails the restore rule", () => {
 
     /* Empty strings, undefined values, and other "not meaningful enough" cases must not overwrite the default. This covers the edge where a corrupted or
      * legacy file carries channelsDvr.host: "" - the runtime CONFIG should stay at the default empty string (which downstream callers already treat as "not
-     * yet discovered") rather than re-hydrating the same empty value through the registry. Behaviorally identical, but the predicate keeps the registry
-     * declarative.
+     * yet discovered") rather than bringing back the same empty value, because a state field's restore rule never takes the empty string.
      */
     const result = mergeConfiguration({ channelsDvr: { host: "" } });
 
     assert.equal(result.channelsDvr.host, DEFAULTS.channelsDvr.host, "empty string disk value does not overwrite the default");
+  });
+});
+
+/* The save and restore rules of every field the process writes, as known answers. For each field and each input, the first answer is whether filterDefaults
+ * keeps the key on disk, and the second is the value mergeConfiguration produces at the path, written as a literal, so an input equal to the default and an
+ * input that is not brought back are both observable. The answers state the rules as behavior, so they hold however the rules are declared.
+ */
+describe("the fields the process writes are kept and restored by their known answers", () => {
+
+  const INPUTS: readonly (readonly [ string, unknown ])[] = [
+
+    [ "undefined", undefined ],
+    [ "the empty string", "" ],
+    [ "\"x\"", "x" ],
+    [ "\"name\"", "name" ],
+    [ "an empty array", [] ],
+    [ "[\"a\"]", ["a"] ],
+    [ "true", true ],
+    [ "false", false ],
+    [ "zero", 0 ]
+  ];
+
+  // Each row lists [ kept, merged ] per input, in the order INPUTS lists them.
+  const EMPTY_STRING_DEFAULT: readonly (readonly [ boolean, unknown ])[] = [
+    [ false, "" ], [ false, "" ], [ true, "x" ], [ true, "name" ], [ false, "" ], [ false, "" ], [ false, "" ], [ false, "" ], [ false, "" ]
+  ];
+
+  const EMPTY_ARRAY_DEFAULT: readonly (readonly [ boolean, unknown ])[] = [
+    [ false, [] ], [ false, [] ], [ false, [] ], [ false, [] ], [ false, [] ], [ true, ["a"] ], [ false, [] ], [ false, [] ], [ false, [] ]
+  ];
+
+  const KNOWN_ANSWERS: Readonly<Record<string, readonly (readonly [ boolean, unknown ])[]>> = {
+
+    "channels.channelSortDirection": [
+      [ false, "asc" ], [ true, "asc" ], [ true, "x" ], [ true, "name" ], [ false, "asc" ], [ false, "asc" ], [ false, "asc" ], [ false, "asc" ], [ false, "asc" ]
+    ],
+    "channels.channelSortField": [
+      [ false, "name" ], [ true, "name" ], [ true, "x" ], [ false, "name" ], [ false, "name" ], [ false, "name" ], [ false, "name" ], [ false, "name" ],
+      [ false, "name" ]
+    ],
+    "channels.disabledPredefined": EMPTY_ARRAY_DEFAULT,
+    "channels.enabledServices": EMPTY_ARRAY_DEFAULT,
+    "channels.setupCompleted": [
+      [ false, false ], [ false, false ], [ false, false ], [ false, false ], [ false, false ], [ false, false ], [ true, true ], [ false, false ], [ false, false ]
+    ],
+    "channels.visibleColumns": EMPTY_ARRAY_DEFAULT,
+    "channelsDvr.host": EMPTY_STRING_DEFAULT,
+    "hdhr.deviceId": EMPTY_STRING_DEFAULT,
+    "logging.debugFilter": EMPTY_STRING_DEFAULT
+  };
+
+  // Whether the filtered document holds the key itself, so a kept value is told apart from a key filterDefaults dropped.
+  const holdsKey = (document: UserConfig, fieldPath: string): boolean => {
+
+    const parts = fieldPath.split(".");
+    const parent = (parts.length === 1) ? document : getNestedValue(document, parts.slice(0, -1).join("."));
+
+    return (typeof parent === "object") && (parent !== null) && Object.hasOwn(parent, parts.at(-1) ?? "");
+  };
+
+  for(const [ fieldPath, answers ] of Object.entries(KNOWN_ANSWERS)) {
+
+    test(fieldPath + " is kept on disk and restored at boot as its known answers state", () => {
+
+      assert.equal(answers.length, INPUTS.length, "precondition: " + fieldPath + " states an answer for every input");
+
+      for(const [ index, [ label, value ] ] of INPUTS.entries()) {
+
+        const [ kept, merged ] = answers[index] ?? assert.fail(fieldPath + " states no answer for " + label);
+        const input = structuredClone(value);
+        const document: UserConfig = {};
+
+        setNestedValue(document as Record<string, unknown>, fieldPath, input);
+
+        const filtered = filterDefaults(document);
+        const result = getNestedValue(mergeConfiguration(document), fieldPath);
+
+        assert.equal(holdsKey(filtered, fieldPath), kept, fieldPath + " given " + label + " is " + (kept ? "kept" : "dropped") + " on save");
+
+        if(kept) {
+
+          assert.deepEqual(getNestedValue(filtered, fieldPath), input, fieldPath + " given " + label + " is kept as written");
+        }
+
+        assert.deepEqual(result, merged, fieldPath + " given " + label + " merges to its known answer");
+
+        if(Array.isArray(input) && Array.isArray(result)) {
+
+          assert.notEqual(result, input, fieldPath + " given " + label + " merges as a copy, never the parsed file's own array");
+        }
+      }
+    });
+  }
+
+  test("schemaVersion is kept as a number and dropped otherwise", () => {
+
+    assert.equal(holdsKey(filterDefaults({ schemaVersion: 0 }), "schemaVersion"), true, "zero is kept");
+    assert.equal(holdsKey(filterDefaults({ schemaVersion: 3 }), "schemaVersion"), true, "three is kept");
+    assert.equal(holdsKey(filterDefaults({ schemaVersion: "1" as unknown as number }), "schemaVersion"), false, "a numeric string is dropped");
+  });
+
+  test("migrationsApplied is kept as a non-empty list and dropped otherwise", () => {
+
+    assert.equal(holdsKey(filterDefaults({ migrationsApplied: ["m"] }), "migrationsApplied"), true, "a non-empty list is kept");
+    assert.equal(holdsKey(filterDefaults({ migrationsApplied: [] }), "migrationsApplied"), false, "an empty list is dropped");
+    assert.equal(holdsKey(filterDefaults({ migrationsApplied: "m" as unknown as string[] }), "migrationsApplied"), false, "a string is dropped");
   });
 });

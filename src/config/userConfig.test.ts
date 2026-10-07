@@ -4,7 +4,7 @@
  * drives the UI, and the small primitives (getNestedValue/setNestedValue/isEqualToDefault) plus the UI-tab/section accessors. The merge priority order, env
  * var handling, and filterDefaults are covered in userConfig.merge.test.ts so this file stays under the conventions' 500-line guidance.
  */
-import { CONFIG_METADATA, DEFAULTS, SYSTEM_STATE_REACTIVITY, getAdvancedSections, getNestedValue, getReactivityClass, getSettingByPath, getSettingsTabSections,
+import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, getAdvancedSections, getNestedValue, getReactivityClass, getSettingByPath, getSettingsTabSections,
   getUITabs, isEqualToDefault, setNestedValue } from "./userConfig.ts";
 import { describe, test } from "node:test";
 import type { ReactivityClass } from "../types/index.ts";
@@ -354,9 +354,9 @@ describe("getAdvancedSections", () => {
   });
 });
 
-/* The reactivity classification is total: every leaf the defaults define resolves to exactly one class, from its metadata when it is a setting and from the
- * system-state table otherwise. The known-answer rows restate the classification table setting by setting, grouped as that table groups them, so a class that
- * drifts from the readers it was read off fails here by name rather than in a save.
+/* The reactivity classification is total: every leaf the defaults define resolves to exactly one class, from its metadata when it is a setting and from its
+ * PROCESS_FIELDS state entry otherwise. The known-answer rows restate the classification table setting by setting, grouped as that table groups them, so a class
+ * that drifts from the readers it was read off fails here by name rather than in a save.
  */
 describe("reactivity classification", () => {
 
@@ -408,7 +408,7 @@ describe("reactivity classification", () => {
     [ "live", [ "streaming.maxConcurrentStreams", "streaming.maxNavigationRetries", "streaming.navigationTimeout", "streaming.videoTimeout" ] ]
   ];
 
-  const KNOWN_SYSTEM_STATE_CLASSES: readonly (readonly [ string, ReactivityClass ])[] = [
+  const KNOWN_PROCESS_FIELD_CLASSES: readonly (readonly [ string, ReactivityClass ])[] = [
 
     [ "channels.channelSortDirection", "live" ],
     [ "channels.channelSortField", "live" ],
@@ -418,9 +418,7 @@ describe("reactivity classification", () => {
     [ "channels.visibleColumns", "live" ],
     [ "channelsDvr.host", "live" ],
     [ "hdhr.deviceId", "live" ],
-    [ "logging.debugFilter", "live" ],
-    [ "paths.chromeProfileName", "restart" ],
-    [ "paths.extensionDirName", "restart" ]
+    [ "logging.debugFilter", "live" ]
   ];
 
   const metadataPaths = new Set(Object.values(CONFIG_METADATA).flat().map((setting) => setting.path));
@@ -450,21 +448,34 @@ describe("reactivity classification", () => {
     }
   });
 
-  test("the system-state table classes exactly the leaves the defaults define outside the metadata, each with the class the table states", () => {
+  // The table's state entries, in the table's own key order, each with the class it states.
+  const stateEntries = Object.entries(PROCESS_FIELDS).flatMap(([ fieldPath, field ]) => ((field.kind === "state") ? [[ fieldPath, field.reactivity ] as const] : []));
+
+  test("the table's state entries are exactly the leaves the defaults define outside the metadata, each with the class the known answers state", () => {
 
     const outside = listConfigLeafPaths().filter((leaf) => !metadataPaths.has(leaf));
 
     assert.ok(outside.length > 0, "precondition: the defaults define leaves outside the metadata");
-    assert.deepEqual([...SYSTEM_STATE_REACTIVITY.keys()], outside, "the table's keys are those leaves, in path order");
-    assert.deepEqual([...SYSTEM_STATE_REACTIVITY.entries()], KNOWN_SYSTEM_STATE_CLASSES);
+    assert.deepEqual(stateEntries.map(([fieldPath]) => fieldPath), outside, "the table's state keys are those leaves, in path order");
+    assert.deepEqual(stateEntries, KNOWN_PROCESS_FIELD_CLASSES);
+  });
+
+  test("no table key is a metadata path, and every schema key is absent from the leaves the defaults define", () => {
+
+    const leaves = new Set(listConfigLeafPaths());
+    const schemaKeys = Object.entries(PROCESS_FIELDS).filter(([ , field ]) => field.kind === "schema").map(([fieldPath]) => fieldPath);
+
+    assert.ok(schemaKeys.length > 0, "precondition: the table declares schema fields");
+    assert.deepEqual(Object.keys(PROCESS_FIELDS).filter((fieldPath) => metadataPaths.has(fieldPath)), [], "the table holds no setting");
+    assert.deepEqual(schemaKeys.filter((fieldPath) => leaves.has(fieldPath)), [], "a schema field exists only in the file, never in the running configuration");
   });
 
   test("every leaf the defaults define resolves through the resolver to the class the known-answer tables state, so a wrong answer fails the row", () => {
 
-    // The expected class comes from the known-answer tables above rather than from the metadata or the system-state table the resolver itself reads, so a
+    // The expected class comes from the known-answer tables above rather than from the metadata or the PROCESS_FIELDS table the resolver itself reads, so a
     // resolver that consults the wrong source or answers a fixed class disagrees with an independent statement of the classification.
     const settingEntries = KNOWN_SETTING_CLASSES.flatMap(([ reactivity, settingPaths ]) => settingPaths.map((settingPath) => [ settingPath, reactivity ] as const));
-    const known = new Map<string, ReactivityClass>([ ...settingEntries, ...KNOWN_SYSTEM_STATE_CLASSES ]);
+    const known = new Map<string, ReactivityClass>([ ...settingEntries, ...KNOWN_PROCESS_FIELD_CLASSES ]);
     const leaves = listConfigLeafPaths();
 
     assert.deepEqual(leaves.toSorted(), [...known.keys()].toSorted(), "precondition: the known-answer tables state a class for every leaf the defaults define");
@@ -475,8 +486,18 @@ describe("reactivity classification", () => {
     }
   });
 
-  test("a path neither the metadata nor the system-state table carries throws, naming the path", () => {
+  test("a path neither the metadata nor the PROCESS_FIELDS table carries throws, naming the path", () => {
 
     assert.throws(() => getReactivityClass("hdhr.friendlyName.nested"), { message: "The configuration path hdhr.friendlyName.nested carries no reactivity class." });
+  });
+
+  test("a schema field carries no class, because it exists only in the file", () => {
+
+    assert.throws(() => getReactivityClass("schemaVersion"), { message: "The configuration path schemaVersion carries no reactivity class." });
+  });
+
+  test("an inherited key is never read as a field, so it carries no class", () => {
+
+    assert.throws(() => getReactivityClass("toString"), { message: "The configuration path toString carries no reactivity class." });
   });
 });

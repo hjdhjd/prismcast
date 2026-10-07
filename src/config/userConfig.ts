@@ -2,7 +2,7 @@
  *
  * userConfig.ts: User configuration file management for PrismCast.
  */
-import type { Config, Nullable, ReactivityClass, SystemStateReactivity } from "../types/index.ts";
+import type { Config, Nullable, ProcessFieldReactivity, ReactivityClass } from "../types/index.ts";
 import { LOG, assertNever, sanitizeString } from "../utils/index.ts";
 import type { CliOverrides } from "./index.ts";
 import type { Migration } from "./persistence.ts";
@@ -1243,8 +1243,6 @@ export const DEFAULTS: Config = {
   paths: {
 
     chromeDataDir: null,
-    chromeProfileName: "chromedata",
-    extensionDirName: "extension",
     logFile: null
   },
 
@@ -1527,19 +1525,36 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
     }
   }
 
-  /* Hydrate fields that live outside CONFIG_METADATA (auto-discovery results like channelsDvr.host, separately-managed lists like channels.disabledPredefined,
-   * the persisted debug filter pattern). The registry pairs each path with a predicate (ignored when undefined) and an optional defensive-copy hook. Adding a
-   * new field here is one HYDRATED_FIELDS entry; the drift-check test in userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into
-   * HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS, so a future preservation entry cannot be added without an explicit hydration classification. See the section
-   * comment above HYDRATED_FIELDS for the full design intent.
+  /* Bring back the state fields the process writes (auto-discovery results like channelsDvr.host, separately-managed lists like channels.disabledPredefined,
+   * the persisted debug filter pattern), each by the rule PROCESS_FIELDS states: a stored value with its default's shape that is not the empty string, written
+   * as a clone so the running configuration never shares a value with the parsed file. A schema field exists only in the file and is never brought back. This
+   * runs after the metadata loop and before the environment and CLI layers, which reach metadata paths only, so those layers still win wherever they apply.
    */
-  for(const field of HYDRATED_FIELDS) {
+  for(const [ fieldPath, field ] of Object.entries(PROCESS_FIELDS)) {
 
-    const userValue = getNestedValue(userConfig, field.path);
+    switch(field.kind) {
 
-    if(field.shouldHydrate(userValue, undefined)) {
+      case "schema": {
 
-      setNestedValue(config as unknown as Record<string, unknown>, field.path, field.copy ? field.copy(userValue) : userValue);
+        break;
+      }
+
+      case "state": {
+
+        const userValue = getNestedValue(userConfig, fieldPath);
+
+        if(hasDefaultShape(userValue, getNestedValue(DEFAULTS, fieldPath)) && (userValue !== "")) {
+
+          setNestedValue(config as unknown as Record<string, unknown>, fieldPath, structuredClone(userValue));
+        }
+
+        break;
+      }
+
+      default: {
+
+        assertNever(field);
+      }
     }
   }
 
@@ -1904,184 +1919,103 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
   return String(primitive) === String(defaultPrimitive);
 }
 
-// Settings preservation registry.
-
-/* The CONFIG_METADATA-driven loop in filterDefaults() handles every setting: a setting appears in CONFIG_METADATA, the loop picks it up, the loop strips
- * values equal to the default, a list setting included, because isEqualToDefault() compares a list by its members. Fields that live outside CONFIG_METADATA
- * entirely (channelsDvr.host populated by showInfo.persistDvrHost(); schemaVersion / migrationsApplied owned by the file-store framework's migration runner)
- * need an explicit allowlist, because the metadata loop never sees them, so without it they would be stripped on the next save.
- *
- * The registry pairs each preserved path with a predicate that decides whether the value at that path is meaningful enough to survive. The predicates are
- * named for their intent (isNonEmptyArray, isTrue, ...) so the registry reads as a declarative table; filterDefaults() consumes it via a single uniform loop.
- * Adding a new preserved field is one line in PRESERVED_FIELDS, not a new inline block in the function body - and Suite 17 in
- * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is covered by the parameterized preservation sweep once its seed
- * value is added to the SEED_VALUES table; the only test edit needed is that seed, never a new test case.
- *
- * Read-side counterpart: HYDRATED_FIELDS (further below) is the symmetric registry consumed by mergeConfiguration() to bring persisted values back into
- * runtime CONFIG on boot. The two sets together with PERSISTENCE_ONLY_FIELDS partition every preserved path into "hydrates to runtime" or "persistence-only
- * metadata" - a drift-check test (userConfig.merge.test.ts) asserts the partition is exact so a future preservation entry cannot be added without an explicit
- * read-side classification.
- */
+// The fields the process writes.
 
 /**
- * Predicate signature for the settings-preservation registry. Each predicate decides whether a particular field's value is meaningful enough to survive the
- * filter pass. The signature accepts both the field's value and its DEFAULTS counterpart so predicates that compare against a default (the sort fields) and
- * predicates that ignore the default (non-empty array / non-empty string checks) share the same call site - filterDefaults() looks up DEFAULTS once per entry
- * and passes both, leaving the predicate free to use whichever it needs.
+ * The declaration of one configuration field the process writes. The process writes every field in PROCESS_FIELDS, and the settings form writes none of them.
+ * The kind tag is the field's whole declaration, and each kind carries one rule:
+ *
+ * - A state field is process-owned state the running configuration holds. It is kept on disk when its value has its default's shape and differs from the
+ *   default, is brought back at boot when its value has its default's shape and is not the empty string, and is applied as its reactivity class says. Its
+ *   default, which DEFAULTS already owns, decides its save rule and its restore rule, so the entry states nothing but its class. An empty string at a state
+ *   field means no value, so the boot leaves the default standing.
+ * - A schema field belongs to the file-store framework's migration runner. It exists only in the file, never in the running configuration, and it is kept
+ *   when its predicate holds.
+ *
+ * One entry carries one kind, and the table refuses a second declaration of a field at compile time, because an object literal cannot repeat a key.
  */
-type PreservePredicate = (value: unknown, defaultValue: unknown) => boolean;
-
-// Predicate: any array, including empty. Used by HYDRATED_FIELDS to unconditionally hydrate any array-typed value present on disk.
-const isArrayValue: PreservePredicate = (value: unknown): boolean => Array.isArray(value);
-
-// Predicate: any non-empty array. Used for fields where the user's empty-array state coincides with the default-empty-array state (disabledPredefined,
-// enabledServices, visibleColumns, migrationsApplied). The defaultValue argument is intentionally unused.
-const isNonEmptyArray: PreservePredicate = (value: unknown): boolean => Array.isArray(value) && (value.length > 0);
-
-// Predicate: any non-empty string. Used for fields whose default is the empty string and whose presence-on-disk should follow the same rule (hdhr.deviceId,
-// logging.debugFilter, channelsDvr.host).
-const isNonEmptyString: PreservePredicate = (value: unknown): boolean => (typeof value === "string") && (value.length > 0);
-
-// Predicate: any number, including NaN. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
-const isNumber: PreservePredicate = (value: unknown): boolean => typeof value === "number";
-
-// Predicate: the boolean true. Used for channels.setupCompleted, a one-way fact whose false state is the default, so only the true state has anything to say
-// on disk and only a true value on disk is worth bringing back into the running configuration.
-const isTrue: PreservePredicate = (value: unknown): boolean => value === true;
-
-// Predicate: a string that differs from the default by simple equality. Used for channelSortField / channelSortDirection - both have meaningful default
-// values ("name", "asc") that should be stripped on save while any other valid string is preserved.
-const differsFromStringDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => (typeof value === "string") && (value !== defaultValue);
+export type ProcessField =
+  { readonly kind: "schema"; readonly preserve: (value: unknown) => boolean } |
+  { readonly kind: "state"; readonly reactivity: ProcessFieldReactivity };
 
 /**
- * One entry in the explicit settings-preservation allowlist. Pairs a config path with the predicate that decides whether the value at that path is
- * meaningful enough to survive a save. Tests parameterize over this registry to assert preservation for every entry without duplicating the field list, so
- * adding a new preserved field is one line here AND zero lines in the test sweep.
+ * Every configuration field the process writes, keyed by dot path in ASCII order. The drift tests in userConfig.test.ts hold the state keys equal to exactly
+ * the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without an entry here, or an entry left behind for a leaf that
+ * moved into the metadata, fails at test time rather than throwing inside a save. A state field's class follows the same rule a setting's declared class does,
+ * read off the field's own readers. Suite 17 in test/e2e/routes/settings-preservation.test.ts iterates the table directly, so a new entry is covered by its
+ * preservation sweep once the entry's seed value joins that file's SEED_VALUES table.
  */
-export interface PreservedField {
+export const PROCESS_FIELDS: Readonly<Record<string, ProcessField>> = {
 
-  // Dot-separated path into the UserConfig shape (e.g., "channels.enabledServices", "schemaVersion").
-  readonly path: string;
+  "channels.channelSortDirection": { kind: "state", reactivity: "live" },
+  "channels.channelSortField": { kind: "state", reactivity: "live" },
+  "channels.disabledPredefined": { kind: "state", reactivity: "live" },
+  "channels.enabledServices": { kind: "state", reactivity: "live" },
+  "channels.setupCompleted": { kind: "state", reactivity: "live" },
+  "channels.visibleColumns": { kind: "state", reactivity: "live" },
+  "channelsDvr.host": { kind: "state", reactivity: "live" },
+  "hdhr.deviceId": { kind: "state", reactivity: "live" },
+  "logging.debugFilter": { kind: "state", reactivity: "live" },
 
-  // Predicate that decides whether the value at `path` is non-default-equivalent and should be preserved into the filtered output.
-  readonly shouldPreserve: PreservePredicate;
+  // The audit trail of the migrations that have run, kept once it names one.
+  "migrationsApplied": { kind: "schema", preserve: (value: unknown): boolean => Array.isArray(value) && (value.length > 0) },
+
+  // The version the migration runner reads to decide which migrations still run, kept whenever it is a number.
+  "schemaVersion": { kind: "schema", preserve: (value: unknown): boolean => typeof value === "number" }
+};
+
+/**
+ * Answers the table's entry for a path, through Object.hasOwn, so an inherited key such as toString is never read as a field.
+ * @param fieldPath - The dot-separated configuration path.
+ * @returns The entry, or undefined when the table declares no field at the path.
+ */
+function getProcessField(fieldPath: string): ProcessField | undefined {
+
+  return Object.hasOwn(PROCESS_FIELDS, fieldPath) ? PROCESS_FIELDS[fieldPath] : undefined;
 }
 
 /**
- * Allowlist of config paths that filterDefaults() preserves outside the CONFIG_METADATA-driven loop. See the section comment above for why a path lives here
- * rather than in CONFIG_METADATA. The list is alphabetized by path so a future maintainer can locate any entry by paging through the registry; ordering does
- * not affect runtime semantics because each entry's preserve check is independent.
- */
-export const PRESERVED_FIELDS: readonly PreservedField[] = [
-
-  { path: "channels.channelSortDirection", shouldPreserve: differsFromStringDefault },
-  { path: "channels.channelSortField", shouldPreserve: differsFromStringDefault },
-  { path: "channels.disabledPredefined", shouldPreserve: isNonEmptyArray },
-  { path: "channels.enabledServices", shouldPreserve: isNonEmptyArray },
-  { path: "channels.setupCompleted", shouldPreserve: isTrue },
-  { path: "channels.visibleColumns", shouldPreserve: isNonEmptyArray },
-  { path: "channelsDvr.host", shouldPreserve: isNonEmptyString },
-  { path: "hdhr.deviceId", shouldPreserve: isNonEmptyString },
-  { path: "logging.debugFilter", shouldPreserve: isNonEmptyString },
-  { path: "migrationsApplied", shouldPreserve: isNonEmptyArray },
-  { path: "schemaVersion", shouldPreserve: isNumber }
-];
-
-/**
- * One entry in the boot-time hydration registry. Pairs a config path with the predicate that decides whether the value at that path should be brought into the
- * runtime CONFIG, plus an optional copy hook for fields that need a defensive copy (arrays use `[...value]` to prevent shared-reference aliasing between the
- * persisted UserConfig blob and the runtime Config). The hydration registry is the read-side counterpart to PRESERVED_FIELDS - PRESERVED_FIELDS keeps a value
- * from being stripped on save; HYDRATED_FIELDS brings the same value back into runtime CONFIG on the next boot.
- */
-export interface HydratedField {
-
-  // Optional defensive-copy hook applied to the disk value before assignment. Used for arrays so the runtime config does not share a reference with the parsed
-  // UserConfig blob (which would let a runtime mutation leak back into the on-disk shape and vice versa). Omitted for primitives where shared-reference aliasing
-  // is structurally impossible.
-  readonly copy?: (value: unknown) => unknown;
-
-  // Dot-separated path into the UserConfig shape (e.g., "channels.enabledServices", "channelsDvr.host"). Must also be a valid path on the runtime Config.
-  readonly path: string;
-
-  // Predicate that decides whether the value at `path` is meaningful enough to hydrate into the runtime CONFIG.
-  readonly shouldHydrate: PreservePredicate;
-}
-
-// Defensive spread copy for array fields. Pulled out as a const so the registry below reads as a declarative table.
-const spreadArray = (value: unknown): unknown => [...(value as unknown[])];
-
-/**
- * Allowlist of config paths that mergeConfiguration() hydrates from the persisted UserConfig into the runtime CONFIG outside the CONFIG_METADATA-driven loop.
- * Each entry corresponds to a PRESERVED_FIELDS entry that lives on the runtime Config type (the persistence-only entries schemaVersion / migrationsApplied are
- * declared in PERSISTENCE_ONLY_FIELDS instead). The list is alphabetized by path; ordering does not affect runtime semantics. A drift-check test in
- * userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS, so a future preservation entry
- * cannot be added without explicitly classifying it as runtime-hydrated or persistence-only.
- */
-export const HYDRATED_FIELDS: readonly HydratedField[] = [
-
-  { path: "channels.channelSortDirection", shouldHydrate: isNonEmptyString },
-  { path: "channels.channelSortField", shouldHydrate: isNonEmptyString },
-  { copy: spreadArray, path: "channels.disabledPredefined", shouldHydrate: isArrayValue },
-  { copy: spreadArray, path: "channels.enabledServices", shouldHydrate: isArrayValue },
-  { path: "channels.setupCompleted", shouldHydrate: isTrue },
-  { copy: spreadArray, path: "channels.visibleColumns", shouldHydrate: isArrayValue },
-  { path: "channelsDvr.host", shouldHydrate: isNonEmptyString },
-  { path: "hdhr.deviceId", shouldHydrate: isNonEmptyString },
-  { path: "logging.debugFilter", shouldHydrate: isNonEmptyString }
-];
-
-/**
- * Allowlist of PRESERVED_FIELDS entries that exist only on the persisted UserConfig shape and have NO runtime CONFIG counterpart. These are framework-managed
- * file-store metadata - the schema-migration runner owns schemaVersion (so the file-store framework can decide whether migrations have run) and migrationsApplied
- * (the audit trail of which migrations have applied). Neither belongs in runtime CONFIG; both must round-trip through filterDefaults so saves do not strip them.
- *
- * The drift-check test consumes this constant to assert that every PRESERVED_FIELDS entry is classified as either runtime-hydrated (HYDRATED_FIELDS) or
- * persistence-only (here), and that the two sets are disjoint. Adding a new PRESERVED_FIELDS entry without classifying it here or in HYDRATED_FIELDS fails the
- * drift check at test time, surfacing the architectural intent that every preserved field has a declared destination.
- */
-export const PERSISTENCE_ONLY_FIELDS: readonly string[] = [
-
-  "migrationsApplied",
-  "schemaVersion"
-];
-
-/* The reactivity classes of the configuration leaves the settings metadata does not carry: the system state a subsystem or a separate endpoint writes, and the
- * fixed path names nothing writes. Each class follows the same rule a setting's declared class does, read off the leaf's own readers. The drift tests in
- * userConfig.test.ts hold the keys equal to exactly the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without a class
- * here, or a class left behind for a leaf that moved into the metadata, fails at test time rather than throwing inside a save. The list is alphabetized by path.
- */
-export const SYSTEM_STATE_REACTIVITY: ReadonlyMap<string, SystemStateReactivity> = new Map<string, SystemStateReactivity>([
-
-  [ "channels.channelSortDirection", "live" ],
-  [ "channels.channelSortField", "live" ],
-  [ "channels.disabledPredefined", "live" ],
-  [ "channels.enabledServices", "live" ],
-  [ "channels.setupCompleted", "live" ],
-  [ "channels.visibleColumns", "live" ],
-  [ "channelsDvr.host", "live" ],
-  [ "hdhr.deviceId", "live" ],
-  [ "logging.debugFilter", "live" ],
-  [ "paths.chromeProfileName", "restart" ],
-  [ "paths.extensionDirName", "restart" ]
-]);
-
-/**
- * Resolves the reactivity class of any configuration leaf: the class its settings metadata declares, or the class the system-state table gives a leaf outside
- * the metadata. An unclassified path is a coding error rather than an operator's, so it throws rather than guessing a class.
+ * Resolves the reactivity class of any configuration leaf: the class its settings metadata declares, or the class its PROCESS_FIELDS state entry states. A
+ * schema field exists only in the file, never in the running configuration, so it carries no class, and an unclassified path is a coding error rather than an
+ * operator's, so each throws rather than guessing a class.
  * @param settingPath - The dot-separated configuration path (e.g., "hdhr.port").
  * @returns The leaf's reactivity class.
- * @throws When neither the metadata nor the system-state table classes the path.
+ * @throws When the path is neither a setting nor a state field.
  */
 export function getReactivityClass(settingPath: string): ReactivityClass {
 
-  const reactivity = getSettingByPath(settingPath)?.reactivity ?? SYSTEM_STATE_REACTIVITY.get(settingPath);
+  const setting = getSettingByPath(settingPath);
 
-  if(reactivity === undefined) {
+  if(setting) {
 
-    throw new Error("The configuration path " + settingPath + " carries no reactivity class.");
+    return setting.reactivity;
   }
 
-  return reactivity;
+  const field = getProcessField(settingPath);
+
+  if(field) {
+
+    switch(field.kind) {
+
+      case "schema": {
+
+        // A schema field is no leaf of the running configuration, so it falls through to the refusal below.
+        break;
+      }
+
+      case "state": {
+
+        return field.reactivity;
+      }
+
+      default: {
+
+        assertNever(field);
+      }
+    }
+  }
+
+  throw new Error("The configuration path " + settingPath + " carries no reactivity class.");
 }
 
 /**
@@ -2117,16 +2051,43 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  // Apply the explicit preservation registry, whose paths lie outside the metadata, so the loop above never wrote them. Each entry is consulted with its
-  // current value plus the default-at-path; the predicate decides whether to write through. See PRESERVED_FIELDS above for the entries and their rationale.
-  for(const field of PRESERVED_FIELDS) {
+  /* Keep the fields the process writes, whose paths lie outside the metadata, so the loop above never wrote them. Each is kept by the rule its PROCESS_FIELDS
+   * kind states: a state field when its value has its default's shape and differs from the default, by the same comparison the loop above applies, and a
+   * schema field when its predicate holds. The order of this loop and the metadata loop does not matter, because the table and the metadata never share a
+   * path, which the drift tests hold.
+   */
+  for(const [ fieldPath, field ] of Object.entries(PROCESS_FIELDS)) {
 
-    const value = getNestedValue(config, field.path);
-    const defaultValue = getNestedValue(DEFAULTS, field.path);
+    const value = getNestedValue(config, fieldPath);
 
-    if(field.shouldPreserve(value, defaultValue)) {
+    switch(field.kind) {
 
-      setNestedValue(filtered, field.path, value);
+      case "schema": {
+
+        if(field.preserve(value)) {
+
+          setNestedValue(filtered, fieldPath, value);
+        }
+
+        break;
+      }
+
+      case "state": {
+
+        const defaultValue = getNestedValue(DEFAULTS, fieldPath);
+
+        if(hasDefaultShape(value, defaultValue) && !isEqualToDefault(value, defaultValue)) {
+
+          setNestedValue(filtered, fieldPath, value);
+        }
+
+        break;
+      }
+
+      default: {
+
+        assertNever(field);
+      }
     }
   }
 

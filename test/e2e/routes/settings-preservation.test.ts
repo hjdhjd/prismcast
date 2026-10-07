@@ -15,19 +15,18 @@
  *      fields - the named tests carry historical-incident context in their messages and serve as low-cost belt-and-suspenders against the most user-visible
  *      regression class. If the parameterized sweep ever skips or mis-seeds one of those fields, the named test still catches the underlying bug.
  *
- *   2. Suite 17 - parameterized preservation sweep driven directly off PRESERVED_FIELDS, the production registry. Adding a new preserved field is one
- *      line in src/config/userConfig.ts (the registry) plus one line in this file's seed table; the sweep then automatically asserts preservation for the new
- *      field. The drift-check test at the top of the sweep block fails loudly if the seed table and the registry get out of sync. This is the structural
- *      counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added to the registry.
+ *   2. Suite 17 - parameterized preservation sweep driven directly off PROCESS_FIELDS, the production table of the fields the process writes. Adding a
+ *      field is one entry in src/config/userConfig.ts (the table) plus one line in this file's seed table; the sweep then automatically asserts preservation
+ *      for the new field. The drift-check test at the top of the sweep block fails loudly if the seed table and the table get out of sync. This is the
+ *      structural counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added.
  *
  *   3. The list-settings sweep, the same shape over every CONFIG_METADATA setting whose default is an array. A list setting is an ordinary metadata setting,
- *      so the registry sweep does not reach it, and its drift check derives the paths from the metadata, so a list setting added later fails until it gets a
+ *      so the table sweep does not reach it, and its drift check derives the paths from the metadata, so a list setting added later fails until it gets a
  *      seed.
  */
-import { CONFIG_METADATA, DEFAULTS, PRESERVED_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
-import type { PreservedField } from "../../../src/config/userConfig.ts";
 import assert from "node:assert/strict";
 
 // The DVR host every row seeds. A save hands a host it changes to the live channelsDvr. handler, which starts a logo population against it, so the seed is a
@@ -185,15 +184,14 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
   });
 });
 
-/* Test-side seed values, keyed by PRESERVED_FIELDS path. Kept in this file (not in the production module) so test fixture data stays out of production code, per
- * the operational rule. A dedicated drift-check test at the top of the sweep asserts this table's keys exactly match the registry's paths - any new entry added
- * to PRESERVED_FIELDS without a matching seed here fails the suite loudly before any sub-test runs, and any orphan seed without a matching registry entry fails
+/* Test-side seed values, keyed by PROCESS_FIELDS path. Kept in this file (not in the production module) so test fixture data stays out of production code, per
+ * the operational rule. A dedicated drift-check test at the top of the sweep asserts this table's keys exactly match the production table's keys - any new
+ * field added to PROCESS_FIELDS without a matching seed here fails the suite loudly before any sub-test runs, and any orphan seed without a matching entry fails
  * the same way.
  *
  * Each value is chosen to differ from its DEFAULTS counterpart so filterDefaults preserves it (the seed must differ from the default to survive default-filtering).
- * schemaVersion and migrationsApplied
- * are framework-managed metadata; the values used here mirror what the runtime would already write (current schema version 3 / a synthetic migration-applied
- * marker), so they round-trip without colliding with the file-store framework's migration runner.
+ * schemaVersion and migrationsApplied are framework-managed metadata; the values used here mirror what the runtime would already write (current schema version
+ * 3 / a synthetic migration-applied marker), so they round-trip without colliding with the file-store framework's migration runner.
  */
 const SEED_VALUES: Record<string, unknown> = {
 
@@ -210,28 +208,28 @@ const SEED_VALUES: Record<string, unknown> = {
   "schemaVersion": 3
 };
 
-describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS", () => {
+describe("POST /config - parameterized preservation sweep over PROCESS_FIELDS", () => {
 
-  /* Suite 17 - the structural counter to "the next 4afa8a0 lands on a field nobody hand-picked for a test." The sweep iterates the production registry directly,
+  /* Suite 17 - the structural counter to "the next 4afa8a0 lands on a field nobody hand-picked for a test." The sweep iterates the production table directly,
    * seeds a non-default value for each entry, POSTs a settings form that touches a different CONFIG_METADATA field (server.port: 9999 - the canonical Phase 1
-   * pattern), and asserts the seeded value survives byte-identical on disk. The registry is the single source of truth; a new preserved field added to the
-   * registry is automatically covered by this sweep without any test edit beyond adding its seed value to the table above.
+   * pattern), and asserts the seeded value survives byte-identical on disk. The table is the single source of truth; a new field added to the table is
+   * automatically covered by this sweep without any test edit beyond adding its seed value to the seed table above.
    */
 
-  test("test-side seed table and PRESERVED_FIELDS registry agree on coverage", () => {
+  test("test-side seed table and the PROCESS_FIELDS table agree on coverage", () => {
 
-    /* Drift check: the seed table's keys must equal the registry's paths exactly - no missing seeds (would fail with a confusing per-field error in a sub-test
-     * below), no orphan seeds (would silently grow the table with stale entries). Comparing sorted arrays surfaces both failure modes in one assertion.
+    /* Drift check: the seed table's keys must equal the production table's keys exactly - no missing seeds (would fail with a confusing per-field error in a
+     * sub-test below), no orphan seeds (would silently grow the table with stale entries). Comparing sorted arrays surfaces each failure mode in one assertion.
      */
-    const registryPaths = PRESERVED_FIELDS.map((field: PreservedField) => field.path).toSorted();
+    const fieldPaths = Object.keys(PROCESS_FIELDS).toSorted();
     const seedPaths = Object.keys(SEED_VALUES).toSorted();
 
-    assert.deepEqual(seedPaths, registryPaths, "SEED_VALUES keys must equal PRESERVED_FIELDS paths exactly. Update the seed table when adding to the registry.");
+    assert.deepEqual(seedPaths, fieldPaths, "SEED_VALUES keys must equal PROCESS_FIELDS keys exactly. Update the seed table when adding to the table.");
   });
 
-  for(const field of PRESERVED_FIELDS) {
+  for(const fieldPath of Object.keys(PROCESS_FIELDS)) {
 
-    test("preserves " + field.path + " across a settings-form POST", async () => {
+    test("preserves " + fieldPath + " across a settings-form POST", async () => {
 
       /* Per-field shape: seed the value, POST a form that touches a different field, assert the seeded value survives byte-identical on disk. The seed value
        * is looked up from SEED_VALUES (drift-checked above); we never duplicate the field list inside this loop body.
@@ -242,11 +240,11 @@ describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS"
 
       const { urlFor } = await bootApp(ctx);
 
-      const seed = SEED_VALUES[field.path];
+      const seed = SEED_VALUES[fieldPath];
 
       await mutateConfig((config) => {
 
-        setNestedValue(config as Record<string, unknown>, field.path, seed);
+        setNestedValue(config as Record<string, unknown>, fieldPath, seed);
       });
 
       const response = await fetch(urlFor("/config"), {
@@ -256,12 +254,12 @@ describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS"
         method: "POST"
       });
 
-      assert.equal(response.status, 200, "settings POST should succeed for " + field.path + "; body: " + (await response.clone().text()).slice(0, 200));
+      assert.equal(response.status, 200, "settings POST should succeed for " + fieldPath + "; body: " + (await response.clone().text()).slice(0, 200));
 
       const persisted = await readPersistedJson(ctx, "config.json");
-      const persistedValue = getNestedValue(persisted, field.path);
+      const persistedValue = getNestedValue(persisted, fieldPath);
 
-      assert.deepEqual(persistedValue, seed, "field " + field.path + " must survive a settings-form POST byte-identical to the seeded value");
+      assert.deepEqual(persistedValue, seed, "field " + fieldPath + " must survive a settings-form POST byte-identical to the seeded value");
     });
   }
 });
@@ -281,7 +279,7 @@ const LIST_SETTING_PATHS = Object.values(CONFIG_METADATA).flat().map((setting) =
 
 describe("POST /config - metadata list settings survive a settings POST", () => {
 
-  /* The registry sweep's sibling for the list settings. A list setting is an ordinary metadata setting the metadata loop keeps when its members differ from
+  /* The table sweep's sibling for the list settings. A list setting is an ordinary metadata setting the metadata loop keeps when its members differ from
    * the default's, so this sweep is the route-level check that a form omitting the list leaves the stored list on disk byte-identical.
    */
 

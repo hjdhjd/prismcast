@@ -84,15 +84,15 @@ describe("file-store backup recovery from a corrupt main file", () => {
       "the recovered main file's host must equal v1 - the .bak content - since the no-op mutate did not change anything");
 
     /* Step 5b: drive the recovered data through the production boot sequence and assert the runtime CONFIG reflects the .bak value. initializeConfiguration()
-     * calls readConfig() and feeds the result into mergeConfiguration(); the HYDRATED_FIELDS registry pulls channelsDvr.host through to runtime CONFIG so the
-     * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural assertion on registry-driven hydration:
+     * calls readConfig() and feeds the result into mergeConfiguration(); the PROCESS_FIELDS table pulls channelsDvr.host through to runtime CONFIG so the
+     * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural assertion on table-driven hydration:
      * a regression that broke it - so that the inline-block merge path skipped channelsDvr.host and left the field preserved on disk but invisible to runtime
      * CONFIG - would surface here as a mismatch between the disk and runtime views, not a silent drop.
      */
     await initializeConfiguration();
 
     assert.equal(CONFIG.channelsDvr.host, "v1.example.test",
-      "runtime CONFIG must reflect the recovered .bak host after initializeConfiguration, confirming HYDRATED_FIELDS bridges disk to runtime");
+      "runtime CONFIG must reflect the recovered .bak host after initializeConfiguration, confirming PROCESS_FIELDS bridges disk to runtime");
   });
 
   test("when both main and .bak are corrupt, readConfig falls through to defaults with parseError=true; no exception thrown at the read boundary", async () => {

@@ -31,7 +31,7 @@ describe("listConfigLeafPaths", () => {
 
     assert.ok(paths.includes("server.port"), "a scalar setting is a leaf");
     assert.ok(paths.includes("streaming.captureCodecs"), "an array-valued setting is one leaf, not one per element");
-    assert.ok(paths.includes("paths.chromeProfileName"), "a leaf outside the settings metadata is listed too");
+    assert.ok(paths.includes("channels.setupCompleted"), "a leaf outside the settings metadata is listed too");
     assert.deepEqual(paths, listConfigLeafPaths(DEFAULTS), "the default root is DEFAULTS");
   });
 });

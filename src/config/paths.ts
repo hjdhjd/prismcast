@@ -199,24 +199,24 @@ export function serviceFileExists(): boolean {
 }
 
 /**
- * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is built from the
- * data directory and the configured profile name.
+ * Returns the Chrome user data directory. When config.paths.chromeDataDir is set, that absolute path is used directly. Otherwise, the directory is chromedata
+ * inside the data directory.
  * @param config - The application configuration.
  * @returns The absolute path to the Chrome data directory.
  */
 export function getChromeDataDir(config: Config): string {
 
-  return config.paths.chromeDataDir ?? path.join(getDataDir(), config.paths.chromeProfileName);
+  return config.paths.chromeDataDir ?? path.join(getDataDir(), "chromedata");
 }
 
 /**
- * Returns the extension directory path, built from the data directory and the configured extension directory name.
- * @param config - The application configuration.
+ * Returns the directory the puppeteer-stream extension files are extracted to, extension inside the data directory. A packaged executable extracts them there
+ * because Chrome cannot load an extension from inside the executable archive.
  * @returns The absolute path to the extension directory.
  */
-export function getExtensionDir(config: Config): string {
+export function getExtensionDir(): string {
 
-  return path.join(getDataDir(), config.paths.extensionDirName);
+  return path.join(getDataDir(), "extension");
 }
 
 /**

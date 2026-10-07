@@ -2602,8 +2602,8 @@ export async function mutateChannelDisplayPrefs(prefs: {
  * one-way transition (it moves setupCompleted from false or absent to true, and no process writer moves it back), so splitting into set+save would be
  * ceremony without benefit.
  *
- * Persistence note: setupCompleted sits in PRESERVED_FIELDS and HYDRATED_FIELDS in userConfig.ts, so the true value written below survives filterDefaults and
- * comes back into the running configuration at the next boot. No process writer clears the flag, because the wizard it records cannot be un-completed.
+ * Persistence note: setupCompleted is a state field in PROCESS_FIELDS in userConfig.ts, so the true value written below survives filterDefaults and comes
+ * back into the running configuration at the next boot. No process writer clears the flag, because the wizard it records cannot be un-completed.
  */
 export async function markSetupCompleted(): Promise<void> {
 

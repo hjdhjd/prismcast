@@ -133,9 +133,9 @@ describe("mutateChannelDisplayPrefs: partial update + runtime CONFIG sync", () =
     /* Contract: the function reads absent fields from runtime CONFIG and writes the union back through mutateConfig. After the call, runtime CONFIG reflects
      * the merged shape - this is what subsequent renders / playlist generators read.
      *
-     * Note on disk shape: filterDefaults strips fields equal to defaults via the PRESERVED_FIELDS predicates (differsFromStringDefault for direction/field,
-     * isNonEmptyArray for visibleColumns). When the explicit override differs from default but the inherited fields still equal defaults, only the override
-     * lands on disk. The contract worth asserting is the runtime CONFIG state, not the on-disk shape (which is filterDefaults' contract).
+     * Note on disk shape: filterDefaults strips fields equal to defaults by the PROCESS_FIELDS state rule, which keeps a direction, a field, or a visibleColumns
+     * list only when it differs from its default. When the explicit override differs from default but the inherited fields still equal defaults, only the
+     * override lands on disk. The contract worth asserting is the runtime CONFIG state, not the on-disk shape (which is filterDefaults' contract).
      */
     await using ctx = await createIntegrationContext();
 
@@ -166,8 +166,8 @@ describe("markSetupCompleted: one-shot transition", () => {
     /* Contract worth asserting at integration tier: after the call, CONFIG.channels.setupCompleted is true. Subsequent table renders and route handlers read this
      * runtime flag.
      *
-     * On-disk persistence note: setupCompleted sits in PRESERVED_FIELDS and HYDRATED_FIELDS, so the function's write lands on disk and the next boot restores
-     * it. The companion suite below asserts the boot inference that sets the flag for an install that already had services or channels.
+     * On-disk persistence note: setupCompleted is a state field in PROCESS_FIELDS, so the function's write lands on disk and the next boot restores it. The
+     * companion suite below asserts the boot inference that sets the flag for an install that already had services or channels.
      */
     await using ctx = await createIntegrationContext();
 

@@ -2,8 +2,8 @@
  *
  * index.ts: Barrel re-export for PrismCast type definitions.
  */
-export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HLSConfig, LoggingConfig, PathsConfig, PlaybackConfig, ReactivityClass,
-  RecoveryConfig, ServerConfig, StreamingConfig, SystemStateReactivity } from "./config.ts";
+export type { BrowserConfig, CaptureMode, ChannelsConfig, Config, HdhrConfig, HLSConfig, LoggingConfig, PathsConfig, PlaybackConfig, ProcessFieldReactivity,
+  ReactivityClass, RecoveryConfig, ServerConfig, StreamingConfig } from "./config.ts";
 export type { CanonicalChannel, Channel, ChannelDefinition, ChannelDelta, ChannelIdentity, ChannelListingEntry, ChannelMap, ChannelServiceBinding,
   CustomizableField, ResolvedChannel, ResolvedChannelMap, ServiceGroup, ServiceVariant, StoredChannel, StoredChannelMap, VariantChannel } from "./channels.ts";
 export { CHANNEL_BINDING_KEYS, CHANNEL_IDENTITY_KEYS, DELTA_ELIGIBLE_BINDING_KEYS, DELTA_ELIGIBLE_IDENTITY_KEYS } from "./channels.ts";

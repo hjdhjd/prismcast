@@ -28,21 +28,13 @@ export interface BrowserConfig {
 }
 
 /**
- * Filesystem paths for Chrome profile data and extension files.
+ * Filesystem path overrides for Chrome profile data and the log file.
  */
 export interface PathsConfig {
 
   // Absolute path override for Chrome's user data directory (profile, cookies, cache), or null to use the default location inside the data directory. When null,
-  // the directory is built as <dataDir>/<chromeProfileName>. Setting this allows storing Chrome data on a different volume or sharing a profile across instances.
+  // the directory is <dataDir>/chromedata. Setting this allows storing Chrome data on a different volume or sharing a profile across instances.
   chromeDataDir: Nullable<string>;
-
-  // Directory name for Chrome's user data within the data directory. Only used when chromeDataDir is null. Chrome locks this directory while running, so we kill
-  // stale processes on startup.
-  chromeProfileName: string;
-
-  // Directory name for extracted puppeteer-stream extension files. When running as a packaged executable, extension files must be extracted to the filesystem
-  // because Chrome cannot load extensions from within the executable archive.
-  extensionDirName: string;
 
   // Absolute path override for the log file, or null to use the default location (<dataDir>/prismcast.log). Setting this allows writing logs to a different
   // volume or a centralized log directory.
@@ -399,13 +391,12 @@ export interface Config {
 
 /**
  * How a saved configuration value reaches the running process. Every leaf of the configuration carries exactly one class: a setting declares its own through
- * SettingMetadata.reactivity, which states the rule each class carries, and a leaf outside the settings metadata is classed in the system-state table beside
- * the hydration registry.
+ * SettingMetadata.reactivity, which states the rule each class carries, and a field the process writes declares its own in its PROCESS_FIELDS entry.
  */
 export type ReactivityClass = "live" | "next-stream" | "restart";
 
 /**
- * The classes a leaf outside the settings metadata can carry. Those leaves are system state a subsystem or a separate endpoint writes, and none is a per-stream
- * tunable, so next-stream is not among them.
+ * The classes a field the process writes can carry, the classes PROCESS_FIELDS states. Those fields are state a subsystem or a separate endpoint writes, and none
+ * is a per-stream tunable, so next-stream is not among them.
  */
-export type SystemStateReactivity = Exclude<ReactivityClass, "next-stream">;
+export type ProcessFieldReactivity = Exclude<ReactivityClass, "next-stream">;
