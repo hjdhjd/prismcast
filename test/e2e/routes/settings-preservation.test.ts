@@ -194,6 +194,7 @@ const SEED_VALUES: Record<string, unknown> = {
   "channels.disabledPredefined": [ "abc-hulu", "nbc-yttv" ],
   "channels.enabledServices": [ "hulu", "sling" ],
   "channels.precacheServices": ["hulu"],
+  "channels.setupCompleted": true,
   "channels.visibleColumns": [ "channelNumber", "name", "service" ],
   "channelsDvr.host": "192.168.1.50",
   "hdhr.deviceId": "ABCD1234",

@@ -166,10 +166,8 @@ describe("markSetupCompleted: one-shot transition", () => {
     /* Contract worth asserting at integration tier: after the call, CONFIG.channels.setupCompleted is true. Subsequent table renders and route handlers read this
      * runtime flag.
      *
-     * On-disk persistence note: setupCompleted is NOT in PRESERVED_FIELDS or CONFIG_METADATA, so filterDefaults strips it from the on-disk shape. The flag is
-     * effectively in-memory only and gets re-inferred at next startup via initializeUserChannels' "if any services or user channels exist" branch. This is
-     * intentional - the function's mutateConfig call is a no-op on disk, but the flag survives across restarts via the inference, not via persistence. The
-     * companion suite below asserts the inference path that closes the loop.
+     * On-disk persistence note: setupCompleted sits in PRESERVED_FIELDS and HYDRATED_FIELDS, so the function's write lands on disk and the next boot restores
+     * it. The companion suite below asserts the boot inference that sets the flag for an install that already had services or channels.
      */
     await using ctx = await createIntegrationContext();
 
@@ -188,13 +186,11 @@ describe("setupCompleted re-inference at startup (cross-store: services -> setup
 
   test("initializeUserChannels sets setupCompleted=true when enabledServices is non-empty even though config.json carries no setupCompleted entry", async () => {
 
-    /* Counterpart to the markSetupCompleted persistence note above. The flag is intentionally not preserved through filterDefaults; the architectural answer
-     * is re-inference at boot. This test seeds the precondition (CONFIG carries enabledServices, runtime flag starts false) and asserts that calling the
-     * channel-store initializer flips the flag back to true. If a future refactor removes the inference branch in initializeUserChannels, the markSetupCompleted
-     * write becomes a real bug (the flag would not survive a restart) - this test fails first.
+    /* Counterpart to the markSetupCompleted persistence note above. An install that predates the flag carries services or channels but no flag on disk, and the
+     * boot inference sets it from that cross-store signal. This test seeds the precondition (CONFIG carries enabledServices, runtime flag starts false) and
+     * asserts that calling the channel-store initializer flips the flag to true.
      *
-     * We do not seed config.json with setupCompleted because that's the whole point: the flag is observably absent from disk, the inference rebuilds it from
-     * the cross-store signal "user has any services or channels".
+     * We do not seed config.json with setupCompleted because the inference exists for exactly that file: one that has services or channels and no flag.
      */
     await using ctx = await createIntegrationContext();
 

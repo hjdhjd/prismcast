@@ -1527,9 +1527,11 @@ export async function initializeUserChannels(): Promise<void> {
   // Load service selections so prepareChannelsForWrite captures them on subsequent writes.
   setServiceSelections(result.serviceSelections);
 
-  // Inference for setupCompleted: existing users who already have services or channels configured should not see the first-run setup wizard. This is runtime
-  // inference (not a schema migration) because it depends on observed state from two stores (channels and config) and never changes the file shape - only
-  // sets a flag based on what exists. Lives here at the cross-store boundary where both stores are loaded.
+  /* Inference for setupCompleted: an install that already has services or channels configured should not see the first-run setup wizard. This is runtime
+   * inference rather than a schema migration because it depends on observed state across the channels and config stores, so it lives here at the cross-store
+   * boundary where each store it reads is loaded. The flag is a one-way fact - the wizard was completed, or the install already had services or channels when
+   * this ran - so the inference writes it to the file as markSetupCompleted does, and nothing ever clears it.
+   */
   const configuredServices = CONFIG.channels.enabledServices;
 
   if(!CONFIG.channels.setupCompleted) {
@@ -2615,10 +2617,8 @@ export async function mutateChannelDisplayPrefs(prefs: {
  * Marks the first-run Service Setup wizard as completed. Writes the flag to runtime CONFIG and persists to config.json in one call - the operation is a single
  * one-way transition (setupCompleted goes from false/absent to true once, never back), so splitting into set+save would be ceremony without benefit.
  *
- * Persistence note: setupCompleted is intentionally absent from CONFIG_METADATA and PRESERVED_FIELDS in userConfig.ts, so filterDefaults strips it from the
- * on-disk shape during the write below. This is by design - the flag is observably derived from "has the user configured any services or channels" and
- * initializeUserChannels() re-infers it at startup from that observable state. The mutateConfig call here is a no-op on the file but keeps the runtime
- * mutation pathway uniform with every other CONFIG.channels writer; the flag survives across restarts via inference, not persistence.
+ * Persistence note: setupCompleted sits in PRESERVED_FIELDS and HYDRATED_FIELDS in userConfig.ts, so the true value written below survives filterDefaults and
+ * comes back into the running configuration at the next boot. Nothing clears the flag, because the wizard it records cannot be un-completed.
  */
 export async function markSetupCompleted(): Promise<void> {
 

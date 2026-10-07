@@ -634,6 +634,20 @@ describe("hydration registry parity", () => {
     assert.equal(result.channelsDvr.port, DEFAULTS.channelsDvr.port, "untouched fields fall through to defaults");
   });
 
+  test("channels.setupCompleted survives a save and hydrates back into runtime CONFIG, and only its true state is written or restored", () => {
+
+    /* The setup flag is a one-way fact with a false default, so the file carries it only once it is true and the boot brings back only a true value. One
+     * seeded document drives the write-side registry, which keeps it, and the read-side registry, which restores it.
+     */
+    const userConfig: UserConfig = { channels: { setupCompleted: true } };
+
+    assert.equal(filterDefaults(userConfig).channels?.setupCompleted, true, "a true flag survives the default filter on save");
+    assert.equal(mergeConfiguration(userConfig).channels.setupCompleted, true, "a true flag on disk hydrates into runtime CONFIG");
+    assert.equal(filterDefaults({ channels: { setupCompleted: false } }).channels?.setupCompleted, undefined, "the default false is stripped on save");
+    assert.equal(mergeConfiguration({ channels: { setupCompleted: "true" as unknown as boolean } }).channels.setupCompleted, false,
+      "a value that is not the boolean true leaves runtime CONFIG at the default");
+  });
+
   test("hydration leaves runtime CONFIG at defaults when the disk value fails the predicate", () => {
 
     /* Empty strings, undefined values, and other "not meaningful enough" cases must not overwrite the default. This covers the edge where a corrupted or

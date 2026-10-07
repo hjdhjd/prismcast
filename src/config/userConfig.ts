@@ -1855,6 +1855,10 @@ const isNonEmptyString: PreservePredicate = (value: unknown): boolean => (typeof
 // Predicate: any number, including NaN. Used for schemaVersion - the framework-managed integer that any non-undefined value must round-trip through filterDefaults.
 const isNumber: PreservePredicate = (value: unknown): boolean => typeof value === "number";
 
+// Predicate: the boolean true. Used for channels.setupCompleted, a one-way fact whose false state is the default, so only the true state has anything to say
+// on disk and only a true value on disk is worth bringing back into the running configuration.
+const isTrue: PreservePredicate = (value: unknown): boolean => value === true;
+
 // Predicate: a string that differs from the default by simple equality. Used for channelSortField / channelSortDirection - both have meaningful default
 // values ("name", "asc") that should be stripped on save while any other valid string is preserved.
 const differsFromStringDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => (typeof value === "string") && (value !== defaultValue);
@@ -1893,6 +1897,7 @@ export const PRESERVED_FIELDS: readonly PreservedField[] = [
   { path: "channels.disabledPredefined", shouldPreserve: isNonEmptyArray },
   { path: "channels.enabledServices", shouldPreserve: isNonEmptyArray },
   { path: "channels.precacheServices", shouldPreserve: isNonEmptyArray },
+  { path: "channels.setupCompleted", shouldPreserve: isTrue },
   { path: "channels.visibleColumns", shouldPreserve: isNonEmptyArray },
   { path: "channelsDvr.host", shouldPreserve: isNonEmptyString },
   { path: "hdhr.deviceId", shouldPreserve: isNonEmptyString },
@@ -1939,6 +1944,7 @@ export const HYDRATED_FIELDS: readonly HydratedField[] = [
   { copy: spreadArray, path: "channels.disabledPredefined", shouldHydrate: isArrayValue },
   { copy: spreadArray, path: "channels.enabledServices", shouldHydrate: isArrayValue },
   { copy: spreadArray, path: "channels.precacheServices", shouldHydrate: isArrayValue },
+  { path: "channels.setupCompleted", shouldHydrate: isTrue },
   { copy: spreadArray, path: "channels.visibleColumns", shouldHydrate: isArrayValue },
   { path: "channelsDvr.host", shouldHydrate: isNonEmptyString },
   { path: "hdhr.deviceId", shouldHydrate: isNonEmptyString },
