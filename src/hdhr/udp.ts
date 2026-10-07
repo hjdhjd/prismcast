@@ -48,6 +48,18 @@ export interface UdpSurfaceOptions {
 }
 
 /**
+ * Why a UdpSurface did not come up: the port its bind asked for and the error the bind raised, which the controller names when it refuses a change.
+ */
+export interface UdpBindFailure {
+
+  // The error the socket's bind raised, typically EADDRINUSE.
+  readonly error: Error;
+
+  // The UDP port the bind asked for.
+  readonly port: number;
+}
+
+/**
  * A self-disposing HDHomeRun UDP discovery surface. The node owns exactly one responder socket and the captured HTTP-port provider, cycling the socket up and
  * down via ensureUp/ensureDown as the controller reconciles CONFIG.hdhr. ensureDown is exposed as [Symbol.asyncDispose] so the surface composes with the rest of
  * the resource-ownership tree; disposal closes the current socket but leaves the node reusable (a later ensureUp rebinds), because this is owner-bounded, not
@@ -55,16 +67,16 @@ export interface UdpSurfaceOptions {
  */
 export interface UdpSurface extends AsyncDisposable {
 
-  // The port the responder socket is bound to, or null when the surface is down. An accessor read primarily by tests - production uses the fixed
-  // HDHR_DISCOVERY_PORT and never needs to introspect the socket.
+  // The port the responder socket is bound to, or null when the surface is down. Tests read it, directly and through the controller, to reach a socket bound on an
+  // OS-assigned port; production binds the fixed HDHR_DISCOVERY_PORT and never needs to introspect the socket.
   readonly boundPort: Nullable<number>;
 
   // Closes the responder socket if one is bound, resolving only after the socket is fully released. A no-op when already down. Aliased as [Symbol.asyncDispose].
   ensureDown(): Promise<void>;
 
-  // Binds the responder socket, returning true on success and false on graceful bind failure (typically EADDRINUSE). Safe to call more than once: a
-  // second call without an intervening ensureDown is a no-op success.
-  ensureUp(options: UdpSurfaceOptions): Promise<boolean>;
+  // Binds the responder socket, resolving null once it is bound and the bind failure on a graceful one (typically EADDRINUSE). Safe to call more than once: a
+  // second call without an intervening ensureDown resolves null at once.
+  ensureUp(options: UdpSurfaceOptions): Promise<Nullable<UdpBindFailure>>;
 }
 
 /**
@@ -77,12 +89,12 @@ export function createUdpSurface(): UdpSurface {
   // The active responder socket, owned entirely by this node. Null when the surface is down.
   let socket: Nullable<Socket> = null;
 
-  async function ensureUp(options: UdpSurfaceOptions): Promise<boolean> {
+  async function ensureUp(options: UdpSurfaceOptions): Promise<Nullable<UdpBindFailure>> {
 
     // Safe to call more than once: an already-bound surface is a no-op success. Safe to invoke from both initial startup and live config-change application.
     if(socket !== null) {
 
-      return true;
+      return null;
     }
 
     // The socket's message handler captures the HTTP-port provider, so every Discover reply this socket sends reads the HTTP surface's live bound port, which is
@@ -108,10 +120,10 @@ export function createUdpSurface(): UdpSurface {
       }
     });
 
-    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const { promise, resolve } = Promise.withResolvers<Nullable<UdpBindFailure>>();
 
     // Two error handlers, attached at different phases of the socket lifecycle. The bind-failure handler is short-lived: it runs once if bind fails (typically
-    // EADDRINUSE), resolves the bind promise with false, and is removed on bind success. The runtime-error handler is long-lived: it runs for any socket error
+    // EADDRINUSE), resolves the bind promise with the failure, and is removed on bind success. The runtime-error handler is long-lived: it runs for any socket error
     // that occurs after a successful bind, clears the node's socket reference so a subsequent ensureUp can rebind cleanly, and closes the socket. Splitting the
     // two paths prevents the once-handler from misclassifying a post-bind error as a bind failure (with a misleading "port is already in use" log line) and keeps
     // the node's socket reference from pointing at a closed socket.
@@ -126,7 +138,7 @@ export function createUdpSurface(): UdpSurface {
       }
 
       candidate.close();
-      resolve(false);
+      resolve({ error, port });
     };
 
     const runtimeErrorHandler = (error: NodeJS.ErrnoException): void => {
@@ -151,7 +163,7 @@ export function createUdpSurface(): UdpSurface {
       candidate.removeListener("error", bindFailureHandler);
       candidate.on("error", runtimeErrorHandler);
       LOG.info("HDHomeRun LAN discovery is now responding on UDP %s:%d.", bindAddress, address.port);
-      resolve(true);
+      resolve(null);
     });
 
     return promise;

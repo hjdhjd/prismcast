@@ -22,13 +22,14 @@
  * load exactly once per process, so the handler is in place before any settings-save can fire. Tests that explicitly reset the reactivity registry can
  * re-register by importing and invoking registerConfigChangeHandler("hdhr.", applyHdhrConfigChanges) directly - both symbols are exported.
  */
-import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
+import type { ChangeRejection, ConfigChange, ConfigChangeHandler } from "../config/reactivity.ts";
 import type { Config, HdhrConfig, Nullable } from "../types/index.ts";
-import { HDHR_DISCOVERY_PORT, createUdpSurface } from "./udp.ts";
 import { LOG, handleRequestError } from "../utils/index.ts";
+import type { UdpBindFailure, UdpSurfaceOptions } from "./udp.ts";
 import type { AddressInfo } from "node:net";
 import { CONFIG } from "../config/index.ts";
 import type { Server } from "node:http";
+import { createUdpSurface } from "./udp.ts";
 import express from "express";
 import { formatError } from "../utils/errors.ts";
 import { registerConfigChangeHandler } from "../config/reactivity.ts";
@@ -77,19 +78,33 @@ interface HdhrReconcileResult {
   // True when the HTTP surface could not bind the desired port.
   readonly httpFailed: boolean;
 
-  // True when LAN discovery was requested and its UDP surface could not bind.
-  readonly udpFailed: boolean;
+  // The port and the error of a UDP bind that failed when LAN discovery was requested, or null when discovery reached the desired state.
+  readonly udpFailure: Nullable<UdpBindFailure>;
 }
 
 /**
  * The HDHomeRun controller: a reconciler that owns the HTTP and UDP emulation surfaces. reconcile() drives both surfaces to the desired state it is handed and reports
  * what failed to reach it; [Symbol.asyncDispose] is the terminal teardown that brings both down.
  */
-interface HdhrController extends AsyncDisposable {
+export interface HdhrController extends AsyncDisposable {
+
+  // The port the LAN discovery responder is bound to, or null while discovery is down. Read-only, for a test whose controller binds an OS-assigned port and
+  // must learn it to send a Discover request.
+  readonly udpBoundPort: Nullable<number>;
 
   // Drives the HTTP and UDP surfaces to the desired HDHomeRun state. The bind host comes from CONFIG.server.host, a restart-class setting that always holds the
   // running value. Returns what failed to reach the desired state so a caller can refuse the change rather than report it realized.
   reconcile(desired: Readonly<HdhrConfig>): Promise<HdhrReconcileResult>;
+}
+
+/**
+ * How a controller binds its LAN discovery responder. Production passes nothing, so the responder binds the protocol's discovery port on every address; a test
+ * binds the loopback address on an OS-assigned port, so its responder never answers real discovery on the network.
+ */
+export interface HdhrControllerOptions {
+
+  // The address and port the UDP responder binds, spread into every bind the controller asks of its UDP surface.
+  readonly udp?: Pick<UdpSurfaceOptions, "bindAddress" | "port">;
 }
 
 /**
@@ -262,11 +277,13 @@ function createHttpSurface(): HttpSurface {
 }
 
 /**
- * Creates the HDHomeRun controller. The controller owns the HTTP and UDP surface nodes for the whole process lifetime; their sockets cycle internally as reconcile drives
- * them. Failures at any surface are reported up, not thrown - the broader application continues to work even if HDHR emulation cannot bind.
+ * Creates an HDHomeRun controller. The controller owns the HTTP and UDP surface nodes for its whole lifetime; their sockets cycle internally as reconcile drives
+ * them. Failures at any surface are reported up, not thrown - the broader application continues to work even if HDHR emulation cannot bind. The module builds the
+ * process's controller with no options, and a test builds its own with a loopback discovery bind.
+ * @param options - How the controller binds its LAN discovery responder.
  * @returns An HdhrController node.
  */
-function createHdhrController(): HdhrController {
+export function createHdhrController(options: HdhrControllerOptions = {}): HdhrController {
 
   // The HTTP and UDP surfaces this controller owns. Created once and live for the controller's lifetime; the controller expresses desired state (policy) and
   // never reaches into how a surface binds, rebinds, or closes (mechanism).
@@ -282,7 +299,7 @@ function createHdhrController(): HdhrController {
       await udp.ensureDown();
       await http.ensureDown();
 
-      return { httpFailed: false, udpFailed: false };
+      return { httpFailed: false, udpFailure: null };
     }
 
     // The surface binds with the DeviceID it is handed. The configuration layer corrects that id whenever the boot loads the file or a settings save writes it
@@ -292,17 +309,17 @@ function createHdhrController(): HdhrController {
     // UDP is gated on the HTTP server actually being bound: a discovery responder must never advertise a BaseURL pointing at an HTTP port with no listener, so
     // when HTTP is down we stop UDP regardless of the discoveryEnabled flag. The Discover reply advertises http.boundPort (not the desired port) so it always
     // reflects reality, including a refused port change, where HTTP stays on the port it is bound to.
-    let udpFailed = false;
+    let udpFailure: Nullable<UdpBindFailure> = null;
 
     if(desired.discoveryEnabled && (http.boundPort !== null)) {
 
-      udpFailed = !(await udp.ensureUp({ httpPortProvider: () => http.boundPort }));
+      udpFailure = await udp.ensureUp({ ...options.udp, httpPortProvider: () => http.boundPort });
     } else {
 
       await udp.ensureDown();
     }
 
-    return { httpFailed, udpFailed };
+    return { httpFailed, udpFailure };
   }
 
   async function disposeAsync(): Promise<void> {
@@ -316,6 +333,10 @@ function createHdhrController(): HdhrController {
   return {
 
     reconcile,
+    get udpBoundPort(): Nullable<number> {
+
+      return udp.boundPort;
+    },
     [Symbol.asyncDispose]: disposeAsync
   };
 }
@@ -346,60 +367,71 @@ export async function stopHdhrServer(): Promise<void> {
 }
 
 /**
- * Realizes the HDHomeRun state of a save's candidate running configuration. The controller realizes the desired state it is handed once - the whole state, so
- * there is no per-change ordering to get wrong - and the handler reports only what the surfaces could not realize: the HTTP-driving fields (enabled, port) when
- * the HTTP surface failed to bind, and discoveryEnabled when discovery was requested and its bind failed. Each setting's reactivity class has already decided
- * that the change applies live, and the reconcile commits nothing refused here, so a refused change keeps its running value and is retried by every later save.
- * Every other HDHomeRun field, the DeviceID among them, is read where it is used, so reaching the desired state realizes it.
+ * Builds the handler that realizes the HDHomeRun state of a save's candidate running configuration on a controller. The controller realizes the desired state it
+ * is handed once - the whole state, so there is no per-change ordering to get wrong - and the handler reports only what the surfaces could not realize: the
+ * HTTP-driving fields (enabled, port) when the HTTP surface failed to bind, and discoveryEnabled, naming the port its bind asked for and the error it raised, when
+ * discovery was requested and its bind failed. Each setting's reactivity class has already decided that the change applies live, and the reconcile commits
+ * nothing refused here, so a refused change keeps its running value and is retried by every later save. Every other HDHomeRun field, the DeviceID among them, is
+ * read where it is used, so reaching the desired state realizes it.
  *
- * Exported so tests can invoke the dispatch directly with a synthetic diff. Registered with the reactivity primitive at module load (side effect at the bottom
- * of this file) so production settings saves route here automatically.
- * @param changes - The changes of the gap whose path begins with "hdhr.".
- * @param next - The candidate running configuration whose HDHomeRun state the handler realizes.
- * @returns A rejection for each change the surfaces could not realize.
+ * The module builds the registered handler over the process's controller, and a test builds one over a controller of its own.
+ * @param controller - The controller whose surfaces the handler drives.
+ * @returns The handler, which takes the changes of the gap whose path begins with "hdhr." and the candidate, and returns a rejection for each change the surfaces
+ *   could not realize.
  */
-export async function applyHdhrConfigChanges(changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+export function createHdhrConfigHandler(controller: HdhrController): ConfigChangeHandler {
 
-  const desired = next.hdhr;
-  const { httpFailed, udpFailed } = await hdhrController.reconcile(desired);
-  const rejections: ChangeRejection[] = [];
+  return async (changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> => {
 
-  for(const change of changes) {
+    const desired = next.hdhr;
+    const { httpFailed, udpFailure } = await controller.reconcile(desired);
+    const rejections: ChangeRejection[] = [];
 
-    switch(change.path) {
+    for(const change of changes) {
 
-      case "hdhr.enabled":
-      case "hdhr.port": {
+      switch(change.path) {
 
-        // These fields drive the HTTP surface, so a failed bind refuses them and the running configuration keeps the state the surface is actually in.
-        if(httpFailed) {
+        case "hdhr.enabled":
+        case "hdhr.port": {
 
-          rejections.push({ path: change.path, reason: "HDHomeRun could not bind port " + String(desired.port) + ", so the change was not applied." });
+          // These fields drive the HTTP surface, so a failed bind refuses them and the running configuration keeps the state the surface is actually in.
+          if(httpFailed) {
+
+            rejections.push({ path: change.path, reason: "HDHomeRun could not bind port " + String(desired.port) + ", so the change was not applied." });
+          }
+
+          break;
         }
 
-        break;
-      }
+        case "hdhr.discoveryEnabled": {
 
-      case "hdhr.discoveryEnabled": {
+          // Drives the UDP surface. A failure is reported only when discovery was requested (enabled) and its bind failed; turning discovery off cannot fail.
+          if(udpFailure) {
 
-        // Drives the UDP surface. udpFailed is only true when discovery was requested (enabled) and the bind failed; turning discovery off cannot fail.
-        if(udpFailed) {
+            rejections.push({ path: change.path, reason: "HDHomeRun LAN discovery could not bind UDP port " + String(udpFailure.port) + " (" +
+              formatError(udpFailure.error) + "), so the change was not applied." });
+          }
 
-          rejections.push({ path: change.path, reason: "HDHomeRun LAN discovery could not bind UDP port " + String(HDHR_DISCOVERY_PORT) + " (in use)." });
+          break;
         }
 
-        break;
-      }
+        default: {
 
-      default: {
-
-        break;
+          break;
+        }
       }
     }
-  }
 
-  return rejections;
+    return rejections;
+  };
 }
+
+/**
+ * Realizes the HDHomeRun state of a save's candidate running configuration on the process's controller. Exported so tests can invoke the dispatch directly
+ * with a synthetic diff. Registered with the reactivity primitive at module load (side effect at the bottom of this file) so production settings saves route
+ * here automatically.
+ */
+export const applyHdhrConfigChanges: ConfigChangeHandler = createHdhrConfigHandler(hdhrController);
 
 // Module-load side effect: register the live-apply handler exactly once per process. ESM modules load at most once per process so this runs deterministically
 // at boot - before app.ts's startHdhrServer call, before any settings save can fire, and before any test interaction. Tests that explicitly reset the registry

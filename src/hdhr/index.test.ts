@@ -2,23 +2,31 @@
  *
  * index.test.ts: Unit tests for the HDHomeRun emulation server lifecycle and its live-apply config-change handler. Coverage spans the observable behaviors
  * of startHdhrServer / stopHdhrServer - the disabled short-circuit, an OS-assigned port advertised as bound, the advertised DeviceID the boot generated when
- * the stored one was missing or invalid, graceful EADDRINUSE handling on port collision, and shutdown that is safe to call more than once - plus
- * applyHdhrConfigChanges, which realizes the candidate it is handed and returns only the rejections the surfaces earned, including a save to an
- * already-occupied port driven end to end through saveConfiguration and a port change that binds the requested port before it closes the bound one.
- * Each test uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port, and every configuration a row boots or saves goes
- * through an in-memory store double, so nothing reaches the user's real ~/.prismcast directory.
+ * the stored one was missing or invalid, a route that throws answered through the request error handler, a boot onto an occupied port and a bind error of
+ * another kind each logged with no server announced, and shutdown that is safe to call more than once - plus applyHdhrConfigChanges, which realizes the
+ * candidate it is handed and returns only the rejections the surfaces earned, including an enable onto an occupied port, a save to an already-occupied port
+ * driven end to end through saveConfiguration and a port change that binds the requested port before it closes the bound one. LAN discovery is driven on
+ * controllers of the suite's own, each built by one helper that binds the responder on the loopback address, so no row binds the protocol's discovery port on
+ * every address, where it would answer real discovery on the network; every describe that drives the module's own controller keeps discovery off. Each test
+ * uses an OS-assigned or freshly reserved port so it never collides with the production HDHR port, and every configuration a row boots or saves goes through an
+ * in-memory store double, so nothing reaches the user's real ~/.prismcast directory.
  */
 import { CONFIG, initializeConfiguration, saveConfiguration } from "../config/index.ts";
+import type { Config, HdhrConfig } from "../types/index.ts";
 import { LOG, generateDeviceId, validateDeviceId } from "../utils/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { applyHdhrConfigChanges, startHdhrServer, stopHdhrServer } from "./index.ts";
-import type { Config } from "../types/index.ts";
+import { applyHdhrConfigChanges, createHdhrConfigHandler, createHdhrController, startHdhrServer, stopHdhrServer } from "./index.ts";
+import { makeDiscoverRequest, readBaseUrl, sendAndReceive } from "./protocol.helpers.ts";
 import type { ConfigChange } from "../config/reactivity.ts";
+import { HDHR_DISCOVERY_PORT } from "./udp.ts";
+import { HDHR_WILDCARD } from "./protocol.ts";
+import type { HdhrController } from "./index.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
 import type { MemoryConfigStore } from "../config/index.helpers.ts";
 import type { Server } from "node:http";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createSocket } from "node:dgram";
 import { makeMemoryConfigStore } from "../config/index.helpers.ts";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
@@ -107,6 +115,44 @@ function listeningLines(entries: readonly LogEntry[]): string[] {
 function listeningLine(port: number, deviceId: string): string {
 
   return "HDHomeRun emulation is now listening on " + CONFIG.server.host + ":" + String(port) + " (DeviceID: " + deviceId.toUpperCase() + ").";
+}
+
+// makeChange constructs a synthetic ConfigChange. The path drives the dispatch; the handler reads the values it realizes from the candidate it is handed.
+function makeChange(path: string): ConfigChange {
+
+  return { current: null, path, previous: null };
+}
+
+// Reserves a port that is currently free by listening on it and closing the listener, so a row can bind a known number.
+async function reserveFreePort(host = "127.0.0.1"): Promise<number> {
+
+  const reserved = await listenOnEphemeral(host);
+
+  await closeServer(reserved.server);
+
+  return reserved.port;
+}
+
+// The UDP bind every controller this suite builds takes: the loopback address on an OS-assigned port, so no row binds the discovery protocol's port on every
+// address, where its responder would answer real LAN discovery.
+const LOOPBACK_DISCOVERY = { udp: { bindAddress: "127.0.0.1", port: 0 } } as const;
+
+/**
+ * Builds a controller for a discovery row, with the desired state the row reconciles: the emulation and LAN discovery turned on over CONFIG's HDHomeRun state, on
+ * the HTTP port the row names. The controller's responder binds the loopback address, on an OS-assigned port unless the row names a loopback port it holds so
+ * the bind fails. This is the one place the suite builds a controller and the one place it asks for discovery.
+ * @param occupiedUdpPort - A loopback UDP port the row holds, for the row whose responder bind must fail.
+ * @returns The controller and the desired state's builder.
+ */
+function createLoopbackController(occupiedUdpPort?: number): { controller: HdhrController; desired: (httpPort: number) => HdhrConfig } {
+
+  const options = (occupiedUdpPort === undefined) ? LOOPBACK_DISCOVERY : { udp: { ...LOOPBACK_DISCOVERY.udp, port: occupiedUdpPort } };
+
+  return {
+
+    controller: createHdhrController(options),
+    desired: (httpPort: number): HdhrConfig => ({ ...CONFIG.hdhr, discoveryEnabled: true, enabled: true, port: httpPort })
+  };
 }
 
 describe("startHdhrServer - disabled", () => {
@@ -268,22 +314,50 @@ describe("startHdhrServer - port collision", () => {
     restoreConfig(prior);
   });
 
-  test("handles EADDRINUSE gracefully without throwing or starting a server", async () => {
+  test("a boot onto an occupied port logs the in-use warning, announces no listener, and leaves the surface unbound", async () => {
 
-    // We claim a real port first and point the HDHR server at it. The blocker listens on the helper's default 127.0.0.1 while the HDHR server binds
-    // CONFIG.server.host, and the helper's own comment notes that those two listeners can coexist, so the start may bind rather than hit EADDRINUSE. The row
-    // asserts only that startHdhrServer does not reject either way - on EADDRINUSE the handler swallows the error and logs a warning rather than propagating it.
-    const reserved = await listenOnEphemeral();
+    // The blocker binds the host the HDHR server binds, CONFIG.server.host, so the collision is a real exact-address one: a listener on another address of the
+    // same port could coexist with the server. The blocker answers no request, so the row reads the outcome from the log rather than from a fetch.
+    const reserved = await listenOnEphemeral(CONFIG.server.host);
 
     blocker = reserved.server;
     CONFIG.hdhr.enabled = true;
     CONFIG.hdhr.deviceId = generateDeviceId();
     CONFIG.hdhr.port = reserved.port;
 
-    await assert.doesNotReject(() => startHdhrServer(), "EADDRINUSE must be caught, not propagated");
+    const { entries } = await withLogCapture(() => startHdhrServer());
 
-    // Whether the start failed or bound, stopHdhrServer must still be safe to call.
+    assert.ok(entries.some((entry) => (entry.level === "warn") &&
+      (entry.message === "HDHomeRun port " + String(reserved.port) + " is already in use. Check for conflicting services on this port.")),
+    "the boot logged the in-use warning for the occupied port");
+    assert.deepEqual(listeningLines(entries), [], "no server announced a listener");
+    assert.ok(!entries.some((entry) => entry.message.includes("keeping the previous port")), "an unbound surface keeps no previous port");
+
+    // The surface stayed down, so a stop has nothing to close.
     await assert.doesNotReject(stopHdhrServer);
+  });
+
+  test("a bind error other than an address in use logs the start failure and announces no listener", async () => {
+
+    // 192.0.2.1 is TEST-NET-1, an address no interface carries, so the bind fails with EADDRNOTAVAIL rather than EADDRINUSE and reaches the other arm.
+    const originalHost = CONFIG.server.host;
+
+    CONFIG.hdhr.enabled = true;
+    CONFIG.hdhr.deviceId = generateDeviceId();
+    CONFIG.hdhr.port = 0;
+    CONFIG.server.host = "192.0.2.1";
+
+    try {
+
+      const { entries } = await withLogCapture(() => startHdhrServer());
+
+      assert.ok(entries.some((entry) => (entry.level === "warn") && entry.message.startsWith("Failed to start the HDHomeRun HTTP server: ")),
+        "the boot logged the start failure");
+      assert.deepEqual(listeningLines(entries), [], "no server announced a listener");
+    } finally {
+
+      CONFIG.server.host = originalHost;
+    }
   });
 });
 
@@ -359,22 +433,6 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     return next;
   }
 
-  // makeChange constructs a synthetic ConfigChange. The path drives the dispatch; the handler reads the values it realizes from the candidate it is handed.
-  function makeChange(path: string): ConfigChange {
-
-    return { current: null, path, previous: null };
-  }
-
-  // Reserves a port that is currently free by listening on it and closing the listener, so a row can bind a known number.
-  async function reserveFreePort(host = "127.0.0.1"): Promise<number> {
-
-    const reserved = await listenOnEphemeral(host);
-
-    await closeServer(reserved.server);
-
-    return reserved.port;
-  }
-
   beforeEach(async () => {
 
     await initializeConfiguration(undefined, makeMemoryConfigStore({ hdhr: { deviceId: validDeviceId, discoveryEnabled: false, enabled: false } }));
@@ -394,6 +452,22 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
     assert.deepEqual(rejections, []);
     assert.equal((await fetch("http://127.0.0.1:" + String(port) + "/discover.json")).status, 200, "the surface answers on the candidate's port");
     assert.equal(CONFIG.hdhr.enabled, false, "the handler realized the candidate without committing it");
+  });
+
+  test("enabling onto an occupied port refuses hdhr.enabled", async () => {
+
+    // The blocker binds the host the HDHR server binds, for the reason the occupied-port rows below state, so the enable meets a real collision.
+    const blocker = await listenOnEphemeral(CONFIG.server.host);
+
+    try {
+
+      const rejections = await applyHdhrConfigChanges([makeChange("hdhr.enabled")], candidate({ enabled: true, port: blocker.port }));
+
+      assert.deepEqual(rejections, [{ path: "hdhr.enabled", reason: "HDHomeRun could not bind port " + String(blocker.port) + ", so the change was not applied." }]);
+    } finally {
+
+      await closeServer(blocker.server);
+    }
   });
 
   test("disabling brings the HTTP surface down even while CONFIG still says enabled", async () => {
@@ -531,6 +605,109 @@ describe("applyHdhrConfigChanges - live-apply handler", () => {
       assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(boundPort), "the advertised BaseURL names the bound port");
     } finally {
 
+      await closeServer(blocker.server);
+    }
+  });
+});
+
+/* LAN discovery under the reconcile, on controllers of the suite's own. Each row builds its controller through createLoopbackController, so the responder binds the
+ * loopback address on an OS-assigned port, and tears it down in a finally, so no socket outlives the row. The module's own controller is never asked for
+ * discovery here, and each configuration is initialized with discovery off, as every other describe keeps it.
+ */
+describe("createHdhrController - LAN discovery under the reconcile", () => {
+
+  beforeEach(async () => {
+
+    await initializeConfiguration(undefined, makeMemoryConfigStore({ hdhr: { deviceId: generateDeviceId(), discoveryEnabled: false, enabled: false } }));
+  });
+
+  test("brings discovery up only once the HTTP surface is bound, on a port other than the protocol's, and its Discover reply advertises the HTTP port",
+    async () => {
+
+      const { controller, desired } = createLoopbackController();
+      const httpPort = await reserveFreePort();
+
+      try {
+
+        assert.equal(controller.udpBoundPort, null, "precondition: discovery is down before the reconcile");
+        assert.deepEqual(await controller.reconcile(desired(httpPort)), { httpFailed: false, udpFailure: null }, "the HTTP and UDP surfaces reached the desired state");
+
+        const udpPort = controller.udpBoundPort;
+
+        assert.ok((typeof udpPort === "number") && (udpPort !== HDHR_DISCOVERY_PORT), "the responder is bound on a port other than the protocol's: " +
+          String(udpPort));
+
+        const baseUrl = readBaseUrl(await sendAndReceive(udpPort, makeDiscoverRequest(HDHR_WILDCARD, HDHR_WILDCARD)));
+
+        assert.ok(baseUrl.endsWith(":" + String(httpPort)), "the Discover reply advertises the bound HTTP port: " + baseUrl);
+      } finally {
+
+        await controller[Symbol.asyncDispose]();
+      }
+    });
+
+  test("refuses hdhr.discoveryEnabled when the UDP port its responder asks for is occupied, naming that port and the bind error", async () => {
+
+    const blocker = createSocket({ reuseAddr: false, type: "udp4" });
+    const bound = Promise.withResolvers<number>();
+
+    blocker.bind(0, "127.0.0.1", () => {
+
+      bound.resolve(blocker.address().port);
+    });
+
+    const occupiedPort = await bound.promise;
+    const { controller, desired } = createLoopbackController(occupiedPort);
+
+    try {
+
+      const httpPort = await reserveFreePort();
+      const next = structuredClone(CONFIG);
+
+      next.hdhr = desired(httpPort);
+
+      const rejections = await createHdhrConfigHandler(controller)([makeChange("hdhr.discoveryEnabled")], next);
+
+      assert.deepEqual(rejections.map((rejection) => rejection.path), ["hdhr.discoveryEnabled"], "the one change refused is the discovery setting");
+      assert.match(rejections[0]?.reason ?? "", new RegExp("^HDHomeRun LAN discovery could not bind UDP port " + String(occupiedPort) +
+        " \\(.*EADDRINUSE.*\\), so the change was not applied\\.$"), "the refusal names the occupied port and the bind error");
+      assert.equal(controller.udpBoundPort, null, "discovery stayed down");
+      assert.equal((await fetch("http://127.0.0.1:" + String(httpPort) + "/discover.json")).status, 200, "the HTTP surface came up regardless");
+    } finally {
+
+      await controller[Symbol.asyncDispose]();
+
+      const closed = Promise.withResolvers<true>();
+
+      blocker.close(() => {
+
+        closed.resolve(true);
+      });
+
+      await closed.promise;
+    }
+  });
+
+  test("an HTTP surface whose bind is refused leaves discovery down", async () => {
+
+    // The blocker binds the host the HDHR server binds, so the HTTP bind meets a real collision, and discovery, gated on a bound HTTP surface, never comes up.
+    const blocker = await listenOnEphemeral(CONFIG.server.host);
+    const { controller, desired } = createLoopbackController();
+
+    try {
+
+      const next = structuredClone(CONFIG);
+
+      next.hdhr = desired(blocker.port);
+
+      const rejections = await createHdhrConfigHandler(controller)([ makeChange("hdhr.enabled"), makeChange("hdhr.discoveryEnabled") ], next);
+
+      assert.deepEqual(rejections, [{ path: "hdhr.enabled", reason: "HDHomeRun could not bind port " + String(blocker.port) + ", so the change was not applied." }],
+        "only the HTTP-driving change was refused");
+      assert.equal(controller.udpBoundPort, null, "discovery never came up behind an HTTP surface that is not bound");
+    } finally {
+
+      await controller[Symbol.asyncDispose]();
       await closeServer(blocker.server);
     }
   });
