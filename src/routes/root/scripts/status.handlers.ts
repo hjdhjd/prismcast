@@ -348,6 +348,14 @@ function getDomain(url: string): string {
   return (parts.length > 2) ? parts.slice(-2).join(".") : parts.join(".");
 }
 
+// The text a stream is labeled with: its channel name, else its service name, else the concise domain of its URL. The chain uses || (not ??) so an empty channel
+// or service name falls through to the domain, because the server emits an empty string while the channel is not yet identified. The stream-info cell and the
+// streams popover draw it, and the health handler compares it to decide whether an event changes what that cell draws.
+function streamChannelText(s: StreamSummary): string {
+
+  return (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
+}
+
 // Resolve the recovery-level label for a stream in the recovering state. Kept as a dedicated helper because the mapping is level-based, not string-based, so it
 // cannot fold into the same lookup map as the top-level health labels. The escalation ladder lives in streaming/recovery.ts (getRecoveryMethod and
 // computeNextRecoveryLevel): L1=play/unmute, L2=source reload, L3=page navigation. Only levels 1 and 2 reach the browser as "recovering", because
@@ -569,10 +577,8 @@ function buildStreamPopoverContent(menu: Element, ctx: HandlerContext): void {
 
   for(const s of Object.values(ctx.state.streamData)) {
 
-    // The fallback chain uses || (not ??) so empty-string channel/serviceName values fall through to getDomain. The server may emit an empty string when the
-    // channel is not yet identified.
     const color = healthColorVars[s.health] ?? "var(--text-muted)";
-    const name = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
+    const name = streamChannelText(s);
     const dur = Math.floor((now - new Date(s.startTime).getTime()) / 1000);
     const hwBadge = s.hardwareAccelerated ? " <span title=\"Hardware accelerated\">⚡</span>" : "";
     const showSuffix = s.showName ? " <span class=\"stream-popover-show\">" + escapeHtml(s.showName) + "</span>" : "";
@@ -667,9 +673,7 @@ function renderStreamsTable(ctx: HandlerContext): void {
     const isExpanded = ctx.state.expandedStreams[id];
     const chevron = isExpanded ? "&#9660;" : "&#9654;";
     const rowTint = rowTints[s.health] ?? "transparent";
-    // The channel/serviceName fallback uses || semantics so empty strings (server may emit them when identification is pending) fall through to the domain.
-    const channelText = (s.channel ?? "") || (s.serviceName ?? "") || getDomain(s.url);
-    const channelDisplay = ctx.externals.channelDisplayHtml(s.logoUrl, channelText, "channel-logo", "channel-text");
+    const channelDisplay = ctx.externals.channelDisplayHtml(s.logoUrl, streamChannelText(s), "channel-logo", "channel-text");
 
     html += "<tr class=\"stream-row\" data-id=\"" + id + "\" data-click-action=\"toggle-stream-details\" data-stream-id=\"" + id +
       "\" style=\"background-color: " + rowTint + ";\">";
@@ -881,12 +885,11 @@ function handleStreamHealthChanged(data: StreamSummary, ctx: HandlerContext): vo
     return;
   }
 
-  // The fields compared below are drawn in the stream-info cell (the logo, and the native or hardware badge with its codec label), which updateStreamRow's
-  // targeted-update path does not touch, so a change to any of them requires the full table rebuild rather than the cheap per-cell update. The channel name is
-  // drawn in that cell too, from channel, serviceName and url, but those are not compared, so an event that fills in a pending channel name takes the cheap path
-  // and the name stays as first drawn until the next full render.
-  const structuralChange = (prev.logoUrl !== data.logoUrl) || (prev.streamingMode !== data.streamingMode) ||
-    (prev.hardwareAccelerated !== data.hardwareAccelerated) || (prev.captureCodec !== data.captureCodec);
+  // The fields compared below are drawn in the stream-info cell (the channel text, the logo, and the native or hardware badge with its codec label), which
+  // updateStreamRow's targeted-update path does not touch, so a change to any of them requires the full table rebuild rather than the cheap per-cell update. The
+  // channel text is compared as drawn rather than field by field, so a URL change that resolves to the same text keeps the cheap path and the logo images.
+  const structuralChange = (streamChannelText(prev) !== streamChannelText(data)) || (prev.logoUrl !== data.logoUrl) ||
+    (prev.streamingMode !== data.streamingMode) || (prev.hardwareAccelerated !== data.hardwareAccelerated) || (prev.captureCodec !== data.captureCodec);
 
   ctx.state.streamData[data.id] = data;
 
@@ -1076,6 +1079,7 @@ export const HANDLER_FUNCTIONS: readonly EmittableFn[] = [
   formatTime,
   formatTimeAgo,
   getDomain,
+  streamChannelText,
   getRecoveringLabel,
   getHealthBadge,
   formatLastIssue,

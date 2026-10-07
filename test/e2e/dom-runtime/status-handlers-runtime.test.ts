@@ -1809,6 +1809,27 @@ describe("status.handlers: handleStreamHealthChanged (SSE handler)", () => {
         "structural change must surface via full table render");
     })();
   });
+
+  test("redraws the stream-info cell when an event fills in a channel name the first render lacked", () => {
+
+    /* A stream first drawn before its channel is identified carries an empty channel name, so its cell shows the URL's domain. The event that fills the name in
+     * changes the cell's channel text, which the cheap path does not redraw, so the handler takes the full render and the cell shows the name.
+     */
+    return (async (): Promise<void> => {
+
+      await using ctx = await createDomTestContext();
+      const original = makeStream({ captureCodec: "h264", channel: "", id: "x", serviceName: "", streamingMode: "capture", url: "https://www.example.com/live" });
+      const harness = makeHandlerContext(asDomDocument(ctx), { state: { streamData: { "x": original } } });
+
+      handlers.renderStreamsTable(harness.ctx);
+
+      assert.equal(ctx.document.querySelector(".stream-row[data-id=\"x\"] .channel-text")?.textContent, "example.com", "precondition: the domain stands in");
+
+      handlers.handleStreamHealthChanged({ ...original, channel: "NBC" }, harness.ctx);
+
+      assert.equal(ctx.document.querySelector(".stream-row[data-id=\"x\"] .channel-text")?.textContent, "NBC", "the filled-in name is drawn");
+    })();
+  });
 });
 
 describe("status.handlers: handleSystemStatusChanged (SSE handler)", () => {
