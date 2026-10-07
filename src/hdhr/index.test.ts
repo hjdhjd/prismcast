@@ -9,9 +9,9 @@
  * through an in-memory store double, so nothing reaches the user's real ~/.prismcast directory.
  */
 import { CONFIG, initializeConfiguration, saveConfiguration } from "../config/index.ts";
+import { LOG, generateDeviceId, validateDeviceId } from "../utils/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { applyHdhrConfigChanges, startHdhrServer, stopHdhrServer } from "./index.ts";
-import { generateDeviceId, validateDeviceId } from "../utils/index.ts";
 import type { Config } from "../types/index.ts";
 import type { ConfigChange } from "../config/reactivity.ts";
 import type { LogEntry } from "../utils/logEmitter.ts";
@@ -175,6 +175,27 @@ describe("startHdhrServer - successful start", () => {
     const body = await (await fetch("http://127.0.0.1:" + String(port) + "/discover.json")).json() as Record<string, unknown>;
 
     assert.equal(body["BaseURL"], "http://127.0.0.1:" + String(port), "the documents advertise the assigned port, not the port CONFIG names");
+  });
+
+  test("a route that throws is logged and answered with a sentence by the request error handler", async (t) => {
+
+    CONFIG.hdhr.enabled = true;
+    CONFIG.hdhr.deviceId = generateDeviceId();
+    CONFIG.hdhr.port = 0;
+
+    const { entries } = await withLogCapture(() => startHdhrServer());
+    const port = Number(/:(\d+) \(DeviceID/.exec(listeningLines(entries)[0] ?? "")?.[1]);
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+
+    // discover.json upper-cases the running DeviceID per request, so a DeviceID that is not a string makes that route throw once the server is up. Express's own
+    // fallback would answer with its default page, so the sentence in the body is the shared handler's.
+    CONFIG.hdhr.deviceId = null as unknown as string;
+
+    const res = await fetch("http://127.0.0.1:" + String(port) + "/discover.json");
+
+    assert.equal(res.status, 500, "the throwing route answered 500");
+    assert.equal(await res.text(), "Internal server error.", "the body is the request error handler's sentence");
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments[0]), ["A request failed with an unhandled error."], "the failure was logged once");
   });
 
   /**

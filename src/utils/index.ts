@@ -12,6 +12,7 @@ export * from "./errors.ts";
 export * from "./evaluate.ts";
 export * from "./ffmpeg.ts";
 export * from "./format.ts";
+export * from "./httpErrors.ts";
 export * from "./logEmitter.ts";
 export * from "./logger.ts";
 export * from "./m3u.ts";

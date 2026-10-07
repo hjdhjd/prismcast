@@ -5,10 +5,10 @@
 import { CONFIG, displayConfiguration, initializeConfiguration, validateConfiguration } from "./config/index.ts";
 import type { ChangeRejection, ConfigChange } from "./config/reactivity.ts";
 import type { Config, LoggingConfig, Nullable } from "./types/index.ts";
-import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
+import type { Express, Request, RequestHandler, Response } from "express";
 import type { IncomingMessage, Server } from "node:http";
-import { LOG, assertNever, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, isDebugLogging, release,
-  resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
+import { LOG, assertNever, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, handleRequestError,
+  isDebugLogging, release, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
 import { closeBrowser, ensureDataDirectory, getCurrentBrowser, isGracefulShutdown, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
@@ -507,16 +507,8 @@ async function buildApp(): Promise<Express> {
   // Set up all HTTP endpoints.
   setupRoutes(app);
 
-  // Global error handler. Express error handlers require 4 parameters even if unused.
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
-
-    LOG.error("Unhandled error in request: %s.", formatError(err));
-
-    if(!res.headersSent) {
-
-      res.status(500).send("Internal server error");
-    }
-  });
+  // The request error handler goes last, so it receives what every route above raises.
+  app.use(handleRequestError);
 
   return app;
 }

@@ -25,9 +25,9 @@
 import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
 import type { Config, HdhrConfig, Nullable } from "../types/index.ts";
 import { HDHR_DISCOVERY_PORT, createUdpSurface } from "./udp.ts";
+import { LOG, handleRequestError } from "../utils/index.ts";
 import type { AddressInfo } from "node:net";
 import { CONFIG } from "../config/index.ts";
-import { LOG } from "../utils/index.ts";
 import type { Server } from "node:http";
 import express from "express";
 import { formatError } from "../utils/errors.ts";
@@ -153,6 +153,10 @@ function createHttpSurface(): HttpSurface {
     let listeningPort = request.port;
 
     setupHdhrEndpoints(app, () => listeningPort);
+
+    // The request error handler goes last, so a route that throws is logged through the project logger and answered with a sentence rather than handed to
+    // Express's fallback, which writes to the console and sends the stack to the client outside production mode.
+    app.use(handleRequestError);
 
     const { promise, resolve } = Promise.withResolvers<Nullable<Server>>();
     const candidate = app.listen(request.port, request.host);
