@@ -9,7 +9,7 @@ import type { Express, Request, RequestHandler, Response } from "express";
 import type { IncomingMessage, Server } from "node:http";
 import { LOG, assertNever, boundedWait, claim, createMorganStream, formatError, formatTimestamp, getCurrentPattern, getPackageVersion, handleRequestError,
   isDebugLogging, release, resolveFFmpegPath, setConsoleLogging, startUpdateChecking, stopUpdateChecking } from "./utils/index.ts";
-import { closeBrowser, ensureDataDirectory, getCurrentBrowser, isGracefulShutdown, killStaleChrome, prepareExtension, setGracefulShutdown, setLoginModeEndObserver,
+import { closeBrowser, ensureDataDirectory, getCurrentBrowser, isGracefulShutdown, killStaleChrome, setGracefulShutdown, setLoginModeEndObserver,
   startBrowserRestartChecking, startStalePageCleanup, stopBrowserRestartChecking, stopStalePageCleanup, syncWindowVisibility } from "./browser/index.ts";
 import { ensureAllMigrated, snapshotAllForRelease } from "./config/persistence.ts";
 import { flushHealthStateNow, loadHealthState } from "./config/health.ts";
@@ -480,17 +480,7 @@ export function createRequestLogger(stream: StreamOptions): RequestHandler {
  * test substitutes a stub for it.
  * @returns The configured Express application.
  */
-async function buildApp(): Promise<Express> {
-
-  try {
-
-    await prepareExtension();
-  } catch(error) {
-
-    LOG.error("Cannot build app without extension: %s.", formatError(error));
-
-    throw error;
-  }
+function buildApp(): Express {
 
   const app = express();
 
@@ -692,7 +682,7 @@ function startBackgroundServices(): void {
 export interface BootServicesDeps {
 
   readonly attachCdpUpgradeHandler: (server: Server) => void;
-  readonly buildApp: () => Promise<Express>;
+  readonly buildApp: () => Express;
   readonly isGracefulShutdown: () => boolean;
   readonly listenMainServer: (app: Express) => Promise<Server>;
   readonly startBackgroundServices: () => void;
@@ -723,12 +713,11 @@ export const defaultBootServicesDeps: BootServicesDeps = {
  * to shutdown, whose own exit usually comes first because the launch has seconds of work left, so the boot reaches no check whichever exit lands first. A signal during
  * the preroll or the window sync finds a ready browser, so shutdown waits for Chrome's exit, within the browser module's BROWSER_TEARDOWN_DRAIN_BOUND_MS; the window sync
  * returns at once when shutdown has begun, so a boot whose preroll finishes inside that wait reaches the first check, which stops it before the stack is armed, and a
- * boot whose preroll outlasts the wait is ended by the exit. A signal during the build or the bind reaches a handler only under a packaged build or a hostname host,
- * because elsewhere neither crosses an event-loop turn: during the build, shutdown disposes the armed stack and the check after the build stops the boot before the bind;
- * during a hostname bind, shutdown reads the listener only after its own awaits, so the bind completes and shutdown closes the listener, and the check after the bind
- * stops the boot before HDHomeRun starts. A signal during the HDHomeRun start lets shutdown's stop run before the start finishes binding, and the sockets it binds last
- * until the exit. A signal after the boot finished meets no check and shutdown tears everything down; a repeated signal is absorbed by the handler's own guard; and a
- * process restart discards the state, so the next boot starts with it unset.
+ * boot whose preroll outlasts the wait is ended by the exit. The build is synchronous and a bind on an address crosses no event-loop turn, so between arming the stack
+ * and starting HDHomeRun the one await a signal can land in is a hostname host's lookup during the bind: shutdown reads the listener only after its own awaits, so the
+ * bind completes and shutdown closes the listener, and the check after the bind stops the boot before HDHomeRun starts. A signal during the HDHomeRun start lets
+ * shutdown's stop run before the start finishes binding, and the sockets it binds last until the exit. A signal after the boot finished meets no check and shutdown
+ * tears everything down; a repeated signal is absorbed by the handler's own guard; and a process restart discards the state, so the next boot starts with it unset.
  * @param deps - The boot's steps, whose shutdown reader the check calls.
  * @returns True when shutdown has begun, so the caller arms nothing further.
  */
@@ -748,10 +737,9 @@ function shutdownBegan(deps: BootServicesDeps): boolean {
  * Arms what the server runs for the life of the process, in order: the background services, the Express application and its listener, the CDP upgrade handler,
  * and HDHomeRun emulation. The signal handlers are installed well before the boot reaches this point, so a signal can run shutdown against a background stack, a
  * listener and an HDHomeRun surface that do not exist yet, and a boot that armed them afterwards would leave them running in a process that is shutting down. The
- * boot therefore reads the shutdown state before it arms the stack, and again after the build and after the bind, the awaits a later arming step follows, and
- * arms nothing once shutdown has begun. The checks after the build and the bind decide only where those awaits yield to the event loop - a packaged build's
- * extension preparation or a hostname host's lookup - and elsewhere the first check decides. The limit is an await already in flight when the signal lands: it
- * completes, and the process exit at the end of shutdown ends whatever it started.
+ * boot therefore reads the shutdown state before it arms the stack, and again after the bind, the await a later arming step follows, and arms nothing once
+ * shutdown has begun. The check after the bind decides only where that await yields to the event loop - a hostname host's lookup - and elsewhere the first check
+ * decides. The limit is an await already in flight when the signal lands: it completes, and the process exit at the end of shutdown ends whatever it started.
  * @param deps - The boot's steps: the real ones in production, and recording stubs in a test.
  * @returns A promise that resolves once the boot's tail completes or stops for a shutdown, and rejects when the build or the bind fails.
  */
@@ -767,12 +755,7 @@ export async function startBootServices(deps: BootServicesDeps = defaultBootServ
   // Build and start Express application.
   try {
 
-    const app = await deps.buildApp();
-
-    if(shutdownBegan(deps)) {
-
-      return;
-    }
+    const app = deps.buildApp();
 
     // Bind the main HTTP server, detecting bind success or failure through explicit events rather than the unreliable listen callback. A bind failure throws out
     // of here so the catch below surfaces it and the process exits cleanly rather than lingering with no HTTP surface.

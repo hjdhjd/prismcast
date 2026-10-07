@@ -8,12 +8,13 @@
 import { describe, test } from "node:test";
 import { generateDeviceId, validateDeviceId } from "./deviceId.ts";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 
 describe("validateDeviceId", () => {
 
   test("accepts a known-valid 8-character lowercase hex DeviceID", () => {
 
-    // 1000000f is the documented fallback used inside generateDeviceId; it must satisfy the checksum or the fallback would itself be invalid.
+    // 1000000f is valid because LOOKUP[1] ^ LOOKUP[0] ^ LOOKUP[0] ^ LOOKUP[0] ^ 0xF is zero, which the generator rows below also derive from the prefix 100000.
     assert.equal(validateDeviceId("1000000f"), true);
   });
 
@@ -78,8 +79,21 @@ describe("generateDeviceId", () => {
 
   test("returns a string composed only of lowercase hex digits", () => {
 
-    // Output is the prefix.toString("hex") concatenated with finalByte.toString(16).padStart(2,"0") - both produce lowercase hex.
+    // Output is the prefix's toString("hex") followed by a zero and the low nibble's toString(16), each of which produces lowercase hex.
     assert.match(generateDeviceId(), /^[0-9a-f]{8}$/);
+  });
+
+  test("derives the final byte from the prefix: a zero high nibble and the low nibble that zeroes the checksum", (t) => {
+
+    // Known answers, each worked by hand from the lookup table: the prefix 100000 leaves a remainder of 0xF once the zero high nibble is folded in, and the
+    // all-zero prefix leaves none, so their final bytes are 0f and 00.
+    const prefixes = [ Buffer.from([ 0x10, 0x00, 0x00 ]), Buffer.from([ 0x00, 0x00, 0x00 ]) ];
+    let next = 0;
+
+    t.mock.method(crypto, "randomBytes", (): Buffer => prefixes[next++] ?? Buffer.alloc(3));
+
+    assert.equal(generateDeviceId(), "1000000f", "the prefix 100000 takes the final byte 0f");
+    assert.equal(generateDeviceId(), "00000000", "the all-zero prefix takes the final byte 00");
   });
 
   test("returns a DeviceID that passes validateDeviceId", () => {
@@ -90,8 +104,8 @@ describe("generateDeviceId", () => {
 
   test("the every-time guarantee holds across many invocations (sampled)", () => {
 
-    // Boundary: the brute-force loop must terminate with a valid solution for any random prefix. Sampling 100 times exercises a wide swath of the prefix space
-    // and would catch any pathological prefix that fails to find a zero-checksum final byte.
+    // Boundary: the derived final byte must zero the checksum for any random prefix. The sample exercises a wide swath of the prefix space and would catch a
+    // derivation that fails for some remainder.
     for(let i = 0; i < 100; i++) {
 
       const id = generateDeviceId();

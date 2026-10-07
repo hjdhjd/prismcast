@@ -4,6 +4,7 @@
  */
 import { PENDING_PATH_ATTRIBUTE, RESTART_SETTINGS_SENTENCE, SAVE_SETTINGS_LABEL } from "../../config/vocabulary.ts";
 import { ACTIONS } from "../../clientActions.ts";
+import { ICON_FILTER } from "../../icons.ts";
 import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
 
 /**
@@ -1328,9 +1329,8 @@ export function generateConfigSubtabScript(): string {
     "    saveServiceFilter(enabledTags);",
     "  };",
 
-    // Update the service filter button text. The filter icon SVG is inlined here because this runs client-side where the server's icon module is not available.
-    "  const filterIcon = '<svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" " +
-      "stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 2h14l-5 6v5l-4 2V8z\"/></svg>';",
+    // Update the service filter button text, led by the server's own filter icon.
+    "  const filterIcon = " + JSON.stringify(ICON_FILTER) + ";",
     "  function updateServiceFilterButton(enabledTags) {",
     "    const btn = document.getElementById('provider-filter-btn');",
     "    if(!btn) return;",

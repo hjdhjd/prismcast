@@ -98,9 +98,9 @@ let writeChain: Promise<void> = Promise.resolve();
 const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
 // Maximum log file size in bytes, set by initialization and by setMaxLogSize(). It is configuration the size check and the trim read rather than lifecycle, so
-// it stays beside the state. The initial value is a placeholder nothing reads: the size check and the trim run only in the open state, which initialization
-// enters after assigning the configured cap.
-let maxLogSize = 1048576;
+// it stays beside the state. It has no initial value because nothing reads it before initialization assigns the configured cap: the size check and the trim run
+// only in the open state, which initialization enters after that assignment.
+let maxLogSize: number;
 
 /* The clock the flush interval arms on and the pause stamps read, set during initialization. It is per-run configuration the way the size cap is, so it stays
  * beside the state rather than inside it: a member of the open variant would put the clock's lifetime where the file keeps lifecycle, and the closing and closed

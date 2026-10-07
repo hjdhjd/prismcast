@@ -205,12 +205,6 @@ export async function readWindowPlacement(page: Page): Promise<Nullable<WindowPl
  */
 export async function minimizeWindow(page: Page): Promise<void> {
 
-  // Early exit if the page is already closed.
-  if(page.isClosed()) {
-
-    return;
-  }
-
   await withCDPSession(page, async (session, windowId) => {
 
     /* Let the window manager settle before asking for the state change. On macOS, NSWindow state transitions run asynchronously relative to Chrome's
@@ -240,12 +234,6 @@ export async function minimizeWindow(page: Page): Promise<void> {
  * @param clock - Clock driving the confirmation cadence and its elapsed measurement. Defaults to the system clock; tests inject a virtual clock.
  */
 export async function unminimizeWindow(page: Page, clock: Clock = systemClock): Promise<void> {
-
-  // Early exit if the page is already closed.
-  if(page.isClosed()) {
-
-    return;
-  }
 
   await withCDPSession(page, async (session, windowId) => {
 

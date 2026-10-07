@@ -11,7 +11,7 @@ import { TimerRegistry, systemClock } from "homebridge-plugin-utils";
 import { clearLoginState, isLoginModeActive, setLoginDeps } from "./login.ts";
 import { getAllStreams, getStreamCount, hasActiveCaptureStreams, hasEstablishedStreams, isCaptureIdentity } from "../streaming/registry.ts";
 import { getCachedTabId, installStrayOpenTabReaper, onTabActivation } from "./tabSelection.ts";
-import { getChromeDataDir, getDataDir, getExtensionDir } from "../config/paths.ts";
+import { getChromeDataDir, getDataDir } from "../config/paths.ts";
 import { getExtensionPage, launch } from "puppeteer-stream";
 import { getGpuCapabilities, setGpuCapabilities } from "./display.ts";
 import { minimizeWindow, readWindowPlacement, unminimizeWindow, withCDPSession } from "./cdp.ts";
@@ -708,11 +708,7 @@ function clearPageTracking(): void {
 
 /**
  * Ensures the data directory exists, creating it if necessary. This should be called during application startup before any operations that depend on the data
- * directory (like browser launch or extension preparation).
- *
- * The data directory stores:
- * - Chrome profile data (cookies, local storage, session state)
- * - Extension files (when running as a packaged executable)
+ * directory, browser launch above all, because the directory holds the Chrome profile data (cookies, local storage, session state).
  */
 export async function ensureDataDirectory(): Promise<void> {
 
@@ -1657,31 +1653,6 @@ onTabActivation((tabId: number): void => {
 });
 
 /**
- * Custom launch function that modifies Chrome arguments when running as a packaged executable. The packaged version cannot load extensions from node_modules
- * (which is bundled inside the executable), so we point the extension paths to our extracted extension files in the data directory.
- * @param opts - The launch options to modify.
- * @returns The launched browser instance.
- */
-async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
-
-  // When running as a packaged executable (process.pkg is set by the pkg bundler), we add Chrome's native unpacked-extension flags, --disable-extensions-except
-  // and --load-extension, each naming our extracted extension files. puppeteer-stream points opts.enableExtensions at its own node_modules-relative extension
-  // directory, which puppeteer-core passes to a CDP browser.installExtension() call after Chrome starts, and that path does not exist at that location in the
-  // packaged executable. This function leaves opts.enableExtensions as puppeteer-stream set it, so puppeteer-core still attempts that install, without awaiting it.
-  if(process.pkg) {
-
-    const extensionPath = getExtensionDir();
-
-    // Drop any extension flags the args already carry, so our pair pointing at the extracted extension appears exactly once.
-    opts.args = (opts.args ?? [])
-      .filter((arg: string): boolean => !arg.startsWith("--load-extension=") && !arg.startsWith("--disable-extensions-except="))
-      .concat([ "--disable-extensions-except=" + extensionPath, "--load-extension=" + extensionPath ]);
-  }
-
-  return puppeteerLaunch(opts);
-}
-
-/**
  * Formats the GPU capabilities into a human-readable suffix for the "Chrome ready" log line. The renderer string is already cleaned (ANGLE wrapper and Metal
  * prefix stripped) at detection time, so this function uses it directly and appends hardware-accelerated codec names in brackets when available.
  * @param gpu - The detected GPU capabilities.
@@ -2016,9 +1987,10 @@ async function launchReadyBrowser(): Promise<Browser> {
   // this is the one function every launch passes through, so it is also the only place that runs before the first-ever launch on a fresh install.
   seedProfilePreferences(getChromeDataDir(CONFIG));
 
-  // The launch function from puppeteer-stream wraps standard Puppeteer launch to inject the streaming extension. We pass our custom launch function that handles
-  // packaged-executable extension paths. This happens on first stream request, after a browser crash, during server warmup, or during a governed relaunch.
-  const browser = await launch({ launch: launchWithCustomArgs }, buildLaunchOptions());
+  // The launch function from puppeteer-stream wraps a standard Puppeteer launch to inject the streaming extension. We hand it puppeteer-core's own launch as its
+  // launch port, so the browser comes from the puppeteer-core this module depends on rather than whichever copy puppeteer-stream resolves for itself. This happens
+  // on first stream request, after a browser crash, during server warmup, or during a governed relaunch.
+  const browser = await launch({ launch: puppeteerLaunch }, buildLaunchOptions());
 
   try {
 
@@ -2828,82 +2800,6 @@ export function stopBrowserRestartChecking(): void {
 
   restartTimers?.dispose();
   restartTimers = null;
-}
-
-/* When running as a packaged executable (created by the `pkg` tool), the application is bundled into a single binary. Node modules like puppeteer-stream are
- * included in the bundle, but Chrome cannot load extensions from within the packaged binary - it needs actual files on the filesystem.
- *
- * To solve this, we extract the puppeteer-stream extension files to the application's data directory during startup. This happens only when process.pkg is
- * defined (indicating we're running as a packaged executable).
- *
- * The extracted files are:
- * - background.js: The extension's service worker that handles media capture
- * - manifest.json: The extension manifest declaring permissions and capabilities
- * - options.html/options.js: The extension's capture host. options.js defines START_RECORDING on the page's global scope, puppeteer-stream opens options.html as
- *   the extension page it resolves, the readiness handshake polls for START_RECORDING there, and every capture acquisition runs through it. The manifest also
- *   declares it as options_page.
- */
-
-/**
- * Extracts the Puppeteer Stream extension files when running as a packaged executable. This copies the extension files from within the packaged binary to the
- * filesystem where Chrome can load them.
- *
- * When running from source (not packaged), this function does nothing - puppeteer-stream can load the extension directly from node_modules.
- * @throws If extension extraction fails.
- */
-export async function prepareExtension(): Promise<void> {
-
-  // Only needed when running as a packaged executable.
-  if(!process.pkg) {
-
-    return;
-  }
-
-  try {
-
-    // The extension files are extracted to the extension directory within the data directory (ensured to exist before this function is called).
-    const out = getExtensionDir();
-
-    // Create the extension directory if it doesn't exist.
-    try {
-
-      await fsPromises.mkdir(out, { recursive: true });
-    } catch(error) {
-
-      LOG.error("Failed to create extension directory: %s.", formatError(error));
-
-      throw error;
-    }
-
-    // The extension files that need to be extracted. These are the files from puppeteer-stream's extension directory.
-    const files = [ "background.js", "manifest.json", "options.html", "options.js" ];
-
-    for(const file of files) {
-
-      try {
-
-        // Copy each file from the packaged location (relative to the executable) to the data directory. The source path assumes the executable is in the
-        // same directory as node_modules (which is how pkg packages the application).
-        // eslint-disable-next-line no-await-in-loop
-        await fsPromises.copyFile(
-          path.join(path.dirname(process.execPath), "node_modules", "puppeteer-stream", "extension", file),
-          path.join(out, file)
-        );
-      } catch(error) {
-
-        LOG.error("Failed to copy extension file %s: %s.", file, formatError(error));
-
-        throw error;
-      }
-    }
-
-    LOG.debug("browser:lifecycle", "Extension files prepared successfully.");
-  } catch(error) {
-
-    LOG.error("Extension preparation failed: %s.", formatError(error));
-
-    throw error;
-  }
 }
 
 /* Re-export the capture acquisition for the streaming module. The browser directory owns every conversation with puppeteer-stream - index.ts launches it and

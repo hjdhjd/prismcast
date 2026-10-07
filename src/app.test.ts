@@ -166,14 +166,14 @@ describe("startBootServices", () => {
   }
 
   /**
-   * Builds a row's recording steps over the browser module's own shutdown reader. The step a row names sets the graceful-shutdown state, or rejects, before it
-   * returns, which is how a signal or a failure lands while the boot awaits that step.
-   * @param options - Which step sets the shutdown state, and which step rejects.
-   * @param options.rejectAt - The step that rejects with the boot's failure in place of returning.
+   * Builds a row's recording steps over the browser module's own shutdown reader. The step a row names sets the graceful-shutdown state, or fails, before it
+   * returns, which is how a signal or a failure lands during that step. Only the bind can meet a signal, because the build is synchronous.
+   * @param options - Which step sets the shutdown state, and which step fails.
+   * @param options.rejectAt - The step that fails with the boot's failure in place of returning.
    * @param options.shutdownAt - The step that sets the graceful-shutdown state before it returns.
    * @returns The row's boot.
    */
-  function recordBoot({ rejectAt, shutdownAt }: { rejectAt?: "build" | "listen"; shutdownAt?: "build" | "listen" } = {}): RecordedBoot {
+  function recordBoot({ rejectAt, shutdownAt }: { rejectAt?: "build" | "listen"; shutdownAt?: "listen" } = {}): RecordedBoot {
 
     const app = express();
     const failure = new Error("The startup step failed.");
@@ -199,7 +199,7 @@ describe("startBootServices", () => {
 
         steps.push({ name: "attach", received: listener });
       },
-      buildApp: async (): Promise<Express> => {
+      buildApp: (): Express => {
 
         steps.push({ name: "build", received: null });
         settleStep("build");
@@ -264,17 +264,6 @@ describe("startBootServices", () => {
     assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
   });
 
-  test("a shutdown that begins during the build stops the boot before the bind", async (t) => {
-
-    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
-    const boot = recordBoot({ shutdownAt: "build" });
-
-    await startBootServices(boot.deps);
-
-    assert.deepEqual(stepNames(boot), [ "background", "build" ], "neither the listen, the attach nor HDHomeRun ran");
-    assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
-  });
-
   test("a shutdown that begins during the bind stops the boot before HDHomeRun starts", async (t) => {
 
     const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
@@ -286,7 +275,7 @@ describe("startBootServices", () => {
     assert.equal(skipLines(info.mock.calls), 1, "the skip line logged once");
   });
 
-  test("a build that rejects rejects the boot's tail with its error, and nothing after the build runs", async (t) => {
+  test("a build that throws rejects the boot's tail with its error, and nothing after the build runs", async (t) => {
 
     t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
 

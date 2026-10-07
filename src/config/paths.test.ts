@@ -5,9 +5,9 @@
  * and lock the path-builder contract for the Config-derived getters.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getDefaultLogFilePath, getExtensionDir, getHealthFilePath,
-  getLogFilePath, getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath,
-  getStartupLogFilePath, initializeDataDir, serviceFileExists } from "./paths.ts";
+import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getDefaultLogFilePath, getHealthFilePath, getLogFilePath,
+  getLogsDirectory, getProfilesFilePath, getResumeFilePath, getServerPidFilePath, getServiceFileDirectory, getServiceFilePath, getStartupLogFilePath,
+  initializeDataDir, serviceFileExists } from "./paths.ts";
 import type { Config } from "../types/index.ts";
 import { SERVICE_ID } from "../identity.ts";
 import assert from "node:assert/strict";
@@ -310,33 +310,6 @@ describe("getChromeDataDir", () => {
       const config = makeConfig();
 
       assert.equal(getChromeDataDir(config), path.join(dir, "elsewhere", "chromedata"));
-
-      return Promise.resolve();
-    });
-  });
-});
-
-describe("getExtensionDir", () => {
-
-  test("returns dataDir + extension", async () => {
-
-    await withTempDir((dir) => {
-
-      initializeDataDir(dir);
-
-      assert.equal(getExtensionDir(), path.join(dir, "extension"));
-
-      return Promise.resolve();
-    });
-  });
-
-  test("the extension directory name is fixed, so the path follows only the data directory", async () => {
-
-    await withTempDir((dir) => {
-
-      initializeDataDir(path.join(dir, "elsewhere"));
-
-      assert.equal(getExtensionDir(), path.join(dir, "elsewhere", "extension"));
 
       return Promise.resolve();
     });

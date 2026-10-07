@@ -12,7 +12,7 @@ import crypto from "node:crypto";
  * Algorithm: The 32-bit value is processed as 8 nibbles (4 bits each). Nibbles at even positions (0, 2, 4, 6 counting from the most significant) are
  * transformed through a lookup table before XOR. Nibbles at odd positions (1, 3, 5, 7) are XORed directly. A valid ID produces a checksum of zero.
  *
- * We generate a random 24-bit prefix (6 hex chars), then brute-force the final byte (2 hex chars) to satisfy the checksum constraint.
+ * We generate a random 24-bit prefix (6 hex chars), then derive the final byte (2 hex chars) that zeroes the checksum.
  */
 
 // Lookup table from libhdhomerun for DeviceID checksum validation. Applied to nibbles at even positions only.
@@ -66,45 +66,19 @@ export function validateDeviceId(deviceId: string): boolean {
 }
 
 /**
- * Generates a valid HDHomeRun DeviceID. Creates a random 24-bit prefix and finds a final byte that satisfies the checksum constraint.
+ * Generates a valid HDHomeRun DeviceID. Creates a random 24-bit prefix and derives the final byte that satisfies the checksum constraint.
  * @returns An 8-character lowercase hex string with a valid HDHomeRun checksum.
  */
 export function generateDeviceId(): string {
 
   // Generate 3 random bytes (24 bits = 6 hex chars) for the prefix.
-  const prefixBytes = crypto.randomBytes(3);
-  const prefix = prefixBytes.toString("hex");
-
-  // Parse the prefix into nibbles and compute the partial checksum for the first 6 nibbles (positions 0-5).
+  const prefix = crypto.randomBytes(3).toString("hex");
   const nibbles = Array.from(prefix, (ch) => parseInt(ch, 16));
 
-  let partialChecksum = 0;
+  // The final byte's high nibble is zero, at position 6, so the checksum of the prefix and that zero is what remains once the high nibble is folded in. Position
+  // 7 is odd, so its nibble is XORed raw, and the low nibble equal to that remainder zeroes the checksum. The remainder is a XOR of nibbles, so it is always a
+  // single hex digit and every prefix has its final byte.
+  const lowNibble = computeChecksum([ ...nibbles, 0 ]);
 
-  for(const [ i, nibble ] of nibbles.entries()) {
-
-    if((i % 2) === 0) {
-
-      partialChecksum ^= DEVICEID_LOOKUP[nibble] ?? 0;
-    } else {
-
-      partialChecksum ^= nibble;
-    }
-  }
-
-  // Find the final byte (2 nibbles) that makes the total checksum zero. Position 6 is even (lookup table), position 7 is odd (raw). We try all 256 values. A
-  // solution is always guaranteed since for any 4-bit partial checksum, at least one of the 256 final byte combinations will zero the full checksum.
-  for(let finalByte = 0; finalByte < 256; finalByte++) {
-
-    const highNibble = (finalByte >> 4) & 0xF;
-    const lowNibble = finalByte & 0xF;
-    const finalChecksum = partialChecksum ^ (DEVICEID_LOOKUP[highNibble] ?? 0) ^ lowNibble;
-
-    if(finalChecksum === 0) {
-
-      return prefix + finalByte.toString(16).padStart(2, "0");
-    }
-  }
-
-  // This is unreachable - a solution always exists within the 256 candidates. Fall back to a known-valid ID as a safety net.
-  return "1000000f";
+  return prefix + "0" + lowNibble.toString(16);
 }

@@ -246,16 +246,6 @@ export function getChromeDataDir(config: Config): string {
 }
 
 /**
- * Returns the directory the puppeteer-stream extension files are extracted to, extension inside the data directory. A packaged executable extracts them there
- * because Chrome cannot load an extension from inside the executable archive.
- * @returns The absolute path to the extension directory.
- */
-export function getExtensionDir(): string {
-
-  return path.join(getDataDir(), "extension");
-}
-
-/**
  * Returns the default log file path inside the data directory. The configured path's fallback and the startup path both resolve to this expression, so the
  * default location is written once.
  * @returns The absolute path to the default log file.

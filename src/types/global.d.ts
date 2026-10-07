@@ -15,20 +15,6 @@ declare global {
     __prismcastReaffirmSurface?: () => Promise<void>;
     __prismcastSelectVideo?: (type: string) => HTMLVideoElement | null;
   }
-
-  // Extend the NodeJS.Process interface to include the pkg property added by the pkg tool when running as a packaged executable.
-  namespace NodeJS {
-
-    interface Process {
-
-      pkg?: {
-
-        defaultEntrypoint: string;
-        entrypoint: string;
-        path: Record<string, string>;
-      };
-    }
-  }
 }
 
 export {};

@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the testable, non-Chrome-driving pieces of browser/index.ts. The module is dominated by Chrome lifecycle code (launchReadyBrowser,
- * detectBrowserCapabilities, cleanupStalePages, executeBrowserRestart, prepareExtension), which all require Puppeteer integration, and no automated suite exercises
- * them: the integration tier under test/ never launches Chrome.
+ * detectBrowserCapabilities, cleanupStalePages, executeBrowserRestart), which all require Puppeteer integration, and no automated suite exercises them: the
+ * integration tier under test/ never launches Chrome.
  *
  * The unit tests here cover the synchronous accessor surface that does not touch Chrome:
  *
@@ -2170,8 +2170,6 @@ describe("isBrowserIdleForRestart", () => {
  *
  * - getBrowserPages (browser.pages() against a real session). The window-visibility executor is exercised: its factory takes injected primitives and an
  *   injected page resolver, so windowSync.test.ts drives the whole loop with fakes and only the resolver wired in here needs a real browser.
- *
- * - prepareExtension (filesystem operations against the packaged executable layout).
  *
  * - killStaleChrome (process.kill, fs.unlinkSync, Atomics.wait against the real process tree).
  *

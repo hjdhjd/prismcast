@@ -971,10 +971,6 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       clearCache,
       execute: directStrategy,
-
-      // The hook is inert for this provider: the coordinator calls it only after a tune that used a direct URL fails, and resolveDirectUrl here always returns
-      // null, so no tune goes through one.
-      invalidateDirectUrl: channelCache.invalidate,
       resolveDirectUrl
     },
     strategyName: config.strategyName,
