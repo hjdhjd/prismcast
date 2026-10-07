@@ -226,6 +226,28 @@ describe("isEqualToDefault", () => {
     assert.equal(isEqualToDefault("foo", "bar"), false);
     assert.equal(isEqualToDefault(1, 2), false);
   });
+
+  test("a list compares with the capture codec default by its members in any order", () => {
+
+    // The default written out, so each answer is a known answer for the comparison rather than for whatever DEFAULTS holds.
+    const codecDefault = [ "h264", "hevc" ];
+
+    assert.equal(isEqualToDefault([ "hevc", "h264" ], codecDefault), true, "a reordered list holds the default's members");
+    assert.equal(isEqualToDefault(["h264"], codecDefault), false, "a subset of the default's members is another set");
+    assert.equal(isEqualToDefault([ "h264", "hevc", "av1" ], codecDefault), false, "a superset of the default's members is another set");
+  });
+
+  test("a list compares with the empty precache default by its members", () => {
+
+    assert.equal(isEqualToDefault(["hulu"], []), false, "a list with a member differs from the empty default");
+    assert.equal(isEqualToDefault([], []), true, "an empty list equals the empty default");
+  });
+
+  test("a value without an array default's shape counts as absent, so it equals the default", () => {
+
+    assert.equal(isEqualToDefault("h264", [ "h264", "hevc" ]), true, "a string at an array default");
+    assert.equal(isEqualToDefault(null, []), true, "null at an array default");
+  });
 });
 
 describe("getSettingByPath", () => {

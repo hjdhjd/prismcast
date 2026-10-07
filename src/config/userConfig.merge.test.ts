@@ -92,6 +92,30 @@ describe("mergeConfiguration", () => {
     assert.deepEqual(userConfig.channels?.disabledPredefined, ["abc"], "user config array unchanged");
   });
 
+  test("a list setting merges as a clone, so mutating the merged precache list leaves the parsed file's list untouched", () => {
+
+    const userConfig: UserConfig = { channels: { precacheServices: ["hulu"] } };
+    const result = mergeConfiguration(userConfig);
+
+    result.channels.precacheServices.push("sling");
+
+    assert.deepEqual(userConfig.channels?.precacheServices, ["hulu"], "the parsed file's list is unchanged");
+  });
+
+  test("a stored list holding the default's members in another order merges in the default's order", () => {
+
+    const result = mergeConfiguration({ streaming: { captureCodecs: [ "hevc", "h264" ] } });
+
+    assert.deepEqual(result.streaming.captureCodecs, [ "h264", "hevc" ]);
+  });
+
+  test("a stored value that is not a list at a list setting merges as the default", () => {
+
+    const result = mergeConfiguration({ channels: { precacheServices: "hulu" as unknown as string[] } });
+
+    assert.deepEqual(result.channels.precacheServices, []);
+  });
+
   test("user-supplied enabledServices array survives the merge", () => {
 
     const userConfig: UserConfig = { channels: { enabledServices: [ "hulu", "yttv" ] } };
@@ -522,38 +546,50 @@ describe("filterDefaults", () => {
 
   test("captureCodecs equal to default in same order is dropped", () => {
 
-    // captureCodecs is skipped in the metadata loop, so the differsFromSortedArrayDefault predicate is the sole arbiter. A user list identical to the default
-    // (same elements, same order) sorts equal to the default and is therefore not preserved.
+    // captureCodecs is a metadata setting, so the metadata loop decides it through isEqualToDefault, which compares a list by its members. A user list
+    // identical to the default (same elements, same order) holds the default's members and is therefore not preserved.
     const filtered = filterDefaults({ streaming: { captureCodecs: [...DEFAULTS.streaming.captureCodecs] } });
 
     assert.equal(getNestedValue(filtered, "streaming.captureCodecs"), undefined, "default-equal captureCodecs is dropped");
   });
 
-  test("captureCodecs reordered relative to default is treated as default-equal under sorted comparison", () => {
+  test("captureCodecs reordered relative to default is treated as default-equal by its members", () => {
 
-    /* The sorted-equality predicate (differsFromSortedArrayDefault) is registered for streaming.captureCodecs in PRESERVED_FIELDS. The intent: a reordered
-     * codec list (e.g., [hevc, h264] vs default [h264, hevc]) is semantically the same configuration and must be stripped from the persisted shape so the
-     * on-disk file does not capture a meaningless reorder. filterDefaults achieves this by skipping PRESERVED_FIELDS-managed paths in its CONFIG_METADATA
-     * loop, leaving the predicate as the sole arbiter; the predicate's sorted comparison classifies the reordered list as default-equal and writes nothing.
-     * Without that skip, the metadata loop's String() coercion would add the value to the filtered output before the predicate ran (the loop is additive-only
-     * and cannot delete entries the predicate would skip).
+    /* A reordered codec list (e.g., [hevc, h264] vs default [h264, hevc]) is the same set of choices, so it must be stripped from the persisted shape and the
+     * on-disk file does not capture a meaningless reorder. The metadata loop's isEqualToDefault compares an array against an array default by its members in
+     * any order, so it classifies the reordered list as default-equal and writes nothing.
      */
     const reordered = [...DEFAULTS.streaming.captureCodecs].toReversed();
     const filtered = filterDefaults({ streaming: { captureCodecs: reordered } });
 
     assert.equal(getNestedValue(filtered, "streaming.captureCodecs"), undefined,
-      "reordered captureCodecs treated as default-equal under sorted comparison");
+      "reordered captureCodecs treated as default-equal by its members");
   });
 
   test("captureCodecs with a different content set is preserved (not just reorder)", () => {
 
-    /* Boundary on the sorted-equality predicate: a user list missing one of the default codecs is a real customization; it must survive the filter even when
-     * the survivor codec appears in the default. The predicate compares the two arrays as sorted sequences (multiset equality via toSorted + isDeepStrictEqual),
-     * so any difference in the element multiset is preserved.
+    /* Boundary on the members comparison: a user list missing one of the default codecs is a real customization; it must survive the filter even when the
+     * survivor codec appears in the default. isEqualToDefault compares the value and the default as sorted sequences, so any difference in the element
+     * multiset is preserved.
      */
     const filtered = filterDefaults({ streaming: { captureCodecs: ["h264"] } });
 
     assert.deepEqual(getNestedValue(filtered, "streaming.captureCodecs"), ["h264"], "single-codec list is a customization and survives");
+  });
+
+  test("captureCodecs holding more than the default's members is preserved", () => {
+
+    const filtered = filterDefaults({ streaming: { captureCodecs: [ "h264", "hevc", "av1" ] } });
+
+    assert.deepEqual(getNestedValue(filtered, "streaming.captureCodecs"), [ "h264", "hevc", "av1" ], "a superset of the default is a customization and survives");
+  });
+
+  test("the precache list is kept when it names a service, and dropped when empty or not a list", () => {
+
+    assert.deepEqual(getNestedValue(filterDefaults({ channels: { precacheServices: ["hulu"] } }), "channels.precacheServices"), ["hulu"], "a listed service is kept");
+    assert.equal(getNestedValue(filterDefaults({ channels: { precacheServices: [] } }), "channels.precacheServices"), undefined, "the empty default is dropped");
+    assert.equal(getNestedValue(filterDefaults({ channels: { precacheServices: null as unknown as string[] } }), "channels.precacheServices"), undefined,
+      "a null list counts as absent and is dropped");
   });
 
   test("recursive removeEmptyObjects walks nested mixed levels (some children empty, some populated)", () => {
@@ -620,6 +656,13 @@ describe("hydration registry parity", () => {
     const overlap = hydratedPaths.filter((path) => persistenceOnlyPaths.includes(path));
 
     assert.deepEqual(overlap, [], "HYDRATED_FIELDS and PERSISTENCE_ONLY_FIELDS must be disjoint - no path can be both runtime-hydrated and persistence-only");
+  });
+
+  test("no PRESERVED_FIELDS path is a metadata path, so the metadata loop alone decides every setting", () => {
+
+    const metadataPaths = new Set(Object.values(CONFIG_METADATA).flat().map((setting) => setting.path));
+
+    assert.deepEqual(PRESERVED_FIELDS.map((entry) => entry.path).filter((path) => metadataPaths.has(path)), [], "the registry holds only paths outside the metadata");
   });
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {

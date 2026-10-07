@@ -8,7 +8,7 @@
  * regression in the route-handler path (e.g., the body-parser change, the validation step, the merge call site) surfaces here even when the underlying
  * mutateConfig rule still holds.
  *
- * The file is split into two cohesive blocks:
+ * The preservation coverage is split into cohesive blocks:
  *
  *   1. Hand-picked named-fingerprint tests for the highest-leverage 4afa8a0-class fields (disabledPredefined, enabledServices, hdhr.deviceId,
  *      channelsDvr.host) plus the empty-form-body no-op boundary. These remain on purpose, even though the parameterized sweep below also covers each of those
@@ -19,8 +19,12 @@
  *      line in src/config/userConfig.ts (the registry) plus one line in this file's seed table; the sweep then automatically asserts preservation for the new
  *      field. The drift-check test at the top of the sweep block fails loudly if the seed table and the registry get out of sync. This is the structural
  *      counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added to the registry.
+ *
+ *   3. The list-settings sweep, the same shape over every CONFIG_METADATA setting whose default is an array. A list setting is an ordinary metadata setting,
+ *      so the registry sweep does not reach it, and its drift check derives the paths from the metadata, so a list setting added later fails until it gets a
+ *      seed.
  */
-import { PRESERVED_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
+import { CONFIG_METADATA, DEFAULTS, PRESERVED_FIELDS, getNestedValue, mutateConfig, setNestedValue } from "../../../src/config/userConfig.ts";
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
 import type { PreservedField } from "../../../src/config/userConfig.ts";
@@ -197,15 +201,13 @@ const SEED_VALUES: Record<string, unknown> = {
   "channels.channelSortField": "channelNumber",
   "channels.disabledPredefined": [ "abc-hulu", "nbc-yttv" ],
   "channels.enabledServices": [ "hulu", "sling" ],
-  "channels.precacheServices": ["hulu"],
   "channels.setupCompleted": true,
   "channels.visibleColumns": [ "channelNumber", "name", "service" ],
   "channelsDvr.host": UNRESOLVABLE_DVR_HOST,
   "hdhr.deviceId": "ABCD1234",
   "logging.debugFilter": "browser:*",
   "migrationsApplied": ["test-suite-17-marker"],
-  "schemaVersion": 3,
-  "streaming.captureCodecs": ["h264"]
+  "schemaVersion": 3
 };
 
 describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS", () => {
@@ -260,6 +262,64 @@ describe("POST /config - parameterized preservation sweep over PRESERVED_FIELDS"
       const persistedValue = getNestedValue(persisted, field.path);
 
       assert.deepEqual(persistedValue, seed, "field " + field.path + " must survive a settings-form POST byte-identical to the seeded value");
+    });
+  }
+});
+
+/* Test-side seed values for the list settings, keyed by every CONFIG_METADATA path whose default is an array. Each seed differs from its default, so
+ * filterDefaults keeps it, and a settings POST that omits the list must leave it on disk unchanged.
+ */
+const LIST_SEED_VALUES: Record<string, unknown> = {
+
+  "channels.precacheServices": ["hulu"],
+  "streaming.captureCodecs": ["h264"]
+};
+
+// The list settings, derived from the metadata and the defaults rather than written out, so a list setting added later is a path the drift check names.
+const LIST_SETTING_PATHS = Object.values(CONFIG_METADATA).flat().map((setting) => setting.path)
+  .filter((settingPath) => Array.isArray(getNestedValue(DEFAULTS, settingPath)));
+
+describe("POST /config - metadata list settings survive a settings POST", () => {
+
+  /* The registry sweep's sibling for the list settings. A list setting is an ordinary metadata setting the metadata loop keeps when its members differ from
+   * the default's, so this sweep is the route-level check that a form omitting the list leaves the stored list on disk byte-identical.
+   */
+
+  test("test-side list seed table and the metadata's list settings agree on coverage", () => {
+
+    assert.deepEqual(Object.keys(LIST_SEED_VALUES).toSorted(), LIST_SETTING_PATHS.toSorted(),
+      "LIST_SEED_VALUES keys must equal the metadata paths whose default is an array. Add a seed when adding a list setting.");
+  });
+
+  for(const settingPath of LIST_SETTING_PATHS) {
+
+    test("preserves " + settingPath + " across a settings-form POST", async () => {
+
+      await using ctx = await createIntegrationContext();
+
+      await initializePersistence(ctx);
+
+      const { urlFor } = await bootApp(ctx);
+
+      const seed = LIST_SEED_VALUES[settingPath];
+
+      await mutateConfig((config) => {
+
+        setNestedValue(config as Record<string, unknown>, settingPath, seed);
+      });
+
+      const response = await fetch(urlFor("/config"), {
+
+        body: JSON.stringify({ server: { port: 9999 } }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+
+      assert.equal(response.status, 200, "settings POST should succeed for " + settingPath + "; body: " + (await response.clone().text()).slice(0, 200));
+
+      const persisted = await readPersistedJson(ctx, "config.json");
+
+      assert.deepEqual(getNestedValue(persisted, settingPath), seed, "list setting " + settingPath + " must survive a settings-form POST byte-identical to the seed");
     });
   }
 });

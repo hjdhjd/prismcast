@@ -2233,6 +2233,46 @@ describe("config.ts: window.updateCheckboxList", () => {
     assert.deepEqual(JSON.parse(hiddenValue) as string[], [ "alpha", "gamma" ],
       "hidden value must serialize the checked checkbox values as a JSON array");
   });
+
+  test("reads a list unmodified when its members match its default in another order, and modified when its members differ", async () => {
+
+    /* The handler writes the checked members in grid order, while the server renders a list's default in its stored order, so a list whose members match its
+     * default in another order must read unmodified. The fixture's form-group starts marked modified, as the server renders a modified field, so the unmodified
+     * reading has to clear the mark. Each default whose members differ must read modified: one of the same length with one member swapped for another, one
+     * holding every member and one more, and one missing a member, so neither a length comparison nor a one-way containment passes.
+     */
+    await using ctx = await setupConfigRuntime();
+
+    ctx.evaluate(
+      "document.body.insertAdjacentHTML('beforeend', " +
+      "'<div class=\"form-group modified\" id=\"lme-group\">' + " +
+      "'<input type=\"hidden\" id=\"lme-hidden\" data-checkbox-list value=\"\">' + " +
+      "'<div class=\"checkbox-list-grid\">' + " +
+      "'<input type=\"checkbox\" id=\"lme-a\" value=\"alpha\">' + " +
+      "'<input type=\"checkbox\" id=\"lme-b\" value=\"beta\">' + " +
+      "'<input type=\"checkbox\" id=\"lme-c\" value=\"gamma\">' + " +
+      "'</div>' + " +
+      "'</div>');" +
+      "document.getElementById('lme-a').checked = true;" +
+      "document.getElementById('lme-b').checked = true;"
+    );
+
+    // Sets the list's default, fires updateCheckboxList on a checkbox whose state does not change, and reads whether the field is marked modified.
+    const modifiedAgainst = (defaultMembers: readonly string[]): boolean => {
+
+      ctx.evaluate("document.getElementById('lme-hidden').setAttribute('data-default', " + JSON.stringify(JSON.stringify(defaultMembers)) + ");");
+      ctx.evaluate("window.updateCheckboxList(document.getElementById('lme-a'))");
+
+      return ctx.evaluate("document.getElementById('lme-group').classList.contains('modified')") as boolean;
+    };
+
+    assert.equal(modifiedAgainst([ "beta", "alpha" ]), false, "the same members in reverse order read unmodified");
+    assert.equal(ctx.evaluate("document.getElementById('lme-hidden').value"), "[\"alpha\",\"beta\"]",
+      "precondition: the hidden input lists the checked members in grid order");
+    assert.equal(modifiedAgainst([ "alpha", "gamma" ]), true, "a default of the same length with one member swapped reads modified");
+    assert.equal(modifiedAgainst([ "alpha", "beta", "gamma" ]), true, "a default holding every member and one more reads modified");
+    assert.equal(modifiedAgainst(["alpha"]), true, "a default missing one member reads modified");
+  });
 });
 
 describe("config.ts: window.updateServiceSelection", () => {

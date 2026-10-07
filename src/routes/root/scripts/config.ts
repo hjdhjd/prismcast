@@ -399,13 +399,22 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  }",
 
-    // Update modified indicators for a single input.
+    // A checkbox list's hidden input lists its members in grid order once a checkbox changes and in the stored order before, so order carries no meaning: lists
+    // are equal when their sorted members are, the reading the server gives a list setting.
+    "  function listMembersEqual(a, b) {",
+    "    const left = JSON.parse(a || '[]').toSorted();",
+    "    const right = JSON.parse(b || '[]').toSorted();",
+    "    return (left.length === right.length) && left.every((member, index) => member === right[index]);",
+    "  }",
+
+    // Update modified indicators for a single input. A checkbox list compares its members with its default's in any order, and every other input compares its
+    // value with its default as a string.
     "  function updateModifiedIndicator(input) {",
     "    const defaultVal = input.getAttribute('data-default');",
     "    const currentVal = getInputValue(input);",
     "    const formGroup = input.closest('.form-group');",
     "    if(!formGroup) return;",
-    "    const isModified = currentVal !== defaultVal;",
+    "    const isModified = input.hasAttribute('data-checkbox-list') ? !listMembersEqual(currentVal, defaultVal) : (currentVal !== defaultVal);",
     "    const dot = formGroup.querySelector('.modified-dot');",
     "    const resetBtn = formGroup.querySelector('.btn-reset');",
     "    if(isModified) {",

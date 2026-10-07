@@ -1501,19 +1501,37 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
 
       const userValue = getNestedValue(userConfig, setting.path);
 
-      if(userValue !== undefined) {
+      if(userValue === undefined) {
+
+        continue;
+      }
+
+      const defaultValue = getNestedValue(DEFAULTS, setting.path);
+
+      if(!Array.isArray(defaultValue)) {
 
         setNestedValue(config as unknown as Record<string, unknown>, setting.path, userValue);
+
+        continue;
+      }
+
+      /* A list setting takes the shape rule isEqualToDefault() applies. A stored value that is not an array counts as absent, so the default stays. An array
+       * merges as a clone, and as the default's own clone when it holds the default's members in any order, so the running configuration never shares a
+       * value with the parsed file, and it holds what the file round-trips to: a list equal to the default is dropped from the file and read back as the
+       * default, in the default's order.
+       */
+      if(hasDefaultShape(userValue, defaultValue)) {
+
+        setNestedValue(config as unknown as Record<string, unknown>, setting.path, structuredClone(isEqualToDefault(userValue, defaultValue) ? defaultValue : userValue));
       }
     }
   }
 
   /* Hydrate fields that live outside CONFIG_METADATA (auto-discovery results like channelsDvr.host, separately-managed lists like channels.disabledPredefined,
-   * the persisted debug filter pattern) and array fields whose CONFIG_METADATA hydration would alias the parsed UserConfig blob into runtime CONFIG. The
-   * registry pairs each path with a predicate (ignored when undefined) and an optional defensive-copy hook. Adding a new field here is one HYDRATED_FIELDS
-   * entry; the drift-check test in userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS,
-   * so a future preservation entry cannot be added without an explicit hydration classification. See the section comment above HYDRATED_FIELDS for the full
-   * design intent.
+   * the persisted debug filter pattern). The registry pairs each path with a predicate (ignored when undefined) and an optional defensive-copy hook. Adding a
+   * new field here is one HYDRATED_FIELDS entry; the drift-check test in userConfig.merge.test.ts asserts that PRESERVED_FIELDS partitions exactly into
+   * HYDRATED_FIELDS plus PERSISTENCE_ONLY_FIELDS, so a future preservation entry cannot be added without an explicit hydration classification. See the section
+   * comment above HYDRATED_FIELDS for the full design intent.
    */
   for(const field of HYDRATED_FIELDS) {
 
@@ -1842,12 +1860,32 @@ function removeEmptyObjects(obj: Record<string, unknown>): Record<string, unknow
 }
 
 /**
- * Checks if two values are equal for the purpose of default comparison. Handles null, undefined, and type coercion consistently.
+ * Answers whether a value has its default's shape: an array for an array default, and a value of the default's own type for any other. It is the one statement
+ * of the shape rule in this module, and a caller that applies it treats a value without its default's shape as absent.
+ * @param value - The value to check.
+ * @param defaultValue - The default the value stands in for.
+ * @returns True when the value has the default's shape.
+ */
+function hasDefaultShape(value: unknown, defaultValue: unknown): boolean {
+
+  return Array.isArray(defaultValue) ? Array.isArray(value) : (typeof value === typeof defaultValue);
+}
+
+/**
+ * Checks whether a value equals its default for the purpose of default comparison. An array default is decided first: a value without the default's shape,
+ * null and undefined among them, counts as absent and so equals the default, and an array equals it when it holds the default's members in any order. Order
+ * does not count because a list setting is a set of choices, and every array this rule reaches is read as a set. Any other value compares through String()
+ * coercion, with null and undefined equal to each other and to nothing else.
  * @param value - The value to check.
  * @param defaultValue - The default value to compare against.
  * @returns True if the values are considered equal.
  */
 export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean {
+
+  if(Array.isArray(defaultValue)) {
+
+    return !hasDefaultShape(value, defaultValue) || isDeepStrictEqual((value as unknown[]).toSorted(), defaultValue.toSorted());
+  }
 
   // Handle null/undefined cases.
   if((value === null) || (value === undefined)) {
@@ -1860,8 +1898,6 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
     return false;
   }
 
-  // Compared via String() coercion; array-typed values (checkboxList settings) also reach this function and compare as their comma-joined form, which can
-  // misclassify a reordered-but-equivalent list as different. See PRESERVED_FIELDS for the array-aware comparison used when persisting.
   const primitive: string | number | boolean = value as string | number | boolean;
   const defaultPrimitive: string | number | boolean = defaultValue as string | number | boolean;
 
@@ -1870,21 +1906,16 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
 
 // Settings preservation registry.
 
-/* The CONFIG_METADATA-driven loop in filterDefaults() handles the typical case: a setting appears in CONFIG_METADATA, the loop picks it up, the loop strips
- * values equal to the default. Outside that case we need an explicit allowlist for two distinct reasons:
- *
- *   1. Fields that live outside CONFIG_METADATA entirely (channelsDvr.host populated by showInfo.persistDvrHost(); schemaVersion / migrationsApplied owned by
- *      the file-store framework's migration runner). The metadata loop never sees them, so without this allowlist they would be stripped on the next save.
- *
- *   2. Array-shaped fields whose CONFIG_METADATA loop comparison via isEqualToDefault() uses String() coercion, which is fast for inequality detection but
- *      produces false positives for arrays containing commas in their elements. The explicit blocks also guarantee non-empty arrays survive even where the
- *      stringified comparison would not.
+/* The CONFIG_METADATA-driven loop in filterDefaults() handles every setting: a setting appears in CONFIG_METADATA, the loop picks it up, the loop strips
+ * values equal to the default, a list setting included, because isEqualToDefault() compares a list by its members. Fields that live outside CONFIG_METADATA
+ * entirely (channelsDvr.host populated by showInfo.persistDvrHost(); schemaVersion / migrationsApplied owned by the file-store framework's migration runner)
+ * need an explicit allowlist, because the metadata loop never sees them, so without it they would be stripped on the next save.
  *
  * The registry pairs each preserved path with a predicate that decides whether the value at that path is meaningful enough to survive. The predicates are
- * named for their intent (isNonEmptyArray, differsFromSortedArrayDefault, ...) so the registry reads as a declarative table; filterDefaults() consumes it via
- * a single uniform loop. Adding a new preserved field is one line in PRESERVED_FIELDS, not a new inline block in the function body - and Suite 17 in
- * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is covered by the parameterized preservation sweep once its
- * seed value is added to the SEED_VALUES table; the only test edit needed is that seed, never a new test case.
+ * named for their intent (isNonEmptyArray, isTrue, ...) so the registry reads as a declarative table; filterDefaults() consumes it via a single uniform loop.
+ * Adding a new preserved field is one line in PRESERVED_FIELDS, not a new inline block in the function body - and Suite 17 in
+ * test/e2e/routes/settings-preservation.test.ts iterates the registry directly so a new entry is covered by the parameterized preservation sweep once its seed
+ * value is added to the SEED_VALUES table; the only test edit needed is that seed, never a new test case.
  *
  * Read-side counterpart: HYDRATED_FIELDS (further below) is the symmetric registry consumed by mergeConfiguration() to bring persisted values back into
  * runtime CONFIG on boot. The two sets together with PERSISTENCE_ONLY_FIELDS partition every preserved path into "hydrates to runtime" or "persistence-only
@@ -1894,18 +1925,17 @@ export function isEqualToDefault(value: unknown, defaultValue: unknown): boolean
 
 /**
  * Predicate signature for the settings-preservation registry. Each predicate decides whether a particular field's value is meaningful enough to survive the
- * filter pass. The signature accepts both the field's value and its DEFAULTS counterpart so predicates that compare against a default (sort field, capture
- * codecs) and predicates that ignore the default (non-empty array / non-empty string checks) share the same call site - filterDefaults() looks up DEFAULTS
- * once per entry and passes both, leaving the predicate free to use whichever it needs.
+ * filter pass. The signature accepts both the field's value and its DEFAULTS counterpart so predicates that compare against a default (the sort fields) and
+ * predicates that ignore the default (non-empty array / non-empty string checks) share the same call site - filterDefaults() looks up DEFAULTS once per entry
+ * and passes both, leaving the predicate free to use whichever it needs.
  */
 type PreservePredicate = (value: unknown, defaultValue: unknown) => boolean;
 
-// Predicate: any array, including empty. Used by HYDRATED_FIELDS to unconditionally hydrate any array-typed value present on disk; downstream
-// validateConfiguration() normalizes empty-array edge cases (e.g., captureCodecs forces h264).
+// Predicate: any array, including empty. Used by HYDRATED_FIELDS to unconditionally hydrate any array-typed value present on disk.
 const isArrayValue: PreservePredicate = (value: unknown): boolean => Array.isArray(value);
 
 // Predicate: any non-empty array. Used for fields where the user's empty-array state coincides with the default-empty-array state (disabledPredefined,
-// enabledServices, precacheServices, visibleColumns, migrationsApplied). The defaultValue argument is intentionally unused.
+// enabledServices, visibleColumns, migrationsApplied). The defaultValue argument is intentionally unused.
 const isNonEmptyArray: PreservePredicate = (value: unknown): boolean => Array.isArray(value) && (value.length > 0);
 
 // Predicate: any non-empty string. Used for fields whose default is the empty string and whose presence-on-disk should follow the same rule (hdhr.deviceId,
@@ -1923,14 +1953,6 @@ const isTrue: PreservePredicate = (value: unknown): boolean => value === true;
 // values ("name", "asc") that should be stripped on save while any other valid string is preserved.
 const differsFromStringDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => (typeof value === "string") && (value !== defaultValue);
 
-// Predicate: an array whose contents differ from the default by SORTED-element comparison. Used for streaming.captureCodecs - the default ["h264", "hevc"]
-// reordered by the user (["hevc", "h264"]) is semantically the same configuration and should not write to disk; only a different SET of codecs counts as a
-// customization worth preserving.
-const differsFromSortedArrayDefault: PreservePredicate = (value: unknown, defaultValue: unknown): boolean => {
-
-  return Array.isArray(value) && Array.isArray(defaultValue) && !isDeepStrictEqual(value.toSorted(), defaultValue.toSorted());
-};
-
 /**
  * One entry in the explicit settings-preservation allowlist. Pairs a config path with the predicate that decides whether the value at that path is
  * meaningful enough to survive a save. Tests parameterize over this registry to assert preservation for every entry without duplicating the field list, so
@@ -1946,9 +1968,9 @@ export interface PreservedField {
 }
 
 /**
- * Allowlist of config paths that filterDefaults() preserves outside the CONFIG_METADATA-driven loop. See the section comment above for the two distinct
- * reasons a path lives here rather than in CONFIG_METADATA. The list is alphabetized by path so a future maintainer can locate any entry by paging through
- * the registry; ordering does not affect runtime semantics because each entry's preserve check is independent.
+ * Allowlist of config paths that filterDefaults() preserves outside the CONFIG_METADATA-driven loop. See the section comment above for why a path lives here
+ * rather than in CONFIG_METADATA. The list is alphabetized by path so a future maintainer can locate any entry by paging through the registry; ordering does
+ * not affect runtime semantics because each entry's preserve check is independent.
  */
 export const PRESERVED_FIELDS: readonly PreservedField[] = [
 
@@ -1956,15 +1978,13 @@ export const PRESERVED_FIELDS: readonly PreservedField[] = [
   { path: "channels.channelSortField", shouldPreserve: differsFromStringDefault },
   { path: "channels.disabledPredefined", shouldPreserve: isNonEmptyArray },
   { path: "channels.enabledServices", shouldPreserve: isNonEmptyArray },
-  { path: "channels.precacheServices", shouldPreserve: isNonEmptyArray },
   { path: "channels.setupCompleted", shouldPreserve: isTrue },
   { path: "channels.visibleColumns", shouldPreserve: isNonEmptyArray },
   { path: "channelsDvr.host", shouldPreserve: isNonEmptyString },
   { path: "hdhr.deviceId", shouldPreserve: isNonEmptyString },
   { path: "logging.debugFilter", shouldPreserve: isNonEmptyString },
   { path: "migrationsApplied", shouldPreserve: isNonEmptyArray },
-  { path: "schemaVersion", shouldPreserve: isNumber },
-  { path: "streaming.captureCodecs", shouldPreserve: differsFromSortedArrayDefault }
+  { path: "schemaVersion", shouldPreserve: isNumber }
 ];
 
 /**
@@ -2003,13 +2023,11 @@ export const HYDRATED_FIELDS: readonly HydratedField[] = [
   { path: "channels.channelSortField", shouldHydrate: isNonEmptyString },
   { copy: spreadArray, path: "channels.disabledPredefined", shouldHydrate: isArrayValue },
   { copy: spreadArray, path: "channels.enabledServices", shouldHydrate: isArrayValue },
-  { copy: spreadArray, path: "channels.precacheServices", shouldHydrate: isArrayValue },
   { path: "channels.setupCompleted", shouldHydrate: isTrue },
   { copy: spreadArray, path: "channels.visibleColumns", shouldHydrate: isArrayValue },
   { path: "channelsDvr.host", shouldHydrate: isNonEmptyString },
   { path: "hdhr.deviceId", shouldHydrate: isNonEmptyString },
-  { path: "logging.debugFilter", shouldHydrate: isNonEmptyString },
-  { copy: spreadArray, path: "streaming.captureCodecs", shouldHydrate: isArrayValue }
+  { path: "logging.debugFilter", shouldHydrate: isNonEmptyString }
 ];
 
 /**
@@ -2076,24 +2094,10 @@ export function filterDefaults(config: UserConfig): UserConfig {
 
   const filtered: Record<string, unknown> = {};
 
-  // Build the set of paths owned by PRESERVED_FIELDS so the metadata-driven loop can skip them. The PRESERVED_FIELDS predicate is the sole arbiter for those
-  // paths because String() coercion in isEqualToDefault produces false positives for array-shaped values (e.g., a reordered captureCodecs list coerces to a
-  // different comma-joined string than the default and would survive the loop, even when the predicate would correctly classify it as default-equal).
-  // Skipping the loop for those paths and letting the predicate decide is the only way to make the predicate authoritative without restructuring either
-  // registry. Paths in PRESERVED_FIELDS that are NOT in CONFIG_METADATA (channelsDvr.host, hdhr.deviceId, etc.) are unaffected - the loop never visited them
-  // before either.
-  const preservedPaths = new Set(PRESERVED_FIELDS.map((field) => field.path));
-
-  // Iterate over all known settings and check if the value differs from the default. Paths managed by PRESERVED_FIELDS are skipped here so the predicate below
-  // has unilateral control over their inclusion.
+  // Iterate over all known settings and check if the value differs from the default. A list setting is decided here too, by its members in any order.
   for(const settings of Object.values(CONFIG_METADATA)) {
 
     for(const setting of settings) {
-
-      if(preservedPaths.has(setting.path)) {
-
-        continue;
-      }
 
       const value = getNestedValue(config, setting.path);
 
@@ -2113,8 +2117,8 @@ export function filterDefaults(config: UserConfig): UserConfig {
     }
   }
 
-  // Apply the explicit preservation registry. Each entry is consulted with its current value plus the default-at-path; the predicate decides whether to
-  // write through. See PRESERVED_FIELDS above for the entries and their rationale.
+  // Apply the explicit preservation registry, whose paths lie outside the metadata, so the loop above never wrote them. Each entry is consulted with its
+  // current value plus the default-at-path; the predicate decides whether to write through. See PRESERVED_FIELDS above for the entries and their rationale.
   for(const field of PRESERVED_FIELDS) {
 
     const value = getNestedValue(config, field.path);
