@@ -118,7 +118,7 @@ describe("buildChannelTablePatch - composition against real channel state", () =
 
   test("a service-filtered channel renders with the channel-unavailable class in the patch row HTML", async () => {
 
-    /* The service filter (CONFIG.channels.enabledServices) hides channels whose service tag is not in the enabled list. Production keeps the row in the DOM
+    /* The running service filter, which setEnabledServices sets below, hides channels whose service tag is not in the enabled list. Production keeps the row in the DOM
      * with reduced visibility CSS (channel-unavailable) rather than removing it - the row stays sortable and the count totals stay consistent across filter
      * toggles. We use "amcthrillers" because it carries only sling and yttv variants - no "direct" tag. The "direct" tag is structurally always enabled
      * (isServiceTagEnabled returns true for "direct" regardless of the filter), so a channel like "abc" that has a direct/network-owned variant can never be

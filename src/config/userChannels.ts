@@ -9,8 +9,8 @@ import { FileStoreParseError, createFileStore } from "./persistence.ts";
 import { LOG, containsNonPrintable, extractDomain, sanitizeString } from "../utils/index.ts";
 import type { Migration, ValidationIssue } from "./persistence.ts";
 import { PREDEFINED_CHANNELS, PREDEFINED_TAGS } from "../channels/index.ts";
-import { buildServiceGroups, getAllServiceTags, getResolvedChannel, isChannelAvailableByService, isServiceVariant,
-  resolveServiceKey, setEnabledServices, setServiceSelections } from "./services.ts";
+import { applyServiceFilter, buildServiceGroups, getResolvedChannel, isChannelAvailableByService, isServiceVariant, resolveServiceKey,
+  setServiceSelections } from "./services.ts";
 import { pickBindingFields, pickIdentity, pickIdentityFields } from "./channelIdentity.ts";
 import { CONFIG } from "./index.ts";
 import fs from "node:fs";
@@ -1573,24 +1573,8 @@ export async function initializeUserChannels(): Promise<void> {
     await runStartupChannelsCleanup(staleSelections);
   }
 
-  // Now that service groups are built, validate the configured service tags. Strip any unrecognized tags and warn.
-  if(configuredServices.length > 0) {
-
-    const knownTags = new Set(getAllServiceTags().map((t) => t.tag));
-    const configuredSet = new Set(configuredServices);
-    const validTags = [...configuredSet.intersection(knownTags)];
-    const invalidTags = [...configuredSet.difference(knownTags)];
-
-    if(invalidTags.length > 0) {
-
-      LOG.warn("Ignoring unrecognized service tags in configuration: %s.", invalidTags.join(", "));
-    }
-
-    setEnabledServices(validTags);
-  } else {
-
-    setEnabledServices(configuredServices);
-  }
+  // The service groups are built, so the known tags are too: the running filter is the persisted list restricted to them, and the file keeps the list as saved.
+  applyServiceFilter(CONFIG.channels.enabledServices);
 
   // Check for non-printable characters in loaded channel string values. These warnings are informational - loaded data is not modified.
   for(const [ channelKey, stored ] of Object.entries(loadedUserChannels)) {

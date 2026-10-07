@@ -624,8 +624,9 @@ describe("hydration registry parity", () => {
 
   test("hydrates channelsDvr.host from persisted UserConfig into runtime CONFIG", () => {
 
-    /* channelsDvr.host is auto-discovered by showInfo.persistDvrHost and persisted via PRESERVED_FIELDS. This test asserts that HYDRATED_FIELDS brings it back
-     * into runtime CONFIG immediately on boot, so the host is available before the next DVR discovery cycle runs.
+    /* channelsDvr.host is discovered by the show-info module, which writes it into CONFIG and persists it through showInfo.persistDvrHost, and PRESERVED_FIELDS
+     * keeps it on disk. This test asserts that HYDRATED_FIELDS brings it back into runtime CONFIG on boot, which is where the show-info module and pretune read
+     * the host, so it is known from the first poll rather than after the next discovery.
      */
     const userConfig: UserConfig = { channelsDvr: { host: "192.168.1.50" } };
     const result = mergeConfiguration(userConfig);

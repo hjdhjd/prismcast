@@ -8,6 +8,7 @@ import { clearAllPretuneSafetyTimers, setPretuneSafetyTimer, startPretuneSafetyT
 import { fetchFromDvr, getDeviceMappings, getDvrHost } from "./showInfo.ts";
 import { getChannelStreamId, terminateStream } from "./lifecycle.ts";
 import { initializeStream, validateChannel } from "./hls.ts";
+import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
 import type { Nullable } from "../types/index.ts";
 import { emitCurrentSystemStatus } from "../browser/index.ts";
@@ -93,7 +94,7 @@ export interface PretuneDeps {
   // The time source every read, the poll cadence, the per-job timers, and the safety timers run on. Injected as a Clock (rather than direct platform calls) so a
   // test drives the whole schedule on one virtual timeline and asserts it instead of waiting it out.
   readonly clock: Clock;
-  readonly fetchFromDvr: (host: string, path: string, clock?: Clock) => Promise<ScheduledJob[]>;
+  readonly fetchFromDvr: (host: string, port: number, path: string, clock?: Clock) => Promise<ScheduledJob[]>;
   readonly getDeviceMappings: typeof getDeviceMappings;
   readonly getDvrHost: typeof getDvrHost;
   readonly initializeStream: typeof initializeStream;
@@ -123,7 +124,7 @@ let scheduler: Nullable<SchedulerRegistries> = null;
 // Public API.
 
 /**
- * Starts the pretune polling loop. Should be called on server startup after show info polling is initialized.
+ * Starts the pretune polling loop. Should be called on server startup.
  */
 export function startPretunePolling(deps: PretuneDeps = defaultPretuneDeps): void {
 
@@ -138,8 +139,9 @@ export function startPretunePolling(deps: PretuneDeps = defaultPretuneDeps): voi
 
   startPretuneSafetyTimers(deps.clock);
 
-  /* Run the first poll after a short delay to allow the persisted DVR host to load. Each poll is handed the registry it must arm on, by identity, so a poll still
-   * running across a stop arms on the disposed registry it started with rather than on whatever the module binding holds when its awaits resume.
+  /* The first poll runs a few seconds after the start and the cadence follows it. Each poll reads the DVR host and port from the running configuration when it
+   * runs, so a host the boot read from the file or a save changed is the one it polls. Each poll is handed the registry it must arm on, by identity, so a poll
+   * still running across a stop arms on the disposed registry it started with rather than on whatever the module binding holds when its awaits resume.
    */
   registries.polls.schedule(() => {
 
@@ -183,7 +185,9 @@ async function pollForUpcomingJobs(deps: PretuneDeps, jobRegistry: TimerRegistry
     return;
   }
 
-  const jobs = await deps.fetchFromDvr(host, "/api/v1/jobs", deps.clock);
+  // The port is read with the host, so one poll reaches one DVR address throughout.
+  const port = CONFIG.channelsDvr.port;
+  const jobs = await deps.fetchFromDvr(host, port, "/api/v1/jobs", deps.clock);
 
   if(jobs.length === 0) {
 
@@ -197,7 +201,7 @@ async function pollForUpcomingJobs(deps: PretuneDeps, jobRegistry: TimerRegistry
   const seenJobIds = new Set<string>();
 
   // Get the device mappings once for resolving guide numbers. The cache ensures this is fast on repeated calls.
-  const mappings = await deps.getDeviceMappings(host, now);
+  const mappings = await deps.getDeviceMappings(host, port, now);
 
   if(mappings.size === 0) {
 

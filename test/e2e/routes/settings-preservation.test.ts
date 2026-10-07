@@ -26,6 +26,10 @@ import { describe, test } from "node:test";
 import type { PreservedField } from "../../../src/config/userConfig.ts";
 import assert from "node:assert/strict";
 
+// The DVR host every row seeds. A save hands a host it changes to the live channelsDvr. handler, which starts a logo population against it, so the seed is a
+// name under the reserved .invalid domain, which resolves nowhere: the population fails at name resolution at once rather than reaching an address on the network.
+const UNRESOLVABLE_DVR_HOST = "dvr.invalid";
+
 describe("POST /config - settings-form save preserves non-form fields", () => {
 
   test("disabledPredefined survives a settings-form POST", async () => {
@@ -126,7 +130,7 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
     await mutateConfig((config) => {
 
-      config.channelsDvr = { host: "192.168.1.50" };
+      config.channelsDvr = { host: UNRESOLVABLE_DVR_HOST };
     });
 
     const response = await fetch(urlFor("/config"), {
@@ -140,7 +144,7 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
     const persisted = await readPersistedJson(ctx, "config.json") as { channelsDvr: { host: string } };
 
-    assert.equal(persisted.channelsDvr.host, "192.168.1.50", "channelsDvr.host must survive the form save");
+    assert.equal(persisted.channelsDvr.host, UNRESOLVABLE_DVR_HOST, "channelsDvr.host must survive the form save");
   });
 
   test("an empty form body is a no-op against the existing config (no fields to merge)", async () => {
@@ -196,7 +200,7 @@ const SEED_VALUES: Record<string, unknown> = {
   "channels.precacheServices": ["hulu"],
   "channels.setupCompleted": true,
   "channels.visibleColumns": [ "channelNumber", "name", "service" ],
-  "channelsDvr.host": "192.168.1.50",
+  "channelsDvr.host": UNRESOLVABLE_DVR_HOST,
   "hdhr.deviceId": "ABCD1234",
   "logging.debugFilter": "browser:*",
   "migrationsApplied": ["test-suite-17-marker"],

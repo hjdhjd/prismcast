@@ -487,7 +487,7 @@ describe("recordDiscoveryOutcome", () => {
  * - runPrecacheCycle's succeeded/empty/skipped counters and the completion sentence they compose, which requires driving a full multi-service cycle rather than
  *   the single-service deps-threading check above.
  *
- * - The service-filter skip path (skipping services not in CONFIG.channels.enabledServices) - exercised inside runPrecacheCycle.
+ * - The service-filter skip path (skipping services the running service filter excludes) - exercised inside runPrecacheCycle.
  *
  * - Per-provider error isolation (one provider failing while others succeed) - requires a real browser to populate the discovery flow.
  *

@@ -4,12 +4,16 @@
  * fetch active recording jobs and program guide entries, and populate channel logos in two tiers. The module exposes a small public API (getDvrHost, setDvrHost,
  * getShowName, clearShowName, triggerShowNameUpdate, fetchFromDvr, getDeviceMappings, matchesM3uDevice, updateChannelLogo) plus the start/stop polling
  * lifecycle. Tests focus on the pure helpers (getShowName/clearShowName, getDvrHost/setDvrHost, fetchFromDvr success/timeout paths, matchesM3uDevice's overlap
- * boundaries) and avoid the polling start/stop which spawns intervals.
+ * boundaries) and avoid the polling start/stop which spawns intervals. The DVR host is the running configuration's, so the host rows seed and reset it by
+ * re-initializing CONFIG from an empty in-memory store; the rows covering a save that changes the host or the port run against the real store in
+ * test/e2e/streaming/show-info.test.ts.
  */
+import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { clearShowName, fetchFromDvr, getDvrHost, getShowName, matchesM3uDevice, setDvrHost } from "./showInfo.ts";
 import { closePuppeteerStreamWssOnIdle, pendingBodyFetch } from "../testing.helpers.ts";
+import type { ConfigStore } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
 import assert from "node:assert/strict";
 
@@ -21,6 +25,19 @@ const API_TIMEOUT_MS = 5000;
 
 // The macrotask boundaries a drain crosses so a request chain the module fired without awaiting has run to completion before the next row starts.
 const SETTLE_TURNS = 10;
+
+// The Channels DVR port the defaults carry, which the running configuration holds in every row that does not change it.
+const DEFAULT_DVR_PORT = 8089;
+
+// An empty configuration file held in memory. Initializing from it resets CONFIG, the DVR host among it, to the defaults, and it writes nothing anywhere.
+const emptyStore: ConfigStore = {
+
+  mutateConfig: async (): Promise<void> => {
+
+    // Intentional no-op: no row here saves through the configuration layer.
+  },
+  readConfig: async () => ({ config: {}, parseError: false, readError: false })
+};
 
 /* Counts the debug lines carrying the module's fetch-failure template for one host - the line a lapse must not produce and a real failure must. The host narrows
  * the count to the calling row's own request, because the spy sits on a logger every row in the file shares.
@@ -57,10 +74,12 @@ describe("getDvrHost / setDvrHost", () => {
    * finished and log its failure during a later row. A stub answering every request with an empty listing lets that population settle, silently, inside the
    * row that started it; the drain before the restore is what keeps a late request from reaching the real fetch.
    */
-  beforeEach(() => {
+  // Each row starts from the defaults, so the running configuration holds no DVR host until the row sets one.
+  beforeEach(async () => {
 
     originalFetch = globalThis.fetch;
     globalThis.fetch = (async (): Promise<Response> => new Response("[]", { status: 200 }));
+    await initializeConfiguration(undefined, emptyStore);
   });
 
   afterEach(async () => {
@@ -69,27 +88,24 @@ describe("getDvrHost / setDvrHost", () => {
     globalThis.fetch = originalFetch;
   });
 
-  test("getDvrHost returns null in the initial module state", () => {
+  test("getDvrHost answers the host the running configuration holds, and null while it holds none", () => {
 
-    // The module state lives at module scope; the first test in this describe asserts the initial null. Subsequent tests mutate the state, so we lock the
-    // contract here once.
-    // (The setDvrHost test below WILL change the state to "1.2.3.4"; this test must run first per node:test's source-order execution.)
-    if(getDvrHost() !== null) {
+    CONFIG.channelsDvr.host = "test-host-0.example.invalid";
 
-      // If a prior test in the suite already populated the host, verify our setDvrHost-can-update contract still holds rather than failing.
-      assert.ok(typeof getDvrHost() === "string");
-    } else {
+    assert.equal(getDvrHost(), "test-host-0.example.invalid", "the running configuration's host is the DVR host");
 
-      assert.equal(getDvrHost(), null, "fresh module state has no DVR host");
-    }
+    CONFIG.channelsDvr.host = "";
+
+    assert.equal(getDvrHost(), null, "an empty host means no DVR host is known");
   });
 
-  test("setDvrHost stores the value so getDvrHost surfaces it", () => {
+  test("setDvrHost writes the host into the running configuration so getDvrHost surfaces it", () => {
 
-    // Use a sentinel host that won't collide with real hostnames. setDvrHost has a side effect of persisting to disk and triggering logo population - we don't
-    // care about either here, only that the in-memory getter reflects the set value.
+    // Use a sentinel host that won't collide with real hostnames. setDvrHost also persists the host and populates the logos, neither of which this row reads:
+    // the persist has no data directory to write to here and its failure is logged, and the stub above answers the population.
     setDvrHost("test-host-1.example.invalid");
 
+    assert.equal(CONFIG.channelsDvr.host, "test-host-1.example.invalid", "the running configuration holds the host at once");
     assert.equal(getDvrHost(), "test-host-1.example.invalid");
   });
 
@@ -111,11 +127,12 @@ describe("getDvrHost / setDvrHost", () => {
      */
     setDvrHost("1.2.3.4");
 
-    assert.equal(getDvrHost(), "1.2.3.4", "a host-only input updates module state");
+    assert.equal(getDvrHost(), "1.2.3.4", "a host-only input updates the running host");
 
     setDvrHost("1.2.3.4:8089");
 
-    assert.equal(getDvrHost(), "1.2.3.4", "a colon-bearing input leaves module state unchanged - the prior accepted value is preserved");
+    assert.equal(getDvrHost(), "1.2.3.4", "a colon-bearing input leaves the running host unchanged - the prior accepted value is preserved");
+    assert.equal(CONFIG.channelsDvr.host, "1.2.3.4", "and the running configuration with it");
   });
 });
 
@@ -139,7 +156,7 @@ describe("fetchFromDvr", () => {
     // Happy path: fetch resolves with status 200 and a JSON array body. The function returns the parsed array verbatim.
     globalThis.fetch = (async (): Promise<Response> => new Response(JSON.stringify([ { Name: "Show A" }, { Name: "Show B" } ]), { status: 200 }));
 
-    const result = await fetchFromDvr<{ Name: string }>("dvr.example.invalid", "/dvr/jobs");
+    const result = await fetchFromDvr<{ Name: string }>("dvr.example.invalid", DEFAULT_DVR_PORT, "/dvr/jobs");
 
     assert.equal(result.length, 2);
     assert.equal(result[0]?.Name, "Show A");
@@ -152,7 +169,7 @@ describe("fetchFromDvr", () => {
     // never breaks streaming.
     globalThis.fetch = (async (): Promise<Response> => new Response("Not found", { status: 404 }));
 
-    const result = await fetchFromDvr<unknown>("dvr.example.invalid", "/dvr/jobs");
+    const result = await fetchFromDvr<unknown>("dvr.example.invalid", DEFAULT_DVR_PORT, "/dvr/jobs");
 
     assert.deepEqual(result, []);
   });
@@ -161,7 +178,7 @@ describe("fetchFromDvr", () => {
 
     globalThis.fetch = (async (): Promise<Response> => new Response("server error", { status: 500 }));
 
-    const result = await fetchFromDvr<unknown>("dvr.example.invalid", "/anything");
+    const result = await fetchFromDvr<unknown>("dvr.example.invalid", DEFAULT_DVR_PORT, "/anything");
 
     assert.deepEqual(result, []);
   });
@@ -176,7 +193,7 @@ describe("fetchFromDvr", () => {
       throw new Error("Network unreachable");
     });
 
-    const result = await fetchFromDvr<unknown>("dvr.example.invalid", "/anything");
+    const result = await fetchFromDvr<unknown>("dvr.example.invalid", DEFAULT_DVR_PORT, "/anything");
 
     assert.deepEqual(result, []);
 
@@ -195,7 +212,7 @@ describe("fetchFromDvr", () => {
 
     mock.method(globalThis, "fetch", async (_url: string | URL, init?: RequestInit): Promise<Response> => pendingBodyFetch(init));
 
-    const resultPromise = fetchFromDvr<unknown>("dvr.example.invalid", "/anything", clock);
+    const resultPromise = fetchFromDvr<unknown>("dvr.example.invalid", DEFAULT_DVR_PORT, "/anything", clock);
 
     assert.equal(clock.pending, 1, "the request's bound is armed on the clock it was handed");
     assert.deepEqual(clock.requested, [API_TIMEOUT_MS], "and it waits the DVR request's own window");
@@ -210,10 +227,10 @@ describe("fetchFromDvr", () => {
     assert.equal(failureLines(debug, "dvr.example.invalid"), 0, "the fetch's own lapse leaves no failure line behind");
   });
 
-  test("constructs the URL with the configured Channels DVR port (default 8089)", async () => {
+  test("constructs the URL from the host and the port it is handed, whatever port the running configuration holds", async () => {
 
-    // The port comes from CONFIG.channelsDvr.port, which the runtime initializes to DEFAULTS.channelsDvr.port = 8089. This test runs without a user-config
-    // load, so the default is what we observe - locking the hostname:port:path concatenation against the canonical Channels DVR port.
+    // The caller hands the port in, so a request made while a save is reconciled reaches the port the candidate names. The running configuration holds the
+    // default port throughout, which is the negative control: a URL built from CONFIG would carry 8089.
     let observedUrl = "";
 
     globalThis.fetch = (async (input: Request | URL | string): Promise<Response> => {
@@ -225,9 +242,11 @@ describe("fetchFromDvr", () => {
       return new Response("[]", { status: 200 });
     });
 
-    await fetchFromDvr<unknown>("192.168.1.99", "/devices");
+    assert.equal(CONFIG.channelsDvr.port, DEFAULT_DVR_PORT, "precondition: the running configuration holds the default port");
 
-    assert.equal(observedUrl, "http://192.168.1.99:8089/devices");
+    await fetchFromDvr<unknown>("192.168.1.99", 19191, "/devices");
+
+    assert.equal(observedUrl, "http://192.168.1.99:19191/devices");
   });
 
   test("sends the Accept: application/json header", async () => {
@@ -241,7 +260,7 @@ describe("fetchFromDvr", () => {
       return new Response("[]", { status: 200 });
     });
 
-    await fetchFromDvr<unknown>("dvr.example.invalid", "/dvr/jobs");
+    await fetchFromDvr<unknown>("dvr.example.invalid", DEFAULT_DVR_PORT, "/dvr/jobs");
 
     assert.equal(observedHeaders?.get("accept"), "application/json");
   });

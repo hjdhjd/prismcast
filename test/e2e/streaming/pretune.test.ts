@@ -9,9 +9,9 @@
  *
  * Architectural findings surfaced during construction (recorded alongside the integration-tests roadmap):
  *
- *   1. The Channels DVR port is user-configurable via CONFIG.channelsDvr.port - src/streaming/showInfo.ts builds the DVR URL from that value, so there is no
- *      hard-coded port. This suite routes around the HTTP layer entirely by injecting fetchFromDvr at pretune's port, because the HTTP layer is not the
- *      architectural unit under test - binding a stub to a fixed port would conflate two different concerns.
+ *   1. The Channels DVR port is user-configurable via CONFIG.channelsDvr.port - pretune reads it at each poll and hands it to src/streaming/showInfo.ts,
+ *      which builds the DVR URL from it, so there is no hard-coded port. This suite routes around the HTTP layer entirely by injecting fetchFromDvr at
+ *      pretune's port, because the HTTP layer is not the architectural unit under test - binding a stub to a fixed port would conflate two different concerns.
  *
  *   2. getDeviceMappings caches by host with a 5-minute TTL. We sidestep host-keyed pollution by injecting getDeviceMappings entirely - the cache itself is
  *      bypassed, so test isolation is structural rather than depending on TTL math or unique-host-per-test conventions.
@@ -25,15 +25,17 @@
  * whose relationship with their upstream IS the unit under test - the native HLS proxy suite - and is intentionally not used here.
  */
 import * as pretune from "../../../src/streaming/pretune.ts";
+import { CONFIG, initializeConfiguration } from "../../../src/config/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, describe, mock, test } from "node:test";
-import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
+import { createIntegrationContext, initializePersistence, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { deleteChannelStreamId, setChannelStreamId } from "../../../src/streaming/lifecycle.ts";
 import { disablePredefinedChannels, enablePredefinedChannels, mutateChannels } from "../../../src/config/userChannels.ts";
 import { getStream, registerStream, unregisterStream } from "../../../src/streaming/registry.ts";
 import type { Clock } from "homebridge-plugin-utils";
 import assert from "node:assert/strict";
 import { firstOf } from "../../../src/testing.helpers.ts";
+import { getDvrHost } from "../../../src/streaming/showInfo.ts";
 import { makeRegistryEntry } from "../../../src/streaming/registry.helpers.ts";
 import { mutateEnabledServices } from "../../../src/config/services.ts";
 
@@ -54,7 +56,7 @@ let deviceGuideMap = new Map<string, string>();
 const initializeStreamSpy = mock.fn<pretune.PretuneDeps["initializeStream"]>(async () => 999);
 
 // The fetchFromDvr spy returns the per-test scheduledJobs for the jobs endpoint and nothing for any other path.
-const fetchFromDvrSpy = mock.fn<pretune.PretuneDeps["fetchFromDvr"]>(async (_host, path) => ((path === "/api/v1/jobs") ? scheduledJobs : []));
+const fetchFromDvrSpy = mock.fn<pretune.PretuneDeps["fetchFromDvr"]>(async (_host, _port, path) => ((path === "/api/v1/jobs") ? scheduledJobs : []));
 
 /* The injected pretune dependencies: the DVR data-acquisition trio and the initializeStream go-action, substituted at pretune's PretuneDeps port so the decision
  * logic runs against synthetic schedule data with no HTTP round-trip or real capture. getDeviceMappings returns one synthetic device whose guide map is the per-
@@ -1258,5 +1260,48 @@ describe("pretune scheduling state machine", () => {
 
     assert.ok(fetchFromDvrSpy.mock.callCount() >= 1, "the DVR jobs endpoint must be polled, so the short-circuit is on empty mappings, not a skipped poll");
     assert.equal(initializeStreamSpy.mock.callCount(), 0, "an empty device-mappings result must short-circuit the poll before any pretune is scheduled");
+  });
+});
+
+describe("the poll reaches the DVR address the running configuration holds", () => {
+
+  afterEach(() => {
+
+    pretune.stopPretunePolling();
+    fetchFromDvrSpy.mock.resetCalls();
+  });
+
+  test("the first poll reaches the host the boot read from the file, and a later poll reaches the host and port the running configuration moved to", async () => {
+
+    /* The scheduler takes the production host accessor here rather than the stub the rows above share, so each poll reads the DVR host from the running
+     * configuration and the port with it; the DVR data layer stays the spy, so nothing leaves the process. The boot reads the host from the file before the
+     * scheduler starts, so the first poll has nothing left to wait on, and a value a save commits reaches the next poll.
+     */
+    await using ctx = await createIntegrationContext();
+
+    await writePersistedJson(ctx, "config.json", { channelsDvr: { host: "pretune-dvr-a.example.invalid" } });
+    await initializeConfiguration();
+    await initializePersistence(ctx);
+
+    const clock = new TestClock(BASE_TIME_MS);
+
+    pretune.startPretunePolling({ ...makeDeps(clock), getDvrHost });
+
+    clock.advance(5000);
+    await settle();
+
+    assert.deepEqual(fetchFromDvrSpy.mock.calls.map((call) => [ call.arguments[0], call.arguments[1] ]), [[ "pretune-dvr-a.example.invalid", 8089 ]],
+      "the first poll reaches the host the boot read, at the running port");
+
+    // The commit a save's reconcile makes once the DVR handler has realized a new host and port, leaf by leaf.
+    CONFIG.channelsDvr.host = "pretune-dvr-b.example.invalid";
+    CONFIG.channelsDvr.port = 19191;
+
+    clock.advance(60000);
+    await settle();
+
+    const latest = fetchFromDvrSpy.mock.calls.at(-1);
+
+    assert.deepEqual([ latest?.arguments[0], latest?.arguments[1] ], [ "pretune-dvr-b.example.invalid", 19191 ], "the next poll reaches the running host and port");
   });
 });

@@ -22,6 +22,7 @@ import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { clearLoginState, setLoginDeps, startLoginMode } from "./login.ts";
 import { getDomainAuthState, markDomainAuthRequired } from "../config/health.ts";
+import { getEnabledServices, setEnabledServices } from "../config/services.ts";
 import type { BlockedPageClassification } from "./blockedPage.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
@@ -812,13 +813,14 @@ describe("the deferred discovery re-attempt", () => {
     beforeEach(() => {
 
       // The rows here read the login guard, which sits behind the service filter, so the filter starts empty and only the row that means to exercise it sets one.
-      originalEnabled = CONFIG.channels.enabledServices;
-      CONFIG.channels.enabledServices = [];
+      // The cycle reads the running filter, so the rows drive it where production sets it.
+      originalEnabled = getEnabledServices();
+      setEnabledServices([]);
     });
 
     afterEach(() => {
 
-      CONFIG.channels.enabledServices = originalEnabled;
+      setEnabledServices(originalEnabled);
     });
 
     /**
@@ -938,7 +940,7 @@ describe("the deferred discovery re-attempt", () => {
 
       mockProviders = { "login-filtered": deferredProvider("login-filtered"), "login-kept": deferredProvider("login-kept") };
       CONFIG.channels.precacheServices = [ "login-filtered", "login-kept" ];
-      CONFIG.channels.enabledServices = ["login-kept"];
+      setEnabledServices(["login-kept"]);
 
       await startStubLogin();
 

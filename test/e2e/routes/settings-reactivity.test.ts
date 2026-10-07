@@ -9,6 +9,8 @@
  *   3. A save whose candidate fails validation answers 400 with the reason, and the file's bytes and CONFIG stay as they were.
  *   4. A leaf the process writes and the file holds - the setup flag - keeps its running value across a save that does not change it.
  *   5. An import of channel display state takes effect live and schedules no restart.
+ *   6. An import of the service filter and the Channels DVR host takes effect live: the running filter and the running host follow it, and nothing is held
+ *      for a restart.
  *
  * Each row boots its own integration context and calls initializeConfiguration() after createIntegrationContext and before initializePersistence, so CONFIG
  * and the loaded snapshot are read from that row's own data directory rather than inherited from an earlier row in the same process.
@@ -19,6 +21,8 @@ import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir
 import { describe, test } from "node:test";
 import { getAllChannels, getPredefinedChannels, isPredefinedChannelDisabled, markSetupCompleted } from "../../../src/config/userChannels.ts";
 import assert from "node:assert/strict";
+import { getDvrHost } from "../../../src/streaming/showInfo.ts";
+import { getEnabledServices } from "../../../src/config/services.ts";
 import { getNestedValue } from "../../../src/config/userConfig.ts";
 import { readFile } from "node:fs/promises";
 
@@ -178,5 +182,30 @@ describe("POST /config/import - channel display state takes effect live", () => 
     assert.equal(body["willRestart"], false, "no restart is scheduled");
     assert.equal(isPredefinedChannelDisabled(key), true, "the channel is disabled at once");
     assert.equal(key in getAllChannels(), false, "the listing no longer offers it");
+  });
+});
+
+describe("POST /config/import - the service filter and the DVR host take effect live", () => {
+
+  test("an import that changes the service filter and the DVR host answers appliedCount two, schedules no restart, and the running values follow", async () => {
+
+    /* The filter and the host sit outside the settings metadata and their running copies are not CONFIG alone: the running filter is the services module's cache, and the
+     * DVR host is read through getDvrHost. Each has a handler that realizes the candidate's value, so the import lands live. The host is a reserved name that
+     * never resolves, so the logo population the host change starts reaches no DVR.
+     */
+    await using ctx = await createIntegrationContext();
+    const app = await boot(ctx);
+
+    assert.deepEqual(getEnabledServices(), [], "precondition: no service filter is running");
+    assert.equal(getDvrHost(), null, "precondition: no DVR host is known");
+
+    const { body, status } = await post(app, "/config/import", { channels: { enabledServices: ["hulu"] }, channelsDvr: { host: "settings-dvr.example.invalid" } });
+
+    assert.equal(status, 200);
+    assert.equal(body["appliedCount"], 2, "the filter and the host are realized live");
+    assert.equal(body["deferredCount"], 0, "nothing is held for a restart");
+    assert.equal(body["willRestart"], false, "no restart is scheduled");
+    assert.deepEqual(getEnabledServices(), ["hulu"], "the running filter follows the import");
+    assert.equal(getDvrHost(), "settings-dvr.example.invalid", "the running DVR host follows the import");
   });
 });

@@ -7,31 +7,25 @@
  *
  *   - Variant entries with a canonicalKey (in channels.json) reference a canonical that exists in PREDEFINED_CHANNELS or the user's stored channels.
  *   - User domain mappings (in profiles.json) reference profiles that exist as builtin or user-defined.
- *   - The service tag filter (in config.json's channels.enabledServices) contains only recognized service tags.
  *
- * Each issue is logged loudly and, when an auto-fix is provided, applied immediately. Auto-fixes that need to mutate persistent state go through the same
- * mutate* functions as user code so the integrity validators and snapshot machinery cover them too.
+ * The probe reports what an operator must act on and changes nothing: each issue is logged, because the right repair depends on what the operator intended. A
+ * rule the running process can enforce on its own belongs where the process applies it - an unknown service tag never reaches the running filter because the
+ * services module restricts the filter itself - rather than here.
  *
  * Adding a new check is a single function returning ConsistencyIssue[]; collectConsistencyIssues calls each registered check function and aggregates the
  * results into one array.
  */
-import { LOG, formatError } from "../utils/index.ts";
-import { getAllServiceTags, mutateEnabledServices } from "./services.ts";
 import { getUserDomains, getUserProfiles } from "./userProfiles.ts";
-import { CONFIG } from "./index.ts";
 import type { Channel } from "../types/index.ts";
+import { LOG } from "../utils/index.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import { getBuiltinProfile } from "./sites.ts";
 import { getStoredUserChannels } from "./userChannels.ts";
 
 /**
- * A single consistency issue detected by the probe. Each carries enough metadata for the probe runner to log uniformly and apply auto-fixes when present.
+ * A single consistency issue detected by the probe. Each carries enough metadata for the probe runner to log it uniformly.
  */
 interface ConsistencyIssue {
-
-  // Optional auto-fix function. Safe to call more than once, and safe to call from the probe runner. Issues without an autoFix are surfaced for operator
-  // action only.
-  autoFix?: () => Promise<void>;
 
   // Stable category identifier. Used for log grouping and future filtering.
   category: string;
@@ -39,42 +33,8 @@ interface ConsistencyIssue {
   // Human-readable description of the inconsistency.
   description: string;
 
-  // "warning" issues run their autoFix automatically (when present). "error" issues require operator action.
+  // How loudly the runner logs the issue: a warning, or an error that needs the operator before the next restart.
   severity: "warning" | "error";
-}
-
-/**
- * Validates that every service tag in CONFIG.channels.enabledServices is recognized, and when unknown tags remain its auto-fix persists the cleaned list through
- * mutateEnabledServices. In practice initializeUserChannels already strips unrecognized tags from the in-memory CONFIG.channels.enabledServices before the probe
- * runs - a memory-only cleanup that does not rewrite config.json - so the probe usually sees a clean list and the persisting auto-fix does not fire.
- */
-function checkServiceTagFilter(): ConsistencyIssue[] {
-
-  if(CONFIG.channels.enabledServices.length === 0) {
-
-    return [];
-  }
-
-  const knownTags = new Set(getAllServiceTags().map((tag) => tag.tag));
-  const enabledSet = new Set(CONFIG.channels.enabledServices);
-  const invalid = [...enabledSet.difference(knownTags)];
-
-  if(invalid.length === 0) {
-
-    return [];
-  }
-
-  return [{
-
-    autoFix: async (): Promise<void> => {
-
-      // mutateEnabledServices persists the cleaned list to config.json and updates the in-memory cache atomically.
-      await mutateEnabledServices([...enabledSet.intersection(knownTags)]);
-    },
-    category: "unknown-service-tag",
-    description: "Service filter contains unrecognized tag(s): " + invalid.join(", "),
-    severity: "warning"
-  }];
 }
 
 /**
@@ -155,17 +115,14 @@ function collectConsistencyIssues(): ConsistencyIssue[] {
 
   return [
 
-    ...checkServiceTagFilter(),
     ...checkVariantCanonicals(),
     ...checkDomainProfiles()
   ];
 }
 
 /**
- * Runs the consistency probe at startup. Logs every issue, runs auto-fixes for warnings, and surfaces errors for operator review. Errors do not block startup
- * - a consistency error is recoverable runtime state, not an unbootable system. Operators see them in the log and can act before the next restart.
- *
- * Auto-fix failures are themselves logged but do not propagate. The probe is best-effort hygiene; a failure here must not bring down the server.
+ * Runs the consistency probe at startup. Logs every issue at its severity and changes nothing, so an operator sees in the log what needs their action before the
+ * next restart. Errors do not block startup - a consistency error is recoverable runtime state, not an unbootable system.
  */
 export async function runConsistencyProbeAtStartup(): Promise<void> {
 
@@ -180,30 +137,14 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
 
     const message = "Consistency probe (" + issue.category + ", " + issue.severity + "): " + issue.description;
 
-    // Defensive: no current checker emits severity:"error" - every check returns "warning" issues. The branch exists so a future check that needs operator
-    // attention rather than auto-cleanup can mark itself error and surface accordingly. Add a test to assert this behavior once an error-severity check exists.
+    // Defensive: no current checker emits severity:"error" - every check returns "warning" issues. The branch exists so a future check whose issue needs the
+    // operator before the next restart can mark itself error and surface accordingly. Add a test to assert this behavior once an error-severity check exists.
     if(issue.severity === "error") {
 
       LOG.error(message);
     } else {
 
       LOG.warn(message);
-    }
-  }
-
-  // Run auto-fixes in parallel via Promise.allSettled - each fix is independent and a failure on one must not block the others. We iterate the eligible issues
-  // and look up each settlement by index (length-paired by construction; Promise.allSettled preserves input order and arity), logging rejected reasons as
-  // warnings while leaving successful fixes intact.
-  const eligible = issues.filter((issue) => (issue.severity === "warning") && issue.autoFix);
-  const results = await Promise.allSettled(eligible.map(async (issue) => issue.autoFix?.()));
-
-  for(const [ index, issue ] of eligible.entries()) {
-
-    const result = results[index];
-
-    if(result?.status === "rejected") {
-
-      LOG.warn("Consistency probe auto-fix failed for %s: %s.", issue.category, formatError(result.reason));
     }
   }
 

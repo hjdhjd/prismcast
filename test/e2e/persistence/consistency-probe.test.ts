@@ -1,26 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * consistency-probe.test.ts: Integration coverage for the warn-only paths of the cross-store consistency probe and for the probe's auto-fix exception swallow.
- * The probe's auto-fix path (unknown-service-tag) is covered separately in cross-store-consistency.test.ts; this file owns the paths that emit a warning but
- * have no auto-fix - dangling-variant-canonical and dangling-domain-profile - plus the exception-swallow safety net inside runConsistencyProbeAtStartup.
+ * consistency-probe.test.ts: Integration coverage for the cross-store consistency probe, which reports what an operator must act on and changes nothing: the
+ * dangling-variant-canonical and dangling-domain-profile checks, each surfacing a warning for the operator. The service filter's restriction to known tags is
+ * the services module's own rule, covered in cross-store-consistency.test.ts.
  *
- * The warn-only paths have no on-disk side effect to observe (there is no auto-fix to land), so the suite captures LOG output. The probe logs through the
- * process-wide LOG, whose entries also flow to the SSE emitter before the console/file branch; we subscribe to that emitter (subscribeToLogs) and assert
- * against the captured level and formatted message - the same observable an operator sees on the Logs tab. Console logging defaults off under test, so the
- * subscription is silent.
+ * A report has no on-disk side effect to observe, so the suite captures LOG output. The probe logs through the process-wide LOG, whose entries also flow to the
+ * SSE emitter before the console/file branch; we subscribe to that emitter (subscribeToLogs) and assert against the captured level and formatted message - the
+ * same observable an operator sees on the Logs tab. Console logging defaults off under test, so the subscription is silent.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
-import type { IntegrationContext } from "../../helpers/integration.helpers.ts";
+import { createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import type { LogEntry } from "../../../src/utils/logEmitter.ts";
 import assert from "node:assert/strict";
 import { mutateChannels } from "../../../src/config/userChannels.ts";
-import { mutateConfig } from "../../../src/config/userConfig.ts";
 import { mutateProfiles } from "../../../src/config/userProfiles.ts";
 import { runConsistencyProbeAtStartup } from "../../../src/config/consistencyProbe.ts";
-import { setEnabledServices } from "../../../src/config/services.ts";
 import { subscribeToLogs } from "../../../src/utils/logEmitter.ts";
-import { writeFile } from "node:fs/promises";
 
 // Every emitted log entry for the duration of a test. Populated by the subscribeToLogs subscription installed in beforeEach and reset per test so one test's
 // probe output cannot leak into another's assertions. Filtered by level and message substring the same way an operator would scan the Logs tab.
@@ -45,8 +40,7 @@ describe("consistency probe - dangling-variant-canonical detection", () => {
 
     /* The check walks every entry in getStoredUserChannels() and, for each one carrying a canonicalKey, verifies the referenced canonical exists in
      * PREDEFINED_CHANNELS or the user's stored map. Variants that point at nothing surface as a "dangling-variant-canonical" warn issue. The check is
-     * intentionally non-destructive (no autoFix) - the right cleanup depends on operator intent (re-create the canonical vs. delete the variant), so the
-     * probe surfaces and waits.
+     * intentionally non-destructive - the right cleanup depends on operator intent (re-create the canonical vs. delete the variant), so the probe surfaces and waits.
      *
      * The seed: a stored variant with a canonicalKey that does not exist in either source. We use a randomized variant key plus a clearly-not-real canonical
      * so the test cannot accidentally collide with a future predefined entry.
@@ -140,55 +134,5 @@ describe("consistency probe - dangling-domain-profile detection", () => {
     });
 
     assert.equal(danglingForOurDomain.length, 0, "a domain mapped to a user-defined profile must not surface as a dangling reference");
-  });
-});
-
-describe("consistency probe - auto-fix exception swallow", () => {
-
-  test("a failing auto-fix logs a warning and does not propagate as an unhandled rejection", async () => {
-
-    /* The probe runs every eligible auto-fix in parallel via Promise.allSettled, then inspects each settlement and logs a warn for any rejected result. This is
-     * the safety net that prevents one broken auto-fix from crashing the startup probe. We force a real auto-fix to fail by:
-     *
-     *   1. Setting up the unknown-service-tag scenario so checkServiceTagFilter surfaces an issue with an auto-fix that calls mutateEnabledServices (which
-     *      goes through mutateConfig, which goes through the file store).
-     *   2. Corrupting config.json AND config.json.bak between initializePersistence and the probe call so the file store's read fails parse on both files;
-     *      the framework throws FileStoreParseError from within the auto-fix's mutate path.
-     *   3. Asserting the probe still resolves cleanly (no unhandled rejection), the rejected-settlement branch's "Consistency probe auto-fix failed" warn line
-     *      landed, and the probe identified the failing category.
-     *
-     * If the rejection were not inspected and logged, the FileStoreParseError would surface as a process-level unhandled rejection (Node's --test runner would
-     * treat it as a test failure or even abort the run). Inspecting each settlement keeps the rest of startup safe.
-     */
-    await using ctx: IntegrationContext = await createIntegrationContext();
-
-    await initializePersistence(ctx);
-
-    // Seed the unknown-service-tag scenario: enabledServices contains a fake tag that no service offers. The probe's checkServiceTagFilter will surface a
-    // warning issue whose autoFix is mutateEnabledServices.
-    setEnabledServices([ "hulu", "totally-fake-tag-q8r2" ]);
-    await mutateConfig((config) => {
-
-      config.channels ??= {};
-      config.channels.enabledServices = [ "hulu", "totally-fake-tag-q8r2" ];
-    });
-
-    // Now corrupt config.json and config.json.bak so that the autoFix's mutateConfig call hits the corruption guard. mutateConfig calls the file store's
-    // mutate -> read; read attempts the corrupt main, fails parse, attempts .bak, fails parse on .bak too, and surfaces parseError. mutate then throws
-    // FileStoreParseError, which rejects the autoFix call - the rejection surfaces as a rejected settlement that the probe inspects and logs.
-    await writeFile(pathInDataDir(ctx, "config.json"), "{ this is not valid json", "utf-8");
-    await writeFile(pathInDataDir(ctx, "config.json.bak"), "{ neither is this", "utf-8");
-
-    // The probe must complete without rejecting - the per-settlement rejection inspection over Promise.allSettled logs the failure and lets startup proceed.
-    await assert.doesNotReject(() => runConsistencyProbeAtStartup(),
-      "the probe must complete cleanly even when an autoFix throws - the catch is the safety net for partial-progress startup");
-
-    // The rejected-settlement branch surfaces the failed category in the operator-visible log line for triage. The message shape is "Consistency probe auto-fix
-    // failed for <category>: <reason>."; we assert the category appears in that formatted line - the same text an operator reads on the Logs tab.
-    const swallowed = captured.filter((line) => (line.level === "warn") && line.message.includes("Consistency probe auto-fix failed"));
-
-    assert.ok(swallowed.length >= 1, "the swallowed autoFix failure is logged at warn level");
-    assert.ok(swallowed[0]?.message.includes("unknown-service-tag"),
-      "the failing category surfaces in the log line so operators can identify which auto-fix broke");
   });
 });

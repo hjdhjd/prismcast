@@ -2,16 +2,18 @@
  *
  * showInfo.ts: Channels DVR API integration for show name and channel logo lookup.
  */
+import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
+import type { Config, Nullable } from "../types/index.ts";
 import { LOG, formatError, normalizeClientAddress, timeoutSignal } from "../utils/index.ts";
 import { TimerRegistry, systemClock } from "homebridge-plugin-utils";
 import { clearChannelLogos, getAllChannels, getChannelListing, getChannelLogo, getChannelStationId, setChannelLogo,
   setChannelLogos } from "../config/userChannels.ts";
-import { mutateConfig, readConfig } from "../config/userConfig.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
-import type { Nullable } from "../types/index.ts";
 import { emitChannelUpdate } from "./statusEmitter.ts";
 import { getAllStreams } from "./registry.ts";
+import { mutateConfig } from "../config/userConfig.ts";
+import { registerConfigChangeHandler } from "../config/reactivity.ts";
 
 /* This module integrates with the Channels DVR API for two purposes: show name lookup and channel logo population.
  *
@@ -23,10 +25,10 @@ import { getAllStreams } from "./registry.ts";
  * The show name polling mechanism uses a two-phase approach - discovery and lookup:
  *
  * 1. Discovery: Every 30 seconds, try each unique client address as a potential Channels DVR server by calling getDeviceMappings(). If a host has matching M3U
- *    devices, cache it as the last known DVR host. Device mappings are cached for 5 minutes, so non-DVR hosts (e.g., Plex IPs) only incur a network timeout on the
- *    first attempt and every 5 minutes thereafter.
+ *    devices, it becomes the DVR host. Device mappings are cached for 5 minutes, so non-DVR hosts (e.g., Plex IPs) only incur a network timeout on the first
+ *    attempt and every 5 minutes thereafter.
  *
- * 2. Lookup: Use the cached DVR host for show name lookups across ALL active streams, regardless of which client initiated them. This enables Plex-initiated
+ * 2. Lookup: Use the DVR host for show name lookups across ALL active streams, regardless of which client initiated them. This enables Plex-initiated
  *    streams to display show names from the Channels DVR guide, as long as any Channels DVR connection has been seen at some point.
  *
  * Channel logos are populated in two tiers when a DVR host is known:
@@ -37,11 +39,12 @@ import { getAllStreams } from "./registry.ts";
  * 2. Tier 2 (/tms/stations/{name}): For channels with station IDs not covered by tier 1 (disabled channels, channels without an enabled service), a TMS station
  *    name search finds the best matching logo. Results are matched by station ID when possible, otherwise the first result with a valid logo is used.
  *
- * Logo population runs on DVR host discovery (startup or first stream connection) and refreshes every 24 hours. Individual channel add/edit operations trigger a
- * single-entry TMS search for immediate logo availability.
+ * Logo population runs when the poller starts with a DVR host known, when discovery finds a new host, and when a save changes the host or the port, and it
+ * refreshes every 24 hours. Individual channel add/edit operations trigger a single-entry TMS search for immediate logo availability.
  *
- * Caching strategy:
- * - Last known DVR host: Persists across poll cycles, resets on shutdown
+ * State and caching strategy:
+ * - DVR host: The running configuration's channelsDvr.host, the one copy every reader consults. The boot reads it from the file, discovery writes it and
+ *   persists it, and a save that changes it takes effect live, so it outlives the poller and survives restarts
  * - Device channel mappings: Cached for 5 minutes per host, aged on the poller's clock (rarely change)
  * - Recording jobs and guide data: Fetched fresh each poll cycle (30 seconds)
  * - Channel logos: Cached by station ID in userChannels.ts, refreshed every 24 hours
@@ -189,23 +192,21 @@ const showNameCache = new Map<number, string>();
 // Cache of device channel mappings by DVR host.
 const deviceMappingsByHost = new Map<string, DeviceMappingsCache>();
 
-// Last known Channels DVR host that had matching M3U devices. Used to look up show names for all streams, including those initiated by non-DVR clients
-// (e.g., Plex). Persists across poll cycles but resets on shutdown. Updated whenever getDeviceMappings() finds matching devices on a host.
-let lastKnownDvrHost: Nullable<string> = null;
-
 // Public API.
 
 /**
- * Returns the last known Channels DVR host address. Used by the pretune module to poll for upcoming scheduled recordings.
- * @returns The DVR host address, or null if no DVR host has been discovered.
+ * Returns the Channels DVR host the running configuration holds. It is used to look up show names for every stream, including those a non-DVR client such as
+ * Plex started, and by the pretune module to poll for upcoming scheduled recordings.
+ * @returns The DVR host address, or null when no DVR host is known.
  */
 export function getDvrHost(): Nullable<string> {
 
-  return lastKnownDvrHost;
+  return (CONFIG.channelsDvr.host.length > 0) ? CONFIG.channelsDvr.host : null;
 }
 
 /**
- * Sets the DVR host address and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a host.
+ * Makes a host the running DVR host and persists it to the config file if it changed. Called by the discovery loop when a matching M3U device is found on a
+ * host.
  *
  * The host must be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
  * with a debug log rather than silently stripped, because a colon-bearing host indicates a caller-side bug (auto-discovery should be feeding IPs, not
@@ -223,18 +224,20 @@ export function setDvrHost(host: string): void {
     return;
   }
 
-  if(lastKnownDvrHost === host) {
+  if(CONFIG.channelsDvr.host === host) {
 
     return;
   }
 
-  lastKnownDvrHost = host;
+  // The running configuration takes the host first, so every reader sees it at once, and the file follows, so the next save finds the two equal and reports
+  // nothing for it.
+  CONFIG.channelsDvr.host = host;
 
   void persistDvrHost(host);
 
-  // Populate logos whenever the DVR host changes. The early return above (host === lastKnownDvrHost) prevents redundant calls during show name polling's
-  // repeated confirmations of the same host. A genuine host change (e.g., DVR migration) triggers a full re-population with the new host's data.
-  void populateChannelLogos();
+  // Populate logos whenever the DVR host changes. The early return above prevents redundant calls during show name polling's repeated confirmations of the same
+  // host. A genuine host change (e.g., DVR migration) triggers a full re-population with the new host's data.
+  populateRunningChannelLogos();
 }
 
 /**
@@ -251,8 +254,8 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
   pollingClock = clock;
   timers = new TimerRegistry({ clock });
 
-  // Load the persisted DVR host from the config file so the pretune module can begin polling immediately on startup.
-  void loadPersistedDvrHost();
+  // The DVR host is the running configuration's, which the boot read from the file, so the logos populate from it at once when one is known.
+  populateRunningChannelLogos();
 
   // Run immediately on startup, then every 30 seconds.
   void updateShowNames();
@@ -262,10 +265,10 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
     void updateShowNames();
   }, POLL_INTERVAL_MS);
 
-  // Start the 24-hour logo refresh. The initial population is triggered by loadPersistedDvrHost() or setDvrHost() when a DVR host becomes known.
+  // Start the 24-hour logo refresh. A start with no DVR host known populates nothing above; setDvrHost or a save populates once a host becomes known.
   timers.setInterval("logos", () => {
 
-    void populateChannelLogos();
+    populateRunningChannelLogos();
   }, LOGO_REFRESH_INTERVAL_MS);
 }
 
@@ -279,11 +282,10 @@ export function stopShowInfoPolling(): void {
   timers = null;
   pollingClock = systemClock;
 
-  // Clear caches and cached DVR host on shutdown.
+  // Clear the caches on shutdown. The DVR host belongs to the running configuration rather than to the poller, so it stays.
   showNameCache.clear();
   deviceMappingsByHost.clear();
   clearChannelLogos();
-  lastKnownDvrHost = null;
 }
 
 /**
@@ -327,8 +329,10 @@ export function clearShowName(streamId: number): void {
  */
 async function updateShowNames(): Promise<void> {
 
-  // One instant for the whole operation, read at its start, so a stop landing mid-operation cannot split this update's cache reads across two clocks.
+  // One instant and one DVR port for the whole operation, read at its start, so a stop landing mid-operation cannot split this update's cache reads across two
+  // clocks and a save landing mid-operation cannot split its requests across two ports.
   const now = pollingClock.now();
+  const port = CONFIG.channelsDvr.port;
   const streams = getAllStreams();
 
   if(streams.length === 0) {
@@ -355,7 +359,7 @@ async function updateShowNames(): Promise<void> {
   await Promise.all(
     Array.from(discoveryHosts).map(async (host) => {
 
-      const mappings = await getDeviceMappings(host, now);
+      const mappings = await getDeviceMappings(host, port, now);
 
       if(mappings.size > 0) {
 
@@ -364,10 +368,12 @@ async function updateShowNames(): Promise<void> {
     })
   );
 
-  // Lookup phase: use the cached DVR host for show name lookups across all streams.
-  if(lastKnownDvrHost) {
+  // Lookup phase: use the DVR host for show name lookups across all streams.
+  const dvrHost = getDvrHost();
 
-    await updateShowNamesForHost(lastKnownDvrHost, allStreamEntries, now);
+  if(dvrHost) {
+
+    await updateShowNamesForHost(dvrHost, port, allStreamEntries, now);
 
     return;
   }
@@ -382,13 +388,14 @@ async function updateShowNames(): Promise<void> {
 /**
  * Updates show names for streams from a single DVR host.
  * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
  * @param hostStreams - Array of streams from this host with their channel keys.
  * @param now - The instant the calling update read at its start, threaded so the whole operation ages the cache against one reading.
  */
-async function updateShowNamesForHost(host: string, hostStreams: { channelKey: string; id: number }[], now: number): Promise<void> {
+async function updateShowNamesForHost(host: string, port: number, hostStreams: { channelKey: string; id: number }[], now: number): Promise<void> {
 
   // Ensure we have fresh device mappings.
-  const mappings = await getDeviceMappings(host, now);
+  const mappings = await getDeviceMappings(host, port, now);
 
   if(mappings.size === 0) {
 
@@ -402,7 +409,7 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
   }
 
   // Fetch active jobs.
-  const jobs = await fetchFromDvr<ChannelsDvrJob>(host, "/dvr/jobs");
+  const jobs = await fetchFromDvr<ChannelsDvrJob>(host, port, "/dvr/jobs");
 
   // Build a map of channel key -> show name from active recordings.
   const recordingShowNames = new Map<string, string>();
@@ -427,7 +434,7 @@ async function updateShowNamesForHost(host: string, hostStreams: { channelKey: s
   }
 
   // For channels without recording data, get show names from the guide.
-  const guideShowNames = await getGuideShowNames(host);
+  const guideShowNames = await getGuideShowNames(host, port);
 
   // Update show name cache for each stream.
   for(const stream of hostStreams) {
@@ -508,12 +515,14 @@ export function matchesM3uDevice(deviceChannelIds: Set<string>, prismcastChannel
 }
 
 /**
- * Gets device channel mappings for a DVR host, refreshing the cache if needed.
+ * Gets device channel mappings for a DVR host, refreshing the cache if needed. The cache is keyed by host alone, so the channelsDvr. handler clears it when a
+ * save changes the host or the port.
  * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
  * @param now - The instant the cache's freshness is measured against.
  * @returns Map of DeviceID -> (Map of GuideNumber -> channel ID).
  */
-export async function getDeviceMappings(host: string, now: number): Promise<Map<string, Map<string, string>>> {
+export async function getDeviceMappings(host: string, port: number, now: number): Promise<Map<string, Map<string, string>>> {
 
   const cached = deviceMappingsByHost.get(host);
 
@@ -524,7 +533,7 @@ export async function getDeviceMappings(host: string, now: number): Promise<Map<
   }
 
   // Fetch fresh device data.
-  const devices = await fetchFromDvr<ChannelsDvrDevice>(host, "/devices");
+  const devices = await fetchFromDvr<ChannelsDvrDevice>(host, port, "/devices");
 
   // Get PrismCast's channel keys to identify which M3U device is ours.
   const prismcastChannelKeys = new Set(Object.keys(getAllChannels()));
@@ -605,9 +614,10 @@ export async function getDeviceMappings(host: string, now: number): Promise<Map<
 /**
  * Gets guide show names for a DVR host by fetching current program data.
  * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
  * @returns Map of channel ID -> show name for currently airing programs.
  */
-async function getGuideShowNames(host: string): Promise<Map<string, string>> {
+async function getGuideShowNames(host: string, port: number): Promise<Map<string, string>> {
 
   // Get device IDs from the mappings cache (should already be populated).
   const deviceCache = deviceMappingsByHost.get(host);
@@ -619,7 +629,7 @@ async function getGuideShowNames(host: string): Promise<Map<string, string>> {
 
   // Fetch guide data from all M3U devices in parallel.
   const guideResults = await Promise.all(
-    deviceCache.deviceIds.map(async (deviceId) => fetchFromDvr<ChannelsDvrGuideEntry>(host, "/devices/" + deviceId + "/guide/now"))
+    deviceCache.deviceIds.map(async (deviceId) => fetchFromDvr<ChannelsDvrGuideEntry>(host, port, "/devices/" + deviceId + "/guide/now"))
   );
 
   // Build channel ID -> show name map from all devices.
@@ -645,16 +655,18 @@ async function getGuideShowNames(host: string): Promise<Map<string, string>> {
 }
 
 /**
- * Fetches JSON data from a Channels DVR API endpoint.
+ * Fetches JSON data from a Channels DVR API endpoint. The caller hands it the host and the port, so a request made while a save is being reconciled can reach
+ * the DVR the candidate configuration names rather than the one the running configuration still holds.
  * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
  * @param path - The API path (e.g., "/devices" or "/dvr/jobs").
  * @param clock - The clock this request's bound arms on. Defaults to the poller's own clock, read at call time, so a request the poller makes and a request the
  *                pretune scheduler makes each land on the timeline its caller is driving.
  * @returns Array of results, empty array on any error.
  */
-export async function fetchFromDvr<T>(host: string, path: string, clock: Clock = pollingClock): Promise<T[]> {
+export async function fetchFromDvr<T>(host: string, port: number, path: string, clock: Clock = pollingClock): Promise<T[]> {
 
-  const url = "http://" + host + ":" + String(CONFIG.channelsDvr.port) + path;
+  const url = "http://" + host + ":" + String(port) + path;
 
   // The bound carries this error as its abort reason, which is what lets the catch below tell our own lapse apart from every other failure by reference rather
   // than by parsing a name the platform chooses.
@@ -694,32 +706,8 @@ export async function fetchFromDvr<T>(host: string, path: string, clock: Clock =
 }
 
 /**
- * Loads the persisted DVR host from the config file. Called on startup so the pretune module can begin polling immediately.
- */
-async function loadPersistedDvrHost(): Promise<void> {
-
-  try {
-
-    const result = await readConfig();
-    const persistedHost = result.config.channelsDvr?.host;
-
-    if(!result.parseError && persistedHost) {
-
-      lastKnownDvrHost = persistedHost;
-
-      LOG.debug("streaming:showinfo", "Loaded persisted DVR host: %s.", lastKnownDvrHost);
-
-      // Populate logos immediately from the persisted host so they're available on the first page load.
-      void populateChannelLogos();
-    }
-  } catch {
-
-    // Ignore errors - the host will be discovered from the first stream's client address.
-  }
-}
-
-/**
- * Persists the DVR host to the config file so it survives restarts, and mirrors it into the running configuration so both hold the discovered value.
+ * Persists the DVR host to the config file so it survives restarts. setDvrHost has already made it the running host, and a write that fails leaves the file
+ * behind the running configuration until the next save reconciles the two from the file.
  * @param host - The DVR server hostname or IP address.
  */
 async function persistDvrHost(host: string): Promise<void> {
@@ -731,12 +719,6 @@ async function persistDvrHost(host: string): Promise<void> {
       config.channelsDvr ??= {};
       config.channelsDvr.host = host;
     });
-
-    /* mutateConfig writes the file alone, so without this the running configuration would keep the host it started with. The cost lands on the next settings
-     * save, which diffs the re-read file against CONFIG: the host would surface as a change the operator never made, and because nothing applies channelsDvr
-     * live, that save would answer that a restart is required.
-     */
-    CONFIG.channelsDvr.host = host;
   } catch(error) {
 
     LOG.debug("streaming:showinfo", "Failed to persist DVR host: %s.", formatError(error));
@@ -746,23 +728,35 @@ async function persistDvrHost(host: string): Promise<void> {
 // Logo Population.
 
 /**
- * Populates the channel logo cache in two tiers. Tier 1 fetches logo URLs from the DVR's /devices endpoint (covers all channels in the M3U playlist). Tier 2 runs
- * TMS station name searches for any remaining channels with station IDs not covered by tier 1. Called on DVR host discovery (startup or first stream) and every 24
- * hours to pick up network rebrands.
+ * Populates the logos from the running DVR host and port when a host is known, the population the poller's start, its daily refresh, and a discovered host
+ * run.
  */
-async function populateChannelLogos(): Promise<void> {
+function populateRunningChannelLogos(): void {
 
-  if(!lastKnownDvrHost) {
+  const host = getDvrHost();
 
-    return;
+  if(host) {
+
+    void populateChannelLogos(host, CONFIG.channelsDvr.port);
   }
+}
+
+/**
+ * Populates the channel logo cache in two tiers. Tier 1 fetches logo URLs from the DVR's /devices endpoint (covers all channels in the M3U playlist). Tier 2 runs
+ * TMS station name searches for any remaining channels with station IDs not covered by tier 1. Runs when a DVR host becomes known or changes, when a save changes
+ * the port, and every 24 hours to pick up network rebrands. The host and the port are arguments, so the reconcile's handler can hand it the candidate's values
+ * while the running configuration still holds the previous ones.
+ * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
+ */
+async function populateChannelLogos(host: string, port: number): Promise<void> {
 
   // One instant for the whole operation, as the show-name update reads one for its own.
   const now = pollingClock.now();
 
   // Tier 1: fetch device data and extract logos. getDeviceMappings() handles the /devices fetch, device matching, and logo extraction into the cache as a side
   // effect. The 5-minute mapping cache means we don't re-fetch if show name polling already called this recently.
-  await getDeviceMappings(lastKnownDvrHost, now);
+  await getDeviceMappings(host, port, now);
 
   // Tier 2: search TMS by channel name for channels with station IDs not covered by tier 1. This covers disabled channels, channels without an enabled service,
   // and any channels the DVR device didn't include logos for.
@@ -790,7 +784,7 @@ async function populateChannelLogos(): Promise<void> {
     const channelName = entry.channel.name ?? entry.key;
 
     // eslint-disable-next-line no-await-in-loop -- Intentional: sequential to avoid flooding the DVR's TMS proxy with concurrent requests.
-    const found = await searchTmsStationLogo(lastKnownDvrHost, channelName, stationId);
+    const found = await searchTmsStationLogo(host, port, channelName, stationId);
 
     if(found) {
 
@@ -823,13 +817,14 @@ async function populateChannelLogos(): Promise<void> {
  * Searches the TMS stations endpoint for a channel's logo by name. If a result matches the target station ID, uses that logo. Otherwise uses the first result
  * with a valid logo URL (same brand, different regional feed). Caches the result if found.
  * @param host - The DVR server hostname or IP address.
+ * @param port - The DVR's API port.
  * @param channelName - The channel display name to search for (e.g., "AMC", "Animal Planet").
  * @param targetStationId - The Gracenote station ID to match against results.
  * @returns True if a logo was found and cached, false otherwise.
  */
-async function searchTmsStationLogo(host: string, channelName: string, targetStationId: string): Promise<boolean> {
+async function searchTmsStationLogo(host: string, port: number, channelName: string, targetStationId: string): Promise<boolean> {
 
-  const results = await fetchFromDvr<TmsStationResult>(host, "/tms/stations/" + encodeURIComponent(channelName));
+  const results = await fetchFromDvr<TmsStationResult>(host, port, "/tms/stations/" + encodeURIComponent(channelName));
 
   if(results.length === 0) {
 
@@ -878,12 +873,14 @@ async function searchTmsStationLogo(host: string, channelName: string, targetSta
  */
 export function updateChannelLogo(channelName: string, stationId: string): void {
 
-  if(!lastKnownDvrHost) {
+  const host = getDvrHost();
+
+  if(!host) {
 
     return;
   }
 
-  void searchTmsStationLogo(lastKnownDvrHost, channelName, stationId);
+  void searchTmsStationLogo(host, CONFIG.channelsDvr.port, channelName, stationId);
 }
 
 /**
@@ -906,3 +903,28 @@ function normalizeLogoUrl(url: string): string {
     return url;
   }
 }
+
+/**
+ * Realizes a saved change to the DVR host or port. The device mappings were fetched from the DVR the running configuration names, so the cache is cleared, and
+ * the logos repopulate from the candidate's host and port, which the running configuration takes only once the reconcile commits. The population runs without
+ * being awaited, so the save answers without waiting on the DVR, and a host the save clears populates nothing. Nothing here can fail, so the handler refuses
+ * nothing.
+ * @param _changes - The changes under the handler's prefix; the candidate carries the host and the port, so the handler reads them there instead.
+ * @param next - The candidate running configuration.
+ * @returns No rejections.
+ */
+async function applyDvrConfigChanges(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+
+  deviceMappingsByHost.clear();
+
+  if(next.channelsDvr.host.length > 0) {
+
+    void populateChannelLogos(next.channelsDvr.host, next.channelsDvr.port);
+  }
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("channelsDvr.", applyDvrConfigChanges);

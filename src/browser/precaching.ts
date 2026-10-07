@@ -16,6 +16,7 @@ import type { Clock } from "homebridge-plugin-utils";
 import type { Page } from "puppeteer-core";
 import type { PersistedLineupChannel } from "../config/providerLineups.ts";
 import { classifyBlockedPage } from "./blockedPage.ts";
+import { getEnabledServices } from "../config/services.ts";
 import { getProfileForUrl } from "../config/profiles.ts";
 import { isLoginModeActive } from "./login.ts";
 import { startOverlayHandling } from "./consent.ts";
@@ -928,7 +929,9 @@ async function runPrecacheCycle(deps: PrecachingDeps): Promise<void> {
   }
 
   const slugs = CONFIG.channels.precacheServices;
-  const enabledFilter = CONFIG.channels.enabledServices;
+
+  // The running filter rather than the persisted list, so the cycle skips exactly the services every other filter reader hides.
+  const enabledFilter = getEnabledServices();
   const hasFilter = enabledFilter.length > 0;
   const cycleElapsed = startTimer();
 

@@ -2,7 +2,8 @@
  *
  * services.ts: Service group management for multi-service channels.
  */
-import type { Channel, ChannelMap, ResolvedChannel, ServiceGroup } from "../types/index.ts";
+import type { ChangeRejection, ConfigChange } from "./reactivity.ts";
+import type { Channel, ChannelMap, Config, ResolvedChannel, ServiceGroup } from "../types/index.ts";
 import { LOG, extractDomain } from "../utils/index.ts";
 import { CONFIG } from "./index.ts";
 import { DOMAIN_CONFIG } from "./sites.ts";
@@ -11,6 +12,7 @@ import { getDomainConfig } from "./profiles.ts";
 import { getUserDomains } from "./userProfiles.ts";
 import { mutateConfig } from "./userConfig.ts";
 import { pickIdentity } from "./channelIdentity.ts";
+import { registerConfigChangeHandler } from "./reactivity.ts";
 
 /* Service groups allow multiple streaming services to offer the same content. For example, ESPN can be watched via ESPN.com (native) or Disney+.
  *
@@ -54,7 +56,8 @@ let serviceSelections = new Map<string, string>();
 
 // Service Tag System.
 
-// Module-level state for the service filter. Empty array means "no filter" (all services shown). Non-empty means only these tags are active.
+// The running service filter, the one copy every filter reader consults: the persisted list in CONFIG.channels.enabledServices, restricted to the tags the loaded
+// channels and user domains know. Empty means no filter (every service shown); non-empty means only these tags are active.
 let enabledServices: string[] = [];
 
 /**
@@ -273,20 +276,50 @@ export function getEnabledServices(): string[] {
 }
 
 /**
- * Hydrates the in-memory enabled-services cache from a serialized list. Called by initializeUserChannels at startup with the validated tags list. Never called
- * by route code directly - mutations go through mutateEnabledServices, which is the
- * single async path that updates both the cache and the persisted file in one atomic operation.
- * @param tags - The service tags to load into the cache. Empty array means "no filter" (all services shown).
+ * Sets the running service filter, the module cache every filter reader consults, and writes nothing else. The cache is the running filter and
+ * CONFIG.channels.enabledServices is the persisted list: applyServiceFilter derives the filter from the list, and mutateEnabledServices sets the list and then
+ * the filter once the file holds a new list.
+ * @param tags - The service tags the filter enables. Empty array means "no filter" (all services shown).
  */
 export function setEnabledServices(tags: readonly string[]): void {
 
   enabledServices = [...tags];
-  CONFIG.channels.enabledServices = [...tags];
 }
 
 /**
- * Persists a new enabled-services list through the file store. Goes through mutateConfig so the file write, snapshot machinery, and post-mutate cache update
- * all run uniformly - after the call returns, both disk and the module-state cache reflect the new value. Empty array means "no filter" (all services shown).
+ * Makes a persisted service list the running filter, restricted to the tags the loaded channels and user domains know, with one warning naming any tag it
+ * ignores. This is the one statement of the rule that an unknown tag never reaches the running filter: the boot applies it to the persisted list once the
+ * service groups are built, and the reconcile applies it to the saved list whenever a save changes it. The file keeps the user's list rather than the restricted
+ * one, because a partial store load can shrink the known set, and persisting the restriction would then delete tags that are legitimate once every store loads.
+ * A list whose every tag is unknown restricts to the empty filter, which shows every service.
+ * @param tags - The persisted service list.
+ */
+export function applyServiceFilter(tags: readonly string[]): void {
+
+  // An empty list is no filter, so there is nothing to restrict and no reason to collect the known tags.
+  if(tags.length === 0) {
+
+    setEnabledServices([]);
+
+    return;
+  }
+
+  const knownTags = new Set(getAllServiceTags().map((tag) => tag.tag));
+  const configured = [...new Set(tags)];
+  const ignored = configured.filter((tag) => !knownTags.has(tag));
+
+  if(ignored.length > 0) {
+
+    LOG.warn("Ignoring unrecognized service tags in configuration: %s.", ignored.join(", "));
+  }
+
+  setEnabledServices(configured.filter((tag) => knownTags.has(tag)));
+}
+
+/**
+ * Persists a new enabled-services list through the file store, then makes it the persisted list in CONFIG and the running filter, in that order, so after the
+ * call returns the file, CONFIG, and the cache all hold it. Its caller, the service-filter route, accepts only tags that are known or already in the running
+ * filter, so the list is set as given. Empty array means "no filter" (all services shown).
  * @param tags - The new enabled service tags.
  * @throws FileStoreParseError if config.json contains invalid JSON and the .bak rotation is also unparseable.
  */
@@ -300,11 +333,28 @@ export async function mutateEnabledServices(tags: readonly string[]): Promise<vo
     config.channels.enabledServices = next;
   });
 
-  // Module-state cache hydration after successful write. Mirrors the post-mutate hydration done in mutateChannels for serviceSelections and tagRegistry,
-  // keeping the in-memory view consistent with what was just persisted.
-  enabledServices = next;
-  CONFIG.channels.enabledServices = next;
+  // CONFIG follows the file so the next save finds nothing to reconcile for the list, and the running filter follows CONFIG.
+  CONFIG.channels.enabledServices = [...next];
+  setEnabledServices(next);
 }
+
+/**
+ * Realizes a saved change to the persisted service list: the candidate's list becomes the running filter through the same restriction the boot applies, and
+ * the reconcile commits the list itself to CONFIG as the user saved it. Setting the cache cannot fail, so the handler refuses nothing.
+ * @param _changes - The changes under the handler's prefix; the candidate carries the whole list, so the handler reads that instead.
+ * @param next - The candidate running configuration.
+ * @returns No rejections.
+ */
+async function applyServiceFilterChange(_changes: readonly ConfigChange[], next: Readonly<Config>): Promise<readonly ChangeRejection[]> {
+
+  applyServiceFilter(next.channels.enabledServices);
+
+  return [];
+}
+
+// Module-load side effect: register the handler once per process, as every config-change handler registers, so it is in place before the first save can reach
+// the reconcile.
+registerConfigChangeHandler("channels.enabledServices", applyServiceFilterChange);
 
 /**
  * Checks if a service tag is currently enabled. Returns true if the tag is enabled, if no filter is active (empty set), or if the tag is "direct".

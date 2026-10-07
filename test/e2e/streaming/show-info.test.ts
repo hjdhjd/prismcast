@@ -1,19 +1,21 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * show-info.test.ts: Integration coverage for src/streaming/showInfo.ts. The module has no dependency-injection point for its Channels DVR HTTP calls - it
- * builds URLs directly from CONFIG.channelsDvr.port and calls the global fetch - so this suite stubs globalThis.fetch (routed purely by URL path, exactly the
- * mechanism the co-located unit test showInfo.test.ts already uses) rather than standing up a bootStubServer. The persistence subsystem (config.json,
- * channels.json) and the stream registry are real, booted per test via createIntegrationContext + initializePersistence, so the config round-trip and the
- * registered-stream lookup are exercised end-to-end.
+ * builds each URL from the DVR host and port that CONFIG and config.json hold, or from the ones a save names, and calls the global fetch - so this suite stubs
+ * globalThis.fetch (routed purely by URL path, exactly the mechanism the co-located unit test showInfo.test.ts already uses) rather than standing up a bootStubServer.
+ * The persistence subsystem (config.json, channels.json) and the stream registry are real, booted per test via createIntegrationContext, initializeConfiguration, and
+ * initializePersistence, so the config round-trip and the registered-stream lookup are exercised end-to-end.
  *
- * Every internal function under test (updateShowNames, updateShowNamesForHost, getGuideShowNames, loadPersistedDvrHost, persistDvrHost, populateChannelLogos)
- * is module-private, so this suite drives them exclusively through the exported functions: setDvrHost, startShowInfoPolling, and triggerShowNameUpdate. Three
- * behavior groups are asserted:
+ * Every internal function under test (updateShowNames, updateShowNamesForHost, getGuideShowNames, persistDvrHost, populateChannelLogos, and the config-change
+ * handler) is module-private, so this suite drives them exclusively through setDvrHost, startShowInfoPolling, triggerShowNameUpdate, and saveConfiguration.
+ * The behavior groups asserted:
  *
  *   A. Show-name resolution - recording-job precedence over the program guide, guide fallback when no recording matches, and stale-name clearing when
  *      neither source matches anymore.
- *   B. Persisted DVR host round-trip - loadPersistedDvrHost reads channelsDvr.host from config.json on startup, and persistDvrHost (via setDvrHost) writes
- *      only the host field back, never touching channelsDvr.port. The rule rejecting a colon in the host value is asserted alongside the host-only mutate.
+ *   B. The DVR host as the running configuration holds it - the boot reads channelsDvr.host from config.json into CONFIG, where the poller's start finds it;
+ *      setDvrHost writes it into CONFIG and persistDvrHost writes only the host field back, never touching channelsDvr.port, with the rule rejecting a colon
+ *      in the host value asserted alongside; and a save that changes the host or the port clears the device mappings and repopulates the logos from the
+ *      address the save names.
  *   C. Two-tier channel logo population - the /devices endpoint's tier-1 logos land in the shared logo cache and are broadcast via the channelUpdate SSE
  *      event, normalized through normalizeLogoUrl. A tier-2 TMS station-name fallback is attempted for a channel with a station ID but no tier-1 logo.
  *
@@ -21,12 +23,14 @@
  * the >=80% channel-ID overlap gate in getDeviceMappings() passes deterministically regardless of how the predefined catalog evolves.
  *
  * Reset discipline: stopShowInfoPolling() unconditionally clears the poll interval, the logo refresh interval, the pending debounce timer, the show-name
- * cache, the device-mappings cache, the shared channel logo cache, and lastKnownDvrHost - so calling it in afterEach fully resets module state even for
- * tests that never started polling. Every setDvrHost/loadPersistedDvrHost call also fires populateChannelLogos as an un-awaited side effect; buildFullDevice
- * bounds that sweep to at most a couple of network round trips against the test's own stub, and afterEach gives it a brief grace window before restoring
- * globalThis.fetch to the real implementation, so no straggling call can resolve against a live network address once the stub is gone. Any registered
- * stream and status subscription are also torn down so no state leaks into the next test.
+ * cache, the device-mappings cache, and the shared channel logo cache - so calling it in afterEach fully resets module state even for tests that never started
+ * polling. The DVR host is the running configuration's, so each row resets it by calling initializeConfiguration() against its own data directory before
+ * initializePersistence. Every population - a setDvrHost call, a poller start with a host known, a save that changes the host or the port - fires
+ * populateChannelLogos as an un-awaited side effect; buildFullDevice bounds that sweep to at most a couple of network round trips against the test's own stub, and
+ * afterEach gives it a brief grace window before restoring globalThis.fetch to the real implementation, so no straggling call can resolve against a live network address
+ * once the stub is gone. Any registered stream and status subscription are also torn down so no state leaks into the next test.
  */
+import { CONFIG, initializeConfiguration, saveConfiguration } from "../../../src/config/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, firstOf, nthOf } from "../../../src/testing.helpers.ts";
@@ -112,6 +116,9 @@ interface DvrStubState {
   guideByDevice: Map<string, FixtureGuideEntry[]>;
   jobs: FixtureJob[];
 
+  // The host and port of every /devices request, in order, so a row can read which DVR address a device-mapping fetch reached.
+  deviceAddresses: string[];
+
   // How many times the stub has served each URL path, so a row that drives the poll cadence can count the fetches a cadence produced rather than infer them
   // from a downstream effect.
   pathCalls: Map<string, number>;
@@ -148,7 +155,7 @@ interface BuildFullDeviceOptions {
  */
 function createDvrStubState(): DvrStubState {
 
-  return { devices: [], guideByDevice: new Map(), jobs: [], pathCalls: new Map(), tmsByName: new Map() };
+  return { deviceAddresses: [], devices: [], guideByDevice: new Map(), jobs: [], pathCalls: new Map(), tmsByName: new Map() };
 }
 
 /**
@@ -162,8 +169,9 @@ function jsonResponse(body: unknown): Response {
 }
 
 /**
- * Installs a globalThis.fetch stub that routes requests purely by URL path against the given state, ignoring host and port entirely - showInfo.ts always
- * builds "http://" + host + ":" + port + path, and since our stub does not care about host or port, the configured Channels DVR port is irrelevant here.
+ * Installs a globalThis.fetch stub that routes requests purely by URL path against the given state - showInfo.ts always builds "http://" + host + ":" + port +
+ * path, and the stub answers whatever host and port a request names. It records the address of each /devices request, which is how a row reads the DVR a
+ * device-mapping fetch reached.
  * @param state - The mutable fixture state the stub reads from on every call.
  */
 function installDvrFetchStub(state: DvrStubState): void {
@@ -178,6 +186,8 @@ function installDvrFetchStub(state: DvrStubState): void {
     state.pathCalls.set(url.pathname, (state.pathCalls.get(url.pathname) ?? 0) + 1);
 
     if(url.pathname === "/devices") {
+
+      state.deviceAddresses.push(url.host);
 
       return jsonResponse(state.devices);
     }
@@ -217,10 +227,10 @@ function installDvrFetchStub(state: DvrStubState): void {
  * Every channel receives a tier-1 Logo field by default (a shared baseline URL, or its entry in logoOverrides), except channels listed in excludeLogoFor.
  * This matters beyond the logo tests themselves: populateChannelLogos' tier-2 pass only makes a network round trip for channels that reach it WITHOUT a
  * cached logo, so leaving tier 1 sparse (the naive "only set a Logo for the one channel this test cares about" approach) would force a sequential TMS fetch
- * for every one of PrismCast's other ~200 station-id-bearing channels on every setDvrHost/loadPersistedDvrHost call in this suite. Since populateChannelLogos
- * is fired fire-and-forget (void), that sweep can straggle past the test's own completion and, once afterEach restores globalThis.fetch to the real
- * implementation, resolve against a live network call - which is what produced the multi-minute process hang this design was built to eliminate. Defaulting
- * every channel to a baseline logo bounds every test's tier-2 work to at most the handful of channels a test deliberately excludes.
+ * for every other station-id-bearing channel in PrismCast's lineup on every population in this suite. Since populateChannelLogos is fired fire-and-forget (void), that
+ * sweep can straggle past the test's own completion and, once afterEach restores globalThis.fetch to the real implementation, resolve against a live network call - which
+ * is what produced the multi-minute process hang this design was built to eliminate. Defaulting every channel to a baseline logo bounds every test's tier-2 work to at
+ * most the handful of channels a test deliberately excludes.
  * @param deviceId - The DeviceID to assign to the fabricated M3U device.
  * @param options - Per-channel logo shaping. See BuildFullDeviceOptions.
  * @returns The fabricated device fixture plus its channel-key-to-GuideNumber map.
@@ -301,10 +311,10 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       unregisterStream(id);
     }
 
-    // Every setDvrHost/loadPersistedDvrHost call in this suite fires populateChannelLogos as an un-awaited side effect. buildFullDevice bounds that sweep to
-    // at most a couple of network round trips against THIS test's own fetch stub, but we still give it a brief window to fully settle before swapping
-    // globalThis.fetch back to the real implementation below - a straggler that raced past this point would otherwise resolve against a live network call
-    // for a fabricated test host, which is exactly the hang class this bound (and this grace window) exists to prevent.
+    // Every population in this suite fires populateChannelLogos as an un-awaited side effect. buildFullDevice bounds that sweep to at most a couple of network round
+    // trips against THIS test's own fetch stub, but we still give it a brief window to fully settle before swapping globalThis.fetch back to the real implementation
+    // below - a straggler that raced past this point would otherwise resolve against a live network call for a fabricated test host, which is exactly the hang class this
+    // bound (and this grace window) exists to prevent.
     await delay(300);
 
     globalThis.fetch = originalFetch;
@@ -328,6 +338,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const clock = new TestClock(BASE_TIME_MS);
@@ -355,7 +366,8 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       setDvrHost("showinfo-test-clock1.example.invalid");
       startShowInfoPolling(clock);
 
-      assert.equal(clock.pending, 2, "the start armed the show-name poll and the logo refresh on the injected clock");
+      // The host is known when the poller starts, so the start also begins the logo population, whose /devices request is bounded on the poller's clock.
+      assert.equal(clock.pending, 3, "the start armed the show-name poll, the logo refresh, and the population's request bound on the injected clock");
 
       // The start runs an immediate update, which is the first jobs fetch.
       await waitFor(() => (state.pathCalls.get("/dvr/jobs") ?? 0) >= 1, 5000, "the immediate update at start reaches the jobs endpoint");
@@ -385,6 +397,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const clock = new TestClock(BASE_TIME_MS);
@@ -455,6 +468,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();
@@ -477,8 +491,8 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       state.jobs = [{ Channel: targetGuideNumber, DeviceID: deviceId, Name: "Live Recording Title" }];
       state.guideByDevice.set(deviceId, [{ Airings: [{ Title: "Guide Title (must be ignored)" }], Channel: { ChannelID: targetKey } }]);
 
-      // clientAddress stays at the factory default of null so updateShowNames' discovery phase has nothing to iterate over; lastKnownDvrHost is set
-      // directly below via setDvrHost, which is the injection point the lookup phase actually keys off.
+      // clientAddress stays at the factory default of null so updateShowNames' discovery phase has nothing to iterate over; the DVR host is set directly
+      // below via setDvrHost, which is the injection point the lookup phase actually keys off.
       const entry = makeRegistryEntry({ info: { lastPlaylistRequest: 0, storeKey: targetKey } });
 
       registerStream(entry);
@@ -496,6 +510,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();
@@ -541,6 +556,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();
@@ -589,33 +605,36 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
   describe("persisted DVR host round-trip", () => {
 
-    test("startShowInfoPolling loads the persisted channelsDvr.host from config.json into module state", async () => {
+    test("the boot reads the persisted channelsDvr.host into the running configuration, and the poller's start populates the logos from it", async () => {
 
       await using ctx = await createIntegrationContext();
 
+      await writePersistedJson(ctx, "config.json", { channelsDvr: { host: "1.2.3.4", port: 8089 } });
+      await initializeConfiguration();
       await initializePersistence(ctx);
+
+      // The host is known the moment the boot has read the file, before the poller starts.
+      assert.equal(getDvrHost(), "1.2.3.4", "getDvrHost reflects the persisted channelsDvr.host after the boot");
 
       const state = createDvrStubState();
 
       installDvrFetchStub(state);
 
-      // populateChannelLogos fires as a side effect of the persisted host being loaded; this test only cares about the host value, not the logo population
-      // outcome, but a fully-covered device fixture keeps that side effect's tier-2 TMS sweep bounded to zero network round trips (see buildFullDevice).
+      // A fully-covered device fixture keeps the population's tier-2 TMS sweep bounded to zero network round trips (see buildFullDevice).
       state.devices = [buildFullDevice("M3U-Prism-Test-B1").device];
-
-      await writePersistedJson(ctx, "config.json", { channelsDvr: { host: "1.2.3.4", port: 8089 } });
 
       startShowInfoPolling();
 
-      await waitFor(() => getDvrHost() === "1.2.3.4", 5000, "loadPersistedDvrHost reads the persisted host from config.json");
+      await waitFor(() => state.deviceAddresses.length > 0, 5000, "the poller's start populates the logos from the running host");
 
-      assert.equal(getDvrHost(), "1.2.3.4", "getDvrHost reflects the persisted channelsDvr.host after startup");
+      assert.deepEqual(state.deviceAddresses, ["1.2.3.4:8089"], "the device mappings are fetched from the running host and port");
     });
 
     test("setDvrHost persists only channelsDvr.host, leaving channelsDvr.port untouched, and rejects colon-bearing input", async () => {
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();
@@ -631,6 +650,8 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       await writePersistedJson(ctx, "config.json", { channelsDvr: { host: "0.0.0.0", port: 19191 } });
 
       setDvrHost("5.6.7.8");
+
+      assert.equal(CONFIG.channelsDvr.host, "5.6.7.8", "the running configuration holds the host at once");
 
       await waitFor(async () => {
 
@@ -668,6 +689,51 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
       assert.equal(dvrAfterRejectedInput.host, "5.6.7.8", "a rejected colon-bearing host must not be persisted to disk either");
       assert.equal(dvrAfterRejectedInput.port, 19191, "channelsDvr.port remains untouched after the rejected input");
     });
+
+    test("a save that changes the port or the host clears the device mappings and repopulates the logos from the address the save names", async () => {
+
+      /* The handler reads the address from the candidate the save hands it, while CONFIG still holds the previous one, and clears the device-mapping cache,
+       * which is keyed by host. The port change keeps the host, so its cached mappings are still fresh: only the cleared cache sends the population back to
+       * /devices, at the new port. Each population starts its /devices request before the handler returns, which is when the running configuration still
+       * holds the previous address, so a handler reading CONFIG would request the previous one.
+       */
+      await using ctx = await createIntegrationContext();
+
+      await writePersistedJson(ctx, "config.json", { channelsDvr: { host: "showinfo-test-b3.example.invalid" } });
+      await initializeConfiguration();
+      await initializePersistence(ctx);
+
+      const state = createDvrStubState();
+
+      installDvrFetchStub(state);
+      state.devices = [buildFullDevice("M3U-Prism-Test-B3").device];
+
+      startShowInfoPolling();
+
+      await waitFor(() => state.deviceAddresses.length === 1, 5000, "precondition: the start fetched the device mappings from the boot's address");
+
+      const portSave = await saveConfiguration((config) => {
+
+        config.channelsDvr ??= {};
+        config.channelsDvr.port = 19191;
+      });
+
+      assert.deepEqual(portSave.applied.map((change) => change.path), ["channelsDvr.port"], "the port is realized live");
+      assert.deepEqual(state.deviceAddresses, [ "showinfo-test-b3.example.invalid:8089", "showinfo-test-b3.example.invalid:19191" ],
+        "the cleared cache sends the population back to /devices at the saved port");
+      assert.equal(CONFIG.channelsDvr.port, 19191, "the running configuration takes the port once the reconcile commits");
+
+      const hostSave = await saveConfiguration((config) => {
+
+        config.channelsDvr ??= {};
+        config.channelsDvr.host = "showinfo-test-b3b.example.invalid";
+      });
+
+      assert.deepEqual(hostSave.applied.map((change) => change.path), ["channelsDvr.host"], "the host is realized live");
+      assert.deepEqual(hostSave.deferred, [], "and held for no restart");
+      assert.equal(state.deviceAddresses.at(-1), "showinfo-test-b3b.example.invalid:19191", "the population reaches the saved host at the running port");
+      assert.equal(getDvrHost(), "showinfo-test-b3b.example.invalid", "getDvrHost follows the save");
+    });
   });
 
   describe("two-tier channel logo population and channelUpdate SSE emission", () => {
@@ -676,6 +742,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();
@@ -722,6 +789,7 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
       await using ctx = await createIntegrationContext();
 
+      await initializeConfiguration();
       await initializePersistence(ctx);
 
       const state = createDvrStubState();

@@ -3,18 +3,25 @@
  * services.test.ts: Unit tests for the predicates, lookups, and label dispatchers in services.ts - PREDEFINED_SUFFIX, getServiceDisplayName, getCanonicalKey,
  * isServiceTagEnabled, isChannelAvailableByService, getAllServiceTags, getAuthDomainForChannel, resolvePredefinedVariant, findPredefinedByDomain,
  * getChannelServiceLabel, isServiceVariant, hasMultipleServices, getEnabledServices defensive copy, plus the in-memory cache mutators (setEnabledServices,
- * setServiceSelections). Service-group construction lives in services.serviceGroups.test.ts; sort-key computation lives in channelSort.test.ts; the
- * persistent mutator mutateEnabledServices is exercised indirectly via the persistence test layer.
+ * setServiceSelections), the restriction rule that makes a persisted service list the running filter (applyServiceFilter), and the persisting mutator
+ * mutateEnabledServices against a temp data directory. Service-group construction lives in services.serviceGroups.test.ts; sort-key computation lives in
+ * channelSort.test.ts.
  */
-import { PREDEFINED_SUFFIX, buildServiceGroups, findPredefinedByDomain, getAllServiceTags, getAuthDomainForChannel, getCanonicalKey, getChannelServiceLabel,
-  getEnabledServices, getServiceDisplayName, getServiceSelections, getServiceTagForChannel, hasMultipleServices, isChannelAvailableByService, isServiceTagEnabled,
-  isServiceVariant, resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
+import { CONFIG, initializeConfiguration } from "./index.ts";
+import { PREDEFINED_SUFFIX, applyServiceFilter, buildServiceGroups, findPredefinedByDomain, getAllServiceTags, getAuthDomainForChannel, getCanonicalKey,
+  getChannelServiceLabel, getEnabledServices, getServiceDisplayName, getServiceSelections, getServiceTagForChannel, hasMultipleServices, isChannelAvailableByService,
+  isServiceTagEnabled, isServiceVariant, mutateEnabledServices, resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { firstOf, withTempDir } from "../testing.helpers.ts";
+import type { ConfigStore } from "./index.ts";
+import { LOG } from "../utils/index.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import type { ResolvedChannelMap } from "../types/index.ts";
 import assert from "node:assert/strict";
-import { firstOf } from "../testing.helpers.ts";
+import { initializeDataDir } from "./paths.ts";
 import { makeChannel } from "./userChannels.helpers.ts";
+import os from "node:os";
+import { readConfig } from "./userConfig.ts";
 
 describe("PREDEFINED_SUFFIX", () => {
 
@@ -422,6 +429,88 @@ describe("getEnabledServices: defensive copy", () => {
     const snapshot2 = getEnabledServices();
 
     assert.deepEqual(snapshot2.toSorted(), [ "hulu", "yttv" ].toSorted(), "second read does not include the mutation");
+  });
+});
+
+/* The running filter is the services module's cache and the persisted list is CONFIG.channels.enabledServices. Each row starts from the defaults, CONFIG
+ * re-initialized from an empty in-memory store and the running filter emptied, so no row inherits the list or the filter another row left.
+ */
+describe("the running filter and the persisted list", () => {
+
+  // An empty configuration file held in memory. Initializing from it resets CONFIG, the persisted list among it, to the defaults, and it writes nothing anywhere.
+  const emptyStore: ConfigStore = {
+
+    mutateConfig: async (): Promise<void> => {
+
+      // Intentional no-op: the store only seeds the initialization, and no row saves through it.
+    },
+    readConfig: async () => ({ config: {}, parseError: false, readError: false })
+  };
+
+  beforeEach(async () => {
+
+    await initializeConfiguration(undefined, emptyStore);
+    setEnabledServices([]);
+  });
+
+  test("setEnabledServices sets the running filter and leaves the persisted list in CONFIG untouched", () => {
+
+    CONFIG.channels.enabledServices = [ "hulu", "sling" ];
+    setEnabledServices(["yttv"]);
+
+    assert.deepEqual(getEnabledServices(), ["yttv"], "the running filter is the list the setter was handed");
+    assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "sling" ], "the persisted list is not the setter's to write");
+  });
+
+  test("applyServiceFilter keeps the known tags in their order, warns once naming the ignored ones, and leaves the persisted list untouched", (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const persisted = [ "sling", "unknown-tag-a", "hulu", "unknown-tag-b" ];
+
+    CONFIG.channels.enabledServices = [...persisted];
+    applyServiceFilter(CONFIG.channels.enabledServices);
+
+    assert.deepEqual(getEnabledServices(), [ "sling", "hulu" ], "the running filter is the known tags in their persisted order");
+    assert.equal(warn.mock.callCount(), 1, "one warning");
+    assert.equal(warn.mock.calls[0]?.arguments[1], "unknown-tag-a, unknown-tag-b", "the warning names every ignored tag");
+    assert.deepEqual(CONFIG.channels.enabledServices, persisted, "the persisted list keeps the user's tags");
+  });
+
+  test("applyServiceFilter turns an all-unknown list into no filter, and an empty list into no filter without a warning", (t) => {
+
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+
+    setEnabledServices(["hulu"]);
+    applyServiceFilter(["unknown-tag-c"]);
+
+    assert.deepEqual(getEnabledServices(), [], "nothing known is left, so no filter runs");
+    assert.equal(warn.mock.callCount(), 1, "precondition: the unknown tag was named");
+
+    setEnabledServices(["hulu"]);
+    applyServiceFilter([]);
+
+    assert.deepEqual(getEnabledServices(), [], "an empty list replaces the running filter with none");
+    assert.equal(warn.mock.callCount(), 1, "an empty list ignores nothing, so it adds no warning");
+  });
+
+  test("mutateEnabledServices writes the file, then the persisted list in CONFIG, then the running filter", async (t) => {
+
+    // The row points the data directory at a temporary directory withTempDir removes, so once the row ends the resolver names os.tmpdir() instead, a directory
+    // that exists, as the settings route rows leave it.
+    t.after(() => {
+
+      initializeDataDir(os.tmpdir());
+    });
+
+    await withTempDir(async (dir) => {
+
+      initializeDataDir(dir);
+      await mutateEnabledServices([ "hulu", "yttv" ]);
+
+      assert.deepEqual((await readConfig()).config.channels?.enabledServices, [ "hulu", "yttv" ], "the file holds the list");
+      assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "yttv" ], "the persisted list in CONFIG follows the file");
+      assert.deepEqual(getEnabledServices(), [ "hulu", "yttv" ], "the running filter follows CONFIG");
+    });
   });
 });
 

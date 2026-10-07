@@ -733,8 +733,8 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
   // never rejects, so voiding the promise is safe.
   setLoginModeEndObserver((url) => void revalidateDomainAuth(url));
 
-  // Run the cross-store consistency probe now that every store is loaded. Validates foreign-key-style rules spanning multiple stores (service selections, variant
-  // canonicalKey targets, domain profile mappings, service tag filter) and auto-fixes warnings where safe. Errors do not block startup.
+  // Run the cross-store consistency probe now that every store is loaded. It logs each foreign-key-style inconsistency spanning multiple stores that an operator
+  // must act on, such as a variant whose canonical is missing, and changes nothing. Errors do not block startup.
   await runConsistencyProbeAtStartup();
 
   // Load HLS resume state from the previous shutdown. This seeds sequence numbers so streams resume forward instead of resetting to 0.

@@ -1,122 +1,175 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * cross-store-consistency.test.ts: Integration coverage for the cross-store consistency probe (consistencyProbe.ts). The probe enforces foreign-key-style
- * rules that span multiple stores - things per-store schema migrations cannot enforce because they only see one file at a time. The checks are:
+ * cross-store-consistency.test.ts: Integration coverage for the rule that keeps an unknown service tag out of the running filter. The service filter is a list
+ * the user saves in config.json, and whether a tag in it is known depends on another store - the tags come from the loaded channels and the user's domain
+ * mappings - so the rule spans stores. The services module states it once, in applyServiceFilter, and applies it at boot once the service groups are built and
+ * at every reconcile that changes the list: the running filter is the saved list restricted to the known tags, the file and CONFIG keep the list as saved, and
+ * one warning names each tag the restriction ignores. The file keeps the user's list because a partial store load can shrink the known set, and persisting the
+ * restriction would then delete tags that are legitimate once every store loads.
  *
- *   - unknown-service-tag: CONFIG.channels.enabledServices contains tags that are not in the rebuilt service-group taxonomy. AUTO-FIX: strip unknown tags.
- *   - dangling-variant-canonical: a variant entry's canonicalKey points at a channel that does not exist in PREDEFINED_CHANNELS or user channels. NO auto-fix
- *     (the right action depends on operator intent).
- *   - dangling-domain-profile: a user domain mapping references a profile that does not exist. NO auto-fix.
+ * The consistency probe reports what an operator must act on and changes nothing, and an unknown tag is not one of those, so the boot rows run it and assert it
+ * leaves the file as it was. The probe's own checks are covered in consistency-probe.test.ts.
  *
- * The auto-fix path is the most observable from a black-box test because it produces persistent on-disk state changes; we exercise it for the unknown-service-
- * tag case below. The other two checks are surfaced via log warnings only - covered by the warn-capturing integration suite in consistency-probe.test.ts, which
- * seeds the dangling references and captures LOG output directly. This file verifies the auto-fix actually persists across the full real-stores stack.
+ * Each row seeds its own data directory and calls initializeConfiguration() after createIntegrationContext and before initializePersistence, so CONFIG and the
+ * loaded snapshot are read from that row's file rather than inherited from an earlier row in the same process.
  */
-import { createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
-import { describe, test } from "node:test";
-import { CONFIG } from "../../../src/config/index.ts";
+import type { BootedApp, IntegrationContext } from "../../helpers/integration.helpers.ts";
+import { CONFIG, initializeConfiguration, saveConfiguration } from "../../../src/config/index.ts";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { bootApp, createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson, writePersistedJson } from "../../helpers/integration.helpers.ts";
+import { getEnabledServices, isServiceTagEnabled, setEnabledServices } from "../../../src/config/services.ts";
+import type { LogEntry } from "../../../src/utils/logEmitter.ts";
 import assert from "node:assert/strict";
-import { mutateConfig } from "../../../src/config/userConfig.ts";
+import { getNestedValue } from "../../../src/config/userConfig.ts";
+import { readFile } from "node:fs/promises";
 import { runConsistencyProbeAtStartup } from "../../../src/config/consistencyProbe.ts";
-import { setEnabledServices } from "../../../src/config/services.ts";
+import { subscribeToLogs } from "../../../src/utils/logEmitter.ts";
 
-describe("consistency probe - unknown-service-tag auto-fix", () => {
+// Every log entry emitted during a row, so a row can count the warnings that name a tag the restriction ignored.
+let captured: LogEntry[];
 
-  test("strips unknown service tags from CONFIG.channels.enabledServices", async () => {
+let unsubscribe: () => void;
 
-    /* Seed: enabledServices contains a known tag (hulu, which exists in the service-group taxonomy) and a definitely-unknown tag. The probe runs, identifies
-     * the unknown tag, and runs its auto-fix which goes through mutateEnabledServices - the same path the toggle endpoint uses. After the probe completes,
-     * CONFIG.channels.enabledServices should contain only the known tag.
-     */
+beforeEach(() => {
+
+  captured = [];
+  unsubscribe = subscribeToLogs((entry) => { captured.push(entry); });
+});
+
+afterEach(() => {
+
+  unsubscribe();
+});
+
+/**
+ * Boots a row from a seeded configuration file: the file written, the configuration read from it, and the stores hydrated, which builds the running filter.
+ * @param ctx - The row's integration context.
+ * @param enabledServices - The service list the configuration file holds.
+ */
+async function bootWithServices(ctx: IntegrationContext, enabledServices: readonly string[]): Promise<void> {
+
+  await writePersistedJson(ctx, "config.json", { channels: { enabledServices } });
+  await initializeConfiguration();
+  await initializePersistence(ctx);
+}
+
+/**
+ * Reads the service list the configuration file holds.
+ * @param ctx - The row's integration context.
+ * @returns The persisted list, or undefined when the file holds none.
+ */
+async function persistedServices(ctx: IntegrationContext): Promise<unknown> {
+
+  return getNestedValue(await readPersistedJson(ctx, "config.json"), "channels.enabledServices");
+}
+
+/**
+ * Counts the warnings that name a tag.
+ * @param tag - The tag a warning must name.
+ * @returns How many captured warnings name it.
+ */
+function warningsNaming(tag: string): number {
+
+  return captured.filter((entry) => (entry.level === "warn") && entry.message.includes(tag)).length;
+}
+
+/**
+ * Posts a JSON body to a route and returns the status and the parsed body.
+ * @param app - The booted app.
+ * @param route - The route to post to.
+ * @param body - The JSON body.
+ * @returns The status code and the response body.
+ */
+async function post(app: BootedApp, route: string, body: unknown): Promise<{ body: Record<string, unknown>; status: number }> {
+
+  const response = await fetch(app.urlFor(route), { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" });
+
+  return { body: await response.json() as Record<string, unknown>, status: response.status };
+}
+
+describe("the running service filter is the saved list restricted to the known tags", () => {
+
+  test("a file holding an unknown tag boots with the running filter excluding it, the file and CONFIG keeping it, and one warning naming it", async () => {
+
     await using ctx = await createIntegrationContext();
 
-    await initializePersistence(ctx);
+    const saved = [ "hulu", "sling", "unknown-tag-xyz", "spectrum" ];
 
-    // Set the enabled services in module state directly so the probe sees the dirty value via CONFIG.channels.enabledServices. setEnabledServices updates the
-    // module cache and CONFIG; mutateConfig persists the same change to disk, matching what the real path produces.
-    const dirtyTags = [ "hulu", "totally-unknown-service-x9z2" ];
+    await bootWithServices(ctx, saved);
 
-    setEnabledServices(dirtyTags);
-    await mutateConfig((config) => {
+    assert.deepEqual(getEnabledServices(), [ "hulu", "sling", "spectrum" ], "the running filter keeps the known tags in their saved order");
+    assert.deepEqual(CONFIG.channels.enabledServices, saved, "the running configuration holds the list as saved");
+    assert.deepEqual(await persistedServices(ctx), saved, "the file keeps the user's list");
+    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "one warning names the ignored tag");
+
+    // The probe reports only what an operator must act on, so it neither warns about the tag again nor rewrites the file.
+    await runConsistencyProbeAtStartup();
+
+    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "the probe adds no warning about the tag");
+    assert.deepEqual(await persistedServices(ctx), saved, "the probe leaves the file's list as saved");
+
+    // The file and CONFIG agree on the list, so a save of an unrelated live value finds nothing to hold for the restart and leaves the filter as it is.
+    const app = await bootApp(ctx);
+    const { body, status } = await post(app, "/config", { playback: { stallThreshold: 0.2 } });
+
+    assert.equal(status, 200);
+    assert.equal(body["appliedCount"], 1, "precondition: the unrelated live value is applied");
+    assert.equal(body["deferredCount"], 0, "nothing is held for a restart");
+    assert.equal(body["willRestart"], false, "no restart is scheduled");
+    assert.deepEqual(getEnabledServices(), [ "hulu", "sling", "spectrum" ], "the running filter is unchanged by the unrelated save");
+    assert.deepEqual(await persistedServices(ctx), saved, "the file still keeps the user's list");
+  });
+
+  test("a save that writes a list holding an unknown tag restricts the running filter, and the file and CONFIG keep the list as saved", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await bootWithServices(ctx, []);
+
+    const saved = [ "hulu", "sling", "unknown-tag-xyz" ];
+    const outcome = await saveConfiguration((config) => {
 
       config.channels ??= {};
-      config.channels.enabledServices = dirtyTags;
+      config.channels.enabledServices = [...saved];
     });
 
-    // Sanity check: the dirty state is in place before the probe runs.
-    assert.ok(CONFIG.channels.enabledServices.includes("totally-unknown-service-x9z2"), "the unknown tag should be present pre-probe");
+    assert.deepEqual(outcome.applied.map((change) => change.path), ["channels.enabledServices"], "the list is realized live");
+    assert.deepEqual(outcome.deferred, [], "and held for no restart");
+    assert.deepEqual(getEnabledServices(), [ "hulu", "sling" ], "the running filter excludes the unknown tag");
+    assert.deepEqual(CONFIG.channels.enabledServices, saved, "the running configuration holds the list as saved");
+    assert.deepEqual(await persistedServices(ctx), saved, "the file keeps the user's list");
+    assert.equal(warningsNaming("unknown-tag-xyz"), 1, "one warning names the ignored tag");
+  });
+
+  test("a file of known tags boots with the running filter equal to it and no restriction warning, and the probe leaves the file as it was", async () => {
+
+    await using ctx = await createIntegrationContext();
+
+    await bootWithServices(ctx, ["hulu"]);
+
+    assert.deepEqual(getEnabledServices(), ["hulu"], "the running filter is the saved list");
+
+    const before = await readFile(pathInDataDir(ctx, "config.json"), "utf8");
 
     await runConsistencyProbeAtStartup();
 
-    // Post-fix module state: only the known tag remains.
-    assert.deepEqual(CONFIG.channels.enabledServices, ["hulu"], "module state should reflect the probe's auto-fix (unknown tag stripped)");
-
-    // Post-fix on-disk state: the auto-fix persists via mutateEnabledServices, so config.json should match.
-    const persisted = await readPersistedJson(ctx, "config.json") as { channels: { enabledServices: string[] } };
-
-    assert.deepEqual(persisted.channels.enabledServices, ["hulu"], "config.json should reflect the auto-fix");
+    assert.equal(await readFile(pathInDataDir(ctx, "config.json"), "utf8"), before, "the probe leaves the file byte-for-byte as it was");
+    assert.equal(warningsNaming("Ignoring unrecognized service tags"), 0, "the restriction ignores nothing, so it warns about nothing");
   });
 
-  test("a second run with no dirty state is a no-op", async () => {
+  test("an empty list boots with no filter, so every service is enabled", async () => {
 
-    /* Running the probe against a known-clean (already-consistent) state must be a no-op. With only the recognized "hulu" tag enabled there is nothing to fix,
-     * so the probe should find no issues and leave config.json byte-for-byte unchanged across the single call.
-     */
     await using ctx = await createIntegrationContext();
 
-    await initializePersistence(ctx);
-
+    // A filter left by an earlier boot in the same process is what the boot must replace.
     setEnabledServices(["hulu"]);
-    await mutateConfig((config) => {
 
-      config.channels ??= {};
-      config.channels.enabledServices = ["hulu"];
-    });
+    assert.equal(isServiceTagEnabled("sling"), false, "precondition: a filter excluding sling is running");
 
-    const before = await readPersistedJson(ctx, "config.json");
+    await bootWithServices(ctx, []);
 
-    await runConsistencyProbeAtStartup();
-
-    const after = await readPersistedJson(ctx, "config.json");
-
-    assert.deepEqual(after, before, "clean-state probe run must not modify config.json");
-  });
-
-  test("does not throw when there are no enabled services to validate", async () => {
-
-    /* Boundary: an empty enabledServices list means there is nothing for the unknown-service-tag check to validate. The probe should short-circuit cleanly
-     * rather than treat empty as suspicious or null-deref the iteration.
-     */
-    await using ctx = await createIntegrationContext();
-
-    await initializePersistence(ctx);
-
-    setEnabledServices([]);
-
-    await assert.doesNotReject(() => runConsistencyProbeAtStartup(), "probe must handle empty enabledServices cleanly");
-  });
-
-  test("preserves multiple known tags while stripping a single unknown one", async () => {
-
-    /* Mixed-state input: the auto-fix must surgically remove only the unknown entries, preserving every recognized one. We seed with three known tags and
-     * one unknown, then assert the three known tags survive in their original order.
-     */
-    await using ctx = await createIntegrationContext();
-
-    await initializePersistence(ctx);
-
-    const dirtyTags = [ "hulu", "sling", "unknown-tag-xyz", "spectrum" ];
-
-    setEnabledServices(dirtyTags);
-    await mutateConfig((config) => {
-
-      config.channels ??= {};
-      config.channels.enabledServices = dirtyTags;
-    });
-
-    await runConsistencyProbeAtStartup();
-
-    assert.deepEqual(CONFIG.channels.enabledServices, [ "hulu", "sling", "spectrum" ],
-      "known tags should survive in original order; only the unknown one is stripped");
+    assert.deepEqual(getEnabledServices(), [], "the running filter is empty");
+    assert.equal(isServiceTagEnabled("sling"), true, "an empty filter enables every service");
+    await assert.doesNotReject(() => runConsistencyProbeAtStartup(), "the probe handles an empty list cleanly");
   });
 });
