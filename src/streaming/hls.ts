@@ -7,12 +7,13 @@ import type { HLSState, SetupFailureStatus, StreamRegistryEntry } from "./regist
 import { LOG, formatError, formatResolutionLabel, runWithStreamContext, startTimer } from "../utils/index.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile } from "../types/index.ts";
 import type { Request, Response } from "express";
+import type { ResumeData, ResumePosition } from "./hlsResume.ts";
 import { StreamSetupError, createPageWithCapture, generateStreamId, reestablishChannelManifest, setupStream, validateStreamUrl } from "./setup.ts";
 import { applyNativeQualityRefresh, cancelPrerollTimer, createHLSState, getAllStreams, getNextStreamId, getStream, getStreamCount, isCaptureIdentity,
   makePendingCaptureIdentity, registerStream, updateLastAccess } from "./registry.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
-import { deleteResumeData, getResumeSegmentIndex, logStreamResume, peekResumeData } from "./hlsResume.ts";
+import { deleteResumeData, getResumePosition, logStreamResume, peekResumeData } from "./hlsResume.ts";
 import { emitCurrentSystemStatus, isLoginModeActive, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
 import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
@@ -27,7 +28,6 @@ import type { CaptureCodec } from "./codec.ts";
 import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
-import type { ResumeData } from "./hlsResume.ts";
 import type { SegmenterContinuity } from "./fmp4Segmenter.ts";
 import type { TabReplacementResult } from "./recovery.ts";
 import { attemptNativeStreaming } from "../native/index.ts";
@@ -691,7 +691,7 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
     if(stream.hls.prerollBaseUrl && stream.hls.prerollCodec && (stream.hls.prerollStartTime !== null)) {
 
       playlist = generatePrerollPlaylist({ baseUrl: stream.hls.prerollBaseUrl, codec: stream.hls.prerollCodec, now,
-        prerollStartTime: stream.hls.prerollStartTime, startingSequence: stream.hls.resumeSegmentIndex });
+        prerollStartTime: stream.hls.prerollStartTime, resumePosition: stream.hls.resumePosition });
     }
 
     LOG.debug("streaming:preroll", "Serving preroll playlist for stream %d.", streamId);
@@ -818,8 +818,8 @@ interface SpliceReplacementCaptureOptions {
  * Keeping it a separate function rather than a block inside the handler is what protects that: an await added here is a syntax error rather than a review catch.
  *
  * The continuity read lives here, at the swap, and not at the top of the replacement. The old segmenter keeps producing throughout the minute or more the
- * replacement page spends navigating and tuning, so its segment index, track timestamps, and session statistics all advance across that window - a read taken
- * before the tune would seed the new segmenter with a stale sequence and rewind the playlist.
+ * replacement page spends navigating and tuning, so its segment index, track timestamps, session statistics, and segment history all advance across that window -
+ * a read taken before the tune would seed the new segmenter with a stale sequence and rewind the playlist.
  * @param options - The entry, the fresh pipeline, the outgoing page, and the encoder facts carried forward.
  */
 function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): void {
@@ -1146,7 +1146,7 @@ function registerPendingStream(options: RegisterPendingStreamOptions): StreamReg
 
   const { channel, channelName, clientAddress, codec, req } = options;
 
-  // The registration instant, read once at this composition point and used for the resume-index read and the preroll timer's arming.
+  // The registration instant, read once at this composition point and used for the resume-position read and the preroll timer's arming.
   const now = systemClock.now();
   const numericStreamId = getNextStreamId();
   const streamIdStr = generateStreamId(channelName, channel.url);
@@ -1164,9 +1164,9 @@ function registerPendingStream(options: RegisterPendingStreamOptions): StreamReg
   // cancelPrerollTimer() once real content arrives or preroll state is otherwise invalidated, so it cannot fire against state that has moved on.
   const hls = createHLSState();
 
-  // Snapshot the resume segment index once at registration. Both the preroll timer callback and completeStreamSetup() use this single snapshot, eliminating the TTL
-  // race that would occur if each read the resume map independently at different times.
-  hls.resumeSegmentIndex = getResumeSegmentIndex(channelName, now) ?? 0;
+  // Read the resume position once at registration. The preroll timer, the playlist regeneration, and the segmenter's creation all take this one position, so an
+  // entry whose TTL expires mid-tune cannot leave them disagreeing.
+  hls.resumePosition = getResumePosition(channelName, now);
 
   if(isPrerollReady(codec)) {
 
@@ -1185,7 +1185,7 @@ function registerPendingStream(options: RegisterPendingStreamOptions): StreamReg
       const firedAt = systemClock.now();
 
       hls.prerollStartTime = firedAt;
-      hls.playlist = generatePrerollPlaylist({ baseUrl, codec, now: firedAt, prerollStartTime: firedAt, startingSequence: hls.resumeSegmentIndex });
+      hls.playlist = generatePrerollPlaylist({ baseUrl, codec, now: firedAt, prerollStartTime: firedAt, resumePosition: hls.resumePosition });
       hls.signalPlaylistReady();
     }, PREROLL_DELAY_MS);
   }
@@ -1511,32 +1511,42 @@ async function startNativeProxy(options: NativeProxyOptions): Promise<Nullable<N
  */
 export interface BuildResumeContinuityOptions {
 
-  // The segment index the resume itself starts at, before any preroll range is added to it.
-  readonly baseSegmentIndex: number;
-
   // How many preroll segments precede the real ones, or zero when no preroll window is in play.
   readonly prerollSegmentCount: number;
 
-  // The prior session's state read back from disk, or null on a stream that starts from nothing.
+  // The position the registration read, which a preroll playlist has served from, or null when no resume entry was inside the TTL at registration.
+  readonly registeredPosition: Nullable<ResumePosition>;
+
+  // The prior session's state read back from disk at the segmenter's creation, or null when no resume entry is inside the TTL then.
   readonly resumeData: Nullable<ResumeData>;
 }
 
 /**
- * Derives what a segmenter continues from, which on a fresh stream is nothing at all. A resume carries the prior session's timestamps and init version, and its
- * init segment only when no preroll window precedes it - the preroll init differs from the real one, so a byte match there would suppress a discontinuity the
- * boundary genuinely needs. Session statistics are deliberately absent: a resume from disk has none, and inventing an empty set would tell the segmenter a live
- * prior session is continuing and count a tab replacement that never happened. The starting index accounts for both the resume offset and the preroll segment
- * range whenever either contributes one.
+ * Derives what a segmenter continues from, which on a fresh stream is nothing at all. The position it continues from is the registration's when a preroll
+ * precedes it, because the preroll playlist served from that position, and the creation's own peek otherwise, there being no preroll playlist to agree with. A
+ * resume carries the prior session's timestamps and init version, and its init segment only when no preroll window precedes it - the preroll init differs from
+ * the real one, so a byte match there would suppress a discontinuity the boundary genuinely needs. Session statistics are deliberately absent: a resume from disk
+ * has none, and inventing an empty set would tell the segmenter a live prior session is continuing and count a tab replacement that never happened. The
+ * starting index accounts for both the resume position and the preroll segment range whenever either contributes one.
+ *
+ * A resume also carries a segment history that lists no segment and holds the persisted discontinuity count as pruned, because every earlier marker is already
+ * off the front of a window that starts empty. Behind a preroll the history also holds the marker the preroll playlist put on the preroll's first index, which is
+ * the persisted index, because the preroll opens a new timeline there whether or not its playlist was served. A resume with neither a preroll nor a count above
+ * zero carries no history.
  *
  * Each member is present only when this resume genuinely carries it, because the segmenter reads presence rather than value: an absent member and a member set
  * to an empty or zero stand-in mean different things to it.
  *
- * @param options - The resume record and the preroll accounting to derive from.
+ * @param options - The resume record, the registered position, and the preroll accounting to derive from.
  * @returns The continuity the segmenter is constructed with.
  */
 export function buildResumeContinuity(options: BuildResumeContinuityOptions): SegmenterContinuity {
 
-  const { baseSegmentIndex, prerollSegmentCount, resumeData } = options;
+  const { prerollSegmentCount, registeredPosition, resumeData } = options;
+
+  // With a preroll, the position is the registration's, which the preroll playlist served, so the segmenter continues that playlist's sequences even when the entry
+  // expired after the registration read it. Without one, it is the creation's own peek, there being no preroll playlist to agree with.
+  const position = (prerollSegmentCount > 0) ? registeredPosition : resumeData;
 
   return {
 
@@ -1547,7 +1557,21 @@ export function buildResumeContinuity(options: BuildResumeContinuityOptions): Se
       startingInitVersion: resumeData.initVersion
     } : {}),
 
-    ...((resumeData || (prerollSegmentCount > 0)) ? { startingSegmentIndex: baseSegmentIndex + prerollSegmentCount } : {})
+    // A resume carries the persisted count as pruned, every earlier marker already off the front of a window that starts empty. Behind a preroll it also lists the
+    // marker its preroll playlist put on the preroll's first index, the preroll occupying the indices from the persisted index up to the starting index whether or
+    // not its playlist was served. A resume with neither carries nothing a fresh segmenter's state lacks, so the member is absent then.
+    ...((position && ((prerollSegmentCount > 0) || (position.discontinuityCount > 0))) ? {
+
+      priorSegmentHistory: {
+
+        discontinuityIndices: new Set<number>((prerollSegmentCount > 0) ? [position.segmentIndex] : []),
+        prunedDiscontinuityCount: position.discontinuityCount,
+        segmentDurations: new Map<number, number>(),
+        segmentTimestamps: new Map<number, number>()
+      }
+    } : {}),
+
+    ...(((position !== null) || (prerollSegmentCount > 0)) ? { startingSegmentIndex: (position?.segmentIndex ?? 0) + prerollSegmentCount } : {})
   };
 }
 
@@ -1556,7 +1580,7 @@ export function buildResumeContinuity(options: BuildResumeContinuityOptions): Se
  */
 interface CaptureSegmenterOptions {
 
-  // The stream's registry entry, read for its key, its id, its preroll state, its registered resume index, and its settings.
+  // The stream's registry entry, read for its key, its id, its preroll state, its registered resume position, and its settings.
   readonly entry: StreamRegistryEntry;
 
   // The instant the resume data's TTL is measured against.
@@ -1590,11 +1614,7 @@ function createCaptureSegmenter(options: CaptureSegmenterOptions): boolean {
     logStreamResume({ displayName: entry.channelName ?? entry.info.storeKey, resumeData });
   }
 
-  // When preroll is active, use the snapshotted resume index (stored on HLS state at registration) so the segmenter's starting index is guaranteed to match
-  // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly - no preroll playlist to be consistent with.
-  const baseSegmentIndex = (prerollSegmentCount > 0) ? entry.hls.resumeSegmentIndex : (resumeData?.segmentIndex ?? 0);
-
-  const continuity = buildResumeContinuity({ baseSegmentIndex, prerollSegmentCount, resumeData });
+  const continuity = buildResumeContinuity({ prerollSegmentCount, registeredPosition: entry.hls.resumePosition, resumeData });
 
   // Create the fMP4 segmenter. When preroll is active, it includes preroll entries in its sliding window via the compositor, and the pending discontinuity at the
   // preroll-to-real boundary is always needed.

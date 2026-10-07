@@ -34,13 +34,35 @@ const KEYFRAME_DEBUG = false;
 
 // Types.
 
-/* What a fresh segmenter picks up from the sequence it continues, gathered as one value the segmenter module owns rather than five fields every producer and
- * consumer threads by hand. A sixth continuity fact then forces every side of the handoff at once instead of relying on a mental checklist across modules.
+/* The playlist facts a stream's segmenters recorded about the segments they produced, handed to the segmenter that continues the stream's sequence so its
+ * earlier segments keep the durations, program date-times and discontinuity markers its clients already read, and its discontinuity sequence keeps counting
+ * from where it stood. Every continuity snapshot carries the history whole. A resume carries the persisted count as pruned, with the marker its preroll
+ * playlist put on the preroll's first index when a preroll precedes, and carries none when it continues neither a preroll nor a count above zero; a fresh
+ * segmenter has none. Its entries are keyed by segment index, so a producer hands it over together with the starting index it continues.
+ */
+export interface SegmentHistory {
+
+  // Segment indices that carry a discontinuity marker, as the window held them.
+  readonly discontinuityIndices: ReadonlySet<number>;
+
+  // How many discontinuity markers have scrolled off the front of the playlist, which the discontinuity sequence counts.
+  readonly prunedDiscontinuityCount: number;
+
+  // The measured duration of each segment still in the window, in seconds.
+  readonly segmentDurations: ReadonlyMap<number, number>;
+
+  // The epoch millisecond instant each segment still in the window was produced, its program date-time.
+  readonly segmentTimestamps: ReadonlyMap<number, number>;
+}
+
+/* What a fresh segmenter picks up from the sequence it continues, gathered as one value the segmenter module owns rather than separate fields every producer
+ * and consumer threads by hand. A new continuity fact then forces every side of the handoff at once instead of relying on a mental checklist across modules.
  *
  * Every member is individually optional because absence carries meaning, and different producers in fact hold different subsets: a tab replacement snapshots a
- * live segmenter and has all five, while a resume from disk has timestamps, an index, and an init version but no session statistics at all. The
- * priorSessionStats member is the sharpest case - its presence is what tells the constructor a live prior session is continuing, which is what increments the
- * tab replacement counter, so a resume that fabricated an empty stats object would mint a phantom replacement into every resumed stream's session summary.
+ * live segmenter and has every member, while a resume from disk carries an index, the timestamps and init version when the persisted entry is still readable at
+ * the segmenter's creation, the segment history its member describes, and never session statistics. The priorSessionStats member is the sharpest case - its
+ * presence is what tells the constructor a live prior session is continuing, which is what increments the tab replacement counter, so a resume that fabricated
+ * an empty stats object would mint a phantom replacement into every resumed stream's session summary.
  */
 export interface SegmenterContinuity {
 
@@ -51,6 +73,12 @@ export interface SegmenterContinuity {
   // The init segment (ftyp + moov) from the previous segmenter. When provided alongside pendingDiscontinuity, the new init segment is compared against this buffer.
   // If byte-identical, the discontinuity marker is suppressed because the decoder parameters have not changed.
   previousInitSegment?: Nullable<Buffer>;
+
+  // The segment history of the sequence being continued. Its entries are keyed by segment index, so every producer hands it over together with the starting index
+  // it continues. A tab replacement hands over its predecessor's whole window. A resume hands over a history that lists no segment, because the segment store
+  // starts empty after a restart, holding the persisted discontinuity count as pruned and, behind a preroll, the marker at the preroll's first index, because the
+  // preroll opens a new timeline; it hands over none when it continues neither a preroll nor a count above zero. A fresh stream passes none.
+  priorSegmentHistory?: SegmentHistory;
 
   // Prior session stats to merge from the segmenter being succeeded. Present means a live prior session continues: the new segmenter inherits the accumulated
   // stats and increments the tab replacement counter, so the summary at stream end covers the whole session. Absent means a fresh stats object.
@@ -165,8 +193,13 @@ export interface SessionStats {
 export interface FMP4SegmenterResult {
 
   // Returns everything a successor segmenter needs to continue this one's sequence, read fresh at the moment of the call. Tab replacement reads it at the instant
-  // it splices the new pipeline in, because the index, the timestamps, and the session statistics all advance live while the replacement page is being tuned.
+  // it splices the new pipeline in, because the index, the timestamps, the session statistics, and the segment history all advance live while the replacement
+  // page is being tuned.
   getContinuitySnapshot: () => SegmenterContinuity;
+
+  // Returns every discontinuity marker the stream's segmenters have emitted, the pruned and the tracked together. The shutdown handler persists it with the resume
+  // state, so a resumed playlist continues the discontinuity sequence.
+  getDiscontinuityCount: () => number;
 
   // Returns the combined init segment (ftyp + moov) buffer, or null if the init segment has not been received yet. Used by the shutdown handler, which persists it
   // with the resume state so the resumed segmenter can compare its own init segment against it byte for byte.
@@ -282,8 +315,8 @@ interface SegmenterState {
   // The preroll codec variant for this segmenter's composite playlist. Used for duration lookups and URL path construction.
   readonly prerollCodec: CaptureCodec;
 
-  // Number of preroll segments preceding this segmenter's real content. When non-zero, generatePlaylist() includes preroll entries for indices below this value that
-  // are still within the sliding window. Set at construction and never modified.
+  // Number of preroll segments preceding this segmenter's real content. When non-zero, generatePlaylist() includes preroll entries for the indices directly below the
+  // starting segment index that are still within the sliding window. Set at construction and never modified.
   readonly prerollSegmentCount: number;
 
   // Actual media-time durations for each segment in seconds, computed from accumulated trun sample durations divided by the track timescale. Falls back to wall-clock
@@ -314,6 +347,9 @@ interface SegmenterState {
   // Running session statistics accumulated across the lifetime of this segmenter instance. Initialized from priorSessionStats (if provided during tab replacement) to
   // carry forward stats from previous segmenter instances.
   sessionStats: SessionStats;
+
+  // The index of this segmenter's first segment. A preroll occupies the preroll count's indices directly below it. Set at construction and never modified.
+  readonly startingSegmentIndex: number;
 
   // Whether the segmenter has been stopped.
   stopped: boolean;
@@ -525,12 +561,13 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
   const { clock = systemClock, continuity, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, segmentDuration,
     streamId } = options;
-  const { initialTrackTimestamps, previousInitSegment, priorSessionStats, startingInitVersion, startingSegmentIndex } = continuity ?? {};
+  const { initialTrackTimestamps, previousInitSegment, priorSegmentHistory, priorSessionStats, startingInitVersion, startingSegmentIndex } = continuity ?? {};
 
-  // Initialize state.
+  // Initialize state. A continued sequence seeds the collections its playlist and its prune read from the history it carries, so an earlier segment is listed,
+  // dated, marked, pruned and counted exactly as one this segmenter produced.
   const state: SegmenterState = {
 
-    discontinuityIndices: new Set(),
+    discontinuityIndices: new Set(priorSegmentHistory?.discontinuityIndices),
     firstSegmentEmitted: false,
     fragmentBuffer: [],
     hasInit: false,
@@ -550,22 +587,23 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     prerollBaseUrl: prerollBaseUrl ?? null,
     prerollCodec: prerollCodec ?? "h264",
     prerollSegmentCount: prerollSegmentCount ?? 0,
-    prunedDiscontinuityCount: 0,
-    segmentDurations: new Map(),
+    prunedDiscontinuityCount: priorSegmentHistory?.prunedDiscontinuityCount ?? 0,
+    segmentDurations: new Map(priorSegmentHistory?.segmentDurations),
     segmentFirstMoofChecked: false,
     segmentIndex: startingSegmentIndex ?? 0,
     segmentStartTime: clock.now(),
-    segmentTimestamps: new Map(),
+    segmentTimestamps: new Map(priorSegmentHistory?.segmentTimestamps),
     segmentTrackDurations: new Map(),
     segmentsWithoutLeadingKeyframe: 0,
     sessionStats: priorSessionStats ? { ...priorSessionStats, tabReplacementCount: priorSessionStats.tabReplacementCount + 1 } :
       { malformedMoofCount: 0, syncSpreadCount: 0, syncSpreadMaxMs: 0, syncSpreadMinMs: Infinity, syncSpreadSumMs: 0, tabReplacementCount: 0 },
+    startingSegmentIndex: startingSegmentIndex ?? 0,
     stopped: false,
     totalKeyframeIntervalMs: 0,
     trackOffsets: new Map(),
     trackOffsetsInitialized: new Set(),
     trackTimescales: new Map(),
-    trackTimestamps: initialTrackTimestamps ? new Map(initialTrackTimestamps) : new Map<number, bigint>(),
+    trackTimestamps: new Map(initialTrackTimestamps),
     videoTrackId: null,
     videoTrafsInCurrentSegment: null
   };
@@ -577,7 +615,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
    * Generates the m3u8 playlist content. When preroll metadata is present (prerollSegmentCount > 0), the playlist includes both preroll entries (served from global
    * /preroll/ routes with absolute URLs) and real entries (served from the stream's /hls/:name/ routes with relative URLs) in a single sliding window. The preroll
    * entries use a separate #EXT-X-MAP for the preroll init segment, and a #EXT-X-DISCONTINUITY tag marks the boundary between preroll and real content. As real
-   * segments accumulate, preroll entries fall off the window naturally and the playlist becomes purely real content with zero overhead.
+   * segments accumulate, preroll entries fall off the window naturally and the playlist becomes purely real content with zero overhead. A resumed stream's preroll
+   * entry carries the marker its preroll playlist gave it, at the preroll's first index.
    *
    * Delegates all m3u8 formatting to the shared buildPlaylist() function. Preroll windowing and entry construction are handled by the compositor functions in
    * preroll.ts. This function is responsible for constructing real segment entries from the segmenter's state and computing the discontinuity sequence from the
@@ -587,16 +626,20 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     const realInitMapUri = "init.mp4?v=" + String(state.initVersion);
 
-    // Check whether the preroll timer has fired and the client is actually watching preroll. The segment index offset (starting at prerollSegmentCount) is always
-    // applied structurally, but preroll entries are only included in the playlist when the deferred timer has fired - indicated by prerollStartTime being set on the
-    // stream's HLS state. This is the same dynamic check the native proxy uses in its generatePlaylist(). Without this, fast capture streams (tuning before the
-    // preroll delay elapses) would include unnecessary preroll entries in their first playlists.
+    // Check whether the preroll timer has fired and the client is actually watching preroll. The segment index offset (real segments starting past the preroll's
+    // indices) is always applied structurally, but preroll entries are only included in the playlist when the deferred timer has fired - indicated by
+    // prerollStartTime being set on the stream's HLS state. This is the same dynamic check the native proxy uses in its generatePlaylist(). Without this, fast
+    // capture streams (tuning before the preroll delay elapses) would include unnecessary preroll entries in their first playlists.
     const stream = getStream(streamId);
     const prerollActive = (state.prerollSegmentCount > 0) && (stream?.hls.prerollStartTime !== null) && (stream?.hls.prerollStartTime !== undefined);
 
     // Compute the sliding window start index. When preroll is active, the compositor handles the three-way max (floor, sliding window, preroll cap). Without
     // preroll (or when the timer hasn't fired), the standard sliding window rule applies.
     const realSegmentCount = getSegmentCount(streamId);
+
+    // The preroll occupies the preroll count's indices directly below the starting index: from 0 on a fresh stream, and from the persisted index on a resumed one,
+    // so the window places the preroll at the media sequence its preroll playlist served.
+    const prerollStartIndex = state.startingSegmentIndex - state.prerollSegmentCount;
 
     let startIndex: number;
 
@@ -607,6 +650,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         currentSegmentIndex: state.segmentIndex,
         maxSegments: CONFIG.hls.maxSegments,
         prerollSegmentCount: state.prerollSegmentCount,
+        prerollStartIndex,
         realSegmentCount
       });
     } else {
@@ -614,20 +658,33 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       startIndex = Math.max(0, state.segmentIndex - Math.min(realSegmentCount, CONFIG.hls.maxSegments));
     }
 
-    // Build preroll entries for preroll indices still in the window. Only included when the deferred preroll timer has fired and the client is watching preroll.
+    // Build preroll entries for preroll indices still in the window, from the window start's offset into the preroll. Only included when the deferred preroll timer
+    // has fired and the client is watching preroll.
     let prerollEntries: PlaylistSegmentEntry[] = [];
 
-    if(prerollActive && state.prerollBaseUrl && (startIndex < state.prerollSegmentCount)) {
+    if(prerollActive && state.prerollBaseUrl && (startIndex < state.startingSegmentIndex)) {
 
       prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, codec: state.prerollCodec, extension: ".m4s", prerollSegmentCount: state.prerollSegmentCount,
-        startIndex });
+        startIndex: startIndex - prerollStartIndex });
+
+      // A preroll entry carries a marker by its index, as a real entry does, its index being the window start plus its position. The only marker a preroll range
+      // holds sits at the preroll's first index, which is the window's first entry whenever the window lists it, under the preroll init the playlist's initial map
+      // already names, so the entry re-emits no map.
+      for(const [ offset, entry ] of prerollEntries.entries()) {
+
+        if(state.discontinuityIndices.has(startIndex + offset)) {
+
+          entry.discontinuity = true;
+        }
+      }
     }
 
     // Build real segment entries from the segmenter's state. Each entry carries its duration, optional discontinuity marker with init re-emission, and wall-clock
-    // timestamp for PROGRAM-DATE-TIME. The real range starts at either the window start (when no preroll) or the preroll segment count (when preroll entries cover
-    // the earlier indices).
+    // timestamp for PROGRAM-DATE-TIME. The starting index floors the real range only while the preroll is listed, because the preroll entries cover the indices
+    // below it then; a segmenter with no preroll listed, a tab replacement's successor among them, lists the earlier segments its history carries below its
+    // starting index.
     const realEntries: PlaylistSegmentEntry[] = [];
-    const realStartIndex = Math.max(startIndex, state.prerollSegmentCount);
+    const realStartIndex = prerollActive ? Math.max(startIndex, state.startingSegmentIndex) : startIndex;
 
     for(let i = realStartIndex; i < state.segmentIndex; i++) {
 
@@ -638,7 +695,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       };
 
       // Add discontinuity marker and re-emit the init segment reference at preroll-to-real boundaries and recovery events. The preroll-to-real boundary is handled
-      // via the existing pendingDiscontinuity mechanism - outputSegment() adds prerollSegmentCount to discontinuityIndices when the first real segment is output.
+      // via the existing pendingDiscontinuity mechanism - outputSegment() marks the starting segment index, the first real segment's, when it outputs that segment.
       if(state.discontinuityIndices.has(i)) {
 
         entry.discontinuity = true;
@@ -1231,9 +1288,16 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     onError(error);
   }
 
-  // The four live continuity reads, named once so the individual getters and the snapshot below are the same reads rather than two sets that could drift. Each
-  // copies what it returns, so a caller holding a snapshot is unaffected by the segments this segmenter goes on to produce.
+  // The live continuity reads, named once so the individual getters and the snapshot below are the same reads rather than two sets that could drift. Each copies
+  // what it returns, so a caller holding a snapshot is unaffected by the segments this segmenter goes on to produce.
   const readInitVersion = (): number => state.initVersion;
+  const readSegmentHistory = (): SegmentHistory => ({
+
+    discontinuityIndices: new Set(state.discontinuityIndices),
+    prunedDiscontinuityCount: state.prunedDiscontinuityCount,
+    segmentDurations: new Map(state.segmentDurations),
+    segmentTimestamps: new Map(state.segmentTimestamps)
+  });
   const readSegmentIndex = (): number => state.segmentIndex;
   const readSessionStats = (): SessionStats => ({ ...state.sessionStats });
   const readTrackTimestamps = (): Map<number, bigint> => new Map(state.trackTimestamps);
@@ -1244,10 +1308,13 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
       initialTrackTimestamps: readTrackTimestamps(),
       previousInitSegment: state.initSegment,
+      priorSegmentHistory: readSegmentHistory(),
       priorSessionStats: readSessionStats(),
       startingInitVersion: readInitVersion(),
       startingSegmentIndex: readSegmentIndex()
     }),
+
+    getDiscontinuityCount: (): number => state.prunedDiscontinuityCount + state.discontinuityIndices.size,
 
     getInitSegment: (): Nullable<Buffer> => state.initSegment,
 

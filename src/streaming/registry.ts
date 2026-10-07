@@ -13,6 +13,7 @@ import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { RefreshedFeedMetadata } from "../native/index.ts";
+import type { ResumePosition } from "./hlsResume.ts";
 import type { StreamSettings } from "../config/streamSettings.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
@@ -166,9 +167,10 @@ export interface HLSState {
 
   // Resume continuity.
 
-  // Snapshotted resume segment index from the prior session. Read once at stream registration and stored here so both the preroll timer callback and the segmenter
-  // creation in completeStreamSetup() use the same value - eliminating the TTL race that would occur if each read the resume map independently.
-  resumeSegmentIndex: number;
+  // The position the prior session persisted for this channel, read once at registration and null when no entry was inside the TTL then. The standalone preroll
+  // playlist's timer and its per-poll regeneration and the capture segmenter's creation on the preroll path all read it, so every playlist the stream serves
+  // continues one pair of sequences.
+  resumePosition: Nullable<ResumePosition>;
 
   // Setup failure.
 
@@ -521,7 +523,7 @@ export function createHLSState(): HLSState {
     prerollSegmentCount: 0,
     prerollStartTime: null,
     prerollTimer: null,
-    resumeSegmentIndex: 0,
+    resumePosition: null,
     segmentBytes: 0,
     segmentEmitter,
     segments: new Map(),

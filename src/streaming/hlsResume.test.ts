@@ -6,7 +6,7 @@
  * the merge-with-active-streams path used by saveResumeState, and the resume line's figure, measured from persisted counters over a persisted init segment.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { deleteResumeData, getResumeSegmentIndex, loadResumeState, logStreamResume, peekResumeData, saveResumeState } from "./hlsResume.ts";
+import { deleteResumeData, getResumePosition, loadResumeState, logStreamResume, peekResumeData, saveResumeState } from "./hlsResume.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import { LOG } from "../utils/index.ts";
@@ -75,7 +75,7 @@ function makeInitSegment(...traks: Buffer[]): Buffer {
  */
 function makeResumeData(initSegment: Nullable<Buffer>, trackTimestamps: [ number, bigint ][]): ResumeData {
 
-  return { initSegment, initVersion: 1, segmentIndex: 10, trackTimestamps: new Map(trackTimestamps) };
+  return { discontinuityCount: 0, initSegment, initVersion: 1, segmentIndex: 10, trackTimestamps: new Map(trackTimestamps) };
 }
 
 /**
@@ -104,6 +104,7 @@ function captureResumeLines(t: TestContext, resumeData: ResumeData): string[] {
  */
 interface SerializedResumeEntry {
 
+  discontinuityCount?: number;
   initVersion: number;
   segmentIndex: number;
   timestamp: number;
@@ -170,7 +171,7 @@ describe("loadResumeState", () => {
     }
 
     assertEqual(postLoadFileExists, false, "file deleted after read");
-    assertEqual(getResumeSegmentIndex("cnn", BASE_TIME_MS), 1234, "entry available in memory after load");
+    assertEqual(getResumePosition("cnn", BASE_TIME_MS)?.segmentIndex ?? null, 1234, "entry available in memory after load");
   });
 
   test("discards an entry past the TTL at load time and keeps the fresh one", async (t: TestContext) => {
@@ -198,10 +199,10 @@ describe("loadResumeState", () => {
 
     assert(loadLine, "the load reported a count");
     assertEqual(loadLine.split("|")[1], "1,", "one channel loaded - the expired entry was discarded at load, not deferred to the read-time check");
-    assertEqual(getResumeSegmentIndex("fresh", BASE_TIME_MS), 11, "the fresh entry reads back");
+    assertEqual(getResumePosition("fresh", BASE_TIME_MS)?.segmentIndex ?? null, 11, "the fresh entry reads back");
   });
 
-  test("loads a recent entry and exposes it via getResumeSegmentIndex", async () => {
+  test("loads a recent entry and exposes it via getResumePosition", async () => {
 
     await makeResumeFile(tempDir, {
 
@@ -211,8 +212,8 @@ describe("loadResumeState", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assert(typeof getResumeSegmentIndex !== "undefined");
-    assertEqual(getResumeSegmentIndex("espn", BASE_TIME_MS), 42, "loaded segment index for espn");
+    assert(typeof getResumePosition !== "undefined");
+    assertEqual(getResumePosition("espn", BASE_TIME_MS)?.segmentIndex ?? null, 42, "loaded segment index for espn");
   });
 
   test("discards entries older than the 90-second TTL", async () => {
@@ -228,7 +229,7 @@ describe("loadResumeState", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("old", BASE_TIME_MS), null, "expired entry not loaded");
+    assertEqual(getResumePosition("old", BASE_TIME_MS)?.segmentIndex ?? null, null, "expired entry not loaded");
   });
 
   test("loads entries inside the TTL window even at the boundary", async () => {
@@ -244,7 +245,22 @@ describe("loadResumeState", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("boundary", BASE_TIME_MS), 7, "TTL boundary inclusive");
+    assertEqual(getResumePosition("boundary", BASE_TIME_MS)?.segmentIndex ?? null, 7, "TTL boundary inclusive");
+  });
+
+  test("loads an entry written without a discontinuity count at a count of zero", async (t: TestContext) => {
+
+    // A file written before the count was persisted can still be read within the TTL after an upgrade. Its entry carries no count, so it resumes at zero.
+    t.after(() => { deleteResumeData("uncounted"); });
+
+    await makeResumeFile(tempDir, {
+
+      uncounted: { initVersion: 0, segmentIndex: 9, timestamp: BASE_TIME_MS, trackTimestamps: {} }
+    });
+
+    loadResumeState(BASE_TIME_MS);
+
+    assert.deepEqual(getResumePosition("uncounted", BASE_TIME_MS), { discontinuityCount: 0, segmentIndex: 9 }, "an entry without a count resumes at zero");
   });
 
   test("is a no-op when the resume file does not exist (clean start)", () => {
@@ -261,7 +277,7 @@ describe("loadResumeState", () => {
     }
 
     assertEqual(threw, false, "missing file did not throw");
-    assertEqual(getResumeSegmentIndex("anything", BASE_TIME_MS), null, "empty map after no-file load");
+    assertEqual(getResumePosition("anything", BASE_TIME_MS)?.segmentIndex ?? null, null, "empty map after no-file load");
   });
 
   test("discards corrupt JSON and continues with an empty map", async () => {
@@ -282,7 +298,7 @@ describe("loadResumeState", () => {
     }
 
     assertEqual(threw, false, "corrupt JSON did not throw");
-    assertEqual(getResumeSegmentIndex("anything", BASE_TIME_MS), null, "empty map after corrupt-file load");
+    assertEqual(getResumePosition("anything", BASE_TIME_MS)?.segmentIndex ?? null, null, "empty map after corrupt-file load");
   });
 });
 
@@ -361,8 +377,9 @@ describe("peekResumeData", () => {
 
     // Read past the TTL by supplying an instant beyond the window.
     assertEqual(peekResumeData("stale", BASE_TIME_MS + 91000), null, "expired entry returns null");
-    // After eviction, the segment index lookup must also fail.
-    assertEqual(getResumeSegmentIndex("stale", BASE_TIME_MS + 91000), null);
+
+    // Read back inside the window. The entry's own timestamp is inside it, so this read finds nothing only because the expired peek removed the entry.
+    assertEqual(getResumePosition("stale", BASE_TIME_MS)?.segmentIndex ?? null, null, "the expired peek evicted the entry");
   });
 
   test("does NOT consume the entry on read - same data returned on a second peek", async () => {
@@ -474,7 +491,7 @@ describe("deleteResumeData", () => {
 
     deleteResumeData("gone");
     assertEqual(peekResumeData("gone", BASE_TIME_MS), null, "post-delete peek returns null");
-    assertEqual(getResumeSegmentIndex("gone", BASE_TIME_MS), null);
+    assertEqual(getResumePosition("gone", BASE_TIME_MS)?.segmentIndex ?? null, null);
   });
 
   test("is a no-op for unknown channels", () => {
@@ -493,7 +510,7 @@ describe("deleteResumeData", () => {
   });
 });
 
-describe("getResumeSegmentIndex", () => {
+describe("getResumePosition", () => {
 
   let tempDir: string;
 
@@ -510,7 +527,7 @@ describe("getResumeSegmentIndex", () => {
 
   test("returns null for an unknown channel", () => {
 
-    assertEqual(getResumeSegmentIndex("nope", BASE_TIME_MS), null);
+    assertEqual(getResumePosition("nope", BASE_TIME_MS)?.segmentIndex ?? null, null);
   });
 
   test("returns the segment index for a recent entry", async () => {
@@ -523,7 +540,7 @@ describe("getResumeSegmentIndex", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("ok", BASE_TIME_MS), 17);
+    assertEqual(getResumePosition("ok", BASE_TIME_MS)?.segmentIndex ?? null, 17);
   });
 
   test("returns null when the TTL check fails (read-time staleness check)", async () => {
@@ -537,7 +554,18 @@ describe("getResumeSegmentIndex", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("maybe", BASE_TIME_MS + 91000), null, "stale entry filtered at read time");
+    assertEqual(getResumePosition("maybe", BASE_TIME_MS + 91000)?.segmentIndex ?? null, null, "stale entry filtered at read time");
+  });
+
+  test("returns the saved discontinuity count beside the index, through the save and the load", (t: TestContext) => {
+
+    // The count travels the whole persistence path - the active save, the file, the load and the peek - so a member dropped at any of them reads 0 here.
+    t.after(() => { deleteResumeData("counted"); });
+    saveResumeState([{ channelName: "counted", discontinuityCount: 3, initSegment: null, initVersion: 0, segmentIndex: 60, trackTimestamps: new Map() }],
+      BASE_TIME_MS);
+    loadResumeState(BASE_TIME_MS);
+
+    assert.deepEqual(getResumePosition("counted", BASE_TIME_MS), { discontinuityCount: 3, segmentIndex: 60 }, "the saved count loads back beside the index");
   });
 });
 
@@ -563,6 +591,7 @@ describe("saveResumeState", () => {
 
 
       channelName: "alpha",
+      discontinuityCount: 0,
       initSegment: null,
       initVersion: 2,
       segmentIndex: 200,
@@ -571,7 +600,7 @@ describe("saveResumeState", () => {
 
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("alpha", BASE_TIME_MS), 200, "saved entry recovered after load");
+    assertEqual(getResumePosition("alpha", BASE_TIME_MS)?.segmentIndex ?? null, 200, "saved entry recovered after load");
 
     const data = peekResumeData("alpha", BASE_TIME_MS);
 
@@ -611,7 +640,7 @@ describe("saveResumeState", () => {
     await makeResumeFile(tempDir, {
 
 
-      same: { initVersion: 1, segmentIndex: 1, timestamp: BASE_TIME_MS, trackTimestamps: {} }
+      same: { discontinuityCount: 5, initVersion: 1, segmentIndex: 1, timestamp: BASE_TIME_MS, trackTimestamps: {} }
     });
 
     loadResumeState(BASE_TIME_MS);
@@ -620,6 +649,7 @@ describe("saveResumeState", () => {
 
 
       channelName: "same",
+      discontinuityCount: 2,
       initSegment: null,
       initVersion: 9,
       segmentIndex: 999,
@@ -629,7 +659,28 @@ describe("saveResumeState", () => {
     // Reload to read what we just saved.
     loadResumeState(BASE_TIME_MS);
 
-    assertEqual(getResumeSegmentIndex("same", BASE_TIME_MS), 999, "active stream value won the merge");
+    assertEqual(getResumePosition("same", BASE_TIME_MS)?.segmentIndex ?? null, 999, "active stream value won the merge");
+    assertEqual(getResumePosition("same", BASE_TIME_MS)?.discontinuityCount ?? null, 2, "and so did its discontinuity count");
+  });
+
+  test("carries an unconsumed entry forward with its own discontinuity count beside an active stream's", (t: TestContext) => {
+
+    /* A channel that never reconnected keeps its entry through a later shutdown, so the carry-forward must write the count it persisted, not one the active
+     * stream supplies or a default. Each channel is read back after the later save, at its own count.
+     */
+    t.after(() => {
+
+      deleteResumeData("idle");
+      deleteResumeData("live");
+    });
+    saveResumeState([{ channelName: "idle", discontinuityCount: 4, initSegment: null, initVersion: 0, segmentIndex: 30, trackTimestamps: new Map() }], BASE_TIME_MS);
+    loadResumeState(BASE_TIME_MS);
+
+    saveResumeState([{ channelName: "live", discontinuityCount: 1, initSegment: null, initVersion: 0, segmentIndex: 80, trackTimestamps: new Map() }], BASE_TIME_MS);
+    loadResumeState(BASE_TIME_MS);
+
+    assert.deepEqual(getResumePosition("idle", BASE_TIME_MS), { discontinuityCount: 4, segmentIndex: 30 }, "the carried entry keeps the count it was saved with");
+    assert.deepEqual(getResumePosition("live", BASE_TIME_MS), { discontinuityCount: 1, segmentIndex: 80 }, "and the active channel is written at its own");
   });
 
   test("does not throw when the resume file path is unwritable (fs.writeFileSync fails)", () => {
@@ -654,6 +705,7 @@ describe("saveResumeState", () => {
 
 
         channelName: "alpha",
+        discontinuityCount: 0,
         initSegment: null,
         initVersion: 0,
         segmentIndex: 1,
@@ -687,6 +739,7 @@ describe("saveResumeState", () => {
 
 
       channelName: "bytes",
+      discontinuityCount: 0,
       initSegment: original,
       initVersion: 1,
       segmentIndex: 100,

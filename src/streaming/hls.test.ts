@@ -9,21 +9,24 @@
  * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts), which drives the real isLoginModeActive() flag through the setLoginDeps()
  * dependency injection point - the same one browser/index.ts wires at startup - with a stub browser and page, rather than substituting the accessor.
  */
+import type { ResumeData, ResumePosition } from "./hlsResume.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { buildResumeContinuity, describeSetupFailure, handleHLSPlaylist, handleHLSSegment, handleSetupFailure, hasStreamCapacity, sendSetupFailure,
   sendValidationError, validateChannel } from "./hls.ts";
+import { getPlaylist, storeInitSegment, storeNamedInitSegment, storeSegment } from "./hlsSegments.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { setChannelStreamId, terminateStream } from "./lifecycle.ts";
-import { storeInitSegment, storeNamedInitSegment, storeSegment } from "./hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
+import { PassThrough } from "node:stream";
 import type { Response } from "express";
-import type { ResumeData } from "./hlsResume.ts";
 import { StreamSetupError } from "./setup.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
+import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
 import { makeReqRes } from "../routes/express.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { setServiceSelections } from "../config/services.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -345,6 +348,22 @@ describe("handleHLSSegment: named init segments (T5)", () => {
     }
   });
 });
+
+/* makeBox builds a minimal MP4 box: 4-byte size + 4-byte type + payload. The size includes the 8-byte header. A file-local copy of the same minimal builder
+ * used by mp4Parser.moov.test.ts, per the convention that each mp4Parser.*.test.ts (and this file) defines its own copy rather than sharing one.
+ */
+function makeBox(type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
+
+  const size = 8 + payload.length;
+  const buf = Buffer.alloc(size);
+
+  buf.writeUInt32BE(size, 0);
+  buf.write(type, 4, 4, "ascii");
+  payload.copy(buf, 8);
+
+  return buf;
+}
+
 describe("buildResumeContinuity", () => {
 
   /* The derivation reads as a set of conditional arms and the rows walk every one of them, because the segmenter reads this object by key presence rather than
@@ -355,11 +374,18 @@ describe("buildResumeContinuity", () => {
   // The prior session a resume carries back from disk. One literal, reused by the rows that resume, so a shape change lands in one place.
   const resumed: ResumeData = {
 
+    discontinuityCount: 3,
     initSegment: Buffer.from([ 1, 2, 3 ]),
     initVersion: 7,
     segmentIndex: 42,
     trackTimestamps: new Map([[ 1, 90000n ]])
   };
+
+  /* The positions the choice rows tell apart: the registration's read and the creation's own peek, which the preroll count and each other never equal, so a
+   * swapped or inverted choice, a dropped base, or a marker placed at the starting index each reads a figure no correct derivation gives.
+   */
+  const registered: ResumePosition = { discontinuityCount: 3, segmentIndex: 40 };
+  const peeked: ResumeData = { ...resumed, discontinuityCount: 6, segmentIndex: 70 };
 
   test("a resume with no preroll ahead of it carries the whole prior session, and no session statistics", () => {
 
@@ -367,7 +393,7 @@ describe("buildResumeContinuity", () => {
      * the member: present-but-empty would tell the segmenter a live prior session is continuing and mint a tab replacement that never happened into the resumed
      * stream's summary.
      */
-    const result = buildResumeContinuity({ baseSegmentIndex: 42, prerollSegmentCount: 0, resumeData: resumed });
+    const result = buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: { discontinuityCount: 3, segmentIndex: 42 }, resumeData: resumed });
 
     assert.equal(result.initialTrackTimestamps, resumed.trackTimestamps, "the prior session's timestamps, by reference");
     assert.equal(result.previousInitSegment, resumed.initSegment, "and its init segment, because no preroll window precedes this one");
@@ -381,7 +407,7 @@ describe("buildResumeContinuity", () => {
     /* The inner-conditional arm. The preroll init differs from the real one, so handing the prior init segment across a preroll boundary would let a byte match
      * suppress a discontinuity the boundary genuinely needs - the member is withheld rather than nulled.
      */
-    const result = buildResumeContinuity({ baseSegmentIndex: 42, prerollSegmentCount: 5, resumeData: resumed });
+    const result = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: { discontinuityCount: 3, segmentIndex: 42 }, resumeData: resumed });
 
     assert.equal("previousInitSegment" in result, false, "the init segment is withheld across a preroll boundary");
     assert.equal(result.startingSegmentIndex, 47, "and the index accounts for the resume offset and the preroll range together");
@@ -393,7 +419,7 @@ describe("buildResumeContinuity", () => {
   test("a fresh stream behind a preroll window carries the preroll offset and nothing else", () => {
 
     // The index-only arm: there is no prior session to continue, but the preroll segments still occupy the range the real ones start after.
-    const result = buildResumeContinuity({ baseSegmentIndex: 0, prerollSegmentCount: 5, resumeData: null });
+    const result = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: null, resumeData: null });
 
     assert.deepEqual(Object.keys(result), ["startingSegmentIndex"], "exactly one member, and it is the index");
     assert.equal(result.startingSegmentIndex, 5, "which is the preroll range the real segments follow");
@@ -402,9 +428,105 @@ describe("buildResumeContinuity", () => {
   test("a fresh stream with no preroll continues from nothing at all", () => {
 
     // The empty arm. A stream that starts from nothing must hand the segmenter an object with no members, so every default the segmenter owns stays in force.
-    const result = buildResumeContinuity({ baseSegmentIndex: 0, prerollSegmentCount: 0, resumeData: null });
+    const result = buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: null, resumeData: null });
 
     assert.equal(Object.keys(result).length, 0, "nothing to continue from, so nothing is carried");
+  });
+
+  test("behind a preroll the registered position starts the segmenter and places the preroll's marker, the counters still coming from the peek", () => {
+
+    // The preroll playlist served from the registered position, so the segmenter continues it: the starting index is the registered index past the preroll range,
+    // and the history holds the registered count as pruned and the marker the preroll playlist put on its first entry, at the registered index.
+    const result = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: registered, resumeData: peeked });
+
+    assert.equal(result.startingSegmentIndex, 45, "the registered index plus the preroll range");
+    assert.deepEqual(result.priorSegmentHistory, { discontinuityIndices: new Set([40]), prunedDiscontinuityCount: 3, segmentDurations: new Map(),
+      segmentTimestamps: new Map() }, "the marker at the registered index, no listed segment, and the registered count as pruned");
+    assert.equal(result.initialTrackTimestamps, peeked.trackTimestamps, "the counters come from the creation's peek");
+    assert.equal(result.startingInitVersion, peeked.initVersion, "and so does the init version");
+  });
+
+  test("without a preroll the creation's own peek is the position, its count carried with no marker", () => {
+
+    // No preroll playlist was served, so there is nothing to agree with but the entry the creation reads: its index and count, and its init segment.
+    const result = buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: registered, resumeData: peeked });
+
+    assert.equal(result.startingSegmentIndex, 70, "the peeked index, with no preroll range to add");
+    assert.deepEqual(result.priorSegmentHistory, { discontinuityIndices: new Set(), prunedDiscontinuityCount: 6, segmentDurations: new Map(),
+      segmentTimestamps: new Map() }, "no listed marker, and the peeked count as pruned");
+    assert.equal(result.previousInitSegment, peeked.initSegment, "and the peeked init segment, no preroll window preceding it");
+  });
+
+  test("behind a preroll whose entry expired after the registration read it, the registered position still seeds the segmenter", () => {
+
+    // The peek at the segmenter's creation finds nothing, but the preroll playlist has served from the registered position, so the index, the marker and the
+    // count come from it while the counters, which only the persisted entry holds, are absent.
+    const result = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: registered, resumeData: null });
+
+    assert.equal(result.startingSegmentIndex, 45, "the registered index plus the preroll range");
+    assert.deepEqual(result.priorSegmentHistory, { discontinuityIndices: new Set([40]), prunedDiscontinuityCount: 3, segmentDurations: new Map(),
+      segmentTimestamps: new Map() }, "the marker at the registered index and the registered count as pruned");
+    assert.equal("initialTrackTimestamps" in result, false, "and no counters, the peek having found no entry");
+  });
+
+  test("a registered position at a count of zero behind a preroll still places the preroll's marker", () => {
+
+    // A resume at count 0 is still a resume: its preroll opens a new timeline, so the marker is seeded and the count it holds is 0.
+    const result = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: { discontinuityCount: 0, segmentIndex: 40 }, resumeData: null });
+
+    assert.deepEqual(result.priorSegmentHistory, { discontinuityIndices: new Set([40]), prunedDiscontinuityCount: 0, segmentDurations: new Map(),
+      segmentTimestamps: new Map() }, "the marker at the registered index, with nothing pruned");
+  });
+
+  test("carries no segment history where a fresh segmenter's state already holds everything it would", () => {
+
+    // A fresh stream, a preroll-only stream with no registered position, and a resume with no preroll at a count of 0 each continue no marker and no count.
+    const fresh = buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: null, resumeData: null });
+    const prerollOnly = buildResumeContinuity({ prerollSegmentCount: 5, registeredPosition: null, resumeData: null });
+    const uncounted = buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: null, resumeData: { ...peeked, discontinuityCount: 0 } });
+
+    assert.equal("priorSegmentHistory" in fresh, false, "a fresh stream carries none");
+    assert.equal("priorSegmentHistory" in prerollOnly, false, "nor does a preroll-only stream with no registered position");
+    assert.equal("priorSegmentHistory" in uncounted, false, "nor a resume with no preroll at a count of 0");
+  });
+
+  test("a segmenter resumed without a preroll continues the persisted discontinuity sequence", () => {
+
+    /* The resume persisted a count of 3 and its init segment matches the new capture's byte for byte, so the resume's own marker is suppressed and the sequence
+     * the first playlist reports comes from the carried count alone. A continuity that dropped the count would leave the segmenter no discontinuity history, and
+     * its playlist would omit the tag.
+     */
+    const entry = makeRegistryEntry();
+    const init = Buffer.concat([ makeBox("ftyp", Buffer.from("isom")), makeBox("moov") ]);
+
+    registerStream(entry);
+
+    try {
+
+      const segmenter = createFMP4Segmenter({
+
+        continuity: buildResumeContinuity({ prerollSegmentCount: 0, registeredPosition: null, resumeData: { ...resumed, initSegment: init } }),
+        onError: mock.fn(),
+        onStop: mock.fn(),
+        pendingDiscontinuity: true,
+        segmentDuration: makeStreamSettings().segmentDuration,
+        streamId: entry.id
+      });
+      const readable = new PassThrough();
+
+      segmenter.pipe(readable);
+      readable.write(init);
+      readable.write(makeBox("moof"));
+      readable.write(makeBox("mdat", Buffer.from("m42")));
+      readable.write(makeBox("moof"));
+
+      assert.equal(segmenter.getSegmentIndex(), resumed.segmentIndex + 1, "precondition: the resumed segmenter produced its first segment");
+      assert.match(getPlaylist(entry.id) ?? "", /^#EXT-X-DISCONTINUITY-SEQUENCE:3$/m, "the first playlist continues the persisted discontinuity sequence");
+      segmenter.stop();
+    } finally {
+
+      unregisterStream(entry.id);
+    }
   });
 });
 

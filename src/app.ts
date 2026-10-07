@@ -147,6 +147,7 @@ function setupGracefulShutdown(): void {
         resumeEntries.push({
 
           channelName: stream.info.storeKey,
+          discontinuityCount: segmenter.getDiscontinuityCount(),
           initSegment: segmenter.getInitSegment(),
           initVersion: segmenter.getInitVersion(),
           segmentIndex: Math.max(0, segmenter.getSegmentIndex() - 1),

@@ -11,7 +11,7 @@
  * also what lets a row fire the pipeline's own FFmpeg error callback at a chosen moment, before or after the swap, and read which way it was routed.
  */
 import type { CreatePageWithCaptureOptions, CreatePageWithCaptureResult } from "./setup.ts";
-import type { FMP4SegmenterResult, SegmenterContinuity } from "./fmp4Segmenter.ts";
+import type { FMP4SegmenterResult, SegmentHistory, SegmenterContinuity } from "./fmp4Segmenter.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getStream, makePendingCaptureIdentity, registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
@@ -72,6 +72,15 @@ function makeRecordingSession(onAttach?: () => void): RecordingSession {
   };
 }
 
+// The segment history the outgoing segmenter hands over: a marker, a measured duration and a production instant at index 5, and a pruned count of 2.
+const OUTGOING_HISTORY: SegmentHistory = {
+
+  discontinuityIndices: new Set([5]),
+  prunedDiscontinuityCount: 2,
+  segmentDurations: new Map([[ 5, 2.6 ]]),
+  segmentTimestamps: new Map([[ 5, 1700000000000 ]])
+};
+
 /**
  * Builds a segmenter double whose continuity snapshot is read live from the supplied counter, so a row can advance the sequence between the moment the
  * replacement starts and the moment it swaps - which is the only way to tell a snapshot taken at the swap from one taken at the top.
@@ -92,6 +101,7 @@ function makeOutgoingSegmenter(readIndex: () => number): { segmenter: FMP4Segmen
 
         initialTrackTimestamps: new Map<number, bigint>([[ 1, 90000n ]]),
         previousInitSegment: null,
+        priorSegmentHistory: OUTGOING_HISTORY,
         priorSessionStats: { malformedMoofCount: 0, syncSpreadCount: 0, syncSpreadMaxMs: 0, syncSpreadMinMs: 0, syncSpreadSumMs: 0, tabReplacementCount: 4 },
         startingInitVersion: 7,
         startingSegmentIndex: readIndex()
@@ -307,6 +317,25 @@ describe("createTabReplacementHandler: the replacement builds before it tears do
     assert.equal(seeded.getSegmentIndex(), 114, "the new segmenter continues from where the outgoing one actually reached");
     assert.equal(seeded.getInitVersion(), 7, "and from the outgoing init version");
     assert.equal(seeded.getSessionStats().tabReplacementCount, 5, "the prior session's statistics carried across and counted this replacement");
+  });
+
+  test("the new segmenter seeds its segment history from the outgoing segmenter's, by value", async () => {
+
+    // The successor lists the stream's earlier segments from the history its predecessor hands over at the swap, so before it produces anything its own snapshot
+    // reports that history: equal in every field, and held in its own collections rather than the outgoing segmenter's.
+    const establishment = makeEstablishment();
+    const handler = makeHandler(async (): Promise<CreatePageWithCaptureResult> => establishment.result);
+
+    await handler();
+
+    const seeded = establishment.newSession.attached();
+
+    assert.ok(seeded, "a segmenter was wired to the new pipeline");
+
+    const history = seeded.getContinuitySnapshot().priorSegmentHistory;
+
+    assert.deepEqual(history, OUTGOING_HISTORY, "the wired segmenter reports the outgoing history in every field");
+    assert.notEqual(history.discontinuityIndices, OUTGOING_HISTORY.discontinuityIndices, "held in its own collections, not the outgoing segmenter's");
   });
 
   test("a second attempt after a failed one re-reads continuity from the still-live outgoing segmenter", async () => {

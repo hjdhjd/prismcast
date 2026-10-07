@@ -10,6 +10,7 @@ import type { CaptureCodec } from "./codec.ts";
 import type { Clock } from "homebridge-plugin-utils";
 import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
+import type { ResumePosition } from "./hlsResume.ts";
 import { buildPlaylist } from "./playlistBuilder.ts";
 import { getEffectiveCaptureCodec } from "./codec.ts";
 import { getPresetViewport } from "../config/presets.ts";
@@ -501,14 +502,19 @@ export interface PrerollWindowOptions {
   // Number of preroll segments preceding real content.
   prerollSegmentCount: number;
 
+  // The index of the first preroll segment: zero for a fresh stream and the resume index for a resumed one, so the window's preroll range is the preroll count's
+  // indices from there.
+  readonly prerollStartIndex: number;
+
   // Number of real segments currently stored in the segment Map.
   realSegmentCount: number;
 }
 
 /**
- * Computes the sliding window start index for a composite playlist containing both preroll and real segments. The start index is determined by three constraints:
- * (1) never negative, (2) the standard sliding window rule (current index minus window size), and (3) the preroll cap that limits how many preroll entries appear in
- * the window. The third constraint is the key addition - it prevents clients from playing through many seconds of remaining preroll before reaching live content.
+ * Computes the sliding window start index for a composite playlist containing both preroll and real segments. The start index is the largest of these
+ * constraints: (1) never before the preroll's first index, (2) the standard sliding window rule (current index minus window size), and (3) the preroll cap that
+ * limits how many preroll entries appear in the window. The third constraint is the key addition - it prevents clients from playing through many seconds of
+ * remaining preroll before reaching live content.
  *
  * @param options - Window computation parameters.
  * @returns The start index for the composite playlist window.
@@ -518,7 +524,7 @@ export function computePrerollWindow(options: PrerollWindowOptions): number {
   const totalAvailable = options.prerollSegmentCount + options.realSegmentCount;
   const windowSize = Math.min(totalAvailable, options.maxSegments);
 
-  return Math.max(0, options.currentSegmentIndex - windowSize, options.prerollSegmentCount - MAX_PREROLL_IN_WINDOW);
+  return Math.max(options.prerollStartIndex, options.currentSegmentIndex - windowSize, options.prerollStartIndex + options.prerollSegmentCount - MAX_PREROLL_IN_WINDOW);
 }
 
 /**
@@ -659,9 +665,8 @@ export interface PrerollPlaylistOptions extends ProgressiveRevealOptions {
   // The server's external URL (e.g., "http://192.168.1.100:5589").
   readonly baseUrl: string;
 
-  // The MEDIA-SEQUENCE offset. Zero for fresh starts. For resume streams, this is the saved segment index so the preroll playlist continues from the prior
-  // session's sequence range rather than restarting at 0.
-  readonly startingSequence: number;
+  // The position a resumed stream continues from, its media sequence and its discontinuity sequence, or null for a fresh start.
+  readonly resumePosition: Nullable<ResumePosition>;
 }
 
 /**
@@ -677,12 +682,16 @@ export interface PrerollPlaylistOptions extends ProgressiveRevealOptions {
  * misleading and would create a backward time jump at the preroll-to-live boundary (preroll PDT would overshoot real content PDT because the preroll covers 30
  * seconds of content but real content typically arrives in ~15 seconds). PDT is emitted only on real segments once the segmenter produces them.
  *
+ * A resumed stream's playlist continues the media sequence and the discontinuity sequence from its resume position, and marks its first entry with a
+ * discontinuity, because its preroll opens a new timeline. A fresh stream's playlist starts its media sequence at 0 and carries neither the discontinuity
+ * sequence nor the marker.
+ *
  * @param options - See PrerollPlaylistOptions.
  * @returns The complete HLS playlist string, or an empty string if the preroll is not ready.
  */
 export function generatePrerollPlaylist(options: PrerollPlaylistOptions): string {
 
-  const { baseUrl, codec, startingSequence } = options;
+  const { baseUrl, codec, resumePosition } = options;
 
   if(!isPrerollReady(codec)) {
 
@@ -693,10 +702,21 @@ export function generatePrerollPlaylist(options: PrerollPlaylistOptions): string
   const revealCount = computeProgressiveReveal(options);
   const entries = buildPrerollEntries({ baseUrl, codec, extension: ".m4s", prerollSegmentCount: revealCount, startIndex: 0 });
 
+  // A resumed stream's preroll opens a new timeline, its own init segment and its timestamps restarting, so its first entry carries the discontinuity marker and the
+  // playlist reports the persisted count as its discontinuity sequence, a count of 0 included because the playlist then holds a marker. A fresh stream's playlist
+  // carries neither.
+  const [first] = entries;
+
+  if(resumePosition && first) {
+
+    first.discontinuity = true;
+  }
+
   return buildPlaylist({
 
+    discontinuitySequence: resumePosition?.discontinuityCount,
     initialMapUri: baseUrl + "/preroll/" + codec + "/init.mp4",
-    mediaSequence: startingSequence,
+    mediaSequence: resumePosition?.segmentIndex ?? 0,
     targetDuration: getPrerollMaxDuration(codec),
     version: 7
   }, entries);

@@ -21,6 +21,7 @@ const RESUME_TTL = 90000;
 /** Serialized format for JSON persistence. BigInt values are stored as strings; Buffer as base64. */
 interface ResumeEntryJSON {
 
+  discontinuityCount?: number;
   initSegment: Nullable<string>;
   initVersion: number;
   segmentIndex: number;
@@ -33,6 +34,7 @@ interface ResumeEntryJSON {
  */
 interface ResumeEntry {
 
+  discontinuityCount: number;
   initSegment: Nullable<Buffer>;
   initVersion: number;
   segmentIndex: number;
@@ -46,6 +48,7 @@ interface ResumeEntry {
 export interface ResumeStreamData {
 
   channelName: string;
+  discontinuityCount: number;
   initSegment: Nullable<Buffer>;
   initVersion: number;
   segmentIndex: number;
@@ -53,13 +56,24 @@ export interface ResumeStreamData {
 }
 
 /**
- * Resume data returned to the caller for seeding a new segmenter.
+ * Where a resumed stream's media sequence and discontinuity sequence continue from.
  */
-export interface ResumeData {
+export interface ResumePosition {
+
+  // How many discontinuity markers the previous session's playlists had emitted, which the resumed discontinuity sequence continues from.
+  readonly discontinuityCount: number;
+
+  // The segment index the resumed media sequence continues from, the last segment the previous session completed.
+  readonly segmentIndex: number;
+}
+
+/**
+ * Resume data returned to the caller for seeding a new segmenter, its position included.
+ */
+export interface ResumeData extends ResumePosition {
 
   initSegment: Nullable<Buffer>;
   initVersion: number;
-  segmentIndex: number;
   trackTimestamps: Map<number, bigint>;
 }
 
@@ -128,8 +142,10 @@ export function loadResumeState(now: number): void {
     // Deserialize initSegment from base64 string to Buffer.
     const initSegment = entry.initSegment ? Buffer.from(entry.initSegment, "base64") : null;
 
+    // A file written before the discontinuity count was persisted can still be read within the TTL after an upgrade, so an entry without one loads at zero.
     resumeMap.set(channel, {
 
+      discontinuityCount: entry.discontinuityCount ?? 0,
       initSegment,
       initVersion: entry.initVersion,
       segmentIndex: entry.segmentIndex,
@@ -147,37 +163,13 @@ export function loadResumeState(now: number): void {
 }
 
 /**
- * Returns the saved segment index for a channel without consuming the resume data. Used by registerPendingStream() to offset the preroll playlist's
- * MEDIA-SEQUENCE so it continues from the prior session's sequence range rather than starting at 0. Returns null if no valid resume data exists.
- * @param channelName - The channel key to look up.
- * @param now - The instant the TTL is measured against.
- * @returns The saved segment index, or null if no valid resume data exists.
- */
-export function getResumeSegmentIndex(channelName: string, now: number): Nullable<number> {
-
-  const entry = resumeMap.get(channelName);
-
-  if(!entry) {
-
-    return null;
-  }
-
-  if((now - entry.timestamp) > RESUME_TTL) {
-
-    return null;
-  }
-
-  return entry.segmentIndex;
-}
-
-/**
  * Reads resume data for a channel without removing it from the map, and without logging: announcing the resume is the caller's, through logStreamResume. Returns
- * the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. The caller must call deleteResumeData() after
- * successfully using the data to prevent double-consumption. This two-step pattern ensures resume data survives if segmenter creation fails - the next stream
- * start can retry with the same resume state instead of starting from scratch.
+ * the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. Its readers are getResumePosition, which never consumes
+ * the entry, and the capture segmenter's creation, which calls deleteResumeData() once its segmenter is attached. Keeping the read apart from the delete means
+ * resume data survives if segmenter creation fails - the next stream start can retry with the same resume state instead of starting from scratch.
  * @param channelName - The channel key to look up.
  * @param now - The instant the TTL is measured against.
- * @returns Resume data for seeding the segmenter, or null.
+ * @returns The resume data, which seeds the capture segmenter and carries the position the registration reads, or null.
  */
 export function peekResumeData(channelName: string, now: number): Nullable<ResumeData> {
 
@@ -198,11 +190,27 @@ export function peekResumeData(channelName: string, now: number): Nullable<Resum
 
   return {
 
+    discontinuityCount: entry.discontinuityCount,
     initSegment: entry.initSegment,
     initVersion: entry.initVersion + 1,
     segmentIndex: entry.segmentIndex,
     trackTimestamps: entry.trackTimestamps
   };
+}
+
+/**
+ * Returns the position a channel's resume entry continues from. This is the registration's one read: the standalone preroll playlist and the segmenter that
+ * replaces it continue from the position it returns, so an entry whose TTL expires mid-tune cannot leave them disagreeing. It consumes nothing, and it copies the
+ * position out of the peeked data rather than returning that data, so a stream's state never holds the persisted init segment or counters.
+ * @param channelName - The channel key to look up.
+ * @param now - The instant the TTL is measured against.
+ * @returns The resume position, or null if no valid resume data exists.
+ */
+export function getResumePosition(channelName: string, now: number): Nullable<ResumePosition> {
+
+  const resumeData = peekResumeData(channelName, now);
+
+  return resumeData ? { discontinuityCount: resumeData.discontinuityCount, segmentIndex: resumeData.segmentIndex } : null;
 }
 
 /**
@@ -269,24 +277,25 @@ export function deleteResumeData(channelName: string): void {
 
 /**
  * Serializes a resume entry for JSON persistence. Converts Map<number, bigint> to Record<string, string> and Buffer to base64.
+ * @param entry - The entry to serialize.
+ * @returns The entry's JSON form.
  */
-function serializeEntry(
-  initSegment: Nullable<Buffer>, initVersion: number, segmentIndex: number, timestamp: number, trackTimestamps: Map<number, bigint>
-): ResumeEntryJSON {
+function serializeEntry(entry: ResumeEntry): ResumeEntryJSON {
 
   const serializedTimestamps: Record<string, string> = {};
 
-  for(const [ key, value ] of trackTimestamps) {
+  for(const [ key, value ] of entry.trackTimestamps) {
 
     serializedTimestamps[String(key)] = String(value);
   }
 
   return {
 
-    initSegment: initSegment ? initSegment.toString("base64") : null,
-    initVersion,
-    segmentIndex,
-    timestamp,
+    discontinuityCount: entry.discontinuityCount,
+    initSegment: entry.initSegment ? entry.initSegment.toString("base64") : null,
+    initVersion: entry.initVersion,
+    segmentIndex: entry.segmentIndex,
+    timestamp: entry.timestamp,
     trackTimestamps: serializedTimestamps
   };
 }
@@ -309,14 +318,14 @@ export function saveResumeState(entries: ResumeStreamData[], now: number): void 
 
     if((now - entry.timestamp) <= RESUME_TTL) {
 
-      merged.set(channel, serializeEntry(entry.initSegment, entry.initVersion, entry.segmentIndex, entry.timestamp, entry.trackTimestamps));
+      merged.set(channel, serializeEntry(entry));
     }
   }
 
   // Active stream data takes precedence over carried-forward entries.
   for(const stream of entries) {
 
-    merged.set(stream.channelName, serializeEntry(stream.initSegment, stream.initVersion, stream.segmentIndex, now, stream.trackTimestamps));
+    merged.set(stream.channelName, serializeEntry({ ...stream, timestamp: now }));
   }
 
   // Nothing to save.

@@ -92,6 +92,7 @@ describe("computePrerollWindow", () => {
       currentSegmentIndex: 3,
       maxSegments: 10,
       prerollSegmentCount: 0,
+      prerollStartIndex: 0,
       realSegmentCount: 5
     });
 
@@ -107,6 +108,7 @@ describe("computePrerollWindow", () => {
       currentSegmentIndex: 20,
       maxSegments: 10,
       prerollSegmentCount: 5,
+      prerollStartIndex: 0,
       realSegmentCount: 10
     });
 
@@ -115,13 +117,15 @@ describe("computePrerollWindow", () => {
 
   test("never returns a negative start index (Math.max with 0 floor)", () => {
 
-    // Boundary: with prerollSegmentCount = 0 and a low currentSegmentIndex, the windowed term goes negative. The Math.max(0, ...) guards against this.
+    // Boundary: with prerollSegmentCount = 0 and a low currentSegmentIndex, the windowed term goes negative. The floor at the preroll's first index, 0 on this
+    // fresh stream, guards against this.
     const start = computePrerollWindow({
 
 
       currentSegmentIndex: 2,
       maxSegments: 10,
       prerollSegmentCount: 0,
+      prerollStartIndex: 0,
       realSegmentCount: 5
     });
 
@@ -138,6 +142,7 @@ describe("computePrerollWindow", () => {
       currentSegmentIndex: 8,
       maxSegments: 100,
       prerollSegmentCount: 10,
+      prerollStartIndex: 0,
       realSegmentCount: 0
     });
 
@@ -153,10 +158,29 @@ describe("computePrerollWindow", () => {
       currentSegmentIndex: 1,
       maxSegments: 100,
       prerollSegmentCount: 2,
+      prerollStartIndex: 0,
       realSegmentCount: 0
     });
 
     assert.equal(start, 0);
+  });
+
+  test("counts the window from the preroll's first index on a resumed stream, so the preroll keeps the media sequence its playlist served", () => {
+
+    /* A stream resumed at index 500 behind a preroll of 15 holds its preroll at indices 500 to 514 and its first real segment at 515. After that segment the
+     * preroll cap, counted from the preroll's first index, starts the window at 512. A window that ignored the preroll's first index would start at the
+     * sliding-window term, 506, and list indices the stream never produced.
+     */
+    const start = computePrerollWindow({
+
+      currentSegmentIndex: 516,
+      maxSegments: 10,
+      prerollSegmentCount: 15,
+      prerollStartIndex: 500,
+      realSegmentCount: 1
+    });
+
+    assert.equal(start, 512, "the preroll cap counts from the preroll's first index");
   });
 });
 
@@ -342,7 +366,7 @@ describe("generatePrerollPlaylist", () => {
      * can assert without that subprocess.
      */
     const playlist = generatePrerollPlaylist({ baseUrl: "http://example.test:5589", codec: "h264", now: BASE_TIME_MS, prerollStartTime: BASE_TIME_MS,
-      startingSequence: 0 });
+      resumePosition: null });
 
     assert.equal(playlist, "", "no variant -> empty playlist string");
   });
@@ -352,7 +376,7 @@ describe("generatePrerollPlaylist", () => {
     // Companion to the previous test: locks the contract that both codec branches share the same early-return semantics. A regression that hard-coded
     // "h264" in the readiness check would still pass the test above but fail here.
     const playlist = generatePrerollPlaylist({ baseUrl: "http://example.test:5589", codec: "hevc", now: BASE_TIME_MS, prerollStartTime: BASE_TIME_MS,
-      startingSequence: 100 });
+      resumePosition: null });
 
     assert.equal(playlist, "", "hevc without a variant also returns the empty string");
   });

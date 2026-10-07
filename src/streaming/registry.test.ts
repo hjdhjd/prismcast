@@ -410,7 +410,7 @@ describe("createHLSState", () => {
     assert.equal(state.prerollSegmentCount, 0);
     assert.equal(state.prerollStartTime, null);
     assert.equal(state.prerollTimer, null);
-    assert.equal(state.resumeSegmentIndex, 0);
+    assert.equal(state.resumePosition, null);
     assert.equal(state.segmentBytes, 0);
     assert.equal(state.segments.size, 0);
     assert.equal(state.setupFailure, null);

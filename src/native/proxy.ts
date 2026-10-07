@@ -1500,6 +1500,9 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
     currentSegmentIndex: segmentIndex,
     maxSegments: CONFIG.hls.maxSegments,
     prerollSegmentCount,
+
+    // The relay numbers its composite from index 0, so its preroll starts there.
+    prerollStartIndex: 0,
     realSegmentCount
   });
 

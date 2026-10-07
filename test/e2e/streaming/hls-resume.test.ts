@@ -6,7 +6,7 @@
  * last segment of every recording.
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
-import { deleteResumeData, getResumeSegmentIndex, loadResumeState, peekResumeData, saveResumeState } from "../../../src/streaming/hlsResume.ts";
+import { deleteResumeData, getResumePosition, loadResumeState, peekResumeData, saveResumeState } from "../../../src/streaming/hlsResume.ts";
 import { describe, test } from "node:test";
 import { access } from "node:fs/promises";
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ describe("HLS resume state round-trip", () => {
 
   test("save -> load round-trips the segment index for each channel", async () => {
 
-    /* Save state for two channels with distinct segmentIndex values. After load, both should be retrievable via getResumeSegmentIndex with the same values.
+    /* Save state for two channels with distinct segmentIndex values. After load, both should be retrievable via getResumePosition with the same values.
      * The save -> load boundary is the production restart path; this test exercises it without actually restarting the process.
      */
     await using ctx = await createIntegrationContext();
@@ -23,15 +23,15 @@ describe("HLS resume state round-trip", () => {
     await initializePersistence(ctx);
 
     saveResumeState([
-      { channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() },
-      { channelName: "nbc", initSegment: null, initVersion: 1, segmentIndex: 7, trackTimestamps: new Map() }
+      { channelName: "abc", discontinuityCount: 0, initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() },
+      { channelName: "nbc", discontinuityCount: 0, initSegment: null, initVersion: 1, segmentIndex: 7, trackTimestamps: new Map() }
     ], Date.now());
 
     // Now load - simulating the next startup. loadResumeState reads from disk and populates the in-memory map.
     loadResumeState(Date.now());
 
-    assert.equal(getResumeSegmentIndex("abc", Date.now()), 42, "abc segmentIndex round-trips");
-    assert.equal(getResumeSegmentIndex("nbc", Date.now()), 7, "nbc segmentIndex round-trips");
+    assert.equal(getResumePosition("abc", Date.now())?.segmentIndex ?? null, 42, "abc segmentIndex round-trips");
+    assert.equal(getResumePosition("nbc", Date.now())?.segmentIndex ?? null, 7, "nbc segmentIndex round-trips");
 
     // Cleanup so this test does not leak resume state into subsequent tests.
     deleteResumeData("abc");
@@ -47,7 +47,7 @@ describe("HLS resume state round-trip", () => {
 
     await initializePersistence(ctx);
 
-    saveResumeState([{ channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }], Date.now());
+    saveResumeState([{ channelName: "abc", discontinuityCount: 0, initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }], Date.now());
 
     // File exists post-save.
     await assert.doesNotReject(() => access(pathInDataDir(ctx, "hls-resume.json")), "resume file should exist after save");
@@ -70,7 +70,7 @@ describe("HLS resume state round-trip", () => {
 
     await initializePersistence(ctx);
 
-    saveResumeState([{ channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }], Date.now());
+    saveResumeState([{ channelName: "abc", discontinuityCount: 0, initSegment: null, initVersion: 1, segmentIndex: 42, trackTimestamps: new Map() }], Date.now());
     loadResumeState(Date.now());
 
     // First peek returns the data.
@@ -91,13 +91,13 @@ describe("HLS resume state round-trip", () => {
     assert.equal(peekResumeData("abc", Date.now()), null, "peek after delete returns null");
   });
 
-  test("a channel with no saved resume data returns null from getResumeSegmentIndex", async () => {
+  test("a channel with no saved resume data returns null from getResumePosition", async () => {
 
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
 
-    assert.equal(getResumeSegmentIndex("never-saved", Date.now()), null, "no resume data -> null");
+    assert.equal(getResumePosition("never-saved", Date.now())?.segmentIndex ?? null, null, "no resume data -> null");
   });
 
   test("an empty save list produces a file that loads without error and has no resume entries", async () => {
@@ -112,6 +112,6 @@ describe("HLS resume state round-trip", () => {
     saveResumeState([], Date.now());
 
     assert.doesNotThrow(() => { loadResumeState(Date.now()); }, "empty resume file loads cleanly");
-    assert.equal(getResumeSegmentIndex("any-channel", Date.now()), null, "no entries to retrieve");
+    assert.equal(getResumePosition("any-channel", Date.now())?.segmentIndex ?? null, null, "no entries to retrieve");
   });
 });

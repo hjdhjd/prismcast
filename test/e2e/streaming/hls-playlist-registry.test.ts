@@ -18,18 +18,18 @@
  * index, GET) is the same entry point every production caller traverses; it bypasses only the browser/ffmpeg setup the integration tier deliberately does
  * not host.
  *
- * Note on Test 4 (resume): the production code that snapshots the resume index into a stream entry lives inside registerPendingStream() and runs
+ * Note on Test 4 (resume): the production code that reads the resume position into a stream entry lives inside registerPendingStream() and runs
  * unconditionally on every pending registration; only its consumption inside the deferred preroll-timer callback is gated on isPrerollReady(codec). Driving
  * registerPendingStream() directly would require a full Express Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the
- * test mirrors the production read - it calls the public getResumeSegmentIndex() accessor (the same function registerPendingStream uses internally) and
- * seeds hls.resumeSegmentIndex on the synthetic entry from that read. This asserts the wire-level guarantee ("a saved resume index for channel X causes
- * channel X's next playlist to start at MEDIA-SEQUENCE = saved index") without re-implementing any production logic - the resume index flows through the
- * production accessor; the test only asserts what the route emits.
+ * test calls the function the registration calls - the public getResumePosition() accessor - and seeds hls.resumePosition on the synthetic entry from that
+ * read. This asserts the wire-level guarantee ("a saved resume position for channel X causes channel X's next playlist to start at MEDIA-SEQUENCE = saved
+ * index and DISCONTINUITY-SEQUENCE = saved count") without re-implementing any production logic - the position flows through the production accessor; the
+ * test only asserts what the route emits.
  */
 import type { Request, Response } from "express";
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { cleanupIdleStreams, handleHLSSegment } from "../../../src/streaming/hls.ts";
-import { deleteResumeData, getResumeSegmentIndex, loadResumeState, saveResumeState } from "../../../src/streaming/hlsResume.ts";
+import { deleteResumeData, getResumePosition, loadResumeState, saveResumeState } from "../../../src/streaming/hlsResume.ts";
 import { describe, test } from "node:test";
 import { endLoginMode, setLoginDeps, startLoginMode } from "../../../src/browser/login.ts";
 import { getBrowserInstance, syncWindowVisibility } from "../../../src/browser/index.ts";
@@ -181,16 +181,17 @@ describe("HLS playlist served from registry-backed state", () => {
     assert.equal(lines[discontinuityIndex + 2], "segment1.m4s", "segment1 must be the segment immediately following the discontinuity");
   });
 
-  test("a saved resume index materializes as the served playlist's MEDIA-SEQUENCE", async () => {
+  test("a saved resume position materializes as the served playlist's MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE", async () => {
 
     /* The 1589811 regression class at the wire layer: after a restart, the next playlist served for a previously-streamed channel must start at the saved
-     * sequence so Channels DVR's recording continues from where it left off. The persistence side (save/load round-trip) is covered in hls-resume.test.ts;
-     * this test asserts the consumption side - the seed reaches the wire as MEDIA-SEQUENCE.
+     * sequence so Channels DVR's recording continues from where it left off, and its discontinuity sequence must continue from the saved count so it never
+     * falls below what a client last read. The persistence side (save/load round-trip) is covered in hls-resume.test.ts; this test asserts the consumption
+     * side - the seed reaches the wire as MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE.
      *
      * The flow mirrors production: the resume map is populated via saveResumeState/loadResumeState (the persistence path that runs at process startup), and
-     * the entry's hls.resumeSegmentIndex is read from the public getResumeSegmentIndex() accessor - the exact same call registerPendingStream() makes
-     * internally. We then build a playlist with MEDIA-SEQUENCE seeded at that resume index (matching what fmp4Segmenter does in production where it sets
-     * "mediaSequence: startIndex") and assert the body emitted on the wire reflects it.
+     * the entry's hls.resumePosition is read from the public getResumePosition() accessor - the exact same call registerPendingStream() makes. We then build
+     * a playlist with its media sequence and discontinuity sequence seeded from that position and assert the body emitted on the wire reflects them, so a
+     * count dropped by the save, the load, the peek or the position's copy reads 0 here.
      */
     await using ctx = await createIntegrationContext();
 
@@ -200,28 +201,31 @@ describe("HLS playlist served from registry-backed state", () => {
 
     // The 1589811 value is the canonical regression marker - any drift in the resume contract surfaces here as a wrong sequence on the wire.
     const priorIndex = 1589811;
+    const priorCount = 5;
 
-    saveResumeState([{ channelName: "abc", initSegment: null, initVersion: 1, segmentIndex: priorIndex, trackTimestamps: new Map() }], Date.now());
+    saveResumeState([{ channelName: "abc", discontinuityCount: priorCount, initSegment: null, initVersion: 1, segmentIndex: priorIndex, trackTimestamps: new Map() }],
+      Date.now());
     loadResumeState(Date.now());
 
     ctx.registerCleanup(() => { deleteResumeData("abc"); });
 
-    // Read the resume index via the public accessor, mirroring registerPendingStream's snapshot. Production's "?? 0" fallback is faithfully reproduced.
-    const resumeSegmentIndex = getResumeSegmentIndex("abc", Date.now()) ?? 0;
+    // Read the resume position via the public accessor, the read registerPendingStream makes.
+    const resumePosition = getResumePosition("abc", Date.now());
 
-    assert.equal(resumeSegmentIndex, priorIndex, "the resume map round-trip must surface the saved index unchanged");
+    assert.deepEqual(resumePosition, { discontinuityCount: priorCount, segmentIndex: priorIndex }, "the resume map round-trip must surface the saved position");
 
     const entry = makeRegistryEntry({ channelName: "abc" });
 
-    entry.hls.resumeSegmentIndex = resumeSegmentIndex;
+    entry.hls.resumePosition = resumePosition;
 
     registerStream(entry);
     setChannelStreamId("abc", entry.id);
 
     ctx.registerCleanup(() => { terminateStream(entry.id, "abc", "test cleanup"); });
 
-    const playlist = buildPlaylist({ mediaSequence: entry.hls.resumeSegmentIndex, targetDuration: 4, version: 7 }, [
-      { duration: 4, url: "segment" + String(resumeSegmentIndex) + ".m4s" }
+    const playlist = buildPlaylist({ discontinuitySequence: entry.hls.resumePosition.discontinuityCount, mediaSequence: entry.hls.resumePosition.segmentIndex,
+      targetDuration: 4, version: 7 }, [
+      { duration: 4, url: "segment" + String(priorIndex) + ".m4s" }
     ]);
 
     updatePlaylist(entry.id, playlist);
@@ -231,6 +235,8 @@ describe("HLS playlist served from registry-backed state", () => {
 
     assert.match(body, new RegExp("^#EXT-X-MEDIA-SEQUENCE:" + String(priorIndex) + "$", "m"),
       "the served playlist's MEDIA-SEQUENCE must equal the saved resume index");
+    assert.match(body, new RegExp("^#EXT-X-DISCONTINUITY-SEQUENCE:" + String(priorCount) + "$", "m"),
+      "the served playlist's DISCONTINUITY-SEQUENCE must equal the saved discontinuity count");
   });
 });
 
