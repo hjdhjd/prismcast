@@ -70,7 +70,6 @@ function printUsage(): void {
   console.log("");
   console.log("Common Environment Variables:");
   console.log("  AUDIO_BITRATE                   Audio bitrate (bps)");
-  console.log("  CAPTURE_MODE                    Capture mode: ffmpeg (recommended) or native");
   console.log("  CHROME_BIN                      Path to Chrome executable");
   console.log("  FRAME_RATE                      Target frame rate");
   console.log("  HOST                            HTTP server bind address");

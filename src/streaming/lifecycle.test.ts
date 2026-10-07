@@ -14,7 +14,6 @@ import type { CaptureSession } from "./captureSession.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
 import type { NativeProxy } from "../native/proxy.ts";
-import type { Nullable } from "../types/index.ts";
 import type { Readable } from "node:stream";
 import type { StreamRegistryEntry } from "./registry.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
@@ -22,6 +21,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createCaptureSession } from "./captureSession.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { setGracefulShutdown } from "../browser/index.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -88,7 +88,7 @@ interface CaptureSessionParts {
 function makeCaptureSession(parts: CaptureSessionParts = {}): CaptureSession {
 
   const rawCaptureStream = (parts.rawStream ?? { destroy: (): void => { /* inert default */ }, destroyed: false }) as unknown as Readable;
-  const ffmpegProcess = (parts.ffmpeg ?? null) as unknown as Nullable<FFmpegProcess>;
+  const ffmpegProcess = (parts.ffmpeg ?? makeFakeFFmpeg()) as FFmpegProcess;
   const session = createCaptureSession({ ffmpegProcess, rawCaptureStream });
 
   if(parts.segmenter) {
@@ -290,7 +290,7 @@ describe("terminateStream", () => {
 
   test("destroys the raw capture stream when present", () => {
 
-    // terminateStream disposes the capture session, which destroys the raw capture stream (its first teardown step for a no-FFmpeg session).
+    // terminateStream disposes the capture session, which kills its FFmpeg child and then destroys the raw capture stream.
     let destroyed = false;
     const session = makeCaptureSession({ rawStream: { destroy: () => { destroyed = true; }, destroyed: false } });
     const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: session } });

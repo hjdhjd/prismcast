@@ -295,9 +295,9 @@ export interface ServerConfig {
 }
 
 /**
- * Capture mode for media recording. Determines how video/audio is captured from the browser and processed for HLS output.
- * - "ffmpeg": Captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC. More stable for long recordings.
- * - "native": Captures fMP4 (H264+AAC) directly from Chrome. No dependencies but may be unstable with long recordings.
+ * The capture mode setting. Every stream captures through FFmpeg, so the setting names the capture mode in effect and no capture path branches on it.
+ * - "ffmpeg": The capture mode every stream uses, which captures Matroska (the effective capture codec plus Opus) and uses FFmpeg to transcode audio to AAC.
+ * - "native": Names Chrome's direct fMP4 (H264+AAC) recording, which no capture path implements and which every configuration corrects to "ffmpeg".
  *
  * Chrome's native fMP4 MediaRecorder produces corrupt output after 20-30 minutes of recording, so every configuration the server builds corrects "native" to
  * "ffmpeg", the warning is logged at startup and by a save whose write lands, and every write of the configuration file stores the corrected value.
@@ -317,8 +317,8 @@ export interface StreamingConfig {
   // encoding is available. The system selects the highest-priority allowed codec that the GPU supports. Environment variable: CAPTURE_CODECS. Default: ["h264", "hevc"].
   captureCodecs: string[];
 
-  // Capture mode determining how video/audio is captured and processed. "ffmpeg" captures Matroska (H264+Opus) and uses FFmpeg to transcode audio to AAC - more stable
-  // for long recordings but requires FFmpeg. "native" captures fMP4 (H264+AAC) directly from Chrome - no dependencies but may be unstable with long recordings.
+  // The capture mode in effect. "ffmpeg", the capture mode every stream uses, captures Matroska (the effective capture codec plus Opus) and uses FFmpeg to
+  // transcode audio to AAC. "native" names Chrome's direct fMP4 (H264+AAC) recording, which no capture path implements.
   // Environment variable: CAPTURE_MODE. Default: "ffmpeg". Every configuration built corrects any other value to "ffmpeg", and the warning is logged at startup
   // and by a save whose write lands, because Chrome's native fMP4 MediaRecorder corrupts output after 20-30 minutes of recording.
   captureMode: CaptureMode;

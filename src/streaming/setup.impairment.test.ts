@@ -86,7 +86,8 @@ function makeDeps(failure: Error): CreatePageWithCaptureDeps {
       throw new Error("No page is opened at all when the browser accessor refuses.");
     },
     reaffirmCaptureSurface: async (): Promise<void> => { /* No surface is ever acquired to re-affirm. */ },
-    spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+    resolveFFmpegPath: async (): Promise<never> => { throw new Error("No FFmpeg is resolved at all when the browser accessor refuses."); },
+    spawnFFmpeg: (): never => { throw new Error("No FFmpeg is spawned at all when the browser accessor refuses."); },
     startOverlayHandling: async (): Promise<void> => { /* No page is ever created to poll. */ },
     syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
   };

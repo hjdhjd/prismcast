@@ -14,15 +14,16 @@ import type { Browser, Page } from "puppeteer-core";
 import { StreamSetupError, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
-import type { CaptureMode } from "../types/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
 import { LOG } from "../utils/index.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import { Readable } from "node:stream";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { initializeDataDir } from "../config/paths.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -90,7 +91,8 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
-  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+  resolveFFmpegPath: async (): Promise<string> => "ffmpeg",
+  spawnFFmpeg: (): FFmpegProcess => makeFakeFFmpeg(),
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };
@@ -115,18 +117,14 @@ async function runFailingTune(): Promise<StreamSetupError> {
   throw new Error("The tune was expected to fail and did not.");
 }
 
-let originalCaptureMode: CaptureMode;
 let originalNavigationRetries: number;
 let restoreError: () => void;
 
 before(async () => {
 
-  originalCaptureMode = CONFIG.streaming.captureMode;
   originalNavigationRetries = CONFIG.streaming.maxNavigationRetries;
 
-  // Native capture keeps FFmpeg resolution out of the path ahead of navigation, and a single navigation attempt keeps the failure immediate rather than spending
-  // the retry ladder's backoff sleeps on a stub that will never succeed.
-  CONFIG.streaming.captureMode = "native";
+  // A single navigation attempt keeps the failure immediate rather than spending the retry ladder's backoff sleeps on a stub that will never succeed.
   CONFIG.streaming.maxNavigationRetries = 1;
 
   // Both rows drive a genuine setup failure, whose error line is expected and not what they measure.
@@ -140,7 +138,6 @@ before(async () => {
 
 after(() => {
 
-  CONFIG.streaming.captureMode = originalCaptureMode;
   CONFIG.streaming.maxNavigationRetries = originalNavigationRetries;
   restoreError();
 });

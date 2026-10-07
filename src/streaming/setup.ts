@@ -22,7 +22,6 @@ import { initializePlayback, injectVideoSelector, muteExistingVideos, navigateTo
 import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { Clock } from "homebridge-plugin-utils";
-import type { FFmpegProcess } from "../utils/index.ts";
 import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
@@ -54,7 +53,7 @@ import { systemClock } from "homebridge-plugin-utils";
  *
  * createPageWithCapture() handles:
  * - Browser page creation with CSP bypass
- * - Media stream initialization (native fMP4 or Matroska+FFmpeg)
+ * - Media stream initialization (a Matroska capture that FFmpeg remuxes to fMP4)
  * - Navigation with retry
  * - Video element detection and playback setup
  *
@@ -63,9 +62,6 @@ import { systemClock } from "homebridge-plugin-utils";
  * - Health monitor startup
  * - Cleanup function creation
  */
-
-// Native fMP4 capture uses MP4/AAC for direct HLS segmentation without transcoding.
-const NATIVE_FMP4_MIME_TYPE = "video/mp4;codecs=avc1,mp4a.40.2";
 
 // Capture initialization is serialized through a task-scoped lock. Chrome's tabCapture extension can only initialize one capture at a time - a second start while
 // one is in flight fails with "Cannot capture a tab with an active stream" - so every acquisition runs as a task on this one process-wide lock, which holds the
@@ -252,7 +248,7 @@ export interface StreamSetupOptions {
  */
 export interface StreamSetupResult {
 
-  // The capture-pipeline composite owning the raw capture stream and (in FFmpeg mode) the FFmpeg child. The caller attaches the fMP4 segmenter via
+  // The capture-pipeline composite owning the raw capture stream and the FFmpeg child that remuxes it. The caller attaches the fMP4 segmenter via
   // captureSession.attachSegmenter() once it is created, installs the session on the registry entry, and owns its disposal thereafter.
   captureSession: CaptureSession;
 
@@ -354,7 +350,7 @@ export interface CreatePageWithCaptureOptions {
   // Comment to embed in FFmpeg output metadata (channel name or domain).
   comment?: string;
 
-  // Callback invoked on FFmpeg process errors (only used in ffmpeg capture mode).
+  // Callback invoked on an error in the FFmpeg pipeline: the FFmpeg process, its stdout, or the capture stream's pipe into its stdin.
   onFFmpegError?: (error: Error) => void;
 
   // Forwarded to initializePlayback() and ultimately selectChannel(). Persists a category-selector resolution (e.g., Fox "FOXD2C" -> "WFLD") to the user's channel
@@ -401,7 +397,7 @@ export interface CreatePageWithCaptureOptions {
  */
 export interface CreatePageWithCaptureResult {
 
-  // The capture-pipeline composite owning the raw puppeteer-stream capture and (in FFmpeg mode) the FFmpeg child. The caller attaches the fMP4 segmenter via
+  // The capture-pipeline composite owning the raw puppeteer-stream capture and the FFmpeg child that remuxes it. The caller attaches the fMP4 segmenter via
   // captureSession.attachSegmenter() and owns its disposal thereafter.
   captureSession: CaptureSession;
 
@@ -538,9 +534,10 @@ function disposePage(page: Page): void {
  * has to observe it landing there. So are the two surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
  * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
  * pipeline it drives. So is the page creation itself, which is a queued turn on the tab-selection executor rather than a bare browser call, so a test observes
- * that the capture page is asked for through that primitive rather than opened wherever Chrome would put it. The remaining browser calls (registerManagedPage,
- * unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the collaborator-injection form of the
- * library's Clock port.
+ * that the capture page is asked for through that primitive rather than opened wherever Chrome would put it. So is the FFmpeg binary's resolution, which probes
+ * the host's FFmpeg candidates by running them, so a test replaces it beside the spawn rather than probing the host. The remaining browser calls
+ * (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the
+ * collaborator-injection form of the library's Clock port.
  */
 export interface CreatePageWithCaptureDeps {
 
@@ -556,6 +553,10 @@ export interface CreatePageWithCaptureDeps {
   readonly openSharedWindowTab: typeof openSharedWindowTab;
   readonly reaffirmCaptureSurface: typeof reaffirmCaptureSurface;
 
+  // The FFmpeg binary's resolution probes the host's FFmpeg candidates and runs each it tries with -version, so it is injected beside the spawn for a test to
+  // replace as it replaces the spawn.
+  readonly resolveFFmpegPath: typeof resolveFFmpegPath;
+
   // The FFmpeg spawn, injected for the same reason the capture acquisition is: the error wiring this function attaches to the child's streams decides when a fault
   // reaches the caller, and proving both directions of that decision needs a child whose teardown state and stream events a test can drive.
   readonly spawnFFmpeg: typeof spawnFFmpeg;
@@ -564,8 +565,8 @@ export interface CreatePageWithCaptureDeps {
 }
 
 const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCaptureStream, awaitCaptureVerdict: noteClassifiedCaptureFailure,
-  emulateCaptureSurface, getCurrentBrowser, installActivationHeal, openSharedWindowTab, reaffirmCaptureSurface, spawnFFmpeg, startOverlayHandling,
-  syncWindowVisibility };
+  emulateCaptureSurface, getCurrentBrowser, installActivationHeal, openSharedWindowTab, reaffirmCaptureSurface, resolveFFmpegPath, spawnFFmpeg,
+  startOverlayHandling, syncWindowVisibility };
 
 /* The window-topology answers the open primitive needs and cannot reach for itself: tabSelection.ts speaks to the capture extension alone, so the CDP-side carrier
  * resolution and placement confirmation arrive from here, where both modules are already in view. One record, referenced by both call sites, because the two call
@@ -577,7 +578,7 @@ const SHARED_WINDOW_TOPOLOGY = { confirmPlacement: confirmSharedWindowPlacement,
  * Creates a browser page with media capture and navigates to the URL. This is the reusable core function used by both initial stream setup and tab replacement
  * recovery. It handles:
  * - Creating a new browser page with CSP bypass
- * - Initializing media capture (native fMP4 or Matroska+FFmpeg)
+ * - Initializing media capture (a Matroska capture that FFmpeg remuxes to fMP4)
  * - Navigating to the URL with retry
  * - Setting up video playback via navigateToPage() + initializePlayback()
  * - Re-entering itself once, on a fresh page through a freshly acquired browser, when Chrome refuses the capture start and the mid-life probe's verdict says a
@@ -592,7 +593,7 @@ const SHARED_WINDOW_TOPOLOGY = { confirmPlacement: confirmSharedWindowPlacement,
  * @param options - Options for page and capture creation.
  * @param deps - The injected browser and overlay-poll collaborators; defaults to defaultCreatePageWithCaptureDeps. Threaded so a test drives this function without a
  * live Chrome by substituting the shared-browser accessor, the capture acquisition, and the static-capture overlay poll.
- * @returns The page, context, and capture session (which owns the raw capture stream and any FFmpeg child).
+ * @returns The page, context, and capture session (which owns the raw capture stream and its FFmpeg child).
  * @throws Error if page creation, capture initialization, or navigation fails.
  */
 export async function createPageWithCapture(options: CreatePageWithCaptureOptions,
@@ -641,18 +642,16 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // whichever way this tab becomes the selected one, the capture's composition moves back to the emulated surface about a second later.
   await deps.installActivationHeal(page);
 
-  // Select MIME type based on capture mode. FFmpeg mode is more stable for long recordings because Chrome's native fMP4 MediaRecorder can become unstable. The
-  // codec decision (H.264 vs HEVC) is delegated to the codec module, which considers the user's allowlist and GPU hardware capabilities.
-  const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-  const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
+  // The capture's Matroska MIME type carries the codec decision, which is the codec module's: it weighs the user's allowlist against the GPU's hardware encoders.
+  const captureMimeType = getCaptureMimeType();
 
   // Resolve the FFmpeg binary path up front, before the raw capture stream is acquired below. resolveFFmpegPath is a memoized resolver that can sticky-reject; if its
   // await sat between acquiring the raw capture stream and wrapping it in a CaptureSession, a rejection would strand the stream undestroyed (STOP_RECORDING never
   // fires, leaving chrome.tabCapture active). Resolving it here keeps any rejection on a path with no capture resource yet acquired, so the CaptureSession remains
-  // the single owner from the instant the stream exists. Falls back to "ffmpeg" so spawn() defers to PATH lookup; only meaningful in FFmpeg mode.
-  const ffmpegBin = useFFmpeg ? ((await resolveFFmpegPath()) ?? "ffmpeg") : "ffmpeg";
+  // the single owner from the instant the stream exists. Falls back to "ffmpeg" so spawn() defers to PATH lookup.
+  const ffmpegBin = (await deps.resolveFFmpegPath()) ?? "ffmpeg";
 
-  // The capture-pipeline composite, assigned once the raw capture stream and optional FFmpeg child exist and registered on the DisposableStack the moment it is built.
+  // The capture-pipeline composite, assigned once the raw capture stream and its FFmpeg child exist and registered on the DisposableStack the moment it is built.
   let captureSession: CaptureSession;
 
   // Initialize media stream capture. The whole capture-init phase runs inside one try so a browser crash detected at turn grant drives the closed-page recursion,
@@ -732,82 +731,75 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       turnWaitMs: CONFIG.streaming.navigationTimeout
     });
 
-    // For FFmpeg mode, spawn FFmpeg to transcode the Matroska stream to fMP4. FFmpeg copies the H264 video and transcodes Opus audio to AAC. The binary path was
-    // resolved up front (above) so no throwable await sits between acquiring the raw capture stream and wrapping it in the CaptureSession that owns it. The spawn and
-    // pipeline wiring below are synchronous, so the stream is owned the instant it exists.
-    let ffmpegProcess: Nullable<FFmpegProcess> = null;
+    // Spawn FFmpeg to remux the Matroska capture to fMP4: it copies the captured video and transcodes the Opus audio to AAC. The binary path was resolved up front
+    // (above) so no throwable await sits between acquiring the raw capture stream and wrapping it in the CaptureSession that owns it. The spawn and pipeline wiring
+    // below are synchronous, so the stream is owned the instant it exists.
+    const ffmpeg = deps.spawnFFmpeg(ffmpegBin, settings.audioBitsPerSecond, (error) => {
 
-    if(useFFmpeg) {
+      LOG.error("FFmpeg process error: %s.", formatError(error));
 
-      const ffmpeg = deps.spawnFFmpeg(ffmpegBin, settings.audioBitsPerSecond, (error) => {
+      if(onFFmpegError) {
 
-        LOG.error("FFmpeg process error: %s.", formatError(error));
+        onFFmpegError(error);
+      }
+    }, streamId, comment);
+
+    /* A disposed pipeline must never fire its error callback. The listeners below sit on the process's own streams rather than inside the spawn wrapper, so
+     * they are the places a post-kill teardown event can still reach a caller, and each gates on the same teardown flag the wrapper's own handlers use.
+     *
+     * The gate is what keeps a tab replacement's discard silent. A replacement disposes the outgoing pipeline in the same synchronous frame it installs the
+     * incoming one, so a stray event from the killed FFmpeg lands a tick later - against a registry that already holds a healthy new pipeline - and this
+     * closure's callback would break the circuit on the very stream the replacement just saved. String filters cannot cover that: they name the errors
+     * teardown is known to produce, and the point here is every error a killed pipeline produces.
+     */
+    const isTornDown = (): boolean => ffmpeg.isShuttingDown();
+
+    // Handle pipe errors on stdout. Stdin errors are handled by pipeline() below.
+    ffmpeg.stdout.on("error", (error) => {
+
+      const errorMessage = formatError(error);
+
+      if(errorMessage.includes("EPIPE") || isTornDown()) {
+
+        LOG.debug("streaming:ffmpeg", "FFmpeg stdout pipe closed: %s.", errorMessage);
+      } else {
+
+        LOG.error("FFmpeg stdout pipe error: %s.", errorMessage);
+        ffmpeg.kill();
 
         if(onFFmpegError) {
 
           onFFmpegError(error);
         }
-      }, streamId, comment);
+      }
+    });
 
-      ffmpegProcess = ffmpeg;
+    // Pipe the Matroska capture stream to FFmpeg's stdin using pipeline() for proper cleanup. When FFmpeg is killed during tab replacement, pipeline() automatically
+    // destroys the source stream, preventing "write after end" errors that would occur with .pipe().
+    pipeline(stream, ffmpeg.stdin).catch((error: unknown) => {
 
-      /* A disposed pipeline must never fire its error callback. The two listeners below sit on the process's own streams rather than inside the spawn wrapper,
-       * so they are the two places a post-kill teardown event can still reach a caller, and each gates on the same teardown flag the wrapper's own handlers use.
-       *
-       * The gate is what keeps a tab replacement's discard silent. A replacement disposes the outgoing pipeline in the same synchronous frame it installs the
-       * incoming one, so a stray event from the killed FFmpeg lands a tick later - against a registry that already holds a healthy new pipeline - and this
-       * closure's callback would break the circuit on the very stream the replacement just saved. String filters cannot cover that: they name the errors
-       * teardown is known to produce, and the point here is every error a killed pipeline produces.
-       */
-      const isTornDown = (): boolean => ffmpeg.isShuttingDown();
+      const errorMessage = formatError(error);
 
-      // Handle pipe errors on stdout. Stdin errors are handled by pipeline() below.
-      ffmpeg.stdout.on("error", (error) => {
+      // EPIPE, "write after end", and "Premature close" errors are expected during cleanup when FFmpeg is killed or the capture stream is destroyed, and a
+      // pipeline whose FFmpeg is being torn down produces whatever it produces.
+      if(errorMessage.includes("EPIPE") || errorMessage.includes("write after end") || errorMessage.includes("Premature close") || isTornDown()) {
 
-        const errorMessage = formatError(error);
+        return;
+      }
 
-        if(errorMessage.includes("EPIPE") || isTornDown()) {
+      // Unexpected pipeline errors require cleanup.
+      LOG.error("Capture pipeline error: %s.", errorMessage);
+      ffmpeg.kill();
 
-          LOG.debug("streaming:ffmpeg", "FFmpeg stdout pipe closed: %s.", errorMessage);
-        } else {
+      if(onFFmpegError) {
 
-          LOG.error("FFmpeg stdout pipe error: %s.", errorMessage);
-          ffmpeg.kill();
+        onFFmpegError(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
 
-          if(onFFmpegError) {
-
-            onFFmpegError(error);
-          }
-        }
-      });
-
-      // Pipe the Matroska capture stream to FFmpeg's stdin using pipeline() for proper cleanup. When FFmpeg is killed during tab replacement, pipeline() automatically
-      // destroys the source stream, preventing "write after end" errors that would occur with .pipe().
-      pipeline(stream, ffmpeg.stdin).catch((error: unknown) => {
-
-        const errorMessage = formatError(error);
-
-        // EPIPE, "write after end", and "Premature close" errors are expected during cleanup when FFmpeg is killed or the capture stream is destroyed, and a
-        // pipeline whose FFmpeg is being torn down produces whatever it produces.
-        if(errorMessage.includes("EPIPE") || errorMessage.includes("write after end") || errorMessage.includes("Premature close") || isTornDown()) {
-
-          return;
-        }
-
-        // Unexpected pipeline errors require cleanup.
-        LOG.error("Capture pipeline error: %s.", errorMessage);
-        ffmpeg.kill();
-
-        if(onFFmpegError) {
-
-          onFFmpegError(error instanceof Error ? error : new Error(String(error)));
-        }
-      });
-    }
-
-    // Wrap the raw capture stream and optional FFmpeg child as one self-disposing pipeline unit, and register it for structural teardown. The session derives the
-    // segmenter input internally (FFmpeg's stdout in FFmpeg mode, the raw stream in native-fMP4 mode); the caller attaches the segmenter once it is created.
-    captureSession = createCaptureSession({ ffmpegProcess, rawCaptureStream: stream });
+    // Wrap the raw capture stream and its FFmpeg child as one self-disposing pipeline unit, and register it for structural teardown. The session feeds the segmenter
+    // from FFmpeg's fMP4 stdout; the caller attaches the segmenter once it is created.
+    captureSession = createCaptureSession({ ffmpegProcess: ffmpeg, rawCaptureStream: stream });
     resources.use(captureSession);
   } catch(error) {
 
@@ -1814,8 +1806,7 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
     // Use the same capture MIME type and surface as the runtime. The stale state error occurs at the tabCapture API level before encoding matters, so matching
     // those runtime constraints ensures the probe exercises a representative acquisition. The constraints are held to the dimensions the declaration above
     // returned, so the probe holds its track to the surface the page actually carries rather than to a second read of the preset.
-    const useFFmpeg = CONFIG.streaming.captureMode === "ffmpeg";
-    const captureMimeType = useFFmpeg ? getCaptureMimeType() : NATIVE_FMP4_MIME_TYPE;
+    const captureMimeType = getCaptureMimeType();
 
     const streamOptions: CaptureStreamOptions = {
 

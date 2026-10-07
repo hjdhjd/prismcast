@@ -17,16 +17,17 @@
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
 import type { CaptureProbeOutcome, CreatePageWithCaptureDeps } from "./setup.ts";
-import { before, beforeEach, describe, test } from "node:test";
+import { beforeEach, describe, test } from "node:test";
 import { BrowserCaptureImpairedError } from "../browser/index.ts";
 import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE } from "../types/index.ts";
-import { CONFIG } from "../config/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
@@ -121,7 +122,8 @@ const deps: CreatePageWithCaptureDeps = {
     return makeStubPage();
   },
   reaffirmCaptureSurface: async (): Promise<void> => { /* No compositor to re-affirm against. */ },
-  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+  resolveFFmpegPath: async (): Promise<string> => "ffmpeg",
+  spawnFFmpeg: (): FFmpegProcess => makeFakeFFmpeg(),
   startOverlayHandling: async (): Promise<void> => { /* No overlays on a stub page. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what these rows measure. */ }
 };
@@ -152,12 +154,6 @@ function resetState(): void {
   verdictAnswer = async (): Promise<null> => null;
   verdictCalls = 0;
 }
-
-before(() => {
-
-  // Native capture mode keeps the FFmpeg path and its binary resolution out of the region these rows drive.
-  CONFIG.streaming.captureMode = "native";
-});
 
 beforeEach(() => {
 

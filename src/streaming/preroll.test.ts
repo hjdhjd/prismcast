@@ -74,8 +74,8 @@ describe("getPrerollCodec", () => {
 
   test("returns 'h264' as the default fallback when no variant has been generated", () => {
 
-    // The function chains: preferred (from getEffectiveCaptureCodec) -> fallback (other) -> "h264". With no variants generated, every branch falls through to
-    // the literal "h264".
+    // The function chains: the preferred codec (from getEffectiveCaptureCodec), then any ready variant, then the baseline. With no variant generated, the chain
+    // ends at the baseline.
     assert.equal(getPrerollCodec(), "h264");
   });
 });
@@ -404,8 +404,8 @@ describe("setupPrerollRoutes", () => {
 
   test("init.mp4 returns 404 'Preroll not available.' for an unknown codec param", () => {
 
-    /* The codec param is gated by the runtime check ((codec === "h264") || (codec === "hevc")). Anything else - "av1", "foo", undefined - must produce 404
-     * rather than crashing the lookup. Asserts the input-validation branch.
+    /* The route answers from the variant map, which holds no variant for an unrecognized codec, so a parameter such as "av1" must produce 404 rather than
+     * crashing the lookup. Asserts that a parameter with no generated variant answers 404.
      */
     const stub = makeExpressStub();
 

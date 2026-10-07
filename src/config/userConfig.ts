@@ -48,8 +48,8 @@ export interface SettingMetadata {
   // Human-readable description shown in the UI.
   description: string;
 
-  // When set, the field is disabled in the UI and this message is shown as a warning explaining why. The setting's value is forced to its default and cannot be
-  // changed by the user. Used for temporarily disabling options due to upstream issues (e.g., Chrome bugs).
+  // When set, the field is disabled in the UI and this message is shown as a warning explaining why. The field disables only the form's control, and the
+  // configuration's corrections are what hold a setting that must take one value. Used for disabling options due to upstream issues (e.g., Chrome bugs).
   disabledReason?: string;
 
   // Divisor for converting stored value to display value (e.g., 1000 to convert ms to seconds). When set, the UI displays value/displayDivisor and stores
@@ -602,10 +602,10 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
   streaming: [
     {
 
-      description: "FFmpeg (recommended) provides reliable capture for long recordings. Native mode captures directly from Chrome without an external " +
-        "process, but may require stream recovery after 20-30 minutes of continuous use.",
-      disabledReason: "Native capture mode is temporarily disabled due to a Chrome bug that causes fMP4 MediaRecorder to produce corrupt output after " +
-        "20-30 minutes of continuous recording. FFmpeg mode is required until a future Chrome release resolves this issue.",
+      description: "FFmpeg converts the browser's capture into the stream, copying its video and transcoding its audio to AAC, and is the capture mode every " +
+        "stream uses.",
+      disabledReason: "Native capture, which records fMP4 directly in Chrome, is unavailable because Chrome's fMP4 MediaRecorder corrupts its output after " +
+        "20-30 minutes of recording.",
       envVar: "CAPTURE_MODE",
       label: "Capture Mode",
       path: "streaming.captureMode",
@@ -1511,7 +1511,7 @@ export const DEFAULTS: Config = {
   streaming: {
 
     audioBitsPerSecond: 256000,
-    captureCodecs: [ "h264", "hevc" ],
+    captureCodecs: [ CAPTURE_BASELINE_CODEC, "hevc" ],
     captureMode: "ffmpeg",
     frameRate: 60,
     maxConcurrentStreams: 10,

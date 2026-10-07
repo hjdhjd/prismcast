@@ -134,7 +134,7 @@ export interface HealthStatus {
     pageCount: number;
   };
 
-  // Media capture mode currently configured ("ffmpeg" or "native").
+  // The media capture mode in effect, which the configuration holds at "ffmpeg".
   captureMode: string;
 
   // Chrome browser version string (e.g., "Chrome/144.0.7559.110"), or null if the browser is not connected.
@@ -150,7 +150,7 @@ export interface HealthStatus {
     total: number;
   };
 
-  // Whether FFmpeg is available on the system. Only relevant when captureMode is "ffmpeg".
+  // Whether FFmpeg is available on the system, which every capture needs.
   ffmpegAvailable: boolean;
 
   // Node.js memory usage statistics in bytes.

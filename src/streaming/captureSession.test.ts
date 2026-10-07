@@ -1,12 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * captureSession.test.ts: Unit tests for the capture-pipeline composite. createCaptureSession owns three resources (raw capture stream, optional FFmpeg child, fMP4
+ * captureSession.test.ts: Unit tests for the capture-pipeline composite. createCaptureSession owns the pipeline's resources (raw capture stream, FFmpeg child, fMP4
  * segmenter) and exposes a single Disposable whose teardown runs kill -> destroy -> stop. These tests assert that order against synthetic doubles - in particular the
  * correctness-critical first step (FFmpeg is killed, setting its shuttingDown flag, before the capture stream is destroyed and carries EOF to FFmpeg's stdin), the
- * repeated-dispose safety, the native-fMP4 (no FFmpeg) and segmenter-less (setup-phase / native-upgrade) shapes, the "using" scope-bound path, and the
- * orphaned-segmenter fold where attaching a segmenter to an already-disposed session stops it instead of wiring it. The composite is pure orchestration over the
- * three handles' own operations that are already safe to call twice, so synthetic doubles fully exercise it without a real browser capture, FFmpeg child, or
- * fMP4 feed.
+ * repeated-dispose safety, the segmenter-less (setup-phase / native-upgrade) shape, the "using" scope-bound path, and the orphaned-segmenter fold where attaching
+ * a segmenter to an already-disposed session stops it instead of wiring it. The composite is pure orchestration over the handles' own operations that are
+ * already safe to call twice, so synthetic doubles fully exercise it without a real browser capture, FFmpeg child, or fMP4 feed.
  */
 import { describe, test } from "node:test";
 import type { FFmpegProcess } from "../utils/index.ts";
@@ -51,7 +50,7 @@ function createRig(options: { startDestroyed?: boolean } = {}): Rig {
   let ffmpegShuttingDown = false;
   let pipedTo: Nullable<Readable> = null;
 
-  // FFmpeg's fMP4 stdout - the segmenter's pipe target in FFmpeg mode. A tagged object suffices; the session only forwards it to segmenter.pipe().
+  // FFmpeg's fMP4 stdout - the segmenter's pipe target. A tagged object suffices; the session only forwards it to segmenter.pipe().
   const stdout = { tag: "ffmpeg-stdout" } as unknown as Readable;
 
   // The session only ever touches kill() and stdout, so the double carries just those two members (the cast satisfies the rest of the FFmpegProcess contract).
@@ -123,17 +122,6 @@ describe("createCaptureSession - teardown order", () => {
     session.dispose();
 
     assert.equal(rig.calls.shuttingDownAtDestroy, true);
-  });
-
-  test("native-fMP4 mode (no FFmpeg) skips the kill step and tears down capture then segmenter", () => {
-
-    const rig = createRig();
-    const session = createCaptureSession({ ffmpegProcess: null, rawCaptureStream: rig.rawCaptureStream });
-
-    session.attachSegmenter(rig.segmenter);
-    session.dispose();
-
-    assert.deepEqual(rig.calls.order, [ "destroy", "stop" ]);
   });
 
   test("disposes capture and FFmpeg when no segmenter has been attached", () => {
@@ -218,7 +206,7 @@ describe("createCaptureSession - repeat safety", () => {
 
 describe("createCaptureSession - segmenter wiring", () => {
 
-  test("pipes the segmenter to FFmpeg stdout in FFmpeg mode", () => {
+  test("pipes the segmenter to FFmpeg stdout", () => {
 
     const rig = createRig();
     const session = createCaptureSession({ ffmpegProcess: rig.ffmpegProcess, rawCaptureStream: rig.rawCaptureStream });
@@ -227,16 +215,6 @@ describe("createCaptureSession - segmenter wiring", () => {
 
     assert.equal(rig.pipedTo(), rig.stdout);
     assert.equal(session.segmenter, rig.segmenter);
-  });
-
-  test("pipes the segmenter to the raw capture stream in native-fMP4 mode", () => {
-
-    const rig = createRig();
-    const session = createCaptureSession({ ffmpegProcess: null, rawCaptureStream: rig.rawCaptureStream });
-
-    session.attachSegmenter(rig.segmenter);
-
-    assert.equal(rig.pipedTo(), rig.rawCaptureStream);
   });
 
   test("stops the orphan and does not wire it when attaching to an already-disposed session", () => {

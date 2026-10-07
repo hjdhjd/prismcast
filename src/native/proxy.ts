@@ -8,6 +8,7 @@ import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
 import { findNamedInitSegment, pruneNamedInitSegments, storeAudioSegment, storeNamedInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist,
   updateVideoPlaylist } from "../streaming/hlsSegments.ts";
+import { CAPTURE_BASELINE_CODEC } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "../streaming/codec.ts";
 import type { Clock } from "homebridge-plugin-utils";
@@ -142,7 +143,7 @@ export interface NativeProxyOptions {
   prefetchedKey: Nullable<Buffer>;
 
   // The preroll codec variant for composite playlist construction. Determines which preroll variant URLs and durations are used.
-  prerollCodec?: CaptureCodec;
+  prerollCodec?: Nullable<CaptureCodec>;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering at this index to reserve the preroll index range. The
   // composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
@@ -1604,10 +1605,13 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   const { channelName, clock = systemClock, container, encryption, keyUrl, onError, streamId } = options;
   const hasAudio = options.audioVariantUrl !== null;
 
+  // The preroll codec is read only while a preroll is active, and every caller that activates one passes its codec, so the baseline stands in only for a proxy that
+  // never reads it.
+  const prerollCodec: CaptureCodec = options.prerollCodec ?? CAPTURE_BASELINE_CODEC;
+
   // Preroll segment index offset. When preroll is ready (prerollSegmentCount > 0), real segments start numbering after the preroll range (e.g., segmentN.ts where
   // N = prerollSegmentCount). This offset is unconditional - it reserves the index space for preroll regardless of whether the deferred preroll timer fires.
   // The composite playlist behavior (including preroll entries) is determined dynamically by checking stream.hls.prerollStartTime at playlist generation time.
-  const prerollCodec: CaptureCodec = options.prerollCodec ?? "h264";
   const prerollSegmentCount = options.prerollSegmentCount ?? 0;
 
   /* Proxy state. These track segment storage, manifest polling, error thresholds, and playlist generation across the proxy's lifetime. Mutable variables are organized

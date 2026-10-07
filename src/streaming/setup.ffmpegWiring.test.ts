@@ -2,87 +2,64 @@
  *
  * setup.ffmpegWiring.test.ts: Tests for the FFmpeg error wiring createPageWithCapture attaches to a capture pipeline's streams.
  *
- * Two listeners live outside the spawn wrapper - the one on the child's stdout and the one on the capture-to-stdin pipeline - and they are the two places a
- * post-teardown event can still reach the caller's callback. That matters because a tab replacement disposes the outgoing pipeline in the same frame it installs
- * the incoming one, so a stray event from the killed child lands against a registry that already holds a healthy new pipeline, where breaking the circuit would
- * terminate the stream the replacement just saved.
+ * The listeners that live outside the spawn wrapper - the one on the child's stdout and the one on the capture-to-stdin pipeline - are where a post-teardown event can
+ * still reach the caller's callback. That matters because a tab replacement disposes the outgoing pipeline in the same frame it installs the incoming one, so a stray
+ * event from the killed child lands against a registry that already holds a healthy new pipeline, where breaking the circuit would terminate the stream the replacement
+ * just saved.
  *
- * Both directions are asserted for both listeners, because the two ways to get this wrong are opposites: a gate that silences nothing leaves the hazard open, and
- * a gate that silences everything hides genuine faults on a live pipeline. createPageWithCapture composes on its injected collaborators, so these rows drive the
- * real wiring with a stub browser, a PassThrough capture stream, and an FFmpeg double whose teardown state and stream events the test drives.
+ * Both directions are asserted for each listener, because the two ways to get this wrong are opposites: a gate that silences nothing leaves the hazard open, and a gate
+ * that silences everything hides genuine faults on a live pipeline. createPageWithCapture composes on its injected collaborators, so these rows drive the real wiring
+ * with a stub browser, a PassThrough capture stream, and an FFmpeg double whose teardown state and stream events the test drives.
  *
- * The same double records the audio rate each spawn is handed, which is how a row reads that the FFmpeg encoder runs at the stream's own audio rate.
+ * The spawn stub records the binary and the audio rate each spawn is handed, which is how a row reads that the FFmpeg encoder runs at the stream's own audio rate,
+ * and that the binary is the one the injected resolver answers: its path when it finds one, the bare name the PATH lookup takes when it finds none, and no spawn
+ * and no capture at all when the resolution rejects.
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
-import { after, before, beforeEach, describe, test } from "node:test";
+import { beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
-import type { ChildProcess } from "node:child_process";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
+import type { FakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { PassThrough } from "node:stream";
 import type { StreamSettings } from "../config/streamSettings.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
 import { setTimeout as delay } from "node:timers/promises";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-/**
- * The FFmpeg child double. It answers the teardown-requested read exactly as the real wrapper does - set unconditionally by kill() - and exposes its streams so a
- * row can raise the events a dying child raises.
- */
-interface FakeFFmpeg extends FFmpegProcess {
-
-  // How many times kill() has been called, so a row can read whether the live branch tore the pipeline down before escalating.
-  readonly kills: () => number;
-}
-
-/**
- * Builds the FFmpeg double.
- * @returns The double, with real PassThrough streams so the production pipeline wiring runs unchanged.
- */
-function makeFakeFFmpeg(): FakeFFmpeg {
-
-  let kills = 0;
-  let shuttingDown = false;
-
-  return {
-
-    isShuttingDown: (): boolean => shuttingDown,
-    kill: (): void => {
-
-      kills++;
-      shuttingDown = true;
-    },
-    kills: (): number => kills,
-    process: {} as ChildProcess,
-    stdin: new PassThrough(),
-    stdout: new PassThrough()
-  };
-}
+// The binary the resolver each row starts from answers, a path no host carries, so a spawn handed it can only have taken it from the injected resolver.
+const RESOLVED_BINARY = "/test/resolved/ffmpeg";
 
 // The FFmpeg double the current row's establishment is handed, and the capture stream feeding it.
 let ffmpeg: FakeFFmpeg;
 let captureStream: PassThrough;
 
+// How many capture acquisitions the current row's establishment made.
+let acquisitions: number;
+
 // Every error the establishment's caller-facing callback received, in order.
 let faults: Error[];
 
-// The audio rate each FFmpeg spawn was handed, in order.
-let spawnedAudioRates: number[];
+// The current row's FFmpeg resolution, which the injected resolver delegates to.
+let resolveBinary: () => Promise<string | undefined>;
 
-// The capture mode the suite found, restored on the way out so the shared CONFIG is left as it was.
-let originalCaptureMode: string;
+// The binary and the audio rate each FFmpeg spawn was handed, in order.
+let spawnedAudioRates: number[];
+let spawnedBinaries: string[];
 
 const deps: CreatePageWithCaptureDeps = {
 
   acquireCaptureStream: async (): Promise<CaptureStream> => {
 
+    acquisitions++;
     captureStream = new PassThrough();
 
     return captureStream as unknown as CaptureStream;
@@ -95,8 +72,10 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* Nothing to enrol on a stub page. */ },
   openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* No compositor to re-affirm against. */ },
-  spawnFFmpeg: (_ffmpegBin: string, audioBitsPerSecond: number): FFmpegProcess => {
+  resolveFFmpegPath: async (): Promise<string | undefined> => resolveBinary(),
+  spawnFFmpeg: (ffmpegBin: string, audioBitsPerSecond: number): FFmpegProcess => {
 
+    spawnedBinaries.push(ffmpegBin);
     spawnedAudioRates.push(audioBitsPerSecond);
 
     return ffmpeg;
@@ -105,14 +84,16 @@ const deps: CreatePageWithCaptureDeps = {
   syncWindowVisibility: async (): Promise<void> => { /* No window to settle. */ }
 };
 
-/* A minimal Page for the static-capture pipeline: goto and evaluateOnNewDocument are all it is asked for, and the disconnected browser resolves the overlay
- * poll's tick taxonomy to a clean stop rather than leaving a fire-and-forget promise pending past the row.
+/* A minimal Page for the static-capture pipeline: goto and evaluateOnNewDocument are all it is asked for, close is what an establishment's unwind asks of it when
+ * the establishment rejects, and the disconnected browser resolves the overlay poll's tick taxonomy to a clean stop rather than leaving a fire-and-forget promise
+ * pending past the row.
  */
 function makeStubPage(): Page {
 
   return {
 
     browser: (): Browser => ({ connected: false } as unknown as Browser),
+    close: async (): Promise<void> => { /* Nothing to close on a stub. */ },
     createCDPSession: async (): Promise<CDPSession> => ({ send: async (): Promise<unknown> => ({}) } as unknown as CDPSession),
     evaluate: async (): Promise<never> => { throw new Error("The stub page has no live DOM to evaluate against."); },
     evaluateOnNewDocument: async (): Promise<void> => { /* The injected video-selector helper needs no real document on a stub. */ },
@@ -142,24 +123,14 @@ async function establish(settings: StreamSettings = makeStreamSettings()): Promi
   return { dispose: (): void => result.captureSession.dispose() };
 }
 
-before(() => {
-
-  originalCaptureMode = CONFIG.streaming.captureMode;
-
-  // FFmpeg mode is what attaches the two listeners under test.
-  CONFIG.streaming.captureMode = "ffmpeg";
-});
-
-after(() => {
-
-  CONFIG.streaming.captureMode = originalCaptureMode as typeof CONFIG.streaming.captureMode;
-});
-
 beforeEach(() => {
 
+  acquisitions = 0;
   faults = [];
   ffmpeg = makeFakeFFmpeg();
+  resolveBinary = async (): Promise<string> => RESOLVED_BINARY;
   spawnedAudioRates = [];
+  spawnedBinaries = [];
 });
 
 describe("createPageWithCapture: a disposed pipeline never fires its error callback", () => {
@@ -248,5 +219,44 @@ describe("createPageWithCapture: the FFmpeg encoder runs at the stream's audio r
       CONFIG.streaming.audioBitsPerSecond = configuredAudioRate;
       CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
     }
+  });
+});
+
+describe("createPageWithCapture: the FFmpeg binary comes from the injected resolver", () => {
+
+  test("the spawn receives the binary the injected resolver returns", async () => {
+
+    // The resolver each row starts from answers a path no host carries, so a spawn handed anything else took its binary from somewhere other than the collaborator.
+    const capture = await establish();
+
+    assert.deepEqual(spawnedBinaries, [RESOLVED_BINARY], "the one spawn ran the binary the resolver answered");
+
+    capture.dispose();
+  });
+
+  test("a resolver that finds no FFmpeg leaves the spawn the PATH lookup", async () => {
+
+    // The resolver answers undefined when no candidate runs, and the establishment hands the spawn the bare name so spawn() defers to the PATH lookup.
+    resolveBinary = async (): Promise<undefined> => undefined;
+
+    const capture = await establish();
+
+    assert.deepEqual(spawnedBinaries, ["ffmpeg"], "the one spawn ran the bare name the PATH lookup resolves");
+
+    capture.dispose();
+  });
+
+  test("a resolver rejection rejects the establishment with that error before any capture is acquired", async () => {
+
+    // The resolution runs ahead of the acquisition, so a rejection finds no capture stream to strand and the capture session stays the stream's sole owner from
+    // the instant the stream exists.
+    const failure = new Error("The FFmpeg resolution failed.");
+
+    resolveBinary = async (): Promise<never> => { throw failure; };
+
+    await assert.rejects(establish(), (error: unknown) => error === failure, "the establishment rejects with the resolver's own error");
+
+    assert.equal(acquisitions, 0, "no capture was acquired");
+    assert.deepEqual(spawnedBinaries, [], "no FFmpeg was spawned");
   });
 });

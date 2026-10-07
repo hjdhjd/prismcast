@@ -12,18 +12,20 @@
  * pointed at a temp data directory so nothing is written outside it.
  */
 import type { Browser, Page } from "puppeteer-core";
-import type { CaptureMode, ResolvedSiteProfile } from "../types/index.ts";
 import { DirectUrlEstablishmentError, createPageWithCapture, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { evictPersistedWatchUrl, persistProviderLineup } from "../config/providerLineups.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import { Readable } from "node:stream";
+import type { ResolvedSiteProfile } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { initializeDataDir } from "../config/paths.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { mkdtemp } from "node:fs/promises";
@@ -85,7 +87,8 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
-  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+  resolveFFmpegPath: async (): Promise<string> => "ffmpeg",
+  spawnFFmpeg: (): FFmpegProcess => makeFakeFFmpeg(),
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll matters on a failing establishment. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };
@@ -102,17 +105,13 @@ function makeOptions(overrides: { skipDirectUrl?: boolean } = {}): Parameters<ty
   return { profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "direct-url-fallback", url: GUIDE_URL, ...overrides };
 }
 
-let originalCaptureMode: CaptureMode;
 let originalNavigationRetries: number;
 
 before(async () => {
 
-  originalCaptureMode = CONFIG.streaming.captureMode;
   originalNavigationRetries = CONFIG.streaming.maxNavigationRetries;
 
-  // Native capture keeps FFmpeg resolution out of the path ahead of navigation, and a single navigation attempt keeps the failure immediate rather than spending
-  // the retry ladder's backoff sleeps on a stub that will never succeed.
-  CONFIG.streaming.captureMode = "native";
+  // A single navigation attempt keeps the failure immediate rather than spending the retry ladder's backoff sleeps on a stub that will never succeed.
   CONFIG.streaming.maxNavigationRetries = 1;
 
   // Point the persisted lineup store at a temp directory so seeding a hint writes nothing into a real data directory.
@@ -121,7 +120,6 @@ before(async () => {
 
 after(() => {
 
-  CONFIG.streaming.captureMode = originalCaptureMode;
   CONFIG.streaming.maxNavigationRetries = originalNavigationRetries;
 });
 

@@ -1419,7 +1419,7 @@ async function startNativeProxy(options: NativeProxyOptions): Promise<Nullable<N
       applyNativeQualityRefresh(refreshed, metadata);
     },
     page: setup.page,
-    prerollCodec: entry.hls.prerollCodec ?? "h264",
+    prerollCodec: entry.hls.prerollCodec,
     prerollSegmentCount: nativePrerollSegmentCount,
     probeIdentity: setup.probeIdentity,
     reestablishManifest,
@@ -1625,7 +1625,7 @@ function createCaptureSegmenter(options: CaptureSegmenterOptions): boolean {
     ...((prerollSegmentCount > 0) ? {
 
       prerollBaseUrl: entry.hls.prerollBaseUrl,
-      prerollCodec: entry.hls.prerollCodec ?? "h264",
+      prerollCodec: entry.hls.prerollCodec,
       prerollSegmentCount
     } : {}),
 
@@ -1816,13 +1816,12 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       // Prefix the codec label with U+26A1, the high-voltage / lightning-bolt glyph, as a visual marker in the "Streaming..." log line that capture is
       // hardware-accelerated. The glyph is written as an escape so the source stays ASCII; it renders as the lightning bolt in the log output.
       const ffmpegCodec = captureHwAccel ? ("\u26A1 " + effectiveCodec.toUpperCase()) : effectiveCodec.toUpperCase();
-      const captureMode = (streamingMode === "native") ? ("native HLS" + nativeQuality) :
-        (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg [" + ffmpegCodec + "]" : "Native fMP4");
+      const pipelineLabel = (streamingMode === "native") ? ("native HLS" + nativeQuality) : ("FFmpeg [" + ffmpegCodec + "]");
       const displayName = channel?.name ?? url;
 
       const tuneTime = ((now - options.entry.startTime) / 1000).toFixed(1);
 
-      LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.serviceName, setup.profileName, captureMode,
+      LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.serviceName, setup.profileName, pipelineLabel,
         tuneTime, setup.directTune ? " (direct)" : "");
 
       // Mark channel health as successful. Only for predefined channels (channel is defined). Ad-hoc URL streams have no persistent channel identity. Domain

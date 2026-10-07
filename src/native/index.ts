@@ -96,7 +96,7 @@ export interface AttemptNativeStreamingOptions {
   readonly page: Page;
 
   // The preroll codec variant for composite playlist construction.
-  readonly prerollCodec?: CaptureCodec;
+  readonly prerollCodec?: Nullable<CaptureCodec>;
 
   // Number of preroll segments preceding real content. When non-zero, the proxy starts segment numbering after the preroll range to reserve the index space. The
   // composite playlist reads the base URL dynamically from the stream's HLS state.

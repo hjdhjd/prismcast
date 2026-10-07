@@ -7,8 +7,7 @@
  * wedge and deadline mechanics are covered at the primitive tier in captureLock.test.ts; this test asserts only the setup-side wiring.
  */
 import type { Browser, Page } from "puppeteer-core";
-import { before, describe, test } from "node:test";
-import { CONFIG } from "../config/index.ts";
+import { describe, test } from "node:test";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import assert from "node:assert/strict";
@@ -45,17 +44,11 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   openSharedWindowTab: async (): Promise<Page> => makeClosedStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* The closed-page path never reaches the establishment's re-affirmation. */ },
-  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+  resolveFFmpegPath: async (): Promise<string> => "ffmpeg",
+  spawnFFmpeg: (): never => { throw new Error("The FFmpeg spawn must not run when the page is already closed at turn grant."); },
   startOverlayHandling: async (): Promise<void> => { /* No overlay poll runs on the closed-page path. */ },
   syncWindowVisibility: async (): Promise<void> => { /* Window presentation is not what this path measures. */ }
 };
-
-before(() => {
-
-  // Native capture mode keeps the FFmpeg path (and its binary resolution) out of the setup that runs ahead of the lock task, so the closed-page throw is the only
-  // outcome the call exercises.
-  CONFIG.streaming.captureMode = "native";
-});
 
 describe("createPageWithCapture - closed-page turn recursion", () => {
 

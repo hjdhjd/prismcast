@@ -2,18 +2,14 @@
  *
  * captureSession.ts: The capture-pipeline composite for PrismCast.
  *
- * A capture-mode stream is fed by an ordered pipeline of three resources: the raw stream from the tab capture (a Matroska feed in FFmpeg mode, a raw
- * fMP4 feed in native-fMP4 mode), an optional FFmpeg child that remuxes Matroska to fMP4, and the fMP4 segmenter that consumes the pipeline output. These three
- * resources require a specific teardown order that is not simply construction reversed, which is why a flat LIFO stack cannot express it. CaptureSession encapsulates
- * that order behind a single Disposable so every owner that tears a capture pipeline down does so identically, and no owner ever has to know the internal order.
+ * A capture-mode stream is fed by an ordered pipeline of resources: the raw Matroska stream from the tab capture, the FFmpeg child that remuxes it to fMP4, and
+ * the fMP4 segmenter that consumes the pipeline output. These resources require a specific teardown order that is not simply construction reversed, which is
+ * why a flat LIFO stack cannot express it. CaptureSession encapsulates that order behind a single Disposable so every owner that tears a capture pipeline down
+ * does so identically, and no owner ever has to know the internal order.
  *
- * Data flow (FFmpeg mode):
+ * Data flow:
  *
  *   rawCaptureStream (Matroska)  --pipeline-->  ffmpeg.stdin ... ffmpeg.stdout (fMP4)  --pipe-->  segmenter
- *
- * Data flow (native-fMP4 mode, no FFmpeg):
- *
- *   rawCaptureStream (fMP4)  --pipe-->  segmenter
  *
  * Teardown order is kill -> destroy -> stop. Step 1 must precede step 2 for correctness:
  *
@@ -26,20 +22,18 @@
  *   2. Destroy the raw capture stream. destroy() schedules the stream's close emission; the capture's own close handler then calls STOP_RECORDING in the capture
  *      extension on a later tick, provided the browser is still connected. That "still connected" guarantee is owned by the CALLER (which must not tear the browser
  *      down before disposing), not by disposal ordering. Without STOP_RECORDING, Chrome's tabCapture state lingers and a later capture acquisition fails with
- *      "Cannot capture a tab with an active stream." Destroying the stream also carries EOF to FFmpeg's stdin (when present), draining the pipeline.
- *   3. Stop the segmenter. Its input is the pipeline output (FFmpeg stdout, or the raw capture stream in native-fMP4 mode), which has now ended; stop() detaches
- *      its listeners and flushes the parser.
+ *      "Cannot capture a tab with an active stream." Destroying the stream also carries EOF to FFmpeg's stdin, draining the pipeline.
+ *   3. Stop the segmenter. Its input is the pipeline output, FFmpeg's stdout, which has now ended; stop() detaches its listeners and flushes the parser.
  *
  * Every underlying operation is safe to call more than once (FFmpeg.kill() guards its SIGTERM send on ffmpeg.killed, Readable.destroy() guards on destroyed,
- * segmenter.stop() guards on stopped), and the session adds its own disposed flag so a double dispose is a cheap no-op. All three operations are synchronous, so
- * the composite is a synchronous Disposable: the asynchronous aftermath (SIGTERM delivery, the STOP_RECORDING chain, the capture pipeline settling) is
- * fire-and-forget by design; no caller needs to await it. Keeping disposal synchronous keeps terminateStream() synchronous and the recovery hot
- * path allocation-free.
+ * segmenter.stop() guards on stopped), and the session adds its own disposed flag so a double dispose is a cheap no-op. Every teardown operation is synchronous, so the
+ * composite is a synchronous Disposable: the asynchronous aftermath (SIGTERM delivery, the STOP_RECORDING chain, the capture pipeline settling) is fire-and-forget by
+ * design; no caller needs to await it. Keeping disposal synchronous keeps terminateStream() synchronous and the recovery hot path allocation-free.
  *
- * Scope: the composite owns ONLY the three pipeline resources. It deliberately does NOT own the browser page or the managed-page registration - those are the stream
- * owner's concern and remain caller-owned steps (unregisterManagedPage, page.close) that must still bracket dispose() at each teardown site. Window presentation is
- * not a teardown step at all: it follows from whether any stream is still capturing, which terminateStream settles once the registry entry is gone. dispose() is
- * the FULL-teardown entry point: tab replacement disposes the old session and constructs a fresh one rather than mutating a live session in place.
+ * Scope: the composite owns ONLY the pipeline's resources. It deliberately does NOT own the browser page or the managed-page registration - those are the stream owner's
+ * concern and remain caller-owned steps (unregisterManagedPage, page.close) that must still bracket dispose() at each teardown site. Window presentation is not a
+ * teardown step at all: it follows from whether any stream is still capturing, which terminateStream settles once the registry entry is gone. dispose() is the
+ * FULL-teardown entry point: tab replacement disposes the old session and constructs a fresh one rather than mutating a live session in place.
  */
 import type { FFmpegProcess } from "../utils/index.ts";
 import type { FMP4SegmenterResult } from "./fmp4Segmenter.ts";
@@ -82,8 +76,8 @@ export interface CaptureSession extends Disposable {
  */
 export interface CreateCaptureSessionOptions {
 
-  // The FFmpeg child remuxing Matroska to fMP4, or null in native-fMP4 capture mode where the raw capture stream is already fMP4 and needs no transcoding.
-  readonly ffmpegProcess: Nullable<FFmpegProcess>;
+  // The FFmpeg child remuxing the Matroska capture to fMP4, whose stdout is the pipeline output the segmenter consumes.
+  readonly ffmpegProcess: FFmpegProcess;
 
   // The raw stream from the tab capture. Destroyed during disposal to release Chrome's tabCapture state while the browser is still connected.
   readonly rawCaptureStream: Readable;
@@ -92,18 +86,17 @@ export interface CreateCaptureSessionOptions {
 // Factory.
 
 /**
- * Creates a CaptureSession over an already-acquired capture stream and optional FFmpeg child. The pipeline output - the stream the segmenter will consume - is
- * derived here: FFmpeg's stdout when transcoding, otherwise the raw capture stream itself.
- * @param options - The capture stream and optional FFmpeg child to own.
+ * Creates a CaptureSession over an already-acquired capture stream and the FFmpeg child remuxing it. The pipeline output - the stream the segmenter will consume -
+ * is FFmpeg's stdout.
+ * @param options - The capture stream and the FFmpeg child to own.
  * @returns A CaptureSession handle.
  */
 export function createCaptureSession(options: CreateCaptureSessionOptions): CaptureSession {
 
   const { ffmpegProcess, rawCaptureStream } = options;
 
-  // The pipeline output the segmenter consumes. In FFmpeg mode this is FFmpeg's fMP4 stdout; in native-fMP4 mode the raw capture stream is already fMP4 and is its
-  // own output. Computed once because both handles are stable for the session's lifetime.
-  const outputStream: Readable = ffmpegProcess?.stdout ?? rawCaptureStream;
+  // The pipeline output the segmenter consumes is FFmpeg's fMP4 stdout, read once because the handle is stable for the session's lifetime.
+  const outputStream: Readable = ffmpegProcess.stdout;
 
   let disposed = false;
   let segmenter: Nullable<FMP4SegmenterResult> = null;
@@ -136,7 +129,7 @@ export function createCaptureSession(options: CreateCaptureSessionOptions): Capt
     disposed = true;
 
     // Step 1: kill FFmpeg first so its shuttingDown flag is set before the capture stream's EOF can reach its stdin. See the module header for why the order matters.
-    ffmpegProcess?.kill();
+    ffmpegProcess.kill();
 
     // Step 2: destroy the raw capture stream to fire STOP_RECORDING while the browser is still connected and to carry EOF down the pipeline.
     if(!rawCaptureStream.destroyed) {

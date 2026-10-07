@@ -7,22 +7,24 @@
  * createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome
  * launch), a recording acquisition answering with a PassThrough capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, a
  * recording surface emulation, and recording surface re-affirmation steps, while the real pipeline runs everything else. The stub page is shaped so the static
- * branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here), and createCaptureSession merely wraps the injected PassThrough. Native
- * capture mode skips the FFmpeg path and skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as
- * the only pipeline the call exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage) run real: they mutate an in-process page set, so
- * they are inert against the stub.
+ * branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here), and createCaptureSession merely wraps the injected PassThrough and the
+ * FFmpeg double. The injected FFmpeg resolver and spawn keep the FFmpeg pipeline off the host, and skipManifestInterception avoids the CDP interceptor, leaving
+ * the static branch (page.goto then the staticCapture poll) as the only pipeline the call exercises. The remaining browser calls (registerManagedPage,
+ * unregisterManagedPage) run real: they mutate an in-process page set, so they are inert against the stub.
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/tabCapture.ts";
-import { before, beforeEach, describe, test } from "node:test";
+import { beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
+import type { FFmpegProcess } from "../utils/index.ts";
 import type { OpenSharedWindowTabContext } from "../browser/tabSelection.ts";
 import { PassThrough } from "node:stream";
 import type { StartOverlayHandlingOptions } from "../browser/consent.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
@@ -131,7 +133,8 @@ const deps: CreatePageWithCaptureDeps = {
     depsCalls.push("reaffirmCaptureSurface");
     reaffirmPages.push(page);
   },
-  spawnFFmpeg: (): never => { throw new Error("These rows run in native-fMP4 capture mode, where no FFmpeg child is spawned."); },
+  resolveFFmpegPath: async (): Promise<string> => "ffmpeg",
+  spawnFFmpeg: (): FFmpegProcess => makeFakeFFmpeg(),
   startOverlayHandling: async (_page: Page, _profile: unknown, options: StartOverlayHandlingOptions): Promise<void> => { overlayCalls.push(options); },
   syncWindowVisibility: async (page?: Page): Promise<void> => {
 
@@ -139,12 +142,6 @@ const deps: CreatePageWithCaptureDeps = {
     syncPages.push(page);
   }
 };
-
-before(() => {
-
-  // Native capture mode skips the FFmpeg spawn/pipeline path so the static branch is reachable without a real subprocess.
-  CONFIG.streaming.captureMode = "native";
-});
 
 beforeEach(() => {
 

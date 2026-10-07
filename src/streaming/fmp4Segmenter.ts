@@ -5,6 +5,7 @@
 import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
 import { computeTimelinePosition, createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.ts";
+import { CAPTURE_BASELINE_CODEC } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
 import type { Clock } from "homebridge-plugin-utils";
@@ -18,10 +19,9 @@ import { buildPlaylist } from "./playlistBuilder.ts";
 import { getStream } from "./registry.ts";
 import { systemClock } from "homebridge-plugin-utils";
 
-/* This module transforms a puppeteer-stream MP4 capture into HLS fMP4 segments. The overall flow is: (1) receive MP4 data from puppeteer-stream (the configured
- * capture codec, H.264 or HEVC per codec.ts, paired with AAC audio, from either native capture or FFmpeg transcoding), (2) parse MP4 box structure to identify ftyp
- * + moov (initialization segment) and moof + mdat pairs (media fragments),
- * (3) store init segment and accumulate media fragments into segments, and (4) generate and update the m3u8 playlist.
+/* This module transforms FFmpeg's fMP4 remux of the puppeteer-stream capture into HLS fMP4 segments. The overall flow is: (1) receive fMP4 data from FFmpeg's stdout (the
+ * configured capture codec, H.264 or HEVC per codec.ts, paired with AAC audio), (2) parse MP4 box structure to identify ftyp + moov (initialization segment) and
+ * moof + mdat pairs (media fragments), (3) store init segment and accumulate media fragments into segments, and (4) generate and update the m3u8 playlist.
  *
  * Keyframe detection is available for diagnostics by setting KEYFRAME_DEBUG to true. When enabled, each moof's traf/trun sample flags are parsed (ISO 14496-12) to
  * determine whether fragments start with sync samples (keyframes). Statistics are logged at stream termination and per-segment warnings are emitted for segments that
@@ -117,8 +117,9 @@ export interface FMP4SegmenterOptions {
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
   prerollBaseUrl?: Nullable<string>;
 
-  // The preroll codec variant for this segmenter's composite playlist. Determines which preroll variant is referenced in URLs and used for duration lookups.
-  prerollCodec?: CaptureCodec;
+  // The preroll codec variant for this segmenter's composite playlist. Determines which preroll variant is referenced in URLs and used for duration lookups. Null
+  // when no preroll is active.
+  prerollCodec?: Nullable<CaptureCodec>;
 
   // Number of preroll segments preceding this segmenter's content. When non-zero, generatePlaylist() includes preroll entries for indices below the continuity's
   // starting segment index that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic
@@ -585,7 +586,10 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
     normalizedReferencePositionSec: null,
     pendingDiscontinuity: pendingDiscontinuity ?? false,
     prerollBaseUrl: prerollBaseUrl ?? null,
-    prerollCodec: prerollCodec ?? "h264",
+
+    // The codec is read only while a preroll is active, and every caller that activates one passes its codec, so the baseline stands in only for a segmenter that
+    // never reads it.
+    prerollCodec: prerollCodec ?? CAPTURE_BASELINE_CODEC,
     prerollSegmentCount: prerollSegmentCount ?? 0,
     prunedDiscontinuityCount: priorSegmentHistory?.prunedDiscontinuityCount ?? 0,
     segmentDurations: new Map(priorSegmentHistory?.segmentDurations),
@@ -1151,7 +1155,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
               needsRewrite = true;
             }
 
-            LOG.debug("streaming:segmenter", "Initialized offset for track %d: %s (initial=%s, chrome=%s).",
+            LOG.debug("streaming:segmenter", "Initialized offset for track %d: %s (initial=%s, remux=%s).",
               trackId, String(offset), String(initialValue ?? 0n), String(result.originalTfdt));
           }
         }

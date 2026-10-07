@@ -53,11 +53,12 @@ interface ListItem {
 
 /* The capture-codec items' words: each recognized codec's label, and the reason each codec other than the baseline states when this GPU cannot capture it. Each
  * table is keyed by the codec types, so a codec added to the recognized list cannot compile until the form decides its label and, unless it is the baseline,
- * its reason. Which codecs are fixed and which are available is the codec module's answer, so the form holds only these words.
+ * its reason. Which codecs are fixed and which are available is the codec module's answer, so the form holds only these words. A label names its codec alone,
+ * and the " (always enabled)" suffix is the fixed item's, which the provider below appends to whichever codec is the baseline.
  */
 const CAPTURE_CODEC_LABELS: Readonly<Record<CaptureCodec, string>> = {
 
-  h264: "H.264 (always enabled)",
+  h264: "H.264",
   hevc: "HEVC"
 };
 
@@ -71,7 +72,7 @@ const LIST_ITEM_PROVIDERS: Record<string, () => ListItem[]> = {
 
   // Every recognized codec in order: the baseline as the fixed item, and every other codec disabled while this GPU cannot capture it.
   captureCodecs: (): ListItem[] => RECOGNIZED_CODECS.map((codec): ListItem => (codec === CAPTURE_BASELINE_CODEC) ?
-    { fixed: true, label: CAPTURE_CODEC_LABELS[codec], value: codec } :
+    { fixed: true, label: CAPTURE_CODEC_LABELS[codec] + " (always enabled)", value: codec } :
     { disabled: !isCaptureCodecSupported(codec), disabledReason: CAPTURE_CODEC_REASONS[codec], label: CAPTURE_CODEC_LABELS[codec], value: codec }),
 
   providerModules: (): ListItem[] => getProviderModuleInfo().map((p) => ({ label: p.label, value: p.slug }))

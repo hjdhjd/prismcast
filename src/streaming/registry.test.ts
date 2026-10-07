@@ -19,6 +19,7 @@ import type { StreamRegistryEntry } from "./registry.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import assert from "node:assert/strict";
 import { createCaptureSession } from "./captureSession.ts";
+import { makeFakeFFmpeg } from "../utils/ffmpeg.helpers.ts";
 
 // The bits-per-second the native quality-refresh rows hand the registry and then read back off the entry's identity.
 const REFRESHED_BANDWIDTH = 6000000;
@@ -29,7 +30,8 @@ const REFRESHED_BANDWIDTH = 6000000;
  */
 function entryWithSegmenter(segmenter: Record<string, unknown>): StreamRegistryEntry {
 
-  const session = createCaptureSession({ ffmpegProcess: null, rawCaptureStream: { destroy: (): void => { /* inert */ }, destroyed: false } as unknown as Readable });
+  const session = createCaptureSession({ ffmpegProcess: makeFakeFFmpeg(),
+    rawCaptureStream: { destroy: (): void => { /* inert */ }, destroyed: false } as unknown as Readable });
 
   session.attachSegmenter({ pipe: (): void => { /* inert */ }, ...segmenter } as unknown as FMP4SegmenterResult);
 

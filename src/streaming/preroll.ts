@@ -2,6 +2,7 @@
  *
  * preroll.ts: Preroll generation and compositor for immediate HLS response during stream startup.
  */
+import { CAPTURE_BASELINE_CODEC, RECOGNIZED_CODECS } from "../types/index.ts";
 import type { Express, Request, Response } from "express";
 import { LOG, formatResolution, resolvePrerollFFmpegPath, timeoutSignal } from "../utils/index.ts";
 import { createMP4BoxParser, offsetMoofTimestamps, parseMoovTrackInfo } from "./mp4Parser.ts";
@@ -22,8 +23,9 @@ import { buffer as streamToBuffer } from "node:stream/consumers";
  * seconds of black+silence fMP4 at server startup, splits it into individual segments with naturally monotonic PTS, and serves them via global routes so the startup
  * playlist can reference valid media content.
  *
- * Both H.264 and HEVC variants are generated when HEVC is the effective capture codec (user allows it AND GPU supports hardware encoding). This ensures the
- * preroll codec matches the capture codec at the preroll-to-live boundary, eliminating a cross-codec discontinuity that would force a decoder reinitialization.
+ * The baseline codec's variant is always generated, and the effective capture codec's variant as well when it is not the baseline (the user allows it AND the GPU
+ * supports its hardware encoding). This ensures the preroll codec matches the capture codec at the preroll-to-live boundary, eliminating a cross-codec discontinuity
+ * that would force a decoder reinitialization.
  * Preroll encodes with the bundled ffmpeg-for-homebridge binary when it is usable, because its encoder set is known to include libx265, and with an ffmpeg from
  * the system PATH otherwise. It never uses the Channels DVR FFmpeg, whose minimal encoder set may lack HEVC support.
  *
@@ -44,13 +46,35 @@ const PREROLL_INITIAL_WINDOW = 4;
 
 // Deadline for a single preroll variant's encode, bounding this one-shot startup work so a wedged FFmpeg cannot hold the boot before the HTTP listener comes up.
 // The slowest legitimate encode (libx265's slow preset on weak hardware) plausibly takes tens of seconds, so the deadline sits well above that: firing early costs
-// only the preroll on a machine that was going to struggle anyway, and firing late still bounds a hung boot at a minute per variant. Two sequential variants under
-// an HEVC-effective configuration therefore cap the worst pathological boot delay at two minutes before the server continues preroll-free.
+// only the preroll on a machine that was going to struggle anyway, and firing late still bounds a hung boot at a minute per variant. The boot encodes the baseline's
+// variant and at most one more, the effective codec's when it is not the baseline, in sequence, so the worst pathological boot delay is twice this deadline before
+// the server continues preroll-free.
 const PREROLL_GENERATION_TIMEOUT_MS = 60000;
 
+/* The video encoder arguments for each capture codec's preroll variant. The table is keyed by the codec union, so the compiler holds every recognized codec to its
+ * own encoder arguments: a codec added to the recognized list does not compile until its preroll variant can be encoded.
+ */
+const PREROLL_VIDEO_ARGUMENTS: Readonly<Record<CaptureCodec, readonly string[]>> = {
+
+  // Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and CRF 18 produce higher
+  // quality - acceptable for a short duration of simple content generated once at startup.
+  h264: [
+    "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+    "-crf", "18"
+  ],
+
+  // The libx265 encoder does not support the -tune stillimage option (libx264-specific), so we omit it. The -tag:v hvc1 flag ensures the output uses the hvc1 box
+  // type (matching Chrome's MediaRecorder HEVC output) rather than libx265's default hev1.
+  hevc: [
+    "-c:v", "libx265", "-preset", "slow", "-profile:v", "main", "-pix_fmt", "yuv420p",
+    "-crf", "18", "-tag:v", "hvc1"
+  ]
+};
+
 /**
- * Per-codec preroll variant. Each variant contains a complete set of preroll buffers (init segment + media segments) and their durations. Both H.264 and HEVC variants
- * are generated at startup when the GPU supports HEVC hardware encoding, so the preroll codec matches the capture codec at the preroll-to-live boundary.
+ * Per-codec preroll variant. Each variant contains a complete set of preroll buffers (init segment + media segments) and their durations. The baseline codec's
+ * variant is generated at startup, and the effective capture codec's variant as well when it is not the baseline, so the preroll codec matches the capture codec at
+ * the preroll-to-live boundary.
  */
 interface PrerollVariant {
 
@@ -59,8 +83,8 @@ interface PrerollVariant {
   mediaSegments: Buffer[];
 }
 
-// Cached preroll variants keyed by codec label ("h264", "hevc"). Generated once at startup, reused for all streams. The H.264 variant is always generated; the HEVC
-// variant is generated when the GPU supports HEVC hardware encoding.
+// Cached preroll variants keyed by capture codec. Generated once at startup and reused for all streams: the baseline codec's variant always, and the effective
+// capture codec's variant when it is not the baseline.
 const prerollVariants = new Map<string, PrerollVariant>();
 
 // Public Accessors.
@@ -155,7 +179,7 @@ export function getPrerollMaxDuration(codec: CaptureCodec): number {
  * Returns the preroll codec that should be used for new streams. The preferred codec matches the effective capture codec (determined by the user's allowlist and GPU
  * capabilities) so the preroll-to-live boundary has no codec discontinuity. If the preferred variant was not generated (e.g., generation failed), falls back to
  * whichever variant is available.
- * @returns The codec to use for preroll, or "h264" as the default.
+ * @returns The codec to use for preroll, or CAPTURE_BASELINE_CODEC when no variant is ready.
  */
 export function getPrerollCodec(): CaptureCodec {
 
@@ -166,15 +190,9 @@ export function getPrerollCodec(): CaptureCodec {
     return preferred;
   }
 
-  // Fall back: if the preferred variant failed to generate, use the other one.
-  const fallback: CaptureCodec = preferred === "hevc" ? "h264" : "hevc";
-
-  if(isPrerollReady(fallback)) {
-
-    return fallback;
-  }
-
-  return "h264";
+  // Any generated variant is better than none, so the first ready variant in the recognized codecs' order stands in for the preferred one, and the baseline stands
+  // in when none is ready.
+  return RECOGNIZED_CODECS.find((codec) => isPrerollReady(codec)) ?? CAPTURE_BASELINE_CODEC;
 }
 
 // Preroll Generation.
@@ -182,8 +200,9 @@ export function getPrerollCodec(): CaptureCodec {
 /**
  * Generates preroll fMP4 variants at startup. Prefers the bundled ffmpeg-for-homebridge binary, whose encoder set is known to carry both libx264 and libx265, and
  * falls back to an ffmpeg on the system PATH when the bundled binary is missing or will not run - the postinstall download that fetches it can fail, and a working
- * system FFmpeg is a better answer than no preroll at all. The H.264 variant is always generated. The HEVC variant is generated when HEVC is the effective capture
- * codec (user allows it AND GPU supports hardware encoding), so the preroll codec matches the capture codec at the preroll-to-live boundary.
+ * system FFmpeg is a better answer than no preroll at all. The baseline codec's variant is always generated, and the effective capture codec's variant as well
+ * when it is not the baseline (the user allows it AND the GPU supports its hardware encoding), so the preroll codec matches the capture codec at the
+ * preroll-to-live boundary.
  *
  * Each variant spawns FFmpeg to create PREROLL_TOTAL_DURATION seconds of black frame + silence as fragmented MP4, then splits the output into an init segment
  * (ftyp + moov) and individual media segments (moof + mdat pairs) using the MP4 box parser. Each segment has naturally monotonic PTS because it comes from a
@@ -208,34 +227,27 @@ export async function generatePreroll(): Promise<void> {
   const viewport = getPresetViewport(CONFIG);
   const size = formatResolution(viewport.width, viewport.height);
 
-  // Generate the H.264 variant. Baseline profile and level 3.1 match Chrome's MediaRecorder output (confirmed via parseMoovCodecConfig telemetry). Slow preset and
-  // CRF 18 produce higher quality - acceptable for a short duration of simple content generated once at startup.
-  await generateVariant(ffmpegBin, "h264", [
-    "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-    "-crf", "18"
-  ], size);
+  // The baseline's variant is always generated, so a preroll stays available even when the effective codec's variant fails to encode.
+  await generateVariant(ffmpegBin, CAPTURE_BASELINE_CODEC, PREROLL_VIDEO_ARGUMENTS[CAPTURE_BASELINE_CODEC], size);
 
-  // Generate the HEVC variant when HEVC is the effective capture codec (user allows it AND GPU supports hardware encoding). The libx265 encoder does not support
-  // the -tune stillimage option (libx264-specific), so we omit it. The -tag:v hvc1 flag ensures the output uses the hvc1 box type (matching Chrome's MediaRecorder
-  // HEVC output) rather than libx265's default hev1.
-  if(getEffectiveCaptureCodec() === "hevc") {
+  // The effective capture codec's variant is generated as well when it is not the baseline, so the preroll matches the capture codec at the preroll-to-live boundary.
+  const effectiveCodec = getEffectiveCaptureCodec();
 
-    await generateVariant(ffmpegBin, "hevc", [
-      "-c:v", "libx265", "-preset", "slow", "-profile:v", "main", "-pix_fmt", "yuv420p",
-      "-crf", "18", "-tag:v", "hvc1"
-    ], size);
+  if(effectiveCodec !== CAPTURE_BASELINE_CODEC) {
+
+    await generateVariant(ffmpegBin, effectiveCodec, PREROLL_VIDEO_ARGUMENTS[effectiveCodec], size);
   }
 }
 
 /**
- * Generates a single preroll variant (H.264 or HEVC) and stores it in the variant cache. Constructs the FFmpeg argument list from shared parameters (input sources,
+ * Generates one capture codec's preroll variant and stores it in the variant cache. Constructs the FFmpeg argument list from shared parameters (input sources,
  * duration, GOP size, audio codec, fMP4 output flags) combined with the codec-specific video encoder arguments.
  * @param ffmpegBin - Path to the FFmpeg executable.
  * @param codec - The codec label for this variant.
  * @param videoArgs - Codec-specific FFmpeg arguments for the video encoder (e.g., "-c:v libx264 -preset slow ...").
  * @param size - The output resolution as "WxH".
  */
-async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs: string[], size: string): Promise<void> {
+async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs: readonly string[], size: string): Promise<void> {
 
   const args = [
     "-hide_banner", "-nostats", "-loglevel", "warning",
@@ -733,8 +745,10 @@ export function setupPrerollRoutes(app: Express): void {
 
   app.get("/preroll/:codec/init.mp4", (req: Request, res: Response) => {
 
+    // The variant map holds exactly the variants generated, so it decides which codecs a route serves, and any other parameter finds no variant. The type test
+    // narrows the request parameter to the single string the map is keyed by.
     const codec = req.params["codec"];
-    const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
+    const variant = (typeof codec === "string") ? prerollVariants.get(codec) : undefined;
 
     if(!variant) {
 
@@ -753,7 +767,7 @@ export function setupPrerollRoutes(app: Express): void {
   app.get("/preroll/:codec/:segment", (req: Request, res: Response) => {
 
     const codec = req.params["codec"];
-    const variant = ((codec === "h264") || (codec === "hevc")) ? prerollVariants.get(codec) : undefined;
+    const variant = (typeof codec === "string") ? prerollVariants.get(codec) : undefined;
 
     if(!variant) {
 
