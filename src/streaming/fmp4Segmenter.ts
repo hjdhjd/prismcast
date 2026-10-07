@@ -3,7 +3,7 @@
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
 import { LOG, toError } from "../utils/index.ts";
-import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
+import { buildPrerollEntries, buildPrerollInitUri, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
 import { computeTimelinePosition, createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.ts";
 import { CAPTURE_BASELINE_CODEC } from "../types/index.ts";
@@ -673,7 +673,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     if(prerollActive && state.prerollBaseUrl && (startIndex < state.startingSegmentIndex)) {
 
-      prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, codec: state.prerollCodec, extension: ".m4s", prerollSegmentCount: state.prerollSegmentCount,
+      prerollEntries = buildPrerollEntries({ baseUrl: state.prerollBaseUrl, codec: state.prerollCodec, prerollSegmentCount: state.prerollSegmentCount,
         startIndex: startIndex - prerollStartIndex });
 
       // A preroll entry carries a marker by its index, as a real entry does, its index being the window start plus its position. The only marker a preroll range
@@ -736,8 +736,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
     // Determine the initial MAP URI. When the window starts with preroll entries, use the preroll init segment. Otherwise, use the real init segment. The
     // prerollBaseUrl is guaranteed non-null when prerollEntries is non-empty (guarded by the conditional above).
-    const initialMapUri = ((prerollEntries.length > 0) && state.prerollBaseUrl) ?
-      (state.prerollBaseUrl + "/preroll/" + state.prerollCodec + "/init.mp4") : realInitMapUri;
+    const initialMapUri = ((prerollEntries.length > 0) && state.prerollBaseUrl) ? buildPrerollInitUri(state.prerollBaseUrl, state.prerollCodec) : realInitMapUri;
 
     const entries = [ ...prerollEntries, ...realEntries ];
 

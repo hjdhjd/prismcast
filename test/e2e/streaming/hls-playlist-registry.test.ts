@@ -6,10 +6,10 @@
  *
  *   1. Wire-level drift between buildPlaylist's output and what the route actually serves. Anything that would mangle the body in transit (encoding, header
  *      mismatch, premature truncation, accidental rewrite) shows up here as a body assertion miss.
- *   2. Resume-index regressions at the playlist layer. The segment-index decrement that keeps the last completed segment in the resumed playlist lives in
+ *   2. Resume-position regressions at the playlist layer. The segment-index decrement that keeps the last completed segment in the resumed playlist lives in
  *      src/app.ts's shutdown handler; hlsResume.ts only persists whatever segmentIndex value it is given. This suite complements hls-resume.test.ts by
- *      asserting that the saved index materializes as the served playlist's MEDIA-SEQUENCE - the operational symptom Channels DVR sees when the resume
- *      contract breaks.
+ *      asserting that the saved position materializes in the preroll playlist the route regenerates for a resumed stream - its MEDIA-SEQUENCE, its
+ *      DISCONTINUITY-SEQUENCE and its opening discontinuity - the operational symptom Channels DVR sees when the resume contract breaks.
  *
  * Why HTTP instead of driving buildPlaylist directly: the suite is hls-playlist-registry.test.ts (describe block "HLS playlist served from
  * registry-backed state") and the architectural integration point is the route handler reading registry state and emitting bytes. Calling buildPlaylist
@@ -18,13 +18,12 @@
  * index, GET) is the same entry point every production caller traverses; it bypasses only the browser/ffmpeg setup the integration tier deliberately does
  * not host.
  *
- * Note on the resume test: the production code that reads the resume position into a stream entry lives inside registerPendingStream() and runs
- * unconditionally on every pending registration; only its consumption inside the deferred preroll-timer callback is gated on isPrerollReady(codec). Driving
- * registerPendingStream() directly would require a full Express Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the
- * test calls the function the registration calls - the public getResumePosition() accessor - and seeds hls.resumePosition on the synthetic entry from that
- * read. This asserts the wire-level guarantee ("a saved resume position for channel X causes channel X's next playlist to start at MEDIA-SEQUENCE = saved
- * index and DISCONTINUITY-SEQUENCE = saved count") without re-implementing any production logic - the position flows through the production accessor; the
- * test only asserts what the route emits.
+ * Note on the resume test: the production code that reads the resume position into a stream entry lives inside registerPendingStream(), and its consumer is
+ * the preroll playlist the route regenerates on every poll until real content arrives. Driving registerPendingStream() directly would require a full Express
+ * Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the test readies a preroll variant through generatePreroll's encoder
+ * port with the synthetic encoder, reads the position through the public getResumePosition() accessor the registration calls, and seeds an entry the way a
+ * pending registration leaves it: no real playlist, the preroll fields, and that position. What the route then serves is generatePrerollPlaylist's own
+ * output, so the assertions read the production consumer rather than a playlist the test built.
  */
 import type { Request, Response } from "express";
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
@@ -32,8 +31,10 @@ import { cleanupIdleStreams, handleHLSSegment } from "../../../src/streaming/hls
 import { deleteResumeData, getResumePosition, loadResumeState, saveResumeState } from "../../../src/streaming/hlsResume.ts";
 import { describe, test } from "node:test";
 import { endLoginMode, setLoginDeps, startLoginMode } from "../../../src/browser/login.ts";
+import { generatePreroll, isPrerollReady } from "../../../src/streaming/preroll.ts";
 import { getBrowserInstance, syncWindowVisibility } from "../../../src/browser/index.ts";
 import { getStream, registerStream } from "../../../src/streaming/registry.ts";
+import { makeSyntheticFmp4, makeSyntheticPrerollEncoder } from "../../../src/streaming/preroll.helpers.ts";
 import { setChannelStreamId, terminateStream } from "../../../src/streaming/lifecycle.ts";
 import { storeInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist, updateVideoPlaylist } from "../../../src/streaming/hlsSegments.ts";
 import type { Browser } from "puppeteer-core";
@@ -181,23 +182,28 @@ describe("HLS playlist served from registry-backed state", () => {
     assert.equal(lines[discontinuityIndex + 2], "segment1.m4s", "segment1 must be the segment immediately following the discontinuity");
   });
 
-  test("a saved resume position materializes as the served playlist's MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE", async () => {
+  test("a saved resume position materializes in the preroll playlist's MEDIA-SEQUENCE, DISCONTINUITY-SEQUENCE and opening discontinuity", async () => {
 
     /* The resume contract at the wire layer: after a restart, the next playlist served for a previously-streamed channel must start at the saved
      * sequence so Channels DVR's recording continues from where it left off, and its discontinuity sequence must continue from the saved count so it never
-     * falls below what a client last read. The persistence side (save/load round-trip) is covered in hls-resume.test.ts; this test asserts the consumption
-     * side - the seed reaches the wire as MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE.
+     * falls below what a client last read. The preroll that plays while the tune starts opens a new timeline, so its first entry carries a discontinuity. The
+     * persistence side (save/load round-trip) is covered in hls-resume.test.ts; this test asserts the consumption side.
      *
      * The flow mirrors production: the resume map is populated through saveResumeState and loadResumeState (the save that runs at shutdown and the load that
-     * runs at the next startup), and the entry's hls.resumePosition is read from the public getResumePosition() accessor - the exact same call
-     * registerPendingStream() makes. We then build a playlist with its media sequence and discontinuity sequence seeded from that position and assert the
-     * body emitted on the wire reflects them, so a count dropped by the save, the load, the peek or the position's copy reads 0 here.
+     * runs at the next startup), the entry's hls.resumePosition is read from the public getResumePosition() accessor - the exact same call
+     * registerPendingStream() makes - and the playlist the route serves is the one it regenerates through generatePrerollPlaylist for an entry with no real
+     * playlist yet. A position dropped by the save, the load, the peek, the copy or the regeneration reads 0 here.
      */
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
 
     const { urlFor } = await bootApp(ctx);
+
+    // A preroll variant readied in this process through the encoder port, so the route has a real variant to regenerate the playlist from.
+    await generatePreroll(makeSyntheticPrerollEncoder({ output: makeSyntheticFmp4([ 2, 2, 2, 2, 2, 2 ]) }));
+
+    assert.ok(isPrerollReady("h264"), "precondition: the synthetic encode readied the baseline variant");
 
     // An arbitrary large, non-zero index, chosen so an off-by-one or a zeroed value surfaces here as a wrong sequence on the wire.
     const priorIndex = 1589811;
@@ -214,8 +220,15 @@ describe("HLS playlist served from registry-backed state", () => {
 
     assert.deepEqual(resumePosition, { discontinuityCount: priorCount, segmentIndex: priorIndex }, "the resume map round-trip must surface the saved position");
 
+    // The entry as a pending registration leaves it once the deferred preroll timer has fired: the preroll fields and the timer's seeded playlist are set, and no
+    // real playlist has arrived, so the route regenerates the preroll playlist on the poll. The seeded text stands in for the timer's and is never served.
+    const baseUrl = "http://preroll.test:5589";
     const entry = makeRegistryEntry({ channelName: "abc" });
 
+    entry.hls.playlist = "#EXTM3U\n";
+    entry.hls.prerollBaseUrl = baseUrl;
+    entry.hls.prerollCodec = "h264";
+    entry.hls.prerollStartTime = Date.now();
     entry.hls.resumePosition = resumePosition;
 
     registerStream(entry);
@@ -223,20 +236,19 @@ describe("HLS playlist served from registry-backed state", () => {
 
     ctx.registerCleanup(() => { terminateStream(entry.id, "abc", "test cleanup"); });
 
-    const playlist = buildPlaylist({ discontinuitySequence: entry.hls.resumePosition.discontinuityCount, mediaSequence: entry.hls.resumePosition.segmentIndex,
-      targetDuration: 4, version: 7 }, [
-      { duration: 4, url: "segment" + String(priorIndex) + ".m4s" }
-    ]);
-
-    updatePlaylist(entry.id, playlist);
-
     const response = await fetch(urlFor("/hls/abc/stream.m3u8"));
     const body = await response.text();
+    const lines = body.split("\n");
+    const firstEntryIndex = lines.findIndex((line) => line.startsWith("#EXTINF:"));
 
+    assert.equal(response.status, 200, "the preroll playlist serves 200; body: " + body.slice(0, 200));
     assert.match(body, new RegExp("^#EXT-X-MEDIA-SEQUENCE:" + String(priorIndex) + "$", "m"),
       "the served playlist's MEDIA-SEQUENCE must equal the saved resume index");
     assert.match(body, new RegExp("^#EXT-X-DISCONTINUITY-SEQUENCE:" + String(priorCount) + "$", "m"),
       "the served playlist's DISCONTINUITY-SEQUENCE must equal the saved discontinuity count");
+    assert.ok(firstEntryIndex > 0, "the served playlist lists preroll entries");
+    assert.equal(lines[firstEntryIndex - 1], "#EXT-X-DISCONTINUITY", "the first preroll entry opens the resumed stream's new timeline with a discontinuity");
+    assert.equal(lines[firstEntryIndex + 1], baseUrl + "/preroll/h264/segment0.m4s", "and it is the first preroll segment");
   });
 });
 
@@ -309,20 +321,23 @@ describe("HLS segment serving from registry-backed state", () => {
 
     ctx.registerCleanup(() => { terminateStream(entry.id, "seg404", "test cleanup"); });
 
-    // A mapped stream that never stored the requested media segment.
+    // A mapped stream that never stored the requested media segment. The body tells the not-found branches apart where the shared status cannot.
     const unknownSegment = await fetch(urlFor("/hls/seg404/segment9.m4s"));
 
     assert.equal(unknownSegment.status, 404, "an unknown segment on a known stream must yield 404");
+    assert.equal(await unknownSegment.text(), "Segment not found.", "and its body names the missing segment");
 
     // A mapped stream with no init segment stored.
     const missingInit = await fetch(urlFor("/hls/seg404/init.mp4"));
 
     assert.equal(missingInit.status, 404, "a known stream with no stored init segment must yield 404");
+    assert.equal(await missingInit.text(), "Init segment not found.", "and its body names the missing init segment");
 
     // A channel with no registered stream at all.
     const unknownStream = await fetch(urlFor("/hls/no-such-channel/segment0.m4s"));
 
     assert.equal(unknownStream.status, 404, "a request for an unmapped channel must yield 404");
+    assert.equal(await unknownStream.text(), "Stream not found.", "and its body names the missing stream");
   });
 
   test("handleHLSSegment answers 400 when a route parameter is empty", () => {
@@ -412,14 +427,17 @@ describe("HLS variant playlist serving for separate-audio streams", () => {
     const noVideo = await fetch(urlFor("/hls/plainvar/video.m3u8"));
 
     assert.equal(noVideo.status, 404, "a stream without a stored video variant must yield 404");
+    assert.equal(await noVideo.text(), "Playlist not found.", "and its body names the missing playlist");
 
     const noAudio = await fetch(urlFor("/hls/plainvar/audio.m3u8"));
 
     assert.equal(noAudio.status, 404, "a stream without a stored audio variant must yield 404");
+    assert.equal(await noAudio.text(), "Playlist not found.", "and its body names the missing playlist");
 
     const unknownStream = await fetch(urlFor("/hls/no-such-channel/video.m3u8"));
 
     assert.equal(unknownStream.status, 404, "a request for an unmapped channel must yield 404");
+    assert.equal(await unknownStream.text(), "Stream not found.", "and its body names the missing stream");
   });
 });
 

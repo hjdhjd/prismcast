@@ -2,16 +2,19 @@
  *
  * preroll.test.ts: Unit tests for the preroll compositor and accessor functions in preroll.ts. The pure functions computePrerollWindow, buildPrerollEntries and
  * computeReveal earn full coverage here. The variant-cache readers - getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec,
- * getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computeProgressiveReveal and generatePrerollPlaylist - are covered on their no-variant branches only,
- * because seeding a variant needs FFmpeg, which no automated tier runs; their populated-variant paths and generatePreroll itself go unexercised by the suites.
- * setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and the no-variant 404 branch. spawnAndCollect's deadline and
- * collection semantics are exercised directly with Node child processes.
+ * getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computeProgressiveReveal and generatePrerollPlaylist - are covered here on their no-variant branches,
+ * because the variant cache lives for the process and this file needs it empty. Their populated-variant paths and generatePreroll itself run in the sibling
+ * preroll.populated.test.ts, which readies a variant through generatePreroll's encoder port with the synthetic encoder in preroll.helpers.ts.
+ * setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and the no-variant 404 branch. spawnAndCollect's deadline,
+ * collection, exit-code, spawn-failure and external-signal semantics are exercised directly with Node child processes.
  */
+import { LOG, isProcessRunning, pollUntil, waitWithTimeout } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, computeReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
   getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes, spawnAndCollect } from "./preroll.ts";
 import { describe, test } from "node:test";
 import { makeExpressStub, makeReqRes } from "../routes/express.helpers.ts";
 import type { Express } from "express";
+import type { Nullable } from "../types/index.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import assert from "node:assert/strict";
 
@@ -25,7 +28,7 @@ describe("isPrerollReady", () => {
 
   test("returns false for a codec that has not been generated", () => {
 
-    // The preroll variants Map starts empty in tests because generatePreroll() spawns FFmpeg, which we do not run. Locks the negative branch.
+    // The preroll variant cache lives for the whole process, and nothing in this file fills it, so every codec reads as not generated here. Locks the negative branch.
     assert.equal(isPrerollReady("h264"), false);
     assert.equal(isPrerollReady("hevc"), false);
   });
@@ -195,7 +198,6 @@ describe("buildPrerollEntries", () => {
 
       baseUrl: "http://example.test:5589",
       codec: "h264",
-      extension: ".m4s",
       prerollSegmentCount: 5,
       startIndex: 5
     });
@@ -211,7 +213,6 @@ describe("buildPrerollEntries", () => {
 
       baseUrl: "http://example.test:5589",
       codec: "h264",
-      extension: ".m4s",
       prerollSegmentCount: 4,
       startIndex: 1
     });
@@ -229,28 +230,11 @@ describe("buildPrerollEntries", () => {
 
       baseUrl: "http://example.test:5589",
       codec: "hevc",
-      extension: ".m4s",
       prerollSegmentCount: 1,
       startIndex: 0
     });
 
     assert.equal(entries[0]?.url, "http://example.test:5589/preroll/hevc/segment0.m4s");
-  });
-
-  test("uses the extension parameter for the segment file extension", () => {
-
-    // Locks that the entry URL carries whatever extension the caller passes. Only ".m4s" is served, because the preroll segment route accepts no other extension.
-    const entries = buildPrerollEntries({
-
-
-      baseUrl: "http://example.test:5589",
-      codec: "h264",
-      extension: ".future-format",
-      prerollSegmentCount: 1,
-      startIndex: 0
-    });
-
-    assert.equal(entries[0]?.url, "http://example.test:5589/preroll/h264/segment0.future-format");
   });
 
   test("each entry carries the segment duration from the cache (or 2s fallback)", () => {
@@ -261,7 +245,6 @@ describe("buildPrerollEntries", () => {
 
       baseUrl: "http://example.test:5589",
       codec: "h264",
-      extension: ".m4s",
       prerollSegmentCount: 3,
       startIndex: 0
     });
@@ -425,8 +408,8 @@ describe("setupPrerollRoutes", () => {
 
   test("init.mp4 returns 404 when the variant Map has no entry for a recognized codec (variant not generated)", () => {
 
-    /* Even for a codec a variant could exist for, the prerollVariants Map starts empty in tests because generatePreroll() is never called. The handler hits the
-     * `if(!variant)` 404 branch.
+    /* Even for a codec a variant could exist for, the prerollVariants Map holds no entry here: it lives for the process, and this file keeps it empty so the
+     * no-variant branches stay reachable, leaving the populated paths to preroll.populated.test.ts. The handler hits the `if(!variant)` 404 branch.
      */
     const stub = makeExpressStub();
 
@@ -485,36 +468,95 @@ describe("setupPrerollRoutes", () => {
 
 describe("spawnAndCollect", () => {
 
-  test("kills the child at the deadline and rejects with the timeout message", async () => {
+  // The real-time bounds the deadline row waits under: the child's pid report, and the exit a SIGKILL forces. Each is far longer than either takes on a working
+  // machine and shorter than the row's own timeout, so a lapse fails the row's assertion rather than the runner's timeout.
+  const PID_REPORT_BOUND_MS = 4000;
+  const EXIT_BOUND_MS = 4000;
+
+  // The per-row timeout every spawning row carries, so a row that never reaches its end fails rather than hangs.
+  const SPAWN_ROW_TIMEOUT_MS = 10000;
+
+  // The marker the deadline row's child carries in its command line, so a check after the run can find a child that outlived it.
+  const DEADLINE_CHILD_MARKER = "prismcast-preroll-deadline-row";
+
+  test("kills the child with SIGKILL at the deadline and rejects with the timeout message", { timeout: SPAWN_ROW_TIMEOUT_MS }, async (t) => {
 
     /* A child that writes a little and then never exits is the hung-encoder shape the deadline exists for. The bound kills it when the deadline passes, and the
      * rejection has to name the timeout rather than surfacing the raw abort error, since that message is what the caller's warning line puts in front of the
-     * operator. The deadline runs from the spawn, so a child killed before its script even executes still rejects through the same path - nothing here depends on
-     * the child getting anywhere.
+     * operator.
      *
-     * The child traps SIGTERM and ignores it, the wedged-encoder shape the production comment describes. The row does not by itself prove the kill is SIGKILL: the
-     * rejection comes from the abort error Node raises once the kill signal is sent, before the child exits, so an ignored SIGTERM would reject the same way.
+     * The child traps SIGTERM and ignores it, the wedged-encoder shape the production comment describes, and reports its pid on stderr, which the collection
+     * forwards to the debug log. The rejection alone cannot tell the kill signals apart, because it comes from the abort error Node raises once any kill signal
+     * is sent. The child's exit can: a child that ignores SIGTERM is gone only if the kill was SIGKILL, so the row waits for the pid to disappear under its own
+     * real-time bound.
      *
-     * The deadline arms on a virtual clock at its full production width, so the advance below is the only thing that can fire it: a deadline reaching the child
-     * by any other route would take a real minute and end this row on the runner's own timeout instead of on the assertion.
+     * The deadline arms on a virtual clock at its full production width, so the advance below is the only thing that can fire it.
      */
     const clock = new TestClock();
+    const reported = Promise.withResolvers<number>();
 
-    const collecting = spawnAndCollect(process.execPath,
-      [ "-e", "process.on(\"SIGTERM\", () => {}); process.stdout.write(\"partial\"); setInterval(() => {}, 1000);" ],
-      { clock, timeoutMs: PREROLL_GENERATION_TIMEOUT_MS });
+    t.mock.method(LOG, "debug", (...args: unknown[]): void => {
 
-    assert.equal(clock.pending, 1, "the generation deadline is armed on the injected clock");
-    assert.deepEqual(clock.requested, [PREROLL_GENERATION_TIMEOUT_MS], "and it waits the deadline's own window");
+      const reportedPid = Number(args[2]);
 
-    clock.advance(PREROLL_GENERATION_TIMEOUT_MS);
+      if(Number.isInteger(reportedPid) && (reportedPid > 0)) {
 
-    await assert.rejects(collecting, /timed out/);
+        reported.resolve(reportedPid);
+      }
+    });
 
-    assert.equal(clock.pending, 0, "and the bound was cancelled rather than left armed");
+    const collecting = spawnAndCollect(process.execPath, [ "-e", "/* " + DEADLINE_CHILD_MARKER + " */ process.on(\"SIGTERM\", () => {}); " +
+      "process.stderr.write(String(process.pid)); process.stdout.write(\"partial\"); setInterval(() => {}, 1000);" ],
+    { clock, timeoutMs: PREROLL_GENERATION_TIMEOUT_MS });
+
+    // A row that fails before its assertion reads this promise still observes the rejection, so the failure stays the row's own rather than an unhandled one.
+    void collecting.catch(() => { /* Read by the assertion below. */ });
+
+    let pid: Nullable<number> = null;
+
+    try {
+
+      assert.equal(clock.pending, 1, "the generation deadline is armed on the injected clock");
+      assert.deepEqual(clock.requested, [PREROLL_GENERATION_TIMEOUT_MS], "and it waits the deadline's own window");
+
+      // The deadline fires only once the child has installed its trap and reported its pid, so the kill meets the wedged shape rather than a child still starting.
+      pid = await waitWithTimeout(reported.promise, PID_REPORT_BOUND_MS, { reason: new Error("The child never reported its pid.") });
+
+      clock.advance(PREROLL_GENERATION_TIMEOUT_MS);
+
+      await assert.rejects(collecting, /timed out/);
+
+      assert.equal(clock.pending, 0, "and the bound was cancelled rather than left armed");
+
+      const childPid = pid;
+
+      await pollUntil({ cadenceMs: 25, ceilingMs: EXIT_BOUND_MS, read: async (): Promise<boolean> => isProcessRunning(childPid),
+        until: (running: boolean): boolean => !running });
+
+      assert.equal(isProcessRunning(childPid), false, "the child that ignores SIGTERM is gone, so the kill was SIGKILL");
+    } finally {
+
+      // Every path ends with the child gone. The deadline is fired when the row stopped before it, so the spawn's own kill reaches the child, and a child whose pid
+      // is known is killed by pid, so a kill signal the child survives fails the row without leaving the child behind.
+      if(clock.pending > 0) {
+
+        clock.advance(PREROLL_GENERATION_TIMEOUT_MS);
+      }
+
+      if(pid !== null) {
+
+        try {
+
+          process.kill(pid, "SIGKILL");
+        } catch {
+
+          // The child is already gone, which is the outcome the row asserts.
+        }
+      }
+    }
   });
 
-  test("collects stdout into a Buffer when the child exits cleanly inside the deadline", async () => {
+  test("collects stdout into a Buffer when the child exits cleanly inside the deadline", { timeout: SPAWN_ROW_TIMEOUT_MS }, async () => {
 
     // A fast child under a generous deadline collects its stdout exactly as it would with no deadline at all - the success path must be undisturbed.
     const clock = new TestClock();
@@ -524,9 +566,32 @@ describe("spawnAndCollect", () => {
     assert.equal(clock.pending, 0, "the deadline is disposed at settlement rather than left armed for its full window");
   });
 
-  test("rejects with the exit-code message when the child exits nonzero inside the deadline", async () => {
+  test("rejects with the exit-code message when the child exits nonzero inside the deadline", { timeout: SPAWN_ROW_TIMEOUT_MS }, async () => {
 
     // A failing child still reports its own exit code. This is what tells a correct implementation apart from one that reports every failure as a timeout.
     await assert.rejects(spawnAndCollect(process.execPath, [ "-e", "process.exit(3)" ], { timeoutMs: 5000 }), /exited with code 3/);
+  });
+
+  test("rejects with the spawn error when the binary cannot be started", { timeout: SPAWN_ROW_TIMEOUT_MS }, async () => {
+
+    // A binary that does not exist never becomes a child at all, so the rejection is the platform's own spawn error rather than an exit code or a timeout.
+    const clock = new TestClock();
+
+    await assert.rejects(spawnAndCollect("/nonexistent/prismcast-preroll-ffmpeg", [], { clock, timeoutMs: 5000 }),
+      (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT");
+
+    assert.equal(clock.pending, 0, "the deadline is disposed when the spawn fails");
+  });
+
+  test("rejects with the signal message when an external signal ends the child", { timeout: SPAWN_ROW_TIMEOUT_MS }, async () => {
+
+    // The child ends itself with SIGTERM, standing in for an operator or a service manager stopping the encode. Preroll kills its own FFmpeg only at the deadline,
+    // so any other signal is an interruption reported by its name rather than as an exit code of null.
+    const clock = new TestClock();
+
+    await assert.rejects(spawnAndCollect(process.execPath, [ "-e", "process.kill(process.pid, \"SIGTERM\"); setInterval(() => {}, 1000);" ],
+      { clock, timeoutMs: 5000 }), /killed by signal SIGTERM/);
+
+    assert.equal(clock.pending, 0, "the deadline is disposed when the signal ends the child");
   });
 });

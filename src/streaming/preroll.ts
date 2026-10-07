@@ -87,6 +87,24 @@ interface PrerollVariant {
 // capture codec's variant when it is not the baseline.
 const prerollVariants = new Map<string, PrerollVariant>();
 
+// The file extension of every preroll media segment. The entries build their URLs with it and the segment route accepts exactly it, so a URL a playlist names is
+// always one the route serves.
+const PREROLL_SEGMENT_EXTENSION = ".m4s";
+
+/**
+ * How preroll generation reaches FFmpeg: resolving the binary to encode with, and running one encode to completion. generatePreroll takes it as a defaulted
+ * parameter wired to the real resolver and spawnAndCollect, the way the FFmpeg context is injected, so a test drives the resolve, split and store path with a
+ * synthetic encoder in place of a real FFmpeg.
+ */
+export interface PrerollEncoder {
+
+  // Resolves the FFmpeg binary to encode with, or undefined when none is usable.
+  readonly resolve: () => Promise<string | undefined>;
+
+  // Runs one encode with the given binary and arguments, resolving with its complete output.
+  readonly run: (ffmpegBin: string, args: string[]) => Promise<Buffer>;
+}
+
 // Public Accessors.
 
 /**
@@ -210,10 +228,11 @@ export function getPrerollCodec(): CaptureCodec {
  * continuous FFmpeg encode. If no FFmpeg is available or a variant fails, the system degrades gracefully - the blocking stream setup path is used instead. That
  * per-variant degradation is also the safety net for a PATH build that turns out to be missing an encoder, which the bundled binary would have had. Each
  * variant's encode is bounded by the generation deadline, so a hung FFmpeg degrades startup to a preroll-free boot instead of blocking it.
+ * @param encoder - How the binary is resolved and each encode is run. Defaults to the real resolver and spawnAndCollect.
  */
-export async function generatePreroll(): Promise<void> {
+export async function generatePreroll(encoder: PrerollEncoder = { resolve: resolvePrerollFFmpegPath, run: spawnAndCollect }): Promise<void> {
 
-  const ffmpegBin = await resolvePrerollFFmpegPath();
+  const ffmpegBin = await encoder.resolve();
 
   if(!ffmpegBin) {
 
@@ -228,27 +247,30 @@ export async function generatePreroll(): Promise<void> {
   const viewport = getPresetViewport(CONFIG);
   const size = formatResolution(viewport.width, viewport.height);
 
+  // Every variant encodes with the one binary resolved above.
+  const encode = async (args: string[]): Promise<Buffer> => encoder.run(ffmpegBin, args);
+
   // The baseline's variant is always generated, so a preroll stays available even when the effective codec's variant fails to encode.
-  await generateVariant(ffmpegBin, CAPTURE_BASELINE_CODEC, PREROLL_VIDEO_ARGUMENTS[CAPTURE_BASELINE_CODEC], size);
+  await generateVariant(encode, CAPTURE_BASELINE_CODEC, PREROLL_VIDEO_ARGUMENTS[CAPTURE_BASELINE_CODEC], size);
 
   // The effective capture codec's variant is generated as well when it is not the baseline, so the preroll matches the capture codec at the preroll-to-live boundary.
   const effectiveCodec = getEffectiveCaptureCodec();
 
   if(effectiveCodec !== CAPTURE_BASELINE_CODEC) {
 
-    await generateVariant(ffmpegBin, effectiveCodec, PREROLL_VIDEO_ARGUMENTS[effectiveCodec], size);
+    await generateVariant(encode, effectiveCodec, PREROLL_VIDEO_ARGUMENTS[effectiveCodec], size);
   }
 }
 
 /**
  * Generates one capture codec's preroll variant and stores it in the variant cache. Constructs the FFmpeg argument list from shared parameters (input sources,
  * duration, GOP size, audio codec, fMP4 output flags) combined with the codec-specific video encoder arguments.
- * @param ffmpegBin - Path to the FFmpeg executable.
+ * @param encode - Runs one encode of the given arguments with the resolved FFmpeg binary, resolving with its complete output.
  * @param codec - The codec label for this variant.
  * @param videoArgs - Codec-specific FFmpeg arguments for the video encoder (e.g., "-c:v libx264 -preset slow ...").
  * @param size - The output resolution as "WxH".
  */
-async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs: readonly string[], size: string): Promise<void> {
+async function generateVariant(encode: (args: string[]) => Promise<Buffer>, codec: CaptureCodec, videoArgs: readonly string[], size: string): Promise<void> {
 
   // A 60-frame GOP at the source's 30 fps puts a keyframe every 2 seconds, and with frag_keyframe that gives 2-second preroll segments, which match the default HLS
   // segment duration and the 2-second fallbacks used in this module.
@@ -268,7 +290,7 @@ async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs
 
   try {
 
-    const output = await spawnAndCollect(ffmpegBin, args);
+    const output = await encode(args);
     const variant = splitPrerollBuffers(output);
 
     if(variant && (variant.mediaSegments.length > 0)) {
@@ -552,10 +574,6 @@ export interface PrerollEntryOptions {
   // The preroll codec variant. Determines the URL path segment (e.g., "/preroll/h264/segment0.m4s").
   codec: CaptureCodec;
 
-  // File extension for preroll segments. It must be ".m4s", the only extension the preroll segment route accepts...an entry built with any other extension points
-  // at a URL the route answers with a 404.
-  extension: string;
-
   // Total number of preroll segments. Entries are produced for indices in [startIndex, prerollSegmentCount).
   prerollSegmentCount: number;
 
@@ -581,11 +599,23 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
     entries.push({
 
       duration: getPrerollSegmentDuration(options.codec, i),
-      url: options.baseUrl + "/preroll/" + options.codec + "/segment" + String(i) + options.extension
+      url: options.baseUrl + "/preroll/" + options.codec + "/segment" + String(i) + PREROLL_SEGMENT_EXTENSION
     });
   }
 
   return entries;
+}
+
+/**
+ * Builds the URI of a preroll variant's init segment. This is the one spelling of that path: the startup playlist's map entry, the composite playlists the capture
+ * segmenter and the native proxy build while preroll entries are in their window, and the init route itself all take it from here.
+ * @param baseUrl - The server's external URL (e.g., "http://192.168.1.100:5589"), or the empty string for the route's own path.
+ * @param codec - The preroll codec variant, or the route's codec parameter.
+ * @returns The init segment's URI.
+ */
+export function buildPrerollInitUri(baseUrl: string, codec: CaptureCodec | ":codec"): string {
+
+  return baseUrl + "/preroll/" + codec + "/init.mp4";
 }
 
 /**
@@ -717,7 +747,7 @@ export function generatePrerollPlaylist(options: PrerollPlaylistOptions): string
 
   // The wider object satisfies the narrower reveal options, so the two instants reach the reveal math under their own names.
   const revealCount = computeProgressiveReveal(options);
-  const entries = buildPrerollEntries({ baseUrl, codec, extension: ".m4s", prerollSegmentCount: revealCount, startIndex: 0 });
+  const entries = buildPrerollEntries({ baseUrl, codec, prerollSegmentCount: revealCount, startIndex: 0 });
 
   // A resumed stream's preroll opens a new timeline, its own init segment and its timestamps restarting, so its first entry carries the discontinuity marker and the
   // playlist reports the persisted count as its discontinuity sequence, a count of 0 included because the playlist then holds a marker. A fresh stream's playlist
@@ -732,7 +762,7 @@ export function generatePrerollPlaylist(options: PrerollPlaylistOptions): string
   return buildPlaylist({
 
     discontinuitySequence: resumePosition?.discontinuityCount,
-    initialMapUri: baseUrl + "/preroll/" + codec + "/init.mp4",
+    initialMapUri: buildPrerollInitUri(baseUrl, codec),
     mediaSequence: resumePosition?.segmentIndex ?? 0,
     targetDuration: getPrerollMaxDuration(codec),
     version: 7
@@ -748,7 +778,7 @@ export function generatePrerollPlaylist(options: PrerollPlaylistOptions): string
  */
 export function setupPrerollRoutes(app: Express): void {
 
-  app.get("/preroll/:codec/init.mp4", (req: Request, res: Response) => {
+  app.get(buildPrerollInitUri("", ":codec"), (req: Request, res: Response) => {
 
     // The variant map holds exactly the variants generated, so it decides which codecs a route serves, and any other parameter finds no variant. The type test
     // narrows the request parameter to the single string the map is keyed by.
@@ -781,9 +811,11 @@ export function setupPrerollRoutes(app: Express): void {
       return;
     }
 
-    // Extract the segment index from the filename (e.g., "segment5.m4s" -> 5).
+    // Extract the segment index from the filename (e.g., "segment5.m4s" -> 5). The extension is tested against the constant the entries are built with, so the
+    // pattern reads only the index.
     const segmentParam = req.params["segment"];
-    const match = (typeof segmentParam === "string") ? /^segment(\d+)\.m4s$/.exec(segmentParam) : null;
+    const match = ((typeof segmentParam === "string") && segmentParam.endsWith(PREROLL_SEGMENT_EXTENSION)) ?
+      /^segment(\d+)$/.exec(segmentParam.slice(0, -PREROLL_SEGMENT_EXTENSION.length)) : null;
 
     if(!match) {
 

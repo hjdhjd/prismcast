@@ -4,7 +4,7 @@
  */
 import { LOG, chromeFetch, resolveUrl, startTimer, timeoutSignal } from "../utils/index.ts";
 import type { MediaContainer, Nullable } from "../types/index.ts";
-import { buildPrerollEntries, computePrerollWindow } from "../streaming/preroll.ts";
+import { buildPrerollEntries, buildPrerollInitUri, computePrerollWindow } from "../streaming/preroll.ts";
 import { decryptSegment, deriveIvFromSequence, fetchDecryptionKey, parseExplicitIv } from "./decrypt.ts";
 import { findNamedInitSegment, pruneNamedInitSegments, storeAudioSegment, storeNamedInitSegment, storeSegment, updateAudioPlaylist, updatePlaylist,
   updateVideoPlaylist } from "../streaming/hlsSegments.ts";
@@ -1508,12 +1508,12 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
     realSegmentCount
   });
 
-  // Build fMP4 preroll entries for preroll indices still in the window. These reference the global /preroll/ routes with absolute URLs and .m4s extension.
+  // Build fMP4 preroll entries for preroll indices still in the window. These reference the global /preroll/ routes with absolute URLs.
   let prerollEntries: PlaylistSegmentEntry[] = [];
 
   if(startIndex < prerollSegmentCount) {
 
-    prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, codec: prerollCodec, extension: ".m4s", prerollSegmentCount, startIndex });
+    prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, codec: prerollCodec, prerollSegmentCount, startIndex });
   }
 
   // Build the relayed source's real entries (MPEG-TS or fMP4) from the video metadata maps via the shared helper.
@@ -1572,7 +1572,7 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
    * has fallen out of the window, the real content's own initialization becomes the window-level reference directly.
    */
   const realInitialMapUri = annotateMapTransitions(realEntries, videoMetadata);
-  let initialMapUri = (prerollEntries.length > 0) ? (prerollBaseUrl + "/preroll/" + prerollCodec + "/init.mp4") : undefined;
+  let initialMapUri = (prerollEntries.length > 0) ? buildPrerollInitUri(prerollBaseUrl, prerollCodec) : undefined;
 
   if(realInitialMapUri !== null) {
 
