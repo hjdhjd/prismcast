@@ -2,13 +2,14 @@
  *
  * logger.ts: Logging utilities with color-coded output for PrismCast.
  */
-import { format, styleText } from "node:util";
+import { format, inspect, styleText } from "node:util";
 import { getStreamId, resolveContextShowName } from "./streamContext.ts";
 import { initDebugFilter, isAnyDebugEnabled, isCategoryEnabled } from "./debugFilter.ts";
 import type { LogColor } from "./fileLogger.ts";
 import type { LogEntry } from "./logEmitter.ts";
 import { emitLogEntry } from "./logEmitter.ts";
 import { formatTimestamp } from "./format.ts";
+import { isPlainObject } from "./plainObject.ts";
 import { writeLogEntry } from "./fileLogger.ts";
 
 /* Terminal color choices for log output. Warnings appear in yellow and errors in red, making it easy to spot issues when scanning log output. Coloring is delegated
@@ -63,7 +64,8 @@ export function isDebugLogging(): boolean {
 }
 
 /* The LOG object provides a centralized logging interface with color-coded output and printf-style format strings. All methods accept a format string followed by
- * optional arguments, using Node's util.format() for interpolation. Supported format specifiers include %s (string), %d (number), %j (JSON), and %o (object).
+ * optional arguments, using Node's util.format() for interpolation. The supported format specifiers are the ones FORMAT_SPECIFIER_PATTERN holds: %s (string),
+ * %d (number), %i (integer), %f (floating point), %j (JSON), %o and %O (object), and %c (CSS, consumed and ignored).
  *
  * Stream context is automatically detected via AsyncLocalStorage. When running within a stream context (established by runWithStreamContext()), log messages are
  * automatically prefixed with the stream ID for correlation across concurrent streaming sessions.
@@ -71,11 +73,50 @@ export function isDebugLogging(): boolean {
  * For logging outside a stream context (e.g., iterating over streams in a disconnect handler), use LOG.withStreamId() to create a bound logger.
  */
 
+/* The format specifiers util.format() consumes an argument for. An escaped percent consumes nothing, so the count strips every escaped percent before it matches,
+ * and what remains mirrors util.format()'s own consumption: a message whose arguments outnumber its specifiers leaves its trailing arguments unconsumed, which is
+ * how logWithLevel tells a trailing context object from an argument a specifier renders. The pattern is global so String.prototype.match returns every
+ * occurrence, and it is read only through match, because a global pattern's own exec and test carry their position from one call to the next in lastIndex.
+ */
+const FORMAT_SPECIFIER_PATTERN = /%[sdifjoOc]/g;
+
+// An escaped percent. util.format() renders it as one literal percent sign, and it consumes no argument.
+const ESCAPED_PERCENT = "%%";
+
+/**
+ * Counts the specifiers in a message that each consume an argument, with escaped percents removed first so "%%s" reads as a literal percent sign and an "s".
+ * @param message - The format string.
+ * @returns The number of argument-consuming specifiers in the message.
+ */
+function countFormatSpecifiers(message: string): number {
+
+  return message.replaceAll(ESCAPED_PERCENT, "").match(FORMAT_SPECIFIER_PATTERN)?.length ?? 0;
+}
+
+/**
+ * Formats the sentence of a line whose trailing context object has been set aside, from the message and the arguments that precede the context.
+ * @param message - The format string.
+ * @param args - The arguments that precede the context object.
+ * @returns The formatted sentence, before normalization.
+ */
+function formatSentence(message: string, args: readonly unknown[]): string {
+
+  if(args.length > 0) {
+
+    return format(message, ...args);
+  }
+
+  // util.format() renders an escaped percent only when it is given an argument, and the context object is such an argument. A message that leaves no argument
+  // for the sentence has no specifier, so rendering its escaped percents is all util.format() would do to the sentence if the context went through it as well.
+  return message.replaceAll(ESCAPED_PERCENT, "%");
+}
+
 /* The logger commits to emitting exactly one sentence terminator on every non-debug line so callers do not have to reason about whether the format string or an
  * interpolated value carries the punctuation. This encodes the "non-debug logs are complete sentences" project rule as logger behavior rather than as per-call-site
  * discipline - a producer changing its message punctuation can no longer silently regress an interpolated log line, and the differing punctuation conventions
  * between formatError (which strips trailing punctuation) and userMessage/validator strings (which carry it) become invisible to callers. Debug stays raw because
- * debug is fragments by convention.
+ * debug is fragments by convention. The terminator closes the sentence, and a trailing context object follows it: a line in the house form, a complete sentence
+ * with its details in a context object, ends with the object rather than with a period after it.
  */
 
 /**
@@ -126,8 +167,10 @@ function emitToSubscribers(level: LogEntry["level"], message: string, categoryTa
 }
 
 /**
- * Interpolates the format string against its arguments and normalizes non-debug messages to a single trailing sentence terminator, then hands the result to
- * emitFormatted for prefixing, SSE emission, and output routing. Debug messages skip normalization because debug output is fragments by convention.
+ * Interpolates the format string against its arguments and normalizes non-debug messages to a single sentence terminator, then hands the result to emitFormatted
+ * for prefixing, SSE emission, and output routing. A non-debug line whose last argument is a plain object that no specifier consumes carries that object as its
+ * context: the sentence is formatted from the message and the other arguments and normalized on its own, and the context follows its terminator as
+ * util.inspect() renders it. Debug messages skip normalization because debug output is fragments by convention.
  * @param level - The log level (error, warn, info, debug).
  * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
  * @param message - The format string.
@@ -137,12 +180,22 @@ function emitToSubscribers(level: LogEntry["level"], message: string, categoryTa
  */
 function logWithLevel(level: LogEntry["level"], color: LogColor, message: string, args: unknown[], explicitStreamId?: string, categoryTag?: string): void {
 
-  const rawFormatted = args.length > 0 ? format(message, ...args) : message;
+  const context = args.at(-1);
+
+  // A trailing plain object that the message's specifiers leave unconsumed is the line's context. On a non-debug line the terminator closes the sentence, formatted
+  // from the message and the other arguments, and the context follows it as util.inspect() renders it, the rendering util.format() gives an argument it does not
+  // consume. The plain-object test runs before the specifier count because it is the cheaper check and a line without a trailing object fails it at once.
+  if((level !== "debug") && isPlainObject(context) && (args.length > countFormatSpecifiers(message))) {
+
+    emitFormatted(level, color, normalizeSentence(formatSentence(message, args.slice(0, -1))) + " " + inspect(context), explicitStreamId, categoryTag);
+
+    return;
+  }
+
+  const formatted = args.length > 0 ? format(message, ...args) : message;
 
   // Non-debug levels are guaranteed sentence-terminated; debug stays raw because debug is fragments by convention. The contract lives here, not at the call site.
-  const formatted = (level === "debug") ? rawFormatted : normalizeSentence(rawFormatted);
-
-  emitFormatted(level, color, formatted, explicitStreamId, categoryTag);
+  emitFormatted(level, color, (level === "debug") ? formatted : normalizeSentence(formatted), explicitStreamId, categoryTag);
 }
 
 /**
@@ -259,7 +312,7 @@ export const LOG = {
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
    * @param category - The debug category (e.g., "tuning:hulu", "recovery:tab", "streaming:segmenter").
-   * @param message - The format string (supports %s, %d, %j, %o).
+   * @param message - The format string (supports %s, %d, %i, %f, %j, %o, %O, %c).
    * @param args - Values to interpolate into the format string.
    */
   debug: function(category: string, message: string, ...args: unknown[]): void {
@@ -277,7 +330,7 @@ export const LOG = {
    * stream initialization errors. The red color provides immediate visual indication of serious problems requiring attention.
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
-   * @param message - The format string (supports %s, %d, %j, %o).
+   * @param message - The format string (supports %s, %d, %i, %f, %j, %o, %O, %c).
    * @param args - Values to interpolate into the format string.
    */
   error: function(message: string, ...args: unknown[]): void {
@@ -290,7 +343,7 @@ export const LOG = {
    * status updates.
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
-   * @param message - The format string (supports %s, %d, %j, %o).
+   * @param message - The format string (supports %s, %d, %i, %f, %j, %o, %O, %c).
    * @param args - Values to interpolate into the format string.
    */
   info: function(message: string, ...args: unknown[]): void {
@@ -303,7 +356,7 @@ export const LOG = {
    * recovered from, missing optional features, or degraded functionality.
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
-   * @param message - The format string (supports %s, %d, %j, %o).
+   * @param message - The format string (supports %s, %d, %i, %f, %j, %o, %O, %c).
    * @param args - Values to interpolate into the format string.
    */
   warn: function(message: string, ...args: unknown[]): void {

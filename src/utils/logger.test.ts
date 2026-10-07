@@ -344,8 +344,9 @@ describe("LOG.withStreamId bound logger", () => {
 
 describe("LOG sentence normalization (info / warn / error)", () => {
 
-  /* The logger guarantees that every non-debug line ends with exactly one terminator. This suite asserts each branch of the normalizer so a future regression in
-   * the helper (or a removal of the call from logWithLevel) surfaces immediately. Debug intentionally bypasses the normalizer and is covered separately.
+  /* The logger guarantees that every non-debug sentence ends with exactly one terminator, and a trailing context object follows that terminator rather than
+   * taking one of its own. This suite asserts each branch of the normalizer so a future regression in the helper (or a removal of the call from logWithLevel)
+   * surfaces immediately. Debug intentionally bypasses the normalizer and is covered separately.
    */
   let captured: LogEntry[];
   let unsubscribe: () => void;
@@ -459,6 +460,103 @@ describe("LOG sentence normalization (info / warn / error)", () => {
     LOG.info("startup failed: %s", "Invalid URL.");
 
     assert.equal(captured[0]?.message, "startup failed: Invalid URL.");
+  });
+
+  test("places the terminator before a trailing context object, with no period after the object", () => {
+
+    // The house form: a complete sentence with its details in a trailing context object, which follows the terminator as util.inspect() renders it.
+    LOG.warn("Configuration reload rejected; not applied.", { reason: "bad" });
+
+    assert.equal(captured[0]?.message, "Configuration reload rejected; not applied. { reason: 'bad' }");
+  });
+
+  test("gives a message without a terminator its period before the trailing context object", () => {
+
+    LOG.info("No terminator here", { a: 1 });
+
+    assert.equal(captured[0]?.message, "No terminator here. { a: 1 }");
+  });
+
+  test("treats a null-prototype object as a trailing context object", () => {
+
+    // A plain object may have no prototype at all, so a dictionary built on Object.create(null) is context too, rendered after the terminator with
+    // util.inspect()'s null-prototype label.
+    LOG.info("Null prototype", Object.assign(Object.create(null) as object, { a: 1 }));
+
+    assert.equal(captured[0]?.message, "Null prototype. [Object: null prototype] { a: 1 }");
+  });
+
+  /* One row per specifier util.format() consumes an argument for. In each, the only argument is a plain object and the specifier consumes it, so the object stays
+   * inside the sentence and the line ends with the terminator. A specifier missing from the count would read the object as context and move it past the period.
+   */
+  for(const { expected, message, specifier } of [
+    { expected: "Value { a: 1 }.", message: "Value %s", specifier: "%s" },
+    { expected: "Value NaN.", message: "Value %d", specifier: "%d" },
+    { expected: "Value NaN.", message: "Value %i", specifier: "%i" },
+    { expected: "Value NaN.", message: "Value %f", specifier: "%f" },
+    { expected: "Value {\"a\":1}.", message: "Value %j", specifier: "%j" },
+    { expected: "Value { a: 1 }.", message: "Value %o", specifier: "%o" },
+    { expected: "Value { a: 1 }.", message: "Value %O", specifier: "%O" },
+    { expected: "Styled value.", message: "%cStyled value", specifier: "%c" }
+  ]) {
+
+    test("keeps a plain object consumed by " + specifier + " inside the sentence, the terminator after it", () => {
+
+      LOG.info(message, { a: 1 });
+
+      assert.equal(captured[0]?.message, expected);
+    });
+  }
+
+  test("strips an escaped percent before counting, so a context object after a consumed value still follows the terminator", () => {
+
+    // The escaped percent sits directly before "c", a specifier letter. Counting without the strip would read "%c" as a second specifier, find every argument
+    // consumed, and leave the object inside the sentence.
+    LOG.info("Encoder %s at 95%%cpu", "x264", { limit: 90 });
+
+    assert.equal(captured[0]?.message, "Encoder x264 at 95%cpu. { limit: 90 }");
+  });
+
+  test("renders an escaped percent in a sentence whose only argument is the context object", () => {
+
+    // util.format() renders an escaped percent only when it is given an argument, and the context object is one, so the sentence renders the escape just as
+    // util.format() does when the context goes through it with the message.
+    LOG.info("Literal %%s marker kept", { id: 1 });
+
+    assert.equal(captured[0]?.message, "Literal %s marker kept. { id: 1 }");
+  });
+
+  test("keeps a trailing null inside the sentence, the terminator after it", () => {
+
+    LOG.info("with null", null);
+
+    assert.equal(captured[0]?.message, "with null null.");
+  });
+
+  test("keeps a trailing undefined inside the sentence, the terminator after it", () => {
+
+    LOG.info("with undefined", undefined);
+
+    assert.equal(captured[0]?.message, "with undefined undefined.");
+  });
+
+  test("keeps a trailing Error inside the sentence, its stack rendered before the terminator", () => {
+
+    // An Error is a class instance rather than a plain object, so it is never context. The fixed stack keeps file paths and runtime frames out of the line.
+    const error = new Error("boom");
+
+    error.stack = "Error: boom\n    at fixture (file.ts:1:1)";
+    LOG.info("with fixed stack", error);
+
+    assert.equal(captured[0]?.message, "with fixed stack Error: boom\n    at fixture (file.ts:1:1).");
+  });
+
+  test("leaves a debug line with a trailing object raw (debug never sets a context object apart)", () => {
+
+    initDebugFilter("*");
+    LOG.debug("recovery:tab", "raw fragment", { a: 1 });
+
+    assert.equal(captured[0]?.message, "raw fragment { a: 1 }", "debug formats every argument in place and bypasses the sentence contract");
   });
 });
 

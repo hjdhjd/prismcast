@@ -19,6 +19,7 @@ export * from "./morganStream.ts";
 export * from "./network.ts";
 export * from "./never.ts";
 export * from "./pid.ts";
+export * from "./plainObject.ts";
 export * from "./platform.ts";
 export * from "./processInspector.ts";
 export * from "./retry.ts";

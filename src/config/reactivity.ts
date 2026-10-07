@@ -21,7 +21,7 @@
  * Multiple handlers per prefix are disallowed at registration time and throw immediately, so duplicate-wiring bugs surface during boot rather than as silent
  * misrouted dispatches at runtime.
  */
-import { LOG, formatError } from "../utils/index.ts";
+import { LOG, formatError, isPlainObject } from "../utils/index.ts";
 import type { Nullable } from "../types/index.ts";
 
 /**
@@ -314,7 +314,8 @@ function findLongestPrefix(path: string): Nullable<string> {
  */
 function collectDiff(prefix: string, previous: unknown, current: unknown, changes: ConfigChange[]): void {
 
-  // If either side is not a plain object, treat this position as a leaf and emit a change when the values differ.
+  // If either side is not a plain object, treat this position as a leaf and emit a change when the values differ. Treating every non-plain value as a leaf is
+  // the right behavior for Config - it is JSON-shaped and contains no class instances or arrays-of-objects whose elements should diff independently.
   if(!isPlainObject(previous) || !isPlainObject(current)) {
 
     if(!deepEqual(previous, current)) {
@@ -334,25 +335,6 @@ function collectDiff(prefix: string, previous: unknown, current: unknown, change
 
     collectDiff(childPath, previous[key], current[key], changes);
   }
-}
-
-/**
- * Predicate: is the value a plain object (not array, not null, not a class instance like Date)? The reactivity primitive treats any non-plain value as a leaf,
- * which is the right behavior for Config - it is JSON-shaped and contains no class instances or arrays-of-objects whose elements should diff independently.
- * @param value - The candidate.
- * @returns True if value is a plain object literal.
- */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-
-  if((value === null) || (typeof value !== "object") || Array.isArray(value)) {
-
-    return false;
-  }
-
-  // Object.getPrototypeOf is typed as returning any in the standard lib. Cast through unknown so the comparisons below are type-safe.
-  const proto = Object.getPrototypeOf(value) as unknown;
-
-  return (proto === null) || (proto === Object.prototype);
 }
 
 /**
