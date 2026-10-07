@@ -221,8 +221,9 @@ describe("terminateStream", () => {
 
   test("calling twice does not crash and the second call is a no-op", () => {
 
-    // The terminationInitiated guard ensures double-termination is silently absorbed. Locks the contract that callers can issue redundant terminate calls without
-    // worrying about stack overflows or double-stop calls into the segmenter.
+    // The first call removes the registry entry, so the second finds nothing to dispose and segmenter.stop runs once. The terminationInitiated guard covers only a
+    // re-entrant call during a termination already in progress, so this later sequential call still runs the index cleanup and logs a second summary. Locks the
+    // contract that callers can issue redundant terminate calls without worrying about stack overflows or double-stop calls into the segmenter.
     const { calls, segmenter } = makeSegmenter();
     const entry = makeRegistryEntry({ identity: { ...makePendingCaptureIdentity(), captureSession: makeCaptureSession({ segmenter }) } });
 

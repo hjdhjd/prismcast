@@ -3,13 +3,13 @@
  * native-hls-proxy.test.ts: Integration coverage for the native HLS proxy in src/native/proxy.ts. The architectural unit under test is the proxy's
  * fetch-and-store path - read an upstream variant manifest, walk the segment list, fetch each segment (decrypting AES-128 when keyed), populate the registry's
  * HLS state with the bytes plus a generated playlist. The integration boundary is upstream HTTP -> registry HLS state. Downstream serving back to clients goes
- * through the existing route handlers and is covered by Suite 14 (hls-playlist-registry.test.ts) - this suite stops at the registry write.
+ * through the existing route handlers and is covered by hls-playlist-registry.test.ts - this suite stops at the registry write.
  *
  * Why bootStubServer here instead of fetch-mocking. The proxy's relationship with its upstream IS the architectural unit under test: URL resolution against
  * baseUrl, sequential segment fetching, key fetching, decryption, manifest re-fetch on the polling cadence. A real HTTP listener exercises every byte of
  * that surface end-to-end. Mocking globalThis.fetch would skip URL composition and timeout behavior, and module-mocking the upstream would prove nothing
- * about the wire-level contract. Suite 12 was correctly mocked at the module boundary because pretune's relationship with its DVR is incidental data
- * acquisition; Suite 13 is correctly bound to a real HTTP loop because the proxy IS the upstream relationship.
+ * about the wire-level contract. The pretune suite injects its DVR data at pretune's PretuneDeps port because pretune's relationship with its DVR is incidental
+ * data acquisition; this suite is bound to a real HTTP loop because the proxy IS the upstream relationship.
  *
  * What is intentionally out of scope:
  *

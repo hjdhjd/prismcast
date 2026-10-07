@@ -3,11 +3,11 @@
  * pretune.test.ts: Integration coverage for the pretune scheduling state machine in src/streaming/pretune.ts. The architectural unit under test is pretune's
  * decision logic - read the DVR job schedule, dedupe against active streams, schedule per-job timers within the horizon, cancel cleanly on stop. The HTTP
  * fetch layer to the DVR is not the boundary under test - it is data acquisition for the decision layer. pretune composes those calls behind its injectable
- * PretuneDeps port (fetchFromDvr, getDeviceMappings, getDvrHost, initializeStream), so we pass a deps object that feeds synthetic schedule data straight into
+ * PretuneDeps port (clock, fetchFromDvr, getDeviceMappings, getDvrHost, initializeStream), so we pass a deps object that feeds synthetic schedule data straight into
  * the decision logic and records go / no-go decisions through an initializeStream spy - no real HTTP round-trip, no real browser-launching capture path, and
  * no loader mock.
  *
- * Architectural findings surfaced during construction (recorded alongside the integration-tests roadmap):
+ * Architectural constraints that shape this suite:
  *
  *   1. The Channels DVR port is user-configurable via CONFIG.channelsDvr.port - pretune reads it at each poll and hands it to src/streaming/showInfo.ts,
  *      which builds the DVR URL from it, so there is no hard-coded port. This suite routes around the HTTP layer entirely by injecting fetchFromDvr at
@@ -47,8 +47,8 @@ const BASE_TIME_MS = 1700000000000;
 // fixture stays in lockstep with what pretune reads rather than duplicating the type.
 let scheduledJobs: pretune.ScheduledJob[] = [];
 
-// Synthetic device mappings - guide number to channel key. pretune calls getDeviceMappings(host) to resolve job.channels[0] (a guide number) to a PrismCast channel
-// key. The injected getDeviceMappings returns one synthetic device whose guide map is this. Reassigned per test.
+// Synthetic device mappings - guide number to channel key. pretune calls getDeviceMappings(host, port, now) to resolve job.channels[0] (a guide number) to a
+// PrismCast channel key. The injected getDeviceMappings returns one synthetic device whose guide map is this. Reassigned per test.
 let deviceGuideMap = new Map<string, string>();
 
 // The initializeStream spy stands in for the browser-launching capture path so tests observe pretune's go / no-go decisions by call count and arguments. Typed as
@@ -145,9 +145,9 @@ describe("pretune scheduling state machine", () => {
     assert.ok(fetchFromDvrSpy.mock.callCount() >= 1, "the DVR jobs endpoint must be polled at least once");
   });
 
-  test("a job for a channel that is already streaming does NOT trigger pretune (cf2e9c7 regression guard)", async () => {
+  test("a job for a channel that is already streaming does NOT trigger pretune (duplicate-stream guard)", async () => {
 
-    /* The cf2e9c7 regression class: pretune must coexist with active streams without spawning duplicates. A scheduled program for channel X arriving in the
+    /* The already-streaming guard: pretune must coexist with active streams without spawning duplicates. A scheduled program for channel X arriving in the
      * polling window when X is already streaming must end at the existingStreamId guard inside pretuneChannel - no second initializeStream call for X. The
      * symptom this catches in production is duplicate streams competing for the same channel slot, capacity-limit-related rejection cascades, or in the worst
      * case, two browser tabs racing on the same provider session.
@@ -165,7 +165,7 @@ describe("pretune scheduling state machine", () => {
       data.channels["abc"] = { name: "ABC", url: "https://example.test/abc" };
     });
 
-    // Pre-register an active stream for "abc" - this is what triggers the cf2e9c7 skip.
+    // Pre-register an active stream for "abc" - this is what triggers the already-streaming skip.
     const activeEntry = makeRegistryEntry({ channelName: "abc" });
 
     registerStream(activeEntry);
@@ -225,7 +225,7 @@ describe("pretune scheduling state machine", () => {
 
     deviceGuideMap = new Map([[ "100", "abc" ]]);
 
-    // Schedule a job 4 minutes ahead - well inside the horizon, well before the polling interval would refresh it.
+    // Schedule a job 4 minutes ahead - well inside the horizon - so its per-job timer is still pending when the row stops polling after the startup poll.
     scheduledJobs = [{
 
       channels: ["100"],
@@ -305,14 +305,14 @@ describe("pretune scheduling state machine", () => {
     assert.equal((options as { preTuned: boolean }).preTuned, true, "options.preTuned must be true so the stream is exempt from idle timeout until a client connects");
   });
 
-  /* Phase 2.5 Suite 38: pretune contract for non-streamable channels.
+  /* Pretune contract for non-streamable channels.
    *
-   * The tests below close coverage gaps adjacent to Suite 12's "already-streaming" rule. Each asserts what pretune does when the DVR job's resolved channel
-   * is not currently streamable from PrismCast - either because the channel does not exist (test 1), is structurally hidden by the user's service filter
-   * (test 2), or is on the user's predefined-disabled list (test 3). Test 4 is a positive control proving the new tests' assertions are informative: a
-   * normally-available predefined channel still pretunes through the same code paths the negative tests share.
+   * The tests below close coverage gaps adjacent to the "already-streaming" rule above. Each asserts what pretune does when the DVR job's resolved channel
+   * is not currently streamable from PrismCast - either because the channel does not exist (the missing-channel row), is structurally hidden by the user's
+   * service filter (the filtered-channel row), or is on the user's predefined-disabled list (the disabled-predefined row). The predefined positive control
+   * proves these rows' assertions are informative: a normally-available predefined channel still pretunes through the same code paths the negative tests share.
    *
-   * The pretune entry point is pretuneChannel(channelId, jobName, startTimeMs), which calls validateChannel(channelId) to gate the actual capture. The decision
+   * The pretune entry point is pretuneChannel(channelId, jobName, startTimeMs, deps), which calls validateChannel(channelId) to gate the actual capture. The decision
    * surface that matters per scenario:
    *
    *   - Channel not in catalog: validateChannel returns invalid (Channel not found, 404). Pretune short-circuits before initializeStream.
@@ -327,7 +327,7 @@ describe("pretune scheduling state machine", () => {
 
   test("scheduled job for a channel key NOT in the catalog does NOT trigger pretune", async () => {
 
-    /* Suite 38 test 1: missing channel. The guide number maps to "missing-channel-x9z2", a key that exists nowhere - not in PREDEFINED_CHANNELS, not in user
+    /* Missing channel. The guide number maps to "missing-channel-x9z2", a key that exists nowhere - not in PREDEFINED_CHANNELS, not in user
      * channels. validateChannel walks the channelsRef lookup, the getAllChannels fallback, and finds nothing - returns 404 invalid. Pretune short-circuits with
      * a debug log and never calls initializeStream. The negative case asserts that pretune cannot fire on phantom channels (a guide-mapping drift, a renamed
      * channel still referenced by the DVR's queued job, a typo in the operator's mapping table).
@@ -370,7 +370,7 @@ describe("pretune scheduling state machine", () => {
 
   test("scheduled job for a channel filtered out by enabledServices does NOT trigger pretune", async () => {
 
-    /* Suite 38 test 2: filtered channel. enabledServices is the user's "I do not subscribe to / am not interested in this service" signal. A channel whose every
+    /* Filtered channel. enabledServices is the user's "I do not subscribe to / am not interested in this service" signal. A channel whose every
      * variant tag is excluded is not actionable for the user - pretuning it would capture a browser tab the user cannot see, increment the recovery budget on a
      * service the user explicitly excluded, and diverge from the M3U playlist (built on getVisibleChannels), the HDHomeRun lineup (iterates getAllChannels), and
      * getAllChannels itself - all three of which already exclude filtered-out channels.
@@ -387,8 +387,8 @@ describe("pretune scheduling state machine", () => {
     await enablePredefinedChannels([ "abcnews", "cnn", "nbc" ]);
 
     // Set a filter that excludes every variant of abcnews. abcnews has no `direct` tag (no site URL), so isChannelAvailableByService(abcnews) is false: this is
-    // structurally a filtered-out channel from the user's perspective, but the pretune path does not consult that predicate. Use a known tag, which the running
-    // filter keeps, that no abcnews variant carries, so we are unambiguously outside every abcnews variant's tag set.
+    // structurally a filtered-out channel from the user's perspective, and validateChannel, which pretuneChannel calls, rejects it with "Channel not available."
+    // Use a known tag, which the running filter keeps, that no abcnews variant carries, so we are unambiguously outside every abcnews variant's tag set.
     await mutateEnabledServices(["paramountplus"]);
 
     ctx.registerCleanup(async () => {
@@ -426,9 +426,9 @@ describe("pretune scheduling state machine", () => {
 
   test("scheduled job for a disabledPredefined channel does NOT trigger pretune", async () => {
 
-    /* Suite 38 test 3: a predefined channel on the user's disabledPredefined list. validateChannel checks isPredefinedChannelDisabled first, short-
-     * circuits with 404 "Channel is disabled," and pretuneChannel returns before initializeStream. The negative case: a user explicitly hiding a channel
-     * from the playlist also suppresses pretune for that channel - the two paths share the same on-off semantics.
+    /* A predefined channel on the user's disabledPredefined list. validateChannel checks isPredefinedChannelDisabled first, short-circuits with 404 "Channel
+     * is disabled," and pretuneChannel returns before initializeStream. The negative case: a user explicitly hiding a channel from the playlist also
+     * suppresses pretune for that channel - the two paths share the same on-off semantics.
      */
     await using ctx = await createIntegrationContext();
 
@@ -471,7 +471,7 @@ describe("pretune scheduling state machine", () => {
 
   test("scheduled job for a normally-available predefined channel triggers exactly one pretune call", async () => {
 
-    /* Suite 38 test 4: positive control adjacent to the negative tests above. A clean state (no filter, nothing disabled), a predefined channel (cnn) that
+    /* Positive control adjacent to the negative tests above. A clean state (no filter, nothing disabled), a predefined channel (cnn) that
      * structurally exists in PREDEFINED_CHANNELS, and a job within the horizon. Pretune resolves the channel, validates it, and fires initializeStream. This
      * asserts that the negative-test assertions are informative - if the positive path were broken, all negative-test 0-counts would pass for the wrong reason.
      *
@@ -516,8 +516,8 @@ describe("pretune scheduling state machine", () => {
     assert.equal((options as { preTuned: boolean }).preTuned, true, "options.preTuned must be true so the stream is exempt from idle timeout until a client connects");
   });
 
-  /* Scheduler-branch coverage. The tests below assert the still-uncovered internal branches of pretune's state machine that the go / no-go tests above do not
-   * exercise: the safety-timeout reaper (claimed vs unclaimed), the retry loop and its past-start abandonment guard, the pre-schedule skips (cancelled/skipped,
+  /* Scheduler-branch coverage. The tests below assert the internal branches of pretune's state machine that the go / no-go tests above do not exercise:
+   * the safety-timeout reaper (claimed vs unclaimed), the retry loop and its past-start abandonment guard, the pre-schedule skips (cancelled/skipped,
    * outside horizon, already started, empty or unresolvable guide, empty device mappings), and the timer-map hygiene (dedup on re-poll, stale-timer cleanup on
    * job disappearance). Each drives the scheduler on its own virtual clock and asserts the observable effect a regression would break - the initializeStream spy
    * call count, the registry state after a timer fires, or the termination of a reaped stream.
@@ -650,7 +650,7 @@ describe("pretune scheduling state machine", () => {
 
   test("a throwing initializeStream is retried up to MAX_RETRIES attempts within the pretune window", async () => {
 
-    /* The retry loop: pretuneChannel retries a failing capture up to MAX_RETRIES (5) times, sleeping RETRY_DELAY_MS (5s) between attempts, because a transient
+    /* The retry loop: pretuneChannel makes up to MAX_RETRIES (5) attempts at a failing capture, sleeping RETRY_DELAY_MS (5s) between them, because a transient
      * launch failure inside the pretune window should still land the stream before the recording starts. The spy call count of exactly 5 is the observable a
      * regression (retrying too few, too many, or forever) would break.
      *
@@ -690,7 +690,8 @@ describe("pretune scheduling state machine", () => {
 
     pretune.startPretunePolling(deps);
 
-    // Fire the per-job timer at +20s (before the 60s interval). Its callback enters the retry loop; attempt 1 throws and awaits the first real RETRY_DELAY_MS sleep.
+    // Fire the per-job timer at +20s (before the 60s interval). Its callback enters the retry loop; attempt 1 throws and parks on the first RETRY_DELAY_MS sleep on
+    // the virtual clock.
     clock.advance(5000);
     await settle();
     clock.advance(15000);
@@ -1095,8 +1096,8 @@ describe("pretune scheduling state machine", () => {
 
   test("a job whose channels[0] is empty is skipped while a resolvable job fires", async () => {
 
-    /* The empty-guide skip: a job whose preferred channel entry is empty yields no guide number to resolve, so pretune skips it before touching the device
-     * mappings. The control job with a resolvable guide proves the poll ran and asserts that only it schedules.
+    /* The empty-guide skip: a job whose preferred channel entry is empty yields no guide number to resolve, so pretune skips it before resolving the guide
+     * number against the device mappings. The control job with a resolvable guide proves the poll ran and asserts that only it schedules.
      */
     await using ctx = await createIntegrationContext();
 

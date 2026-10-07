@@ -13,7 +13,8 @@ import type { StreamHealthStatus } from "./statusEmitter.ts";
  */
 
 /**
- * Recovery metrics tracked throughout the stream's lifetime. Returned when the monitor stops for inclusion in termination logs.
+ * Recovery metrics tracked throughout the stream's lifetime. The termination prologue reads them through MonitorHandle.getMetrics() for the stream-end log, and
+ * they remain valid after the monitor is disposed.
  */
 export interface RecoveryMetrics {
 
@@ -66,7 +67,8 @@ export interface MonitorHandle extends Disposable {
 
 // Recovery method names. These are the single source of truth for recovery methods: they serve as the log labels in start, success, and failure messages, as the
 // computed keys into the ATTEMPT_FIELDS and SUCCESS_FIELDS metrics-counter maps below, and as the return values of getRecoveryMethod. Changing a value here changes
-// all three in lockstep, so they are not free to edit for log cosmetics - editing one silently re-routes (or breaks) the corresponding metrics counter.
+// every one of those roles in lockstep, so an edit changes the log text and carries its counter key along with it. The values must stay distinct from one another,
+// because two equal values would collapse into a single key in each map and merge two counters.
 export const RECOVERY_METHODS = {
 
   pageNavigation: "page navigation",
@@ -560,15 +562,15 @@ export function getIssueCategory(state: VideoState, isStalled: boolean, isBuffer
  * own navigation timeouts as warnings instead of throwing, and the evaluate-call timeout path (EvaluateTimeoutError) belongs to the health monitor's own call chain,
  * never this one.
  *
- * The refusal Chrome answers a capture start with is referenced from the module that speaks that protocol rather than re-typed here, so a wording change in the
- * extension's answer cannot leave the two spellings disagreeing.
+ * The refusal Chrome answers a capture start with is read from the shared constant both this classifier and the capture module import, rather than re-typed here,
+ * so a wording change in the extension's answer cannot leave the two spellings disagreeing.
  */
 const CAPTURE_INFRASTRUCTURE_PATTERNS = [ "Cannot capture", "Capture queue", CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, "No active tab", "capture extension",
   "timed out" ] as const;
 
 /**
  * Classifies whether an error originates in Chrome's capture infrastructure (the extension, the capture lock, or stream initialization) rather than in a specific
- * site or stream. This is the single source of truth for that judgment, and it has two readers, both on the establishment's failure paths: the acquisition
+ * site or stream. This is the single source of truth for that judgment, and every reader sits on the establishment's failure paths: the acquisition
  * chokepoint uses it to decide whether a failure is evidence the browser may no longer be capture-ready, and the stream-setup path uses it to decide the
  * client-facing 503 back-off. The judgment is shared; the side effect fires in exactly one of them.
  * @param error - The error or message to classify.

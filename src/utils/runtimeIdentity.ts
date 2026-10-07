@@ -24,7 +24,8 @@
  *                             fingerprint differs from the record's, another program that inherited the PID within the same boot. Each means "the writer is
  *                             gone"; safe to overwrite.
  *   - stale-malformed       : File exists but cannot be parsed (unrecognized format, partial write, corruption, a PID line that is not a positive integer, a
- *                             missing or empty boot session). Safe to overwrite.
+ *                             missing or empty boot session), or cannot be read (any read error other than ENOENT), reported with an empty raw. Safe to
+ *                             overwrite.
  *
  * Same-boot PID reuse. The bootId check alone catches the cross-reboot case (a reboot mints a new boot session, so a recycled PID classifies as
  * stale-different-boot regardless of liveness). It cannot catch the same-boot residual: a SIGKILL of PrismCast followed by the kernel reassigning the freed PID
@@ -33,7 +34,7 @@
  * than rebuilt from process.argv, which differs from what the table reports. A live same-boot PID whose command line fingerprints differently is another
  * program that inherited the PID, and the slot is stale. When identity cannot be determined - a record with no fingerprint, or a PID whose command line the
  * table cannot report because the table is unavailable on the platform or the PID is absent from it - we keep the held-live verdict: failing to confirm identity
- * must never downgrade a possibly-live holder to "free", since that is the only branch that risks two concurrent instances. The fingerprint holds only while the
+ * must never downgrade a possibly-live holder to stale, since an overwritable verdict is the only path to two concurrent instances. The fingerprint holds only while the
  * table reports the command line the claim read, so a process that rewrote its title after its claim would read its own record as stale, which is why the server
  * sets no title.
  *
@@ -71,8 +72,8 @@ export interface IdentityRecord {
 }
 
 /**
- * Discriminated union representing the on-disk state at a given path. Every branch is exhaustive at compile time, so callers must handle each variant
- * explicitly and the type system catches any new state added in the future.
+ * Discriminated union representing the on-disk state at a given path. Each variant carries only the data its state has. claim() and release() test for
+ * held-live alone, so unless they are extended, claim() overwrites a new variant and release() leaves its file in place.
  */
 export type IdentityState =
   { kind: "free" } |
@@ -132,8 +133,11 @@ export function inspect(filePath: string, ctx: RuntimeIdentityContext = createDe
       return { kind: "free" };
     }
 
-    // Any other read error (EACCES, EIO, ...) is reported as malformed-with-empty-raw so callers fall through to the overwrite path rather than crashing on
-    // transient I/O.
+    // Any other read error (EACCES, EIO, ...) is reported as malformed-with-empty-raw, so claim() takes the overwrite path rather than crashing. Like a record
+    // that fails to parse, this downgrade is made without proof that the holder is gone, a deliberate exception to the header's rule that unconfirmed identity
+    // keeps held-live: an unreadable file holds no record to confirm, so keeping held-live would refuse every startup until the file was repaired by hand. The
+    // overwrite either throws, when the temp write or the rename is refused, or replaces the file, and if a holder is still running behind it, this startup
+    // meets the port bind the concurrency note describes.
     return { kind: "stale-malformed", raw: "" };
   }
 

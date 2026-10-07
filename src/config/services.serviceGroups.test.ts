@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * services.serviceGroups.test.ts: Unit tests for service-group construction in services.ts - buildServiceGroups (passes 1, 2, 3 across canonical/variant/override
- * scenarios) and resolveServiceKey's filter-fallback paths. Predicates, lookups, and label dispatchers live in services.test.ts; sort-key computation lives in
+ * scenarios) and resolveServiceKey's no-fallback outcomes. Predicates, lookups, and label dispatchers live in services.test.ts; sort-key computation lives in
  * channelSort.test.ts.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -128,8 +128,8 @@ describe("buildServiceGroups: user-override scenarios A and B", () => {
 
     setServiceSelections({});
 
-    /* extractDomain returns the concise domain (e.g., "example.test" for "foreign.example.test"). The label uses that concise form, so the test asserts on
-     * "Custom (example.test)" rather than the full hostname.
+    /* extractDomain returns the concise domain (e.g., "example.test" for "foreign.example.test"), and the label uses that concise form. The row asserts only the
+     * "Custom (...)" shape of the label, so it does not tell the concise domain from the full hostname.
      */
     const userOverride = makeChannel({ ...nbcPredefined, name: "NBC Custom", url: "https://foreign.example.test/feed" });
     const huluVariant = makeChannel({ canonicalKey: "nbc", url: "https://www.hulu.com/live" });
@@ -244,6 +244,8 @@ describe("resolveServiceKey: filter-fallback paths", () => {
    *
    *   - No selection: `enabledServices.length > 0 && !isServiceTagEnabled(canonicalServiceTag)` -> findFirstEnabledVariant.
    *   - Valid selection but its tag is filtered out: same fallback.
+   *
+   * The rows below cover the no-fallback outcomes only: each resolves a channel whose canonical or selected service is enabled, so neither fallback branch runs.
    */
 
   let originalSelections: Record<string, string>;

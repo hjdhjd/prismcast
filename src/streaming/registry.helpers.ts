@@ -55,8 +55,8 @@ export const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
  * one. The proxy is the single member with no neutral value the type admits - the type says a native stream always has one - so the factory widens a stand-in into the
  * handle here, once, rather than every suite repeating the same widening around its own partial.
  *
- * The stand-in answers the two calls termination makes of any registered stream's proxy, so a native fixture is safe to tear down without every suite building
- * a proxy it never meant to exercise. A scenario that drives the proxy supplies its own through the override.
+ * The stand-in answers the calls termination makes of any registered stream's proxy (stop and getStats), so a native fixture is safe to tear down without every
+ * suite building a proxy it never meant to exercise. A scenario that drives the proxy supplies its own through the override.
  * @param overrides - Partial identity members to override the defaults, most often a stand-in proxy the scenario drives.
  * @returns A fully-populated NativeStreamIdentity.
  */

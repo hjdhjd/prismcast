@@ -5,7 +5,7 @@
  * restore and then confirms it against Chrome's own report), readWindowState (that report, read for a page), and readWindowPlacement (the window's frame and
  * state together, for a caller opening a second window in the same spot).
  * The tests use plain stub objects shaped per the Page and CDPSession contracts - no real browser is launched, and the window's dimensions enter the picture
- * only through the placement read, because the two window primitives drive presentation state alone. Which state the window should be in is decided in
+ * only through the placement read, because the window primitives drive presentation state alone. Which state the window should be in is decided in
  * windowSync.ts and asserted there; these tests cover only the commands each primitive issues, the confirmation the restore waits on, and what each read makes of
  * the report it gets.
  */
@@ -17,9 +17,9 @@ import type { LogEntry } from "../utils/logEmitter.ts";
 import assert from "node:assert/strict";
 import { subscribeToLogs } from "../utils/logEmitter.ts";
 
-/* CdpStub captures every send() call so tests can assert on the command sequence. The send() implementation routes by method name to either the test-supplied
- * response factory or a sensible default - Browser.getWindowForTarget always returns windowId 7, and every other command resolves with nothing, which is what
- * Chrome's window-state commands themselves return.
+/* CdpStub captures every send() call so tests can assert on the command sequence. A test that supplies overrideSend replaces the router outright; otherwise
+ * send() answers by method name - Browser.getWindowForTarget returns windowId 7 unless getWindowForTargetResponse overrides it, Browser.getWindowBounds reports
+ * a normal window state, and every other command resolves with nothing, which is what Chrome's window-state commands themselves return.
  */
 interface CdpStub {
 
@@ -265,8 +265,8 @@ describe("minimizeWindow", () => {
 
   test("never measures the page (the window's content size is not an input)", async () => {
 
-    /* The chrome-dimension measurement fed the resize target. Nothing sizes the window now, so a page.evaluate here would be a live DOM read on the capture page
-     * for a value no code consumes. The stub records any evaluate the implementation issues.
+    /* Nothing sizes the window, so a page.evaluate here would be a live DOM read on the capture page for a value no code consumes. The stub records any evaluate
+     * the implementation issues.
      */
     const cdpStub = makeCdpStub();
 
@@ -508,8 +508,8 @@ describe("readWindowState", () => {
 
   test("normalizes an unavailable report to null rather than throwing", async () => {
 
-    // Three ways the state is simply not knowable - a closed page, a response carrying no bounds, and a session that rejects - all read as null, because a
-    // caller logging this as a diagnostic has nothing different to do about any of them.
+    // Each way the state is not knowable - a closed page, a response carrying no bounds, and a session that rejects - reads as null, because a caller logging
+    // this as a diagnostic has nothing different to do about any of them.
     assert.equal(await readWindowState(makePageStub({ isClosedReturn: true })), null, "a closed page reports no state");
     assert.equal(await readWindowState(makePageStub({ cdpStub: makeCdpStub({ overrideSend: async (): Promise<unknown> => ({ windowId: 7 }) }) })), null,
       "a response carrying no bounds reports no state");

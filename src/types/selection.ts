@@ -37,8 +37,7 @@ export interface ChannelSelectorResult {
    * This is the transient failure class a reload cures, and it is what the tune path's single retry keys on; a channel name that is genuinely absent from a guide
    * that did render is a different failure and carries no flag, because re-reading the same rendered guide would only fail again more slowly.
    *
-   * Meaningless beside success: true. The flat result shape predates this field and the one consumer reads it inside the failure branch only; restructuring the
-   * result into a discriminated union so the type system says that too is worthwhile work, and separate from this.
+   * Meaningless beside success: true; a reader consults it only in the failure branch.
    */
   guideUnavailable?: boolean;
 
@@ -102,8 +101,8 @@ export interface ChannelStrategyEntry {
  */
 export interface DiscoveredChannel {
 
-  // Parent network name when the channel is a local affiliate. Present for Hulu affiliates, YTTV local affiliates, Fox FOXD2C entries, Spectrum affiliates, and
-  // Xfinity/Cox (comcastPolymer) affiliates. Omitted when not applicable.
+  // Parent network name when the channel is a local affiliate, or the per-market call sign for a Fox category member. Populated by providers whose guide data
+  // identifies an affiliate. Omitted when not applicable.
   affiliate?: string;
 
   // Category-selector membership. When the discovered channel belongs to a category that the provider declares in ProviderModule.categoryResolution.selectors, this field
@@ -121,17 +120,17 @@ export interface DiscoveredChannel {
   name: string;
 
   // Gracenote station ID extracted from the provider's guide data, when available. Used by Channels DVR for automatic guide data matching via the
-  // tvc-guide-stationid M3U attribute. Currently populated by Spectrum (tmsid from channel logo URLs).
+  // tvc-guide-stationid M3U attribute. Populated by providers whose guide data exposes a Gracenote ID.
   stationId?: string;
 
   // Channel tier: "paid" for subscription channels, "free" for free ad-supported channels, or "addon" for channels requiring TV provider authentication. Present
-  // for Sling, where the paid/free distinction matters (Freestream channels are free), and for Fox, where locked channels are tagged "addon". Omitted for
-  // providers where every channel shares the same tier.
+  // on a channel whose provider's guide marks its tier, and omitted on every other channel.
   tier?: string;
 }
 
 /**
- * Provider-declared identifiers for the provider's authentication wall, consumed by the blocked-page classifier when a discovery walk returns zero channels.
+ * Provider-declared identifiers for the provider's authentication wall, consumed by the blocked-page classifier when a discovery walk returns zero channels
+ * and when a tune fails.
  * Host patterns match the landed URL's hostname (exact, or any subdomain of the pattern); selectors match against the page DOM. Either match classifies the page
  * as an auth wall ahead of the generic sign-in shape probe. Declared per provider only when the generic probe cannot recognize that provider's wall.
  */
@@ -232,11 +231,11 @@ export interface ProviderModule {
   // any successful tune proves auth. Used by Sling where free-tier (Freestream) channels succeed without a paid subscription.
   validateTune?: (channelSelector: string) => boolean;
 
-  // Optional failsafe called after a manifest interception finalizes, in both contexts that establish a channel: a tune's interception and a token-refresh
-  // re-establishment's, each only for master-kind selections. Inspects the captured master manifest URL to confirm it belongs to the channel identified by
+  // Optional failsafe called after a manifest interception finalizes, from the shared adjudication stage (adjudicateChannelSelection) every establishment runs on
+  // its interception, and only for master-kind selections. Inspects the captured master manifest URL to confirm it belongs to the channel identified by
   // channelSelector. Returns null when the URL is acceptable (either it matches the selector, or its shape is unrecognizable - we fail open in that case so a
   // CDN-side path change does not break tuning). Returns a human-readable failure reason when the URL clearly belongs to a different channel - which is the
-  // signature of a click that did not switch the player. Currently implemented by foxProvider; other providers can opt in if they have similar risk.
+  // signature of a click that did not switch the player. Implemented by providers whose manifest URLs identify the channel.
   verifyManifestForChannel?: (url: string, channelSelector: string) => Nullable<string>;
 }
 
@@ -264,18 +263,18 @@ export interface CategoryResolutionFailure {
 
 /**
  * Outcome of resolving a category selector. Discriminated union of CategoryResolutionSuccess and CategoryResolutionFailure. Resolvers must always return one of
- * these two shapes - there is no null. This forces every resolver to articulate its outcome explicitly, which guarantees diagnostic detail on every failure and
+ * these shapes - there is no null. This forces every resolver to articulate its outcome explicitly, which guarantees diagnostic detail on every failure and
  * removes ambiguity between "could not resolve" and "did not attempt to resolve."
  *
  * Consumers tell the two variants apart by the `callSign` and `reason` field names, using TypeScript's `"callSign" in result` narrowing without needing a tagged
  * enum. A future evolution that needs additional outcomes (e.g., resolution to a list of candidates for user disambiguation) can add a new variant here as a new
- * named interface without touching the existing two.
+ * named interface without touching the existing variants.
  */
 export type CategoryResolution = CategoryResolutionSuccess | CategoryResolutionFailure;
 
 /**
  * Cohesive configuration for a provider that exposes one or more category selectors - selector values that represent a category of channels needing per-user
- * resolution to a concrete identifier rather than naming a specific channel directly. Grouping the three related fields into one sub-object makes the contract
+ * resolution to a concrete identifier rather than naming a specific channel directly. Grouping the related fields into one sub-object makes the contract
  * atomic in the type system: a provider either has the entire configuration or has none of it. There is no way to declare a category list without a resolver, no
  * way to set a resolver without category values, and no way to set the strict-resolution flag without the rest of the machinery being present.
  *

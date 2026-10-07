@@ -138,9 +138,9 @@ interface ResolutionState {
   graceEnd: number;
 
   /* The largest-area intrinsic reading seen while playback was progressing, null until the first such reading and growing only, because the page's rendition ladder
-   * is fixed for the stream and a drop below half of it is what "degraded" means. The record's accepted flag says the ladder already ran to acceptance at this
-   * size; it clears when the picture returns to the peak (the episode is over) or when a larger reading replaces the record (the source proved more), and never
-   * through the recovery resets, so an unrelated recovery cannot re-run the ladder inside one degraded episode.
+   * is fixed for the stream and a drop below RESOLUTION_RATIO_THRESHOLD of its area is what "degraded" means. The record's accepted flag says the ladder already
+   * ran to acceptance at this size; it clears when the picture returns to the peak (the episode is over) or when a larger reading replaces the record (the source
+   * proved more), and never through the recovery resets, so an unrelated recovery cannot re-run the ladder inside one degraded episode.
    */
   peak: Nullable<ResolutionPeak>;
 
@@ -205,8 +205,8 @@ const defaultMonitorDeps: MonitorDeps = { clock: systemClock, getCaptureImpairme
  * @param streamInfo - Stream metadata for status updates.
  * @param onCircuitBreak - Callback function called when circuit breaker trips.
  * @param onTabReplacement - Optional callback for tab replacement recovery. When provided and 3+ consecutive timeouts occur, this is called to replace the hung tab.
- *                           If null/undefined, tab replacement is not available; sustained evaluate timeouts are only surfaced via status (lastIssueType) with no
- *                           automatic recovery escalation.
+ *                           When no handler is supplied, or the browser is marked as unable to start captures, a tab that stays unresponsive past three timeouts
+ *                           terminates the stream through the circuit breaker, because nothing else can recover it.
  * @param deps - The injected browser-boundary collaborators; defaults to defaultMonitorDeps. Threaded so a test drives the ladder's availability decision and the
  *               window sync without a live Chrome.
  * @returns A MonitorHandle exposing the live recovery metrics (getMetrics) and a self-contained dispose that stops the monitor's polling interval.
@@ -259,7 +259,8 @@ export function monitorPlaybackHealth(
   // video fills the viewport again.
   let fullscreenReapplyCount = 0;
 
-  // Flag indicating the cleanup function was called. When true, the next interval check will clear itself.
+  // The stopped marker. stopMonitoring raises it together with disposing the interval, and in-flight awaits read it so they apply nothing once the monitor has
+  // stopped.
   let intervalCleared = false;
 
   /* Serialization flag for the tick body. The interval fires on its schedule whether or not the previous tick's async body has settled, so without this a single
@@ -344,7 +345,7 @@ export function monitorPlaybackHealth(
   const SEGMENT_STALENESS_TIMEOUT = 20000;
 
   // The capture surface: the size capture encodes at, reported beside the source's own size in the status the monitor emits. Read once for the monitor's lifetime,
-  // because the quality preset is restart-gated and cannot change while a stream is running, so re-deriving it on every two-second tick would be work that can only
+  // because the quality preset is restart-gated and cannot change while a stream is running, so re-deriving it on every tick would be work that can only
   // ever produce the same answer.
   const presetViewport = getPresetViewport(CONFIG);
 
@@ -358,8 +359,8 @@ export function monitorPlaybackHealth(
   // Grace period in milliseconds after stream start and after each recovery action. Gives ABR time to ramp up before flagging degradation.
   const RESOLUTION_GRACE_PERIOD = 30000;
 
-  // Number of consecutive degraded readings required before triggering recovery. At ~2 seconds per monitor tick, 15 readings = ~30 seconds of sustained
-  // degradation. This lets transient ABR dips (commercial breaks, ad transitions) self-heal without unnecessary page reloads.
+  // Number of consecutive degraded readings, one per monitor tick, required before triggering recovery. At the default monitor interval that is about 30 seconds
+  // of sustained degradation. This lets transient ABR dips (commercial breaks, ad transitions) self-heal without unnecessary page reloads.
   const RESOLUTION_DEGRADED_COUNT_THRESHOLD = 15;
 
   // Fixed margin in milliseconds before the maxContinuousPlayback limit at which a proactive reload is triggered. Two minutes provides enough time for page
@@ -445,7 +446,7 @@ export function monitorPlaybackHealth(
 
   /**
    * Checks segment delivery health for native streams. Detects stalled streams by comparing the proxy's segment index and last segment timestamp against thresholds.
-   * Recovery follows three escalation levels per the plan:
+   * Recovery escalates through these levels:
    *
    * - L1: Re-fetch manifest (handled by the proxy's internal retry loop - consecutive failures up to the threshold)
    * - L2: Reload page for fresh tokens (same mechanism as proactive token refresh, but triggered by segment staleness)
@@ -584,7 +585,7 @@ export function monitorPlaybackHealth(
    * Holds a native capture fallback at the decision site while the recovery grace window is open, reporting the stream as recovering instead of entering the
    * fallback cycle. Every native trigger - a relay that stopped itself on its error threshold, a stall the ladder has escalated to its last rung - describes a
    * condition that holds on every tick once it is true. Without this read the whole cycle - the mode pre-flip, the attempt, the revert, the window sync, the
-   * warning - would run twice a second inside a window every other trigger is respecting. Nothing is lost by waiting, since neither condition is curing itself in
+   * warning - would run on every tick inside a window every other trigger is respecting. Nothing is lost by waiting, since neither condition is curing itself in
    * the meantime, and the status still goes out so the display keeps advancing. The replacement primitive's own entry gate stays the guarantee beneath this: a
    * gate here can be forgotten, that one cannot be bypassed.
    *
@@ -1084,9 +1085,9 @@ export function monitorPlaybackHealth(
 
   /**
    * Reports whether the monitor is inside the post-recovery grace window. One state, read here by every consumer that has to honour it: the tick computes the
-   * value it threads into the health checks from this, and the triggers that sit outside that thread - the tiny-segment gate, the unresponsive-tab gate, the
-   * native fallback triggers through deferFallbackInsideGrace, and the replacement primitive's own entry gate - call it directly. A second way of asking the
-   * same question is how a trigger ends up escalating inside a window every other trigger is respecting.
+   * value it threads into the health checks from this, which the tiny-segment and staleness gates read, and the triggers that sit outside that thread - the
+   * unresponsive-tab gate, the native fallback triggers through deferFallbackInsideGrace, and the replacement primitive's own entry gate - call it directly. A
+   * second way of asking the same question is how a trigger ends up escalating inside a window every other trigger is respecting.
    * @returns True while the grace window from the last recovery action is still open.
    */
   function isWithinRecoveryGrace(): boolean {
@@ -1111,7 +1112,7 @@ export function monitorPlaybackHealth(
    * terminateStream has already disposed this monitor; the resumption must then apply nothing at all - no grace window, no discontinuity mark, no context
    * adoption, no counter reset, no navigation-failure tally, no status emission - because each of those would describe a stream that is already gone.
    *
-   * Releasing recoveryState.inProgress is this helper's own job for exactly that reason: all five callers raise the flag before their await and lower it on the
+   * Releasing recoveryState.inProgress is this helper's own job for exactly that reason: every caller raises the flag before its await and lowers it on the
    * way out, and the resumption they skip is where that lowering would otherwise have happened. executeTabReplacement is not one of them - its finally already
    * owns the release.
    * @returns True if the monitor stopped and the caller must apply nothing.
@@ -1683,7 +1684,7 @@ export function monitorPlaybackHealth(
           segmentSize, String(hasVideo), segmentState.consecutiveTinySegments, effectiveThreshold);
 
         /* Act on sustained undersized segments, but not inside the post-recovery grace window. The grace term is what keeps a stream that a replacement did not
-         * cure from re-escalating every two seconds: a fresh capture needs its window to start producing real segments, and a stream still emitting tiny ones
+         * cure from re-escalating on every tick: a fresh capture needs its window to start producing real segments, and a stream still emitting tiny ones
          * when the window closes will satisfy this again immediately. Suppressing the whole branch - the warning and the circuit-breaker fallback alongside the
          * replacement - is deliberate, and mirrors what the staleness branch below has always done with its own grace term. The counter keeps advancing
          * meanwhile, so the evidence is not lost, only the reaction is deferred.
@@ -1821,6 +1822,7 @@ export function monitorPlaybackHealth(
     // (RESOLUTION_DEGRADED_COUNT_THRESHOLD consecutive readings) to let transient ABR dips self-heal.
     if((resolutionState.consecutiveDegradedReadings >= RESOLUTION_DEGRADED_COUNT_THRESHOLD) && (resolutionState.recoveryAttempt === 0)) {
 
+      // The logged duration counts one reading per tick at the default two-second monitor interval, so it is approximate for a stream whose interval differs.
       const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
       LOG.warn("Video resolution has been degraded for %ss (%s\u00d7%s against a %s\u00d7%s peak). Attempting recovery via %s.",
@@ -1834,7 +1836,7 @@ export function monitorPlaybackHealth(
         LOG.warn("Resolution recovery deferred - page navigation rate limit reached (%s in %s minutes).",
           CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
-        // Defer by pushing grace end forward to avoid re-triggering every 2 seconds.
+        // Defer by pushing grace end forward to avoid re-triggering on every tick.
         resolutionState.graceEnd = now + RESOLUTION_GRACE_PERIOD;
         recoveryState.inProgress = false;
 
@@ -1893,6 +1895,7 @@ export function monitorPlaybackHealth(
 
       if(canReplaceTab()) {
 
+        // The same per-tick duration as the first warning, approximate for a stream whose monitor interval differs from the default.
         const degradedDuration = resolutionState.consecutiveDegradedReadings * 2;
 
         LOG.warn("Video resolution is still degraded after %ss (%s\u00d7%s). Attempting recovery via %s.",
@@ -1969,7 +1972,7 @@ export function monitorPlaybackHealth(
       LOG.warn("Proactive reload deferred - page navigation rate limit reached (%s in %s minutes).",
         CONFIG.playback.maxPageReloads, Math.round(CONFIG.playback.pageReloadWindow / 60000));
 
-      // Set a grace period so this deferral does not re-trigger every 2 seconds while the rate limit remains in effect. Level 3 is the bound a page navigation
+      // Set a grace period so this deferral does not re-trigger on every tick while the rate limit remains in effect. Level 3 is the bound a page navigation
       // would have taken, which is the action being deferred.
       setRecoveryGracePeriod(3);
 
@@ -2590,7 +2593,8 @@ export function monitorPlaybackHealth(
           if((recoveryState.escalationLevel > 0) && (healthyDuration > CONFIG.playback.sustainedPlaybackRequired)) {
 
             // Clear buffering state. The bufferingStartTime may persist through recovery cycles due to networkState === 2 (NETWORK_LOADING) being true for live streams
-            // even during healthy playback. Since we have confirmed 60 seconds of progression, the stream is definitively not buffering.
+            // even during healthy playback. The stream has gone sustainedPlaybackRequired (60 seconds by default) since its last recovery attempt and is progressing
+            // on this tick, so it is not buffering.
             bufferingStartTime = null;
 
             // Reset escalation, failure counters, segment tracking, and circuit breaker. Sustained healthy playback confirms the stream works, so we clear every

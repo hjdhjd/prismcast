@@ -1,19 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * upgrade-preservation.test.ts: Integration coverage for the historical bug class where one save path silently dropped state owned by another. The two
- * canonical instances were:
+ * upgrade-preservation.test.ts: Integration coverage for the bug class where one save path silently drops state owned by another. A save to one store never
+ * drops fields another writer owns, and a config save never touches channels.json. The describe blocks carry the commit ids of the canonical instances as
+ * regression provenance:
  *
- *   - 4afa8a0 (v1.3.2): saving the settings form wiped the disabled channel list, the service filter, and the HDHomeRun device ID. Cause: the form's POST
- *     handler overwrote config.json wholesale with form-only values rather than merging into the existing shape. The fix introduced mergeConfigValues, which
- *     spreads form values onto the existing config so non-form fields are preserved.
+ *   - 4afa8a0 (v1.3.2): saving the settings form wiped the disabled channel list, the service filter, and the HDHomeRun device ID, because the form's POST
+ *     handler overwrote config.json wholesale with form-only values rather than merging them into the existing shape.
  *
- *   - 1c549e8 (v1.9.1): user-set channel numbers and station IDs on local-affiliate variants were lost across upgrades. Cause: an upgrade migration normalized
+ *   - 1c549e8 (v1.9.1): user-set channel numbers and station IDs on local-affiliate variants were lost across upgrades, because an upgrade migration normalized
  *     variant entries against the predefined base too aggressively, treating user-authored identity fields on variants as redundant overrides.
  *
- * The 4afa8a0 and 1c549e8 describe blocks below assert these guarantees from different angles. The 4afa8a0 block seeds non-form config state, drives the production
- * config save path that historically broke it, and asserts the non-form state survives the merge. The 1c549e8 block verifies cross-store isolation: it
- * seeds a user customization in the channels store, drives a config-store save, and asserts the channels file is byte-for-byte unchanged - a config save
- * must never reach into and mutate the channels store. The suite is a regression net: a future refactor that reintroduces either failure mode fails here loudly.
+ * The 4afa8a0 block asserts that a store read-modify-write touching only a form-managed field keeps the system-state fields beside it. Every row writes through
+ * the store-level mutateConfig; test/e2e/routes/settings-preservation.test.ts is the suite that drives the POST /config handler and mergeConfigValues. The
+ * 1c549e8 block guards cross-store isolation: it seeds a user customization in the channels store, drives a config-store save, and asserts the channels file is
+ * byte-for-byte unchanged - a config save must never reach into and mutate the channels store. It does not guard the migration-normalization failure itself,
+ * which src/config/userChannels.migration.test.ts covers next to the migration.
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -28,15 +29,15 @@ describe("settings-save preservation (catches the 4afa8a0 family)", () => {
   test("a partial config update does not wipe disabledPredefined", async () => {
 
     /* The 4afa8a0 bug shape: the user has disabled some predefined channels (CONFIG.channels.disabledPredefined is non-empty); they then save the settings
-     * form, which submits only CONFIG_METADATA fields; the saved config.json has empty disabledPredefined. The fix uses mergeConfigValues to spread form
-     * values onto the existing config rather than replacing it - we exercise that path by issuing a mutateConfig that touches only a form-shape field and
-     * asserting disabledPredefined survives.
+     * form, which submits only CONFIG_METADATA fields; the saved config.json has empty disabledPredefined. This row asserts the store-level half of that
+     * guarantee: a mutateConfig that touches only a form-shape field keeps disabledPredefined. The POST /config path through mergeConfigValues is driven by
+     * settings-preservation.test.ts.
      */
     await using ctx = await createIntegrationContext();
 
     await initializePersistence(ctx);
 
-    // Seed: disable some predefined channels through the same path the toggle endpoint uses.
+    // Seed: write the disabled predefined list straight to the file through the store-level mutateConfig.
     await mutateConfig((config) => {
 
       config.channels ??= {};
@@ -107,7 +108,7 @@ describe("settings-save preservation (catches the 4afa8a0 family)", () => {
 
     /* channelsDvr.host is auto-discovered at runtime by showInfo.ts. The settings form does not manage it - it is not in CONFIG_METADATA, so a
      * wholesale-overwrite save would drop it without the explicit-preservation block in filterDefaults. This test asserts that the merge-save path keeps it.
-     * The host rule is host-only, post-v3-migration; the embedded-port form does not appear in steady state.
+     * channelsDvr.host holds a bare host; a port never appears in it.
      */
     await using ctx = await createIntegrationContext();
 

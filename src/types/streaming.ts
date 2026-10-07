@@ -6,7 +6,8 @@ import type { Nullable } from "./shared.ts";
 
 /**
  * All recognized capture codec identifiers. H.264 is the universal baseline; additional codecs require GPU hardware encoding. This array is the single definition
- * from which the CaptureCodec type, MIME type lookup, and config validation all derive.
+ * every codec-aware reader derives from: a reader that walks the recognized codecs reads the array itself, and every per-codec table is keyed by the CaptureCodec
+ * type or a narrowing of it, so a codec added here fails the type check until each table gives it an entry.
  */
 export const RECOGNIZED_CODECS = [ "h264", "hevc" ] as const;
 
@@ -22,10 +23,11 @@ export type CaptureCodec = typeof RECOGNIZED_CODECS[number];
 export const CAPTURE_BASELINE_CODEC = "h264" satisfies CaptureCodec;
 
 /**
- * Chrome's rejection text when it cannot open a capture source for the tab. Two layers speak this string and neither may spell it independently: the capture
- * module tests a refusal against it to decide whether the start is worth one more attempt, and the recovery module carries it in the signature list that
- * classifies a failure as capture infrastructure. It lives here, in a module with no runtime dependencies at all, so the classifier can read the protocol's own
- * wording without taking on the browser stack that speaks the protocol.
+ * Chrome's rejection text when it cannot open a capture source for the tab. Every layer that recognizes Chrome's refusal reads this one string, and none may spell
+ * it independently: the capture module reads it to log Chrome's refusal with its diagnostics, the stream setup reads it to decide whether the establishment
+ * re-enters itself once on the probe's verdict, and the recovery module carries it in the signature list that classifies a failure as capture infrastructure. It
+ * lives here, in a module with no runtime dependencies at all, so the classifier can read the protocol's own wording without taking on the browser stack that
+ * speaks the protocol.
  */
 export const CAPTURE_SOURCE_UNAVAILABLE_MESSAGE = "Could not start video source";
 
@@ -172,7 +174,8 @@ export interface HealthStatus {
   // Human-readable status message, present when status is not "healthy".
   message?: string;
 
-  // Overall health status: "healthy" when everything is working, "degraded" when approaching capacity, "unhealthy" when browser is disconnected.
+  // Overall health status: "healthy" when everything works, "degraded" when the browser can no longer start captures and is waiting to relaunch or when streams
+  // approach capacity, "unhealthy" when the browser is disconnected.
   status: "degraded" | "healthy" | "unhealthy";
 
   // Active stream information.

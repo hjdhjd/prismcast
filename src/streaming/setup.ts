@@ -40,7 +40,7 @@ import { pipeline } from "node:stream/promises";
 import { startOverlayHandling } from "../browser/consent.ts";
 import { systemClock } from "homebridge-plugin-utils";
 
-/* This module contains the common stream setup logic for HLS streaming. The core logic is split into two functions:
+/* This module contains the common stream setup logic for HLS streaming. At its core are createPageWithCapture() and setupStream():
  *
  * 1. createPageWithCapture(): Creates a browser page, starts media capture, navigates to the URL, and sets up video playback. This is the reusable core that both
  *    initial stream setup and tab replacement recovery use.
@@ -48,8 +48,12 @@ import { systemClock } from "homebridge-plugin-utils";
  * 2. setupStream(): Orchestrates stream creation by calling createPageWithCapture(), then starting the health monitor. This is the
  *    entry point for new stream requests.
  *
- * The separation allows tab replacement recovery (in monitor.ts) to reuse the capture setup logic without duplicating code. When a browser tab becomes unresponsive,
- * the recovery handler can close the old tab, call createPageWithCapture() to create a fresh one, and continue with the same stream ID.
+ * Beside them, the module holds the shared channel playback establishment (establishChannelPlayback), native manifest re-establishment
+ * (reestablishChannelManifest), the capture-system verification (verifyCaptureSystem), and the passive mid-life capture detector.
+ *
+ * The separation allows tab replacement recovery, built in hls.ts and invoked by the monitor, to reuse the capture setup logic without duplicating code. When a
+ * browser tab becomes unresponsive, the recovery handler calls createPageWithCapture() to establish a fresh page while the existing capture keeps serving, then
+ * swaps to the new page under the same stream ID.
  *
  * createPageWithCapture() handles:
  * - Browser page creation with CSP bypass
@@ -100,9 +104,9 @@ const PROBE_TEARDOWN_ALLOWANCE_MS = STOP_RECORDING_CEILING_MS + PAGE_CLOSE_MARGI
 // budget below.
 const PLAYBACK_INIT_TIMEOUT = 45000;
 
-// Margin folded into the interception budget beyond the phases it explicitly sizes: the small span between phase-2 finishing and finalize firing (the window
-// resize and minimize, setupStream's pre-verification work) plus true slack. The interception window is a leak bound for a tune that dies without unwinding, not a
-// latency bound - no healthy path waits on it - so its generosity costs nothing.
+// Margin folded into the interception budget beyond the phases it explicitly sizes: the small span between phase-2 finishing and finalize firing (the
+// capture-surface re-affirmation and the window-visibility sync, setupStream's pre-verification work) plus true slack. The interception window is a leak bound for
+// a tune that dies without unwinding, not a latency bound - no healthy path waits on it - so its generosity costs nothing.
 const INTERCEPTION_BUDGET_MARGIN_MS = 5000;
 
 // The caller-visible capture-timeout messages, each defined once so the lock's deadline errors and any assertion test read the exact text. Both match
@@ -263,7 +267,8 @@ export interface StreamSetupResult {
   cleanup: () => Promise<void>;
 
   // Manifest interceptor handle from the CDP listener installed before navigation. Contains the interception promise and a finalize() function that the caller
-  // invokes after channel selection is complete. Null if the interceptor was not installed (tab replacement or DRM-cached channel).
+  // invokes after channel selection is complete. Null if the interceptor was not installed: a channel locked to screen capture, a DRM-cached binding, or an
+  // install that failed.
   manifestInterception: Nullable<ManifestInterceptorHandle>;
 
   // Unique numeric ID for this stream.
@@ -370,7 +375,8 @@ export interface CreatePageWithCaptureOptions {
   // DirectUrlEstablishmentError structurally impossible on the fallback attempt: with no direct URL in play, the branch that throws it is never entered.
   skipDirectUrl?: boolean;
 
-  // When true, skips CDP manifest interception. Set when the probe cache already has a "drm" result for this channel, avoiding 15 seconds of wasted CDP overhead.
+  // When true, skips CDP manifest interception. Set for a channel locked to screen capture (forceCapture) and when the probe cache already has a "drm" result
+  // for this channel, avoiding a CDP observer that can produce nothing a DRM stream could use.
   skipManifestInterception?: boolean;
 
   // The stream ID string for logging (e.g., "cnn-5jecl6").
@@ -507,8 +513,8 @@ export function validateStreamUrl(url: string | undefined): UrlValidationResult 
 
 /**
  * Disposes a browser page acquired during stream setup: unregisters it from managed-page tracking and closes it if still open. The close is fire-and-forget with a
- * debug log on error, matching the long-standing setup-failure cleanup behavior. Used as the DisposableStack disposer for pages in createPageWithCapture and
- * setupStream, and by the setup-result cleanup closure, so every setup-phase page teardown flows through one definition.
+ * debug log on error, because a page that fails to close during setup cleanup has no caller left to report to. Used as the DisposableStack disposer for pages in
+ * createPageWithCapture and setupStream, and by the setup-result cleanup closure, so every setup-phase page teardown flows through one definition.
  * @param page - The page to dispose.
  */
 function disposePage(page: Page): void {
@@ -531,13 +537,14 @@ function disposePage(page: Page): void {
  * defaultCreatePageWithCaptureDeps built from the functions this module already imports. syncWindowVisibility belongs here for a reason of its own: the window has
  * to be on screen before capture acquires the compositor, and injecting the sync is what lets a test observe that ordering without a real window.
  * emulateCaptureSurface is injected for the same reason: the emulated surface has to be declared on the page before capture acquires it, and the ordering assertion
- * has to observe it landing there. So are the two surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
+ * has to observe it landing there. So are the surface re-affirmation steps - the activation heal installed before acquisition and the re-issue that closes the
  * establishment - which reach the page through the same boundary rather than being called on it directly, so a test's hand-built page double stays as small as the
  * pipeline it drives. So is the page creation itself, which is a queued turn on the tab-selection executor rather than a bare browser call, so a test observes
  * that the capture page is asked for through that primitive rather than opened wherever Chrome would put it. So is the FFmpeg binary's resolution, which probes
- * the host's FFmpeg candidates by running them, so a test replaces it beside the spawn rather than probing the host. The remaining browser calls
- * (registerManagedPage, unregisterManagedPage) stay direct imports: they mutate an in-process page set, so they need no substitution. This is the
- * collaborator-injection form of the library's Clock port.
+ * the host's FFmpeg candidates by running them, so a test replaces it beside the spawn rather than probing the host. The managed-page registration
+ * (registerManagedPage, unregisterManagedPage) stays a direct import because it mutates an in-process page set and needs no substitution; the remaining direct
+ * calls are reached through the page double itself or are not exercised on the paths the tests drive. This is the collaborator-injection form of the library's
+ * Clock port.
  */
 export interface CreatePageWithCaptureDeps {
 
@@ -569,8 +576,8 @@ const defaultCreatePageWithCaptureDeps: CreatePageWithCaptureDeps = { acquireCap
   startOverlayHandling, syncWindowVisibility };
 
 /* The window-topology answers the open primitive needs and cannot reach for itself: tabSelection.ts speaks to the capture extension alone, so the CDP-side carrier
- * resolution and placement confirmation arrive from here, where both modules are already in view. One record, referenced by both call sites, because the two call
- * sites want the identical pair.
+ * resolution and placement confirmation arrive from here, where both modules are already in view. One record, referenced by every call site, because every call
+ * site wants the identical pair.
  */
 const SHARED_WINDOW_TOPOLOGY = { confirmPlacement: confirmSharedWindowPlacement, resolveCarrier: resolveSharedWindowCarrier };
 
@@ -588,13 +595,16 @@ const SHARED_WINDOW_TOPOLOGY = { confirmPlacement: confirmSharedWindowPlacement,
  * - Creating the segmenter and attaching it to the capture session via captureSession.attachSegmenter()
  * - Registering/updating the stream in the registry
  * - Starting/updating the health monitor
- * - Handling cleanup on failure
+ *
+ * On failure the function disposes everything it acquired, so the caller owns only what a successful return hands over.
  *
  * @param options - Options for page and capture creation.
- * @param deps - The injected browser and overlay-poll collaborators; defaults to defaultCreatePageWithCaptureDeps. Threaded so a test drives this function without a
- * live Chrome by substituting the shared-browser accessor, the capture acquisition, and the static-capture overlay poll.
+ * @param deps - The injected browser-boundary collaborators (see CreatePageWithCaptureDeps); defaults to defaultCreatePageWithCaptureDeps, so a test can drive this
+ * function without a live Chrome.
  * @returns The page, context, and capture session (which owns the raw capture stream and its FFmpeg child).
- * @throws Error if page creation, capture initialization, or navigation fails.
+ * @throws DirectUrlEstablishmentError when a resolved direct watch URL failed on evidence against it (the hint is already evicted); the browser supervisor's own
+ *   refusal errors from the browser accessor unchanged; a plain Error when Chrome crashed during capture initialization more times than the retry cap allows;
+ *   otherwise the page-creation, capture-initialization, or navigation failure as it was raised.
  */
 export async function createPageWithCapture(options: CreatePageWithCaptureOptions,
   deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<CreatePageWithCaptureResult> {
@@ -611,7 +621,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   // Acquire every resource on a DisposableStack so that any throw - in capture initialization, navigation, or playback setup - disposes them structurally as the
   // function unwinds, in last-acquired-first order (capture session before page, so the capture stream is destroyed and STOP_RECORDING fires while the browser is
   // still connected, before the page closes). On success we move() the stack to disarm it and transfer ownership to the caller. This centralizes teardown that
-  // would otherwise be repeated in each failure path, and closes the navigation-path leak of the manifest interceptor.
+  // would otherwise be repeated in each failure path, and keeps the manifest interceptor inside the same teardown on every exit.
   using resources = new DisposableStack();
 
   /* Create browser page. The establishment goes on to start a capture, so a browser that can no longer start one refuses here, before a page exists. The page is
@@ -854,7 +864,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     // Every other rejection - a caller-deadline CaptureDeadlineError, a refusal the one retry has already been spent on, or any other capture-init failure - just
     // unwinds. The verdict still gets the failure, because a browser that cannot start captures is worth marking whoever asked; nothing waits on it here.
-    // Resource teardown (page, interceptor, and the capture session once built) is handled by the DisposableStack as this throw unwinds the function scope.
+    // Resource teardown (the page, and the capture session once built) is handled by the DisposableStack as this throw unwinds the function scope.
     void deps.awaitCaptureVerdict(error);
 
     throw error;
@@ -912,8 +922,8 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
         initOptions: { persistResolution: options.persistResolution, requestedUrl: navigationUrl, skipChannelSelection: usedDirectUrl },
 
-        // Navigate with retry. The 10-second navigationTimeout is appropriate for page loads, and retryOperation correctly reloads the page on genuine navigation
-        // failures. The retry ladder is this path's own policy, kept separate from channel selection so its timeout does not race the internal click retry loops
+        // Navigate with retry. The configured navigationTimeout bounds each page load, and retryOperation reloads the page on genuine navigation failures. The
+        // retry ladder is this path's own policy, kept separate from channel selection so its timeout does not race the internal click retry loops
         // in channel selection strategies (guideGrid can take 15-20 seconds for binary search + click retries).
         navigate: async (): Promise<void> => {
 
@@ -1168,7 +1178,8 @@ export interface EstablishChannelPlaybackOptions {
  * only per-path policy differs.
  * @param page - The page being established.
  * @param profile - The resolved site profile whose strategy drives navigation and channel selection.
- * @param handle - The interceptor observing this establishment, or null when nothing is observing it (a tab replacement, or an install that failed).
+ * @param handle - The interceptor observing this establishment, or null when nothing is observing it (a tab replacement, a skipped interception for a
+ * capture-locked or DRM-cached channel, or an install that failed).
  * @param options - The caller's navigation policy, its initialization options, and an optional settlement hook. See EstablishChannelPlaybackOptions.
  * @param deps - Injected browser-boundary collaborator; defaults to the real playback initializer in production.
  * @returns The result playback initialization produced: the video context for subsequent monitoring, and the strategy's direct-tune flag where it resolved one.
@@ -1230,9 +1241,9 @@ export async function adjudicateChannelSelection(handle: ManifestInterceptorHand
  *
  * @param options - Stream configuration options.
  * @param onCircuitBreak - Callback invoked when the circuit breaker trips (stream unrecoverable).
- * @param deps - The injected browser and overlay-poll collaborators, forwarded to every establishment attempt this function makes; defaults to
- * defaultCreatePageWithCaptureDeps. Threaded for the same reason createPageWithCapture takes them: a test drives the establishment sequence - including its guide
- * fallback - without a live Chrome by substituting the shared-browser accessor, the capture launcher, and the overlay poll.
+ * @param deps - The injected browser-boundary collaborators (see CreatePageWithCaptureDeps), forwarded to every establishment attempt this function makes and
+ * read directly by its cleanup closure; defaults to defaultCreatePageWithCaptureDeps. Threaded for the same reason createPageWithCapture takes them: a test drives
+ * the establishment sequence - including its guide fallback - without a live Chrome.
  * @returns Setup result with capture session, cleanup function, and metadata.
  * @throws StreamSetupError if setup fails with appropriate status code and message.
  */
@@ -1367,8 +1378,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
 
       /* Skip CDP manifest interception when the channel is locked to screen capture, or when the probe cache already knows this stream's binding resolves to
        * DRM. The per-channel override short-circuits first, so a forced channel never installs the interceptor: nothing intercepts a manifest, no native
-       * attempt runs, no probe fires, and the encryption cache stays untouched by that stream. The cache half avoids creating a CDP session that sits idle for
-       * 15 seconds before the interceptor timeout cleans it up; every stream carries an identity, ad-hoc URLs included, so that lookup needs no guard.
+       * attempt runs, no probe fires, and the encryption cache stays untouched by that stream. The cache half avoids creating a CDP observer that can produce
+       * nothing a DRM stream could use; every stream carries an identity, ad-hoc URLs included, so that lookup needs no guard.
        */
       const skipInterception = (channel?.forceCapture === true) || (getCachedEncryption(probeIdentity, systemClock.now()) === "drm");
 
@@ -1443,7 +1454,8 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
           "using it. Please retry shortly.", { cause: error });
       }
 
-      // createPageWithCapture handles its own cleanup on failure (closes page, kills FFmpeg).
+      // createPageWithCapture disposes everything it acquired on failure (the capture session with its FFmpeg child, the interceptor, and the page), so nothing is
+      // left here to clean up.
       const errorMessage = formatError(error);
       const lowerMessage = errorMessage.toLowerCase();
       const benignPatterns = [ "abort", "session closed" ];
@@ -1487,10 +1499,10 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     // Tune verification. The shared adjudication stage finalizes the manifest interceptor and confirms the captured master manifest URL belongs to the channel
     // that was just tuned. This step makes setupStream "verified by construction" - every consumer of StreamSetupResult (HLS preroll, HLS blocking, MPEG-TS,
     // native proxy, capture mode) receives a stream guaranteed to be on the requested channel without having to opt in or coordinate. Streams with no manifest
-    // interception at all (DRM-cached channels, tab replacements) have nothing to adjudicate and skip the step entirely; verifyManifestSelection owns which of
-    // the remaining ones it can speak to. A failure reason throws StreamSetupError so the existing failure path marks channel health, terminates the pending
-    // registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes the capture session, interceptor, and page
-    // as the throw unwinds.
+    // interception at all (a channel locked to screen capture, a DRM-cached binding, or an install that failed) have nothing to adjudicate and skip the step
+    // entirely; verifyManifestSelection owns which of the remaining ones it can speak to. A failure reason throws StreamSetupError so the existing failure path
+    // marks channel health, terminates the pending registry entry, and surfaces a clear error - never silently delivers the wrong channel. The scope guard disposes
+    // the capture session, interceptor, and page as the throw unwinds.
     if(manifestInterception) {
 
       const verifyError = await adjudicateChannelSelection(manifestInterception, profile, directTune);
@@ -1542,7 +1554,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
     };
 
     // Success: transfer ownership out of the scope guard. The cleanup closure and, once the session is installed on the registry entry, terminateStream become
-    // responsible for disposing the page and capture session; the interceptor continues into tune verification and native streaming.
+    // responsible for disposing the page and capture session; the interceptor, already finalized and verified above, continues into the native upgrade.
     owned.move();
 
     // Return the setup result.
@@ -1765,13 +1777,20 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
 type CaptureProbeMode = { boundMs: number; kind: "gate" } | { boundMs: number; kind: "midlife"; signal: AbortSignal };
 
 /**
- * Executes a single capture probe attempt. Creates a temporary page on the given browser, tries to start a capture stream, and tears everything down cleanly. It
- * NEVER throws in either mode: it returns null on success or an error-message string on failure, so callers branch on the string. The two modes differ only in how
- * the acquisition is bounded - see CaptureProbeMode.
+ * Executes a single capture probe attempt. Creates a temporary page on the given browser, tries to start a capture stream, and tears everything down cleanly. A
+ * failed capture never throws in any mode: it returns null on success or an error-message string on failure, so callers branch on the string. The modes differ
+ * only in how the acquisition is bounded - see CaptureProbeMode.
+ *
+ * Opening the probe page and emulating the layout surface on it run before the try block and can still reject out of this function. A rejection from
+ * the emulation leaves the probe page registered and open. In gate mode the rejection escapes verifyCaptureSystem's retry loop on that attempt, so the launch fails
+ * without its remaining attempts and the supervisor counts it as a failed launch. In mid-life mode the capture lock's run rejects with it, and probeCaptureSerialized
+ * classifies it as a failed verdict, which marks the browser. The window sync the mid-life arm runs in its finally block absorbs its own failures, so it adds no
+ * rejection, and a rejection from a step that runs before the try block skips that sync, because the function never enters the try.
  * @param browser - The Chrome instance to probe.
  * @param mode - The operating mode: gate (internal acquisition race) or midlife (self-timed acquisition on the lock).
  * @param clock - Clock used for the mid-life self-timing and the teardown confirmation. Defaults to the system clock.
- * @returns Null on success, or an error message string on failure.
+ * @returns Null on success, or an error message string on a failed capture.
+ * @throws Whatever opening the probe page or emulating its layout surface rejects with.
  */
 async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clock: Clock = systemClock): Promise<Nullable<string>> {
 
@@ -1872,8 +1891,9 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
     await teardown(stream);
 
-    // Report failure when the caller abandoned this probe at the lock's outer deadline (unobservable in practice - the lock already rejected the caller - but it keeps
-    // the never-throw contract and prevents stranding a capture), or when the acquisition's own latency exceeded the criterion bound.
+    // Report failure when the caller abandoned this probe at the lock's outer deadline (unobservable in practice - the lock already rejected the caller - but it
+    // reports the abandonment as a returned string, the way every failed capture here is reported, and prevents stranding a capture), or when the acquisition's
+    // own latency exceeded the criterion bound.
     if(mode.signal.aborted || (elapsed > mode.boundMs)) {
 
       return CAPTURE_PROBE_TIMEOUT_MESSAGE;
@@ -1940,8 +1960,8 @@ export type CaptureProbeOutcome =
  * Classifies a throw from the probe's run on the capture lock into a verdict or the absence of one. A turn-wait timeout means the probe never got to run: with
  * other streams tuning at the same moment it queued behind their legitimate acquisitions, and a lock that is busy says something about load, not about the browser
  * - a holder that is genuinely hung marks the browser through its own wedge. Every other value, the outer deadline above all, means the probe held its turn and its
- * own acquisition did not settle, which is exactly the failure the mark exists for. Pure and total, so the distinction the detector rests on is pinnable without a
- * browser.
+ * own acquisition did not settle, which is exactly the failure the mark exists for. Pure and total, so a test can assert the distinction the detector rests on
+ * without a browser.
  * @param error - The value the lock run threw.
  * @returns The outcome the detector acts on.
  */
@@ -1975,7 +1995,8 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
       deadlineMs: timeout + PROBE_TEARDOWN_ALLOWANCE_MS,
 
       // The probe's wedge is a loud warning only, never a second verdict: by wedge time the detector has already marked this browser from the returned failure
-      // (the outer deadline fires roughly 22s earlier), so a mark raised here would land on an instance that already carries one.
+      // (the outer deadline always fires first, because the lock derives the wedge bound to land strictly after the deadline), so a mark raised here would land
+      // on an instance that already carries one.
       onWedge: (): void => {
 
         LOG.warn("A mid-life capture probe has wedged past the recovery bound; the browser was already marked when the probe's deadline fired, so this wedge " +
@@ -1995,17 +2016,18 @@ async function probeCaptureSerialized(browser: Browser, timeout: number): Promis
  * Classifies an establishment failure and, when it carries a capture-infrastructure signature, hands it to the passive mid-life detector.
  *
  * This sits at the acquisition chokepoint rather than in one caller's catch, so every path that establishes a capture gets the detection: a fresh stream's setup,
- * a tab replacement, and anything added later. Both of createPageWithCapture's own catch blocks call it, which is what extends the coverage across phases - the
+ * a tab replacement, and anything added later. Each of createPageWithCapture's own catch blocks calls it, which is what extends the coverage across phases - the
  * acquisition catch sees a refused capture start, the establishment catch sees the playback-initialization timeout the pattern list also names.
  *
- * Every logical setup classifies at most once. What holds that rule at the two call sites is where each call sits: each classifies the failure it is about to
- * rethrow raw, and never one it is about to wrap for a retry. So a failure blamed on a direct watch URL classifies nothing, and the standing attempt that follows
- * it classifies for both. The alternative would hand the readiness detector two failures from one setup, which is two background probes deciding a single
- * browser's fate.
+ * Classification is skipped for the typed direct-URL failure: a failure blamed on a direct watch URL leaves createPageWithCapture wrapped for a retry and
+ * classifies nothing, and the standing attempt that follows it classifies for both. The refusal retry is the deliberate exception - the acquisition catch classifies the
+ * first refusal and waits on its verdict, because waiting on that verdict is the retry policy. A retry that is refused again, or whose navigation then fails,
+ * classifies a second time: the shared in-flight slot or the impairment already recorded against the browser absorbs that call when the first verdict is still
+ * pending or marked the browser, and otherwise it is a fresh question about a browser that has failed again since its last verdict.
  *
- * DirectUrlEstablishmentError is excluded here as well, as the backstop that keeps the rule true of a call site added later rather than as a filter the current
- * two depend on: neither of them can reach this with one, because the type exists only to leave this function, and the path that wraps into it throws before
- * the classification line is reached.
+ * DirectUrlEstablishmentError is excluded here as well, as the backstop that keeps the skip true of a call site added later rather than as a filter the existing
+ * call sites depend on: none of them can reach this with one, because the type exists only to leave createPageWithCapture, and the path that wraps into it throws
+ * before the classification line is reached.
  * @param error - The failure the establishment is about to rethrow.
  * @returns The verdict the detector reached, or null when this failure called for none.
  */

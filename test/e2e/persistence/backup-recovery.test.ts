@@ -5,7 +5,7 @@
  * contents in memory and surfaces recoveredFromBackup on its own result, writing nothing itself, and the durable repair of the file on disk lands under the store's
  * write queue - at boot through ensureAllMigrated, or through the next mutate, whose own write replaces the corrupt main with good data. Only when both files
  * are unparseable does the result fall back to defaults with parseError=true. Without integration coverage, the next change to the recovery sequencing (e.g., a
- * refactor that moved the restore back outside the queue, or that mistakenly fed the corrupt main back into .bak before recovery) ships untested.
+ * refactor that ran the restore outside the queue, or that mistakenly fed the corrupt main back into .bak before recovery) ships untested.
  *
  * The scenarios tested here are the user-visible failure modes that recovery exists to handle: a kill-mid-save, an OS-level write failure, a partial flush
  * during shutdown. Each leaves the main file in a corrupt state that the .bak can rescue. The test deliberately corrupts files inside ctx.dataDir so the
@@ -15,9 +15,9 @@
  * framework itself branches on - the .bak rotation inside doMutate is skipped whenever a read recovered. The per-store wrapper read functions (readConfig,
  * readChannels, readProfiles) project the data and the parse status onto their respective UserConfigLoadResult / UserChannelsLoadResult /
  * UserProfilesLoadResult shapes, and nothing more, so the rows below assert the recovery through what it produces: the recovered content, the parse status,
- * and the state of the two files on disk. Tests 1 and 4 trigger recovery through mutateConfig / mutateChannels, whose API returns no read result at all;
- * their assertions cover separate guarantees (post-recovery disk state, runtime CONFIG via initializeConfiguration, no FileStoreParseError thrown, per-store
- * isolation).
+ * and the state of the two files on disk. The canonical recovery test and the per-store isolation test trigger recovery through mutateConfig /
+ * mutateChannels, whose API returns no read result at all; their assertions cover separate guarantees (post-recovery disk state, runtime CONFIG via
+ * initializeConfiguration, no FileStoreParseError thrown, per-store isolation).
  *
  * Why corrupt the file by writing garbage instead of using mock.module to inject parse failure: the contract under test is "the framework recovers from a
  * corrupt MAIN FILE on disk." A mocked parser failure would skip the framework's actual fs.readFile and fs.copyFile chain - the production code path. Real
@@ -41,10 +41,10 @@ describe("file-store backup recovery from a corrupt main file", () => {
      *   1. Establish two distinct config states via mutateConfig - the second write copies the first to .bak. After this, main carries the v2 host and .bak
      *      carries the v1 host.
      *   2. Snapshot the .bak file's bytes for the pre-corruption sanity check below (Step 1's v1 snapshot lives in .bak). The independent .bak-preservation
-     *      guarantee - that recovery never overwrites .bak with the corrupt main - is asserted by Test 3 using its own separately-captured snapshot, not this one.
+     *      guarantee - that recovery never overwrites .bak with the corrupt main - is asserted by the .bak-preservation test using its own separately-captured snapshot.
      *   3. Overwrite main with garbage that does not parse as JSON.
-     *   4. Trigger a read by calling mutateConfig with a no-op. This invokes the framework's read(), which fails to parse main, falls through to .bak, parses
-     *      it, atomically restores main from .bak, and returns the parsed v1 data. The mutate then proceeds normally - no FileStoreParseError thrown.
+     *   4. Trigger a read by calling mutateConfig with a no-op. This invokes the framework's read(), which fails to parse main, falls back to .bak, and
+     *      returns the v1 data with recoveredFromBackup set, writing nothing. The mutate's own write then replaces the corrupt main - no FileStoreParseError thrown.
      *   5. Assert: the post-mutate disk state shows main with valid JSON (specifically the v1 host - the recovered value, since the no-op mutate did not
      *      change anything), and the in-memory CONFIG (refreshed via initializeConfiguration) reflects v1.
      *
@@ -86,8 +86,8 @@ describe("file-store backup recovery from a corrupt main file", () => {
     /* Step 5b: drive the recovered data through the production boot sequence and assert the runtime CONFIG reflects the .bak value. initializeConfiguration()
      * calls readConfig() and feeds the result into mergeConfiguration(); the PROCESS_FIELDS table pulls channelsDvr.host through to runtime CONFIG so the
      * recovered host is reachable via the same accessor production code uses. The runtime-CONFIG assertion is the structural assertion on table-driven hydration:
-     * a regression that broke it - so that the inline-block merge path skipped channelsDvr.host and left the field preserved on disk but invisible to runtime
-     * CONFIG - would surface here as a mismatch between the disk and runtime views, not a silent drop.
+     * a regression that broke it - a PROCESS_FIELDS entry or state-field restore that dropped channelsDvr.host, leaving the field preserved on disk but missing
+     * from runtime CONFIG - would surface here as a mismatch between the disk and runtime views, not a silent drop.
      */
     await initializeConfiguration();
 
@@ -243,9 +243,9 @@ describe("file-store backup recovery from a corrupt main file", () => {
     assert.equal((recoveredEntry as Record<string, unknown>)["name"], "Iso v1",
       "the recovered channel must show the v1 name (.bak content), confirming recovery used .bak rather than falling through to defaults");
 
-    // The channels .bak survived the recovery path itself (same rule as Test 3, scoped to the recovery boundary). The no-op mutate that triggered recovery
-    // does NOT rotate .bak: doMutate guards the main->.bak copy with `if(!result.recoveredFromBackup)`, and read() recovered here, so the rotation is skipped
-    // entirely. .bak is left untouched because no rotation runs - not because a rotation re-wrote identical bytes.
+    // The channels .bak survived the recovery path itself (same rule as the .bak-preservation test, scoped to the recovery boundary). The no-op mutate that
+    // triggered recovery does NOT rotate .bak: doMutate guards the main->.bak copy with `if(!result.recoveredFromBackup)`, and read() recovered here, so the
+    // rotation is skipped entirely. .bak is left untouched because no rotation runs - not because a rotation re-wrote identical bytes.
     assert.equal(await readFile(pathInDataDir(ctx, "channels.json.bak"), "utf-8"), channelsBakBefore,
       "channels.json.bak must remain byte-identical - the recovery path does not touch .bak, and the recovering mutate skips the rotation entirely");
   });

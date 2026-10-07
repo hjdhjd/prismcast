@@ -2,8 +2,8 @@
  *
  * deviceId.test.ts: Unit tests for the HDHomeRun DeviceID generator and validator. Both functions implement the libhdhomerun XOR-with-lookup checksum, which
  * Plex enforces during tuner discovery; producing an invalid ID (or accepting one mistakenly as valid) silently breaks discovery without surfacing any
- * diagnostic, so the suite covers a checksum-mismatch case, the position-0 lookup boundary via the all-zero ID, and the length, charset, and whitespace
- * checks that gate the checksum comparison.
+ * diagnostic, so the suite covers a checksum-mismatch case, the all-zero ID, and the length, charset, and whitespace checks that gate the checksum
+ * comparison.
  */
 import { describe, test } from "node:test";
 import { generateDeviceId, validateDeviceId } from "./deviceId.ts";
@@ -61,10 +61,10 @@ describe("validateDeviceId", () => {
     assert.equal(validateDeviceId("\t1000000f"), false, "leading tab");
   });
 
-  test("accepts the all-zero string (lookup table makes its checksum zero)", () => {
+  test("accepts the all-zero string (its even-position lookups cancel pairwise)", () => {
 
-    // Boundary: 00000000 is structurally valid because LOOKUP[0] = 0xA, so even-position XORs cancel pairwise (0xA XOR 0xA = 0) and odd positions are zero.
-    // This is a property of the lookup table the algorithm inherits from libhdhomerun - locking it surfaces any future change to LOOKUP[0].
+    // Boundary: 00000000 validates for any lookup table, because LOOKUP[0] is XORed once per even position, an even number of times, so the lookups cancel
+    // pairwise and the odd positions are zero. This row cannot detect a change to LOOKUP[0]; the 1000000f row above depends on LOOKUP[1] ^ LOOKUP[0] = 0xF.
     assert.equal(validateDeviceId("00000000"), true);
   });
 });

@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * persistence.test.ts: Core unit tests for the transactional file store framework. The framework is the SSOT for atomic writes, serialized mutations, declarative
- * schema migrations, post-write integrity verification, and snapshot management - every config file (channels, config, profiles, health) goes through it.
+ * schema migrations, post-write integrity verification, and snapshot management - every persisted file goes through it.
  *
  * This file owns the framework's CORE behaviors - error class, construction validation, read happy paths, mutate happy paths, queue serialization - plus the
  * write-ownership rule that ties reads and mutates together: a read recovers a corrupt main from .bak in memory and writes nothing, the corrupt-main rotation
- * guard keeps the good backup, and the durable restore lands under the queue at the boot step or through the next mutate. Three sibling files
+ * guard keeps the good backup, and the durable restore lands under the queue at the boot step or through the next mutate. Sibling files
  * (persistence.snapshots.test.ts, persistence.integrity.test.ts, persistence.migrations.test.ts) own the snapshot system, the remaining integrity-and-recovery
  * branches, and the migration runner respectively. The split is by concern, not alphabet, so each file's title corresponds directly to a section of the
  * framework's contract.
@@ -62,9 +62,9 @@ describe("FileStoreParseError", () => {
 
   test("the name override survives a throw/catch round-trip and remains queryable on the caught instance", () => {
 
-    /* Route handlers catch FileStoreParseError specifically to return HTTP 400 rather than 500 - they rely on the .name override (rather than instanceof) when
-     * the error has crossed a serialization boundary or has been wrapped in another error's `cause` chain. We assert both: catching the thrown error reads name
-     * correctly, and a synthetic AggregateError that wraps it via cause leaves the inner name intact for inspection.
+    /* The name override stays readable after a throw and catch, and on an error carried as another error's cause, for any consumer that inspects the name
+     * rather than the class. We assert both: catching the thrown error reads name correctly, and a plain Error that wraps it via cause leaves the inner name
+     * intact for inspection.
      */
     const original = new FileStoreParseError("channels", "/tmp/x.json", "boom");
 
@@ -77,8 +77,8 @@ describe("FileStoreParseError", () => {
       assert.equal((caught).name, "FileStoreParseError", ".name override visible after catch");
     }
 
-    // Wrap via cause to mimic the route-handler pattern where a higher-level error reports the parse error as its underlying cause. The inner instance keeps
-    // its overridden name, even though the outer Error's name is the default "Error".
+    // Wrap via cause, as any caller that reports the parse error as a higher-level error's underlying cause would. The inner instance keeps its overridden
+    // name, even though the outer Error's name is the default "Error".
     const wrapper = new Error("higher-level failure", { cause: original });
 
     assert.equal((wrapper.cause as Error).name, "FileStoreParseError", ".name preserved through cause-chain wrapping");
@@ -628,7 +628,7 @@ describe("FileStore.mutate - corrupt-main rotation guard", () => {
     // The mutate reads (recovering from .bak in memory), applies the change, and writes. The corrupt main must never be rotated into .bak.
     await store.mutate((data) => { data.value = 1234; });
 
-    // The good .bak survived: it still holds the original recovered content, NOT the corrupt main. This is the heart of the data-loss guard.
+    // The good .bak survived: it still holds the original recovered content, NOT the corrupt main. This is the outcome the data-loss guard exists to protect.
     assert.equal(backend.files.get(filePath + ".bak"), goodBakContent, ".bak retains the only good copy - the corrupt main was never rotated into it");
 
     // The atomic write replaced the corrupt main with the freshly-mutated good data.
@@ -881,9 +881,9 @@ describe("FileStore.ensureMigrated - the durable restore at boot", () => {
 
   test("a main file and a backup that are both unparseable leave the boot step a pure read rather than a failure", async () => {
 
-    /* The boundary between the repairs the boot step persists. A file with no usable backup has nothing to recover, so read() reports parseError with no
-     * migrations and no recovery, and the boot step must take neither branch: attempting the no-op mutate would hit doMutate's corruption guard and throw
-     * FileStoreParseError out of startup, turning an unreadable settings file into a server that will not start.
+    /* The boundary between the repairs the boot step persists. A file with no usable backup has nothing to recover, so the boot step's silent load() reports
+     * parseError with no migrations and no recovery, and the boot step must take neither branch: attempting the no-op mutate would hit doMutate's corruption
+     * guard and throw FileStoreParseError out of startup, turning an unreadable settings file into a server that will not start.
      */
     const backend = makeMemoryStorageBackend();
     const filePath = "/data/doubly-corrupt.json";

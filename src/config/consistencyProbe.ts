@@ -137,8 +137,7 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
 
     const message = "Consistency probe (" + issue.category + ", " + issue.severity + "): " + issue.description;
 
-    // Defensive: no current checker emits severity:"error" - every check returns "warning" issues. The branch exists so a future check whose issue needs the
-    // operator before the next restart can mark itself error and surface accordingly. Add a test to assert this behavior once an error-severity check exists.
+    // An error-severity issue is logged at error, so a check whose issue needs the operator before the next restart surfaces accordingly.
     if(issue.severity === "error") {
 
       LOG.error(message);
@@ -148,8 +147,7 @@ export async function runConsistencyProbeAtStartup(): Promise<void> {
     }
   }
 
-  // Defensive: paired with the per-issue severity dispatch above. No checker currently emits severity:"error", so this aggregate report is unreachable today;
-  // it remains in place so a future error-severity check produces the operator-visible summary line without any further wiring.
+  // Paired with the per-issue severity dispatch above: any error-severity issue also produces one operator-visible summary line counting them.
   const errors = issues.filter((issue) => issue.severity === "error").length;
 
   if(errors > 0) {

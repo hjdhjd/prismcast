@@ -64,7 +64,7 @@ describe("computeConfigDiff", () => {
     const previous = { streaming: { captureCodecs: [ "h264", "vp9" ] } };
     const current = { streaming: { captureCodecs: ["h264"] } };
 
-    // The array swap is a single change, not three individual deletes.
+    // The array is compared whole, so the change is one entry at the array's own path rather than an element-level entry for the dropped "vp9".
     assert.deepEqual(computeConfigDiff(previous, current), [
       { current: ["h264"], path: "streaming.captureCodecs", previous: [ "h264", "vp9" ] }
     ]);

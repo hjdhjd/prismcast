@@ -27,7 +27,7 @@ import { logAutoDismiss } from "../consent.ts";
  * Tuning flow:
  * 1. resolveDirectUrl: sets up channelmap API response interception and installs the request-interception listener (once per page), returning null. On warm tunes the
  *    listener serves the cached channelmap response instantly, eliminating the 3-5s network round-trip.
- * 2. The caller (tuneToChannel in video.ts) navigates to the guide URL, loading the Polymer SPA.
+ * 2. The tune path (initial setup in streaming/setup.ts, or tuneToChannel in video.ts on recovery) navigates to the guide URL, loading the Polymer SPA.
  * 3. directStrategy: waits for `TV-APP.channelMap.channels` to populate, finds the target channel by callSign, and calls `_watchChannelEventHandler`.
  * 4. A fire-and-forget poll watches for a visible "Watch Now" modal button and clicks it if it appears.
  * 5. initializePlayback continues with waitForVideoReady, fullscreen, etc.
@@ -167,9 +167,10 @@ export interface ComcastPolymerProviderConfig {
 
 /**
  * Strips common Comcast callSign suffixes to produce a normalized lookup key. Strips the first matching suffix from the end of the callSign, but only when the
- * remaining string is at least 2 characters. Examples: CNNHD->CNN, AESTR->AE, CNNHDP->CNN, BRAVOHP->BRAVO, STZEAPH->STZEA, KNXVDTP->KNXV.
+ * remaining string is at least 2 characters. The output is always lowercased: CNNHD->cnn, AESTR->ae, CNNHDP->cnn, BRAVOHP->bravo, STZEAPH->stzea, KNXVDTP->knxv.
  * @param callSign - The raw callSign from the channelmap API.
- * @returns The stripped callSign, or the original if no suffix matched or stripping would produce a string shorter than 2 characters.
+ * @returns The lowercased callSign with its first matching suffix removed, or the lowercased callSign when no suffix matched or stripping would leave fewer than
+ *   2 characters.
  */
 function stripCallSignSuffix(callSign: string): string {
 
@@ -235,9 +236,9 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
   // channelmap API response marks the lineup complete, so a partially-populated cache is never served as the whole lineup.
   const channelCache = createProviderChannelCache<ChannelEntry>((entry) => entry.discovered);
 
-  // Cached channelmap API response for CDP request interception on warm tunes. Stored on the first successful API response. The exact URL and headers are replayed
-  // so that only the correct request is intercepted (the SPA makes multiple requests to URLs matching the channelmap pattern, but only one is the actual channel
-  // lineup).
+  // Cached channelmap API response for CDP request interception on warm tunes. Replaced on every successful channelmap response, so it holds the latest one. The
+  // exact URL and headers are replayed so that interception is limited to that one URL. The SPA makes multiple requests to URLs matching the channelmap pattern
+  // and only one is the actual channel lineup, so the replayed URL is the lineup's only when the lineup is the last matching 200 response.
   let cachedBody: Nullable<string> = null;
   let cachedUrl: Nullable<string> = null;
   let cachedHeaders: Record<string, string> = {};
@@ -522,10 +523,10 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
 
       void response.text().then((text: string) => {
 
-        // Cache the exact URL, headers, and body for CDP request interception on warm tunes. The exact URL ensures we only intercept the correct channelmap
-        // request - the SPA makes multiple requests to URLs matching the pattern, but only this one returns the channel lineup. We strip content-encoding and
-        // content-length because response.text() returns the decoded (decompressed) body - replaying encoding headers with decoded content would cause
-        // double-decompression.
+        // Cache the exact URL, headers, and body for CDP request interception on warm tunes, replacing whatever an earlier matching response stored. The SPA makes
+        // multiple requests to URLs matching the pattern, so the cached URL is the lineup's only when the lineup is the last matching 200 response. We strip
+        // content-encoding and content-length because response.text() returns the decoded (decompressed) body - replaying encoding headers with decoded content
+        // would cause double-decompression.
         cachedUrl = url;
         cachedBody = text;
 
@@ -971,7 +972,8 @@ export function createComcastPolymerProvider(config: ComcastPolymerProviderConfi
       clearCache,
       execute: directStrategy,
 
-      // Only the failing selector's own key is dropped, so the next tune re-resolves it from fresh channelmap data while every other key stays warm.
+      // The hook is inert for this provider: the coordinator calls it only after a tune that used a direct URL fails, and resolveDirectUrl here always returns
+      // null, so no tune goes through one.
       invalidateDirectUrl: channelCache.invalidate,
       resolveDirectUrl
     },

@@ -532,9 +532,9 @@ describe("getSettingsTabSections", () => {
 
   test("orphan paths in SETTINGS_TAB_SECTIONS are silently filtered (defensive)", () => {
 
-    /* The contract documented in the source comment: a path in SETTINGS_TAB_SECTIONS that does not resolve to a CONFIG_METADATA entry is dropped during
-     * derivation rather than throwing. Verified indirectly by confirming each returned setting has a matching path - any entry whose getSettingByPath
-     * returned undefined would have been filtered out, and we observe no holes. This asserts the silent-filter contract.
+    /* The source documents that a path in SETTINGS_TAB_SECTIONS that does not resolve to a CONFIG_METADATA entry is dropped during derivation rather than
+     * throwing. SETTINGS_TAB_SECTIONS is module-private and holds no orphan path, so this row cannot drive one through the filter; what it asserts is that every
+     * resolved section setting carries a path.
      */
     const sections = getSettingsTabSections();
 

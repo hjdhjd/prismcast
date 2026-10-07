@@ -65,8 +65,7 @@ export interface SetupFailureStatus {
  * HLS segment and playlist storage for a stream. This includes the fMP4 initialization segment (codec configuration), media segments (.m4s files), and the current
  * playlist content. The playlistReady promise allows callers to wait for the first playlist to be generated.
  *
- * Note: HLSState is co-located with the registry because it is part of StreamRegistryEntry. Moving it to hlsSegments.ts would create a circular dependency since
- * hlsSegments.ts imports getStream from registry.ts.
+ * HLSState lives beside StreamRegistryEntry because it is part of the entry's shape, and the registry owns that shape.
  */
 export interface HLSState {
 
@@ -92,8 +91,8 @@ export interface HLSState {
 
   // Segment storage.
 
-  // The fMP4 initialization segment containing codec configuration. Sent once at stream start and retained for the stream's lifetime. Clients must fetch this before
-  // any media segments.
+  // The capture path's current fMP4 initialization segment, containing codec configuration. It is replaced when a continued capture brings a new one. Clients must
+  // fetch this before any media segments.
   initSegment: Nullable<Buffer>;
 
   // Map of media segment filenames to their binary data.
@@ -114,8 +113,8 @@ export interface HLSState {
    * makes cross-track isolation structural rather than a naming convention: pruning one track cannot reach the other's entries.
    *
    * A track holds more than one entry whenever an upstream MAP change is still referenced by segments in the playlist window - the outgoing init must remain
-   * fetchable until the last segment that needs it rotates out. This differs from the capture path's single initSegment slot above, which is overwritten in
-   * place because capture owns its own encoder and never changes codec configuration mid-stream.
+   * fetchable until the last segment that needs it rotates out. This differs from the capture path's single initSegment slot above: capture keeps one current
+   * initialization, replaces it when a continued capture produces a new one, and announces the change with a versioned #EXT-X-MAP URI at the discontinuity.
    */
   initSegments: Record<InitSegmentTrack, Map<string, Buffer>>;
 
@@ -342,8 +341,8 @@ export function getNextStreamId(): number {
 }
 
 /**
- * Registers a stream in the registry. The one production caller registers the pending entry before setup begins, so a concurrent request for the channel
- * finds the stream at once and every later stage of the stream reads the entry it registered.
+ * Registers a stream in the registry. Callers register the pending entry before setup begins, so a concurrent request for the channel finds the stream at once
+ * and every later stage of the stream reads the entry it registered.
  * @param entry - The stream registry entry to add.
  */
 export function registerStream(entry: StreamRegistryEntry): void {
@@ -451,10 +450,10 @@ export function isHardwareAccelerated(entry: StreamRegistryEntry): boolean {
 }
 
 /**
- * Records the quality a token refresh has bound this stream to. The registry owns the mechanics because two layers relay the same refresh - the native upgrade in
- * hls.ts and the monitor's L2 recovery - and a hand-copied guard-then-spread in each would be two chances to get it wrong.
+ * Records the quality a token refresh has bound this stream to. The registry owns the mechanics because more than one layer relays the same refresh (the native
+ * upgrade in hls.ts, the monitor's L2 recovery), and a hand-copied guard-then-spread in each would be one more chance to get it wrong.
  *
- * The narrow happens here, freshly, because both callers invoke this from an asynchronous callback that can fire long after any earlier check: a refresh that
+ * The narrow happens here, freshly, because every caller invokes this from an asynchronous callback that can fire long after any earlier check: a refresh that
  * completes while a capture fallback is mid-flight finds a capture identity and is skipped. Skipping is right in every case - quality metadata for a stream
  * midway through a fallback is moot, and a fallback that fails restores the proxy, whose next refresh writes the quality again.
  * @param entry - The stream registry entry to update.

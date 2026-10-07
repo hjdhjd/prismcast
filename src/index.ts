@@ -87,14 +87,15 @@ function printUsage(): void {
 }
 
 /**
- * Prints a complete listing of all environment variables organized by category. Generates the per-category listing dynamically from CONFIG_METADATA; the
- * Special section below is hand-maintained since PRISMCAST_DATA_DIR and PRISMCAST_DEBUG are resolved outside config.json.
+ * Prints the environment variables organized by category. Walks a hand-maintained ordered category list and prints, for each listed category, the settings
+ * CONFIG_METADATA holds that carry an environment variable; a CONFIG_METADATA category missing from that list is not printed. The Special section below is
+ * hand-maintained since PRISMCAST_DATA_DIR and PRISMCAST_DEBUG are resolved outside config.json.
  */
 function printEnvironmentVariables(): void {
 
   /* eslint-disable no-console */
 
-  // Category ordering: server first (most commonly configured), then alphabetical, with Special last.
+  // The hand-maintained category list, in print order: server first (most commonly configured), then the listed categories alphabetically, with Special last.
   const categoryOrder: { displayName: string; key: string }[] = [
     { displayName: "Server", key: "server" },
     { displayName: "Browser", key: "browser" },
@@ -388,8 +389,8 @@ if(subcommand === "service") {
     setDebugLogging(true);
   }
 
-  // The environment's contribution to the log path, read once here rather than inside a handler that must stay synchronous. The path arm of the environment
-  // parser yields a string or null and never another type, so anything else is the absence of an override.
+  // The environment's contribution to the log path, read once here for the exit handler below. The path arm of the environment parser yields a string or null
+  // and never another type, so anything else is the absence of an override.
   const override = getEnvOverrideValue("paths.logFile");
   const envLogFile = (typeof override === "string") ? override : null;
 

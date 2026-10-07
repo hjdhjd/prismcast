@@ -783,14 +783,15 @@ export class CdpProxySession {
 
   /**
    * Attaches a wildcard event listener to a CDPSession. Each CDP-domain event (matched by the "Domain.event" naming pattern - uppercase first letter, dot,
-   * lowercase next letter) is forwarded to the WS client after the session's own listeners have run, so any internal state mutation (e.g. cleanup driven by
-   * Target.targetDestroyed) is settled before the client sees the event. Target.* events are gated on this.discoverTargets so a client that has not subscribed
-   * to the Target domain does not receive its events even though our internal subscription stays on.
+   * lowercase next letter) is forwarded to the WS client after the session's own listeners have been invoked. Only the synchronous part of each listener has
+   * run by then: async cleanup, such as the session detach Target.targetDestroyed drives, finishes after the client has seen the event. Target.* events are
+   * gated on this.discoverTargets so a client that has not subscribed to the Target domain does not receive its events even though our internal subscription
+   * stays on.
    *
    * Implementation note. CDPSession exposes no public "subscribe to every event" hook, so we monkey-patch the EventEmitter.emit method. The patch saves the
    * original so detachEventListener can restore it cleanly. Order of operations inside the patch is: dispatch through original first (specific listeners fire,
-   * including the internal Target.* handlers we registered), then forward to the client. This ordering avoids the race where the client receives an event tied
-   * to state we haven't yet cleaned up.
+   * including the internal Target.* handlers we registered), then forward to the client. This ordering settles any synchronous state change before the client
+   * receives the event; it does not wait on a listener's async work.
    *
    * @param session - The CDP session to monitor.
    * @param sessionId - The synthetic sessionId to include in the forwarded events (null for browser-level events).
@@ -813,8 +814,8 @@ export class CdpProxySession {
 
       if((typeof event === "string") && (/^[A-Z][a-zA-Z0-9]+\.[a-z]/).test(event)) {
 
-        // Target.* events are gated: clients only see them when they have opted in via Target.setDiscoverTargets / setAutoAttach. Our internal subscription stays
-        // on regardless so we can drive session cleanup.
+        // Target.* events are gated: clients only see them when they have opted in via Target.setDiscoverTargets. Our internal subscription stays on regardless
+        // so we can drive session cleanup.
         const isTargetEvent = event.startsWith("Target.");
         const shouldForward = !isTargetEvent || proxy.discoverTargets;
 

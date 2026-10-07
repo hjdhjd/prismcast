@@ -210,7 +210,7 @@ describe("POST /config/import - values are validated by runtime type", () => {
 
   test("a quoted number in a port field is rejected even when the number itself is in range", async () => {
 
-    /* 5589 sits inside the port field's declared 1-65535 range, so the pre-existing bounds check has nothing to say about it. Only the runtime type check can
+    /* 5589 sits inside the port field's declared 1-65535 range, so the bounds check has nothing to say about it. Only the runtime type check can
      * reject this document, which is what makes the fixture prove the type check rather than the bounds check.
      */
     await using ctx = await createIntegrationContext();

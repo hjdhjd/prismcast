@@ -105,7 +105,7 @@ const defaultPretuneDeps: PretuneDeps = { clock: systemClock, fetchFromDvr, getD
 // State.
 
 /**
- * The pair of timer registries a running scheduler owns: the poll cadence and its first poll, and one keyed one-shot per scheduled job.
+ * The timer registries a running scheduler owns: the poll cadence and its first poll, and one keyed one-shot per scheduled job.
  */
 interface SchedulerRegistries {
 
@@ -116,8 +116,8 @@ interface SchedulerRegistries {
   readonly polls: TimerRegistry;
 }
 
-/* The running scheduler, or null when it is stopped. Both registries are built on the scheduler's clock at start and disposed at stop, and this one binding is the
- * single statement of whether the scheduler is running, so the two registries can never disagree about it.
+/* The running scheduler, or null when it is stopped. Every registry is built on the scheduler's clock at start and disposed at stop, and this one binding is the
+ * single statement of whether the scheduler is running, so its registries can never disagree about it.
  */
 let scheduler: Nullable<SchedulerRegistries> = null;
 

@@ -32,7 +32,8 @@ describe("buildChannelTablePatch - composition against real channel state", () =
   afterEach(() => {
 
     // Reset the service filter to the no-filter state. Disabled-predefined state is per-test - each test that disables a channel re-enables it before
-    // exiting because mutateChannels writes to the per-test tmp data dir, but the in-memory CONFIG.channels.disabledPredefined list is process-wide.
+    // exiting because the process write to config.json lands in the per-test tmp data dir, but the in-memory CONFIG.channels.disabledPredefined list is
+    // process-wide.
     setEnabledServices([]);
   });
 
@@ -153,9 +154,10 @@ describe("buildChannelTableState - composition against real channel state", () =
 
   test("disabling a predefined channel decrements counts.enabled and increments counts.disabled (no total drift)", async () => {
 
-    /* The summary counts feed the channels tab header ("12 / 200 channels"). A regression that miscounts disabled channels surfaces as a wrong header number,
-     * which operators notice immediately. The unit suite locks the local rules (total = enabled + disabled, total = predefined + user); this test asserts
-     * the transition - a single disable mutation must move exactly one channel from enabled to disabled with no change in total or in user/predefined splits.
+    /* The summary counts feed the channel summary line above the table ("200 channels (190 predefined, 10 user)", followed by the enabled and disabled
+     * counts). A regression that miscounts disabled channels surfaces as a wrong summary number, which operators notice immediately. The unit suite locks the
+     * local rules (total = enabled + disabled, total = predefined + user); this test asserts the transition - a single disable mutation must move exactly one
+     * channel from enabled to disabled with no change in total or in user/predefined splits.
      */
     await using ctx = await createIntegrationContext();
 
@@ -177,9 +179,10 @@ describe("buildChannelTableState - composition against real channel state", () =
 
   test("scopeCounts reflect the predefined East/Pacific/all distribution and stay consistent with counts", async () => {
 
-    /* The scopeCounts feed the East/Pacific scope toggle in the channel table header. Each scope reports its own enabled/total, so a regression that
-     * miscomputes one would surface as an asymmetric toggle (e.g., "East 50/100" vs "Pacific 0/100" when both should match). We assert the structural rule:
-     * each scope's total is non-negative, enabled <= total, and scopeCounts.all.total bounds the per-scope totals.
+    /* The scopeCounts feed the Quick Actions scope toggles (All Predefined, East Variants, Pacific Variants), each rendered as "N of M enabled". Each scope
+     * reports its own enabled/total, so a regression that miscomputes one would surface as an asymmetric pair of toggles (e.g., East Variants at "50 of 100
+     * enabled" against Pacific Variants at "0 of 100 enabled" when both should match). We assert the structural rule: each scope's total is non-negative,
+     * enabled <= total, and scopeCounts.all.total bounds the per-scope totals.
      */
     await using ctx = await createIntegrationContext();
 

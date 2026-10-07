@@ -194,7 +194,7 @@ export function createUdpSurface(): UdpSurface {
 
 /**
  * Handles a single incoming UDP packet. Parses it through the pure protocol codec, dispatches by packet type, and sends the appropriate reply (or drops the
- * packet silently when it cannot or should not be answered). Pulled out of the socket.on("message", ...) inline body so the dispatch table reads cleanly.
+ * packet silently when it cannot or should not be answered). Kept separate from the socket's message listener so the dispatch table reads cleanly.
  * @param socket - The bound UDP socket, used to send replies.
  * @param msg - The raw datagram bytes.
  * @param rinfo - The sender's address info, used both to address the reply and to pick a LAN-reachable BaseURL.

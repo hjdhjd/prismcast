@@ -17,7 +17,8 @@ import { snapshotStreamSettings } from "./streamSettings.ts";
  * direction:
  *
  * - If StreamSettings gains a key, declareKeysOf's completeness check fails to compile - the array must be updated.
- * - Once the array is updated, the assertSameShape test fails - the factory must populate the new key.
+ * - The assertSameShape test checks that the builder's frozen object carries exactly the declared keys and no extra ones. Population of every key is
+ *   guaranteed by the builder's own return type, so a key the builder misses fails to compile in streamSettings.ts.
  */
 export const STREAM_SETTINGS_KEYS = declareKeysOf<StreamSettings>()([
 

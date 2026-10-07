@@ -1,9 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * userConfig.merge.test.ts: Unit tests for the env- and CLI-aware portions of the user-config layer - mergeConfiguration, getEnvOverrides, filterDefaults, and the
- * save and restore rules of the fields the process writes (the PROCESS_FIELDS table, and channelsDvr.host hydration into runtime CONFIG). Split out from
- * userConfig.test.ts to keep each file under the conventions' 500-line guidance and to isolate the tests that mutate process.env from the pure-function tests in
- * the sibling suite.
+ * userConfig.merge.test.ts: Unit tests for the env- and CLI-aware portions of the user-config layer - mergeConfiguration, getEnvOverrides, getEnvOverrideValue,
+ * filterDefaults, and the save and restore rules of the fields the process writes (the PROCESS_FIELDS table, and channelsDvr.host hydration into runtime
+ * CONFIG). These are the tests that mutate process.env, kept apart from the pure-function tests in userConfig.test.ts.
  */
 import { CONFIG_METADATA, DEFAULTS, PROCESS_FIELDS, filterDefaults, getEnvOverrideValue, getEnvOverrides, getNestedValue, mergeConfiguration,
   setNestedValue } from "./userConfig.ts";
@@ -183,9 +182,9 @@ describe("mergeConfiguration", () => {
   test("text env vars are sanitized at the ingress across all three text types", () => {
 
     /* The host, path, and string arms all clean their value the way the settings form and the config import already clean these same types. Each vehicle below
-     * carries both kinds of contamination the sanitizer exists for: surrounding padding, and an embedded non-printable character that no amount of trimming
-     * would remove. Reaching CONFIG uncleaned matters here because nothing downstream validates an environment value - a host with a trailing newline or a path
-     * with an embedded null byte would be used as written.
+     * carries surrounding padding, and the string vehicle also carries an embedded non-printable character that no amount of trimming would remove. The host and
+     * path vehicles embed a null byte, but process.env truncates a value at a null byte, so those rows exercise the trimming only. Reaching CONFIG uncleaned
+     * matters because a host or free-string value has no validator behind it - a host with a trailing newline would be used as written.
      */
     process.env["HOST"] = "  192.168.1.50\u0000  ";
     process.env["HDHR_FRIENDLY_NAME"] = " Living\u200bRoom Tuner ";
@@ -200,10 +199,9 @@ describe("mergeConfiguration", () => {
 
   test("a path env var yields the null sentinel when it holds nothing visible", () => {
 
-    /* Two boundaries share one arm. A whitespace-only value has always collapsed to the sentinel, because trimming alone is enough to empty it. A value made
-     * entirely of non-printable characters does not - trimming leaves it intact - so it is the case that separates cleaning from trimming. Both must land on
-     * null, because a path holding nothing visible means "use the default", and for paths.logFile the alternative is a value that fails the absolute-path check
-     * and takes startup down with it.
+    /* These boundaries share one arm. A whitespace-only value collapses to the sentinel because trimming empties it. A value made entirely of non-printable
+     * characters does not - trimming leaves it intact - so it is the case that separates cleaning from trimming. Both must land on null, because a path holding
+     * nothing visible means "use the default", and for paths.logFile the alternative is a value that fails the absolute-path check and takes startup down with it.
      */
     process.env["PRISMCAST_LOG_FILE"] = "   ";
 
@@ -243,9 +241,9 @@ describe("mergeConfiguration", () => {
 
   test("env var that parses as zero is honored (no truthiness gate on parsed values)", () => {
 
-    /* Boundary: the merge writes through any defined parsed value because the guard is `parsedValue !== undefined`, NOT a truthy check. This asserts that a single
-     * non-empty checkboxList override reaches CONFIG unchanged, with no per-element truthiness filter applied to the array contents. The checkboxList type carries
-     * no positivity gate at the merge layer, which makes it the clean vehicle for exercising the defined-value pass-through here.
+    /* Boundary: the merge writes through any parsed value because resolveEnvOverride's guard is its `parsed === undefined` check. This row asserts that a single
+     * non-empty checkboxList override reaches CONFIG unchanged, with no per-element filter applied to the array contents. Its value is truthy, so the row does not
+     * tell the undefined check apart from a truthiness gate.
      */
     process.env["CAPTURE_CODECS"] = "h264";
 
@@ -267,7 +265,8 @@ describe("mergeConfiguration", () => {
   test("checkboxList env var that is empty parses to an empty array (no codec override)", () => {
 
     /* Boundary: parseEnvValue's checkboxList branch splits on commas and filters empty strings. An entirely-empty env var produces an empty array, which
-     * mergeConfiguration writes through. validateConfiguration later forces h264 back; the merge layer's contract is just "produce the user's literal".
+     * mergeConfiguration writes through. buildCandidate's normalization (correctCaptureValues) restores the H.264 baseline afterward; the merge layer's contract
+     * is just "produce the user's literal".
      */
     process.env["CAPTURE_CODECS"] = "";
 
@@ -278,8 +277,7 @@ describe("mergeConfiguration", () => {
 
   test("float env var is parsed via parseFloat and applied (STALL_THRESHOLD)", () => {
 
-    /* parseEnvValue's float branch is otherwise unreached by the existing merge tests. STALL_THRESHOLD is a documented float setting; asserting the parse here
-     * locks the type-specific branch.
+    /* This row covers parseEnvValue's float branch. STALL_THRESHOLD is a documented float setting; asserting the parse here locks the type-specific branch.
      */
     process.env["STALL_THRESHOLD"] = "0.42";
 
@@ -409,10 +407,10 @@ describe("getEnvOverrides", () => {
 
   test("a discarded environment variable is reported by the merge and never by the badge reader", (t) => {
 
-    /* Which caller reports is the whole design, so the row asserts both halves against one variable. Rendering the settings page resolves the environment layer
-     * once per section, so a reader that reported would turn one operator mistake into a page-load-sized burst of identical lines; the merge runs on a boot and
-     * on each save to the settings, each an operator's own action, so a line per merge arrives when they would look for it. Spying on LOG.warn rather than
-     * swapping the logger keeps the assertion narrow, and reading the substitution arguments rather than a formatted string keeps it independent of the format.
+    /* Which caller reports is the whole design, so the row asserts both halves against one variable. The settings page reads the environment on every page load,
+     * so a reader that reported would log a line per render rather than per operator action; the merge runs on a boot and on each save to the settings, each an
+     * operator's own action, so a line per merge arrives when they would look for it. Spying on LOG.warn rather than swapping the logger keeps the assertion
+     * narrow, and reading the substitution arguments rather than a formatted string keeps it independent of the format.
      */
     const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
 

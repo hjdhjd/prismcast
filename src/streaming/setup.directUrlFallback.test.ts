@@ -42,8 +42,8 @@ const PERSISTED_WATCH_URL = "https://play.hbomax.com/channel/watch/persisted-hin
 let gotoFailure: Error = new Error("navigation refused");
 let gotoUrls: string[] = [];
 
-// The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses and the interception-skip
-// decision falls to the option each case sets explicitly.
+// The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses, so setupStream's computed
+// interception skip is false and nothing about encryption influences the path under test.
 const PROBE_IDENTITY: ProbeCacheIdentity = { key: "direct-url-fallback-case", stamp: "direct-url-fallback-stamp" };
 
 // The stream's start instant, which setup takes from the pending entry. A fixed instant, because no row here completes a tune whose monitor would report it.
@@ -208,8 +208,8 @@ describe("setupStream - the guide fallback", () => {
 
   test("does not retry when the failure was not evidence against the URL", async () => {
 
-    // A page-death failure rethrows raw from the establishment, so the fallback's instanceof gate declines it and the tune fails on its single attempt - the same
-    // outcome it had before a fallback existed to decline.
+    // A page-death failure rethrows raw from the establishment, so the fallback's instanceof gate declines it and the tune fails on its first attempt with no
+    // guide retry, since a page death is no evidence against the URL.
     gotoFailure = new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'");
 
     await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),

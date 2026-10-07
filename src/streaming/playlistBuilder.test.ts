@@ -30,7 +30,7 @@ describe("buildPlaylist", () => {
 
   test("formats EXTINF durations to exactly three decimal places", () => {
 
-    // Boundary: the toFixed(3) literal shapes every emitted duration. Locks the exact rendering for half-integer and irrational inputs.
+    // Boundary: the toFixed(3) literal shapes every emitted duration. Locks the exact rendering for half-integer and whole-number inputs.
     const result = buildPlaylist({ mediaSequence: 0, version: 7 }, [
       { duration: 1.5, url: "a.m4s" },
       { duration: 2, url: "b.m4s" },

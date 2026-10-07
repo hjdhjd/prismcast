@@ -531,7 +531,7 @@ describe("serializeRecord / parseRecord round trip", () => {
 
   test("parseRecord returns null when bootId is missing", () => {
 
-    // A bare-integer file from a pre-runtimeIdentity PrismCast lacks the bootId line. It must be classified as malformed so the state machine overwrites it.
+    // A record whose other fields are present but whose bootId line is missing must still read as malformed, so the state machine overwrites it.
     assert.equal(parseRecord("4242\nstartedAt=2026-05-17\nversion=1.0.0\n"), null);
   });
 

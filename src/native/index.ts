@@ -59,7 +59,8 @@ const MAX_TIMER_DELAY_MS = 2147483647;
 // Minimum remaining token lifetime (in milliseconds) for a direct-fetched variant URL to be considered usable. If the variant URL's token expires sooner than this,
 // the direct fetch result is discarded and we fall back to a page reload to get a genuinely fresh token. This prevents handing the proxy a variant URL that expires
 // almost immediately. Set low (5s) because the proxy only needs the variant URL to survive one poll cycle (~3s). A higher threshold (e.g., 30s) would cause Fox.com
-// channels to reject perfectly usable variant URLs - Fox.com tokens have ~57s total lifetime, leaving ~27s at the 30s refresh point.
+// channels to reject perfectly usable variant URLs - Fox.com variant tokens live ~57s in total, so a 30s threshold would discard a direct-fetched variant URL that
+// can still serve several poll cycles.
 const MIN_USABLE_TOKEN_LIFETIME = 5000;
 
 // Timeout for awaiting the manifest interception promise after playback init.
@@ -136,7 +137,8 @@ export interface NativeStreamResult {
   // re-reference; "ts" streams are self-describing. Null only on the DRM path, which never reaches a successful result.
   container: Nullable<MediaContainer>;
 
-  // Whether the stream has separate audio renditions. Set once at stream creation on HLSState.hasAudio so the HLS handler knows to serve variant playlists.
+  // Whether the stream has separate audio renditions. Copied onto HLSState.hasAudio when the native upgrade is applied, so the HLS handler knows to serve variant
+  // playlists, and cleared there again when the stream falls back to capture.
   hasAudio: boolean;
 
   // The native proxy that fetches and stores segments. The proxy holds no CDP session references - session ownership lives entirely inside the manifest
@@ -388,8 +390,8 @@ function computeRefreshBoundary(masterUrl: string, variantUrl: string): Nullable
  *    cannot fire back-to-back). When that refresh fires the master token is spent, the direct fetch fails, and the page-reload path mints a genuinely new master URL
  *    - once, at the boundary, not every MIN_REFRESH_DELAY for the final minutes before expiry.
  *
- * This is the core of the busy-loop fix: each refresh reschedules from the boundary it aims at, never from a shrinking-but-unchanging master expiry, so the cadence
- * is a single boundary-targeted timer rather than a per-cycle re-probe.
+ * Each refresh reschedules from the boundary it aims at, never from a shrinking-but-unchanging master expiry, so the cadence is a single boundary-targeted timer
+ * rather than a per-cycle re-probe.
  *
  * @param options - Token refresh options.
  */

@@ -15,8 +15,9 @@
  *   4. Negative and failure paths: a valid Upgrade request (which parses as an unsupported type) is dropped without a reply - distinct from the malformed-packet
  *      drop, which fails the parser's length/CRC check - a Discover request addressed to another device type or another device id is dropped without a reply, a
  *      Discover request that arrives while the provider reports no bound HTTP port goes unanswered, and a bind collision on the responder port resolves ensureUp
- *      false at warn level rather than throwing, so the HTTP HDHR surface survives a discovery-port conflict. The expected-no-reply rows pass a shortened receive
- *      bound so the wait is a fraction of a second rather than the full round-trip budget.
+ *      false at warn level rather than throwing, so the HTTP HDHR surface survives a discovery-port conflict. The no-reply rows for a Discover addressed to
+ *      another device and for a Discover with no bound HTTP port pass a shortened receive bound, so their wait is a fraction of a second rather than the full
+ *      round-trip budget; the malformed-packet and Upgrade rows wait out the default bound.
  *
  *   5. The bind lifecycle: a second ensureUp call returns true without rebinding, ensureDown closes the socket and leaves the surface
  *      reusable so a later ensureUp rebinds cleanly, and HDHR_DISCOVERY_PORT is asserted against the canonical SiliconDust value so a refactor cannot silently
@@ -24,7 +25,7 @@
  *
  * The integration tests run on 127.0.0.1 with an ephemeral port so they cannot collide with a real HDHomeRun device or another emulator on the developer's
  * host. `await using` disposal tears the responder down at the end of each test, so there is no afterEach to forget. Request packet builders (makeDiscoverRequest,
- * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so both test files speak the same wire format.
+ * makeGetRequest) and the shared framing helper (sealPacket) come from protocol.helpers.ts so every HDHomeRun test speaks the same wire format.
  */
 import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { HDHR_DISCOVERY_PORT, createUdpSurface, selectLanAddress } from "./udp.ts";
@@ -176,7 +177,7 @@ describe("UdpSurface - round-trip", () => {
 
     assert.equal(ok, true);
 
-    // We did not pass an explicit port; the responder bound an ephemeral port. Retrieve it via the node's boundPort accessor.
+    // We passed port 0, so the kernel assigned an ephemeral port; retrieve it through the node's boundPort accessor.
     const port = requireBoundPort(surface);
     const reply = await sendAndReceive(port, wildcardDiscover());
 

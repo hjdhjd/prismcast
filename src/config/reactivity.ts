@@ -3,10 +3,11 @@
  * reactivity.ts: Config-change reactivity primitive for PrismCast.
  *
  * Every leaf of the configuration carries a reactivity class - live, next-stream, or restart - that says how a saved value reaches the running process. The
- * caller, the reconcile in config/index.ts, records the file it just validated as the loaded snapshot and reconciles the gap between the running configuration
- * and that snapshot through this module: it partitions the gap by class, holds the restart-class changes out of the running configuration, hands the live and
- * next-stream changes to the handlers registered for their path prefixes together with the candidate running configuration, and commits exactly the changes
- * the handlers realized. A process write's commit in the same module dispatches the leaves it wrote to their handlers the same way.
+ * caller, the reconcile in config/index.ts, diffs the running configuration against the candidate it just validated and reconciles that gap through this
+ * module: it partitions the gap by class, holds the restart-class changes out of the running configuration, hands the live and next-stream changes to the
+ * handlers registered for their path prefixes together with the candidate running configuration, and commits exactly the changes the handlers realized. Only
+ * after that commit does the candidate become the loaded snapshot. A process write's commit in the same module dispatches the leaves it wrote to their
+ * handlers the same way.
  *
  * The primitive owns the responsibilities below, and none of them touches a configuration object:
  *
@@ -124,7 +125,8 @@ export interface ApplyResult {
   readonly rejected: readonly { readonly change: ConfigChange; readonly reason: string }[];
 }
 
-// Registry of (prefix -> handler) entries. Lookups walk the entries by descending prefix length to honor longest-prefix-match semantics.
+// Registry of (prefix -> handler) entries. A lookup scans every registered prefix and keeps the longest one the path starts with, which gives
+// longest-prefix-match routing.
 const handlers = new Map<string, ConfigChangeHandler>();
 
 /**
@@ -394,14 +396,14 @@ function collectDiff(prefix: string, previous: unknown, current: unknown, change
 }
 
 /**
- * Deep equality check for leaf values. Stringification via JSON.stringify normalizes nested arrays and objects and handles undefined-vs-missing correctly when
- * the values are wrapped in a single-element array. Sufficient for Config which is JSON-shaped throughout.
+ * Deep equality check for leaf values. Stringification via JSON.stringify normalizes nested arrays and objects, which is sufficient for Config because it is
+ * JSON-shaped throughout. Each value is wrapped in a single-element array before it is stringified, and that wrap treats an absent or undefined leaf and a
+ * null leaf as equal, because both serialize as [null]: a leaf that moves between absent and null reports no change.
  * @param a - First value.
  * @param b - Second value.
  * @returns True if the values are deeply equal.
  */
 function deepEqual(a: unknown, b: unknown): boolean {
 
-  // Wrapping in an array side-steps the JSON.stringify(undefined) === undefined corner case so the comparison handles undefined leaves correctly.
   return JSON.stringify([a]) === JSON.stringify([b]);
 }

@@ -258,9 +258,8 @@ function parseChannelsFile(raw: string): ChannelsFileData {
 
 /* Array-valued ChannelDelta fields whose equality requires canonical case-insensitive ordering before structural comparison via isDeepStrictEqual. The set
  * declares which array fields have unordered-set semantics rather than order-significant lists; equality for these fields runs both sides through sortTags so
- * authoring-order or case differences do not defeat the match. Tags are the only such field today, but the property-based framing is the architectural truth:
- * any unordered-set array field belongs in this set. The `satisfies` constraint keeps the list in sync with ChannelDelta's actual keys at compile time -
- * renaming or removing a field forces this tuple to be updated.
+ * authoring-order or case differences do not defeat the match. The set holds every array field with unordered-set semantics, and any such field belongs in it.
+ * The `satisfies` constraint keeps the list in sync with ChannelDelta's actual keys at compile time - renaming or removing a field forces this tuple to be updated.
  */
 const CANONICAL_SORTED_ARRAY_FIELDS = new Set<keyof ChannelDelta>(
   ["tags"] as const satisfies readonly (keyof ChannelDelta)[]
@@ -470,7 +469,8 @@ function filterToDeltaSurface(key: string, stored: StoredChannel): { filtered: S
  * and no selector, and downstream consumers would fail at the consumption site. classifyEntry only returns a "variant" classification when at least one
  * source carries canonicalKey, so the precondition is satisfied by the only in-tree caller (getMergedChannelMap). Other callers must guarantee the same.
  * @param canonical - The resolved canonical channel. Variant identity inherits from here; canonical binding is intentionally stripped via pickIdentity.
- * @param predefined - The predefined variant entry, if the key has one. Contributes service-binding fields and any per-variant channelNumber override.
+ * @param predefined - The predefined variant entry, if the key has one. Contributes the service-binding fields; any identity field on it is dropped by the
+ * binding-only overlay.
  * @param stored - The user's stored delta for this variant, if any. Applied last so user edits win over predefined variant fields.
  * @returns The fully resolved variant.
  */
@@ -680,8 +680,8 @@ export function intersectBindingDeltas(primary: ChannelDelta, criterion: Channel
  * helper so the inference rule lives in exactly one place.
  *
  * Pure function. Walks predefined and user-stored siblings, sorts by key for determinism (multiple variants with the same domain pick the alphabetically-first
- * one), and returns the first match. Effective URL is the user-stored override (if any string-valued) layered onto the predefined variant URL - same precedence
- * as resolveVariant.
+ * one), and returns the first match. The effective URL is the user-stored url when it is a string; a null or absent stored url falls back to the predefined
+ * variant's URL.
  * @param canonicalKey - The canonical channel key whose siblings should be searched.
  * @param submittedUrl - The URL being matched. Empty/undefined returns undefined.
  * @param channels - The stored channels map snapshot for finding user-defined sibling variants.
@@ -1028,16 +1028,17 @@ const channelsMigrations: Record<number, Migration<ChannelsFileData>> = {
 };
 
 /**
- * Pre-write integrity validator for the channels store. Detects two classes of suspicious mutations:
+ * Pre-write integrity validator for the channels store. Detects these classes of suspicious mutation:
  *
  *   1. Identity-field loss: a stored channel's identity field went from set to undefined without canonical fallback. Catches code that
  *      accidentally drops user-authored channel data while normalizing or transforming entries.
  *   2. Metadata wholesale clear: a top-level metadata collection (serviceSelections, tagRegistry.tags, tagRegistry.deletedTags) went from non-empty to empty
- *      in a single mutation. Catches code that accidentally drops the entire collection (the original bug class - if a future writer or fn regression empties
- *      one of these, this guard logs loudly even though the change is structurally allowed).
+ *      in a single mutation. Catches code that accidentally drops the entire collection - the guard logs loudly even though the change is structurally
+ *      allowed.
  *
- * Both checks are log-only - issues surface as warnings without blocking the write. Genuine wholesale clears (operator clears all selections via UI) are the
- * rare false-positive case here; in practice those happen via per-entry mutations rather than a single empty assignment.
+ * Every check is log-only - issues surface as warnings without blocking the write. The check compares the snapshots before and after the mutation, so any
+ * single mutation that empties a non-empty collection is flagged, including one that removes its last entry: reverting the only service selection logs this
+ * warning.
  * @param prev - Pre-mutation snapshot of the file data.
  * @param next - Post-mutation, post-normalize file data.
  * @returns Issues found, or empty array.
@@ -1256,7 +1257,7 @@ export async function mutateChannels(fn: (data: ChannelsFileData) => void): Prom
 }
 
 /**
- * Runs the startup channels-file cleanup pass. Combines two boot-time concerns into one atomic write so they share a single disk transaction:
+ * Runs the startup channels-file cleanup pass. Combines the boot-time concerns below into one atomic write so they share a single disk transaction:
  *
  * - Stale service-selections cleanup: any selection whose variant key no longer exists (deleted predefined variant, removed user channel) is removed by
  *   buildServiceGroups in module state; this pass mirrors that cleanup to disk so the file matches the runtime view across restarts.
@@ -1524,7 +1525,7 @@ export async function initializeUserChannels(): Promise<void> {
   userChannelsParseError = result.parseError;
   userChannelsParseErrorMessage = result.parseErrorMessage;
 
-  // Load service selections so prepareChannelsForWrite captures them on subsequent writes.
+  // Load service selections into the service-group cache so the service groups built below resolve against them.
   setServiceSelections(result.serviceSelections);
 
   /* Inference for setupCompleted: an install that already has services or channels configured should not see the first-run setup wizard. This is runtime
@@ -1554,11 +1555,10 @@ export async function initializeUserChannels(): Promise<void> {
   // buildServiceGroups already performed.
   const staleSelections = buildServiceGroups(mergedChannels);
 
-  /* Canonical-binding overlap heal at startup. Any canonical override whose binding URL extracts to a sibling variant's domain represents the wholesale-
-   * duplication shape from before the per-field PUT routing landed - the user wanted "default this channel to the sibling's service" but the producer
-   * dumped the full delta onto the canonical instead of routing binding to the variant and recording the redirect via serviceSelections. The normalizer
-   * fixes this on every write; this conditional one-shot pass triggers the heal at boot for users on upgrade so they don't have to perform any manual save
-   * action to clean up their data. Combined with the stale-selections cleanup so a single write handles both startup conditions when both apply.
+  /* Canonical-binding overlap heal at startup. A canonical override whose binding URL extracts to a sibling variant's domain breaks the rule that canonical
+   * overrides carry only canonical-service binding - the intent "default this channel to the sibling's service" belongs in serviceSelections, with the binding
+   * on the variant. The normalizer heals the shape on every write, and this conditional pass triggers that heal at boot so a file carrying the shape is cleaned
+   * without a manual save. It shares one write with the stale-selections cleanup, so the startup conditions that apply land together.
    */
   const needsOverlapHeal = hasCanonicalBindingOverlap(loadedUserChannels);
 
@@ -1613,14 +1613,8 @@ const DELTA_ALLOWED_FIELDS = new Set<string>([ ...DELTA_ELIGIBLE_IDENTITY_KEYS, 
  * canonicalKey) pass through so the resolved channel retains its relationship metadata. The returned object is a fresh reference with a defensive copy of any
  * array-valued fields, so callers can mutate it without corrupting the base.
  *
- * This is the single delta-overlay kernel used by both predefined overrides and user variants. The base may be:
- *
- * - A predefined CanonicalChannel for canonical-override resolution.
- * - A ChannelIdentity-only intermediate during variant resolution (URL is supplied by the variant binding overlay).
- * - A fully resolved canonical for variant base computation.
- *
- * Internally typed as ResolvedChannel for the input shape; intermediate variant-resolution states pass through a cast because url is required on
- * ResolvedChannel but is supplied by the next overlay. The contract is: after the full resolveVariant chain, the result has every required field populated.
+ * This is the canonical-override overlay: the base is the predefined canonical definition, and the stored entry is the user's delta over it. Variants resolve
+ * through overlayVariantBinding instead, and both overlays share applyOverlayKernel so their delta semantics stay aligned.
  * @param base - The base channel to inherit from.
  * @param stored - The stored entry (delta) to overlay.
  * @returns A new ResolvedChannel with the base's fields and the stored entry's overrides applied.
@@ -1631,7 +1625,7 @@ function overlayDelta(base: ResolvedChannel, stored: StoredChannel): ResolvedCha
 }
 
 /**
- * Shared overlay kernel used by overlayDelta and overlayVariantBinding. Walks the stored entry's fields and applies them to a clone of base under three rules:
+ * Shared overlay kernel used by overlayDelta and overlayVariantBinding. Walks the stored entry's fields and applies them to a clone of base under these rules:
  * fields in allowedFields apply with delta semantics (null clears, undefined skips, value overrides); non-allowed fields either pass through (delta) or are
  * silently dropped (variant overlay) per passThroughOthers; canonicalKey is always allowed regardless of the gate so resolved variants retain their relationship
  * metadata. The kernel exists to keep the two overlays from drifting - both share one control-flow path rather than duplicating it in each call site.
@@ -1698,7 +1692,7 @@ function overlayVariantBinding(base: ResolvedChannel, stored: StoredChannel): Re
 }
 
 /**
- * Resolves a stored channel entry into a fully populated ResolvedChannel. Handles the two non-variant cases:
+ * Resolves a stored channel entry into a fully populated ResolvedChannel. Handles the non-variant cases:
  *
  * 1. Predefined override (key matches a predefined entry): the stored entry is a delta over the predefined canonical definition.
  * 2. Standalone user channel (no predefined equivalent): the stored entry is already a full channel; a defensive copy is returned so downstream mutations
@@ -1795,16 +1789,17 @@ function getMergedChannelMap(): ResolvedChannelMap {
  * - "user": exists only in user channels
  * - "override": exists in both (user channel data takes precedence)
  *
- * The enabled field reflects whether the channel is available for streaming. Predefined-only channels can be disabled via configuration; user and override
- * channels are always enabled.
+ * The enabled field reflects whether the channel is available for streaming. A predefined channel, whether or not it carries an override, is disabled exactly
+ * when its key is in disabledPredefined; standalone user channels are always enabled.
  *
  * Service variants (non-canonical keys in service groups) are filtered out from this listing - they are accessed via the service selection mechanism instead.
  *
  * Override entries produce a new resolved Channel object (via resolveStoredChannel()), which is a different reference from PREDEFINED_CHANNELS[key]. The service
  * system (services.ts) relies on this reference difference to detect user overrides via isUserOverride(). Predefined-only entries preserve the original reference.
  *
- * The returned channel field is service-resolved: when a non-default service is selected for a channel, the entry's channel reflects the selected variant's URL,
- * channelSelector, stationId, and channelNumber. The entry's key always remains the canonical key.
+ * The returned channel field is service-resolved: when a non-default service is selected for a channel, the entry's channel reflects the selected variant's
+ * binding (URL, channelSelector, profile), while identity such as stationId and channelNumber stays the canonical's. The entry's key always remains the
+ * canonical key.
  * @returns Sorted array of channel listing entries.
  */
 export function getChannelListing(): ChannelListingEntry[] {
@@ -1854,7 +1849,7 @@ export function getChannelListing(): ChannelListingEntry[] {
     // typed ResolvedChannel.
     const channel: ResolvedChannel = resolvedBase;
 
-    // When a non-default service is selected, resolve the variant so consumers see the correct URL, channelSelector, stationId, and channelNumber. We skip
+    // When a non-default service is selected, resolve the variant so consumers see its binding (URL, channelSelector, profile) under the canonical's identity. We skip
     // resolution when the resolved key matches the canonical key - the channel object is already correct and preserving its reference avoids a redundant lookup.
     const resolvedKey = resolveServiceKey(key);
     const resolvedChannel = (resolvedKey !== key) ? getResolvedChannel(resolvedKey) : undefined;
@@ -1898,9 +1893,9 @@ export function getVisibleChannels(): ChannelListingEntry[] {
 }
 
 /**
- * Returns all available channels (predefined + user), with user channels taking precedence on key conflicts. Disabled predefined channels are excluded. Built on
- * top of getChannelListing() to ensure a single merging code path.
- * @returns The merged channel map with disabled predefined channels filtered out.
+ * Returns the visible channels (predefined + user), with user channels taking precedence on key conflicts. A channel is visible when it is enabled and available
+ * under the current service filter, as isVisibleChannel decides. Built on top of getChannelListing() to ensure a single merging code path.
+ * @returns The merged channel map holding only the visible channels.
  */
 export function getAllChannels(): ResolvedChannelMap {
 
@@ -1973,9 +1968,10 @@ export interface ChannelCustomizations {
  * were removed - so it must apply the same effective-view rules consumers see (vocabulary-filtered tags, implicit-true hdhrEnabled). Field-specific dispatch
  * routes through the existing single-source helpers (getChannelEffectiveTags, getEffectiveHdhrEnabled) so the rules live in exactly one place.
  *
- * For canonical-stored fields, the reset value reads from the predefined canonical. For variant-stored fields, it reads from the predefined variant first,
- * falling back to the predefined canonical when the variant doesn't carry the field (variant-inheritance fallback). Returns undefined when no predefined
- * source has the field - a reset would clear the input.
+ * For canonical-stored fields, the reset value reads from the predefined canonical. For variant-stored fields, it reads from the predefined variant when the
+ * variant carries the field, and from the predefined canonical otherwise. Resolution never carries canonical binding onto a variant, so for a binding field the
+ * predefined variant lacks, the canonical's value is not what the field resolves to once the override is removed. Returns undefined when no predefined source
+ * has the field - a reset would clear the input.
  * @param field - The customized field name.
  * @param storedIn - Where the override is stored (canonical or variant).
  * @param predefinedCanonical - The predefined canonical entry (raw catalog read).
@@ -1984,8 +1980,8 @@ export interface ChannelCustomizations {
  */
 function computeResetValue(field: string, storedIn: CustomizationStoredIn, predefinedCanonical: Channel | undefined, predefinedVariant: Channel | undefined): unknown {
 
-  // Pick the right predefined source for this storage location. Variant-stored fields prefer the predefined variant; fall back to canonical when the variant
-  // doesn't carry the field (e.g., a variant that inherits profile from canonical's URL-based detection).
+  // Pick the predefined source for this storage location. Variant-stored fields read the predefined variant when it carries the field and the predefined
+  // canonical otherwise.
   let source: Channel | undefined;
 
   if(storedIn === "canonical") {
@@ -2697,9 +2693,9 @@ export function getEastWithPacificPredefinedKeys(): string[] {
 }
 
 /**
- * Computes enabled/total counts for all three predefined channel scopes (all, east, pacific) against the current disabled set. Both the enabled count and
+ * Computes enabled/total counts for each predefined channel scope (all, east, pacific) against the current disabled set. Both the enabled count and
  * the total are filtered by service availability so that the displayed counts match the visible channel table. When no service filter is active,
- * all channels pass and the counts are unaffected. Used by the server-side HTML renderer and both toggle endpoints to provide consistent counts to the client.
+ * all channels pass and the counts are unaffected. Used by the server-side HTML renderer and by buildChannelTableState, so every channel table patch carries them.
  * @returns An object with `all`, `east`, and `pacific` keys, each containing `{ enabled, total }`.
  */
 export function getPredefinedScopeCounts(): { all: { enabled: number; total: number }; east: { enabled: number; total: number };
@@ -2719,8 +2715,8 @@ export function getPredefinedScopeCounts(): { all: { enabled: number; total: num
 }
 
 /**
- * Checks if a channel is available for streaming. A channel is available if it exists in the merged channel map returned by getAllChannels(), which already
- * excludes disabled predefined channels (unless overridden by a user channel).
+ * Checks if a channel is available for streaming. A channel is available if it exists in the merged channel map returned by getAllChannels(), which holds only
+ * the visible channels: enabled, and available under the current service filter.
  * @param key - The channel key to check.
  * @returns True if the channel can be streamed.
  */

@@ -1005,6 +1005,10 @@ export function generateLogsContent(): string {
     "  eventSource.onerror = function() {",
     "    sseStatus.innerHTML = '<span class=\"status-dot\" style=\"color: var(--stream-error);\">&#9679;</span> Disconnected';",
     "  };",
+
+    // The 45-second window is 1.5 times the server's 30-second heartbeat (HEARTBEAT_INTERVAL_MS in routes/sse.ts), so a heartbeat that arrives late still lands
+    // inside it and a quiet log stream does not reconnect. Slowing the heartbeat past this window makes every quiet stream reconnect forever, so the two values
+    // change together. The check itself runs every 45 seconds, so a dead stream is detected within about 90 seconds.
     "  logsStalenessInterval = setInterval(function() {",
     "    if((Date.now() - lastLogsEventTime) > 45000) { connectSSE(); }",
     "  }, 45000);",

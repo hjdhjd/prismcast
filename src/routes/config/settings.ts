@@ -476,7 +476,9 @@ interface SettingFieldOptions {
 }
 
 /**
- * Generates HTML for a single setting form field. Supports text inputs, number inputs, and select dropdowns based on the setting type and validValues.
+ * Generates HTML for a single setting form field. The setting's validValues and type choose the control: a select dropdown when validValues is non-empty,
+ * otherwise a hidden-input-plus-checkbox pair for a boolean, a hidden JSON input with a checkbox grid for a checkboxList, and a text or number input for every
+ * other type. The field also carries its pending marker, its default hint and, where they apply, the reset button and the environment override notice.
  * @param options - The setting, the saved value the form shows, its default, its environment override, and its pending entry.
  * @returns HTML string for the form field.
  */
@@ -609,8 +611,8 @@ function generateSettingField(options: SettingFieldOptions): string {
     lines.push("</select>");
   } else if(setting.type === "boolean") {
 
-    // Render boolean as a checkbox. A hidden input with value "false" precedes the checkbox so that unchecking submits "false" rather than omitting the field
-    // entirely (which would cause the server to skip it and fall back to the default).
+    // Render boolean as a checkbox. A hidden input with value "false" precedes the checkbox so that unchecking submits "false". Without it an unchecked box
+    // submits nothing, the save handler skips the path, and the merge keeps the saved true, so the uncheck would be lost.
     const isChecked = (currentValue === true) || (currentValue === "true");
     const defaultStr = defaultValue ? "true" : "false";
 
@@ -687,9 +689,10 @@ function generateSettingField(options: SettingFieldOptions): string {
     // Render as input field.
     const inputType = (setting.type === "float") ? "number" : (((setting.type === "integer") || (setting.type === "port")) ? "number" : "text");
 
-    // Calculate step for arrow key increments. Auto-derived from min/displayDivisor: when the min in display units is between 0 and 1 (exclusive), use it as the
-    // step (e.g., 500ms -> 0.5s step); otherwise step is 1 whole display unit. This gives meaningful arrow increments and constrains input to a sensible value
-    // grid (e.g., 0.5, 1.0, 1.5, ... for half-second steps).
+    // Calculate step for arrow key increments. With a displayDivisor and a min, the step is auto-derived: when the min in display units is between 0 and 1
+    // (exclusive), use it as the step (e.g., 500ms -> 0.5s step); otherwise the step is 1 whole display unit. A float with no displayDivisor steps by 0.01 so
+    // two-decimal values stay reachable, and every other number steps by one display unit. This gives meaningful arrow increments and constrains input to a
+    // sensible value grid (e.g., 0.5, 1.0, 1.5, ... for half-second steps).
     let step = "1";
 
     if(setting.displayDivisor && (setting.min !== undefined)) {
@@ -1392,10 +1395,11 @@ export function setupSettingsRoutes(app: Express): void {
         return;
       }
 
-      // Import replaces the user settings layer and preserves the system state layer. CONFIG_METADATA is the SSOT for which fields are user settings
-      // (port, timeouts, quality preset, etc.) vs system state (channelsDvr.host, deviceId, disabledPredefined, enabledServices, etc.). Clearing all
-      // CONFIG_METADATA-tracked paths before merging ensures that settings not present in the import file revert to defaults rather than surviving
-      // from the previous config. System state fields are untouched because they're not in CONFIG_METADATA. The save validates the result before anything
+      // Import replaces the user settings layer. CONFIG_METADATA is the SSOT for which fields are user settings (port, timeouts, quality preset, etc.) vs
+      // system state (channelsDvr.host, deviceId, disabledPredefined, enabledServices, etc.). Clearing all CONFIG_METADATA-tracked paths before merging
+      // ensures that settings not present in the import file revert to defaults rather than surviving from the previous config. The merge then copies every
+      // key the document carries, so a system-state field missing from the document keeps its current value, while one present in the document - as in a
+      // file written by the export, which carries the whole configuration - is merged over the current one. The save validates the result before anything
       // reaches disk and reconciles the running configuration against it, the same path every write to the settings takes.
       const outcome = await applyConfigurationChange("after configuration import", (existing) => {
 

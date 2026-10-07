@@ -12,8 +12,8 @@
  * Architectural note: this suite is structurally different from the sibling DOM-runtime suites (shared/channels/config). Those scripts have their handler
  * logic tangled with their IIFE init code, so the only way to exercise their behavior is to execute the emitted script string in a synthetic DOM via runScripts.
  * status.handlers.ts exposes every handler, formatter, renderer, and DOM mutator as free-standing TypeScript functions over a HandlerContext literal. That makes
- * them directly importable as TS - this suite calls them with synthetic context literals instead of running the emitted script. The trade-off is masterclass-worthy:
- * the cleaner production architecture earns simpler tests.
+ * them directly importable as TS - this suite calls them with synthetic context literals instead of running the emitted script. Because the production module
+ * separates the handlers from the IIFE, the tests call them directly rather than executing script strings.
  *
  * Harness usage: createDomTestContext is reused for the synthetic Document. The bootApp listener is incidental (we don't fetch from these handlers), but the page
  * HTML provides realistic structural fixtures (#streams-tbody, #system-health, #stream-count, #stream-popover-menu, #toast-container) that the DOM mutators rely
@@ -133,7 +133,7 @@ function makeStream(overrides?: Partial<StreamSummary>): StreamSummary {
   };
 }
 
-/* Global stubs. Two browser globals that the handlers reference as free identifiers must be seeded on globalThis for the duration of this file:
+/* Global stubs. The browser globals the handlers reference as free identifiers must be seeded on globalThis for the duration of this file:
  *
  *   - requestAnimationFrame: Node does not provide it; the schedulers in status.handlers.ts reference it as a free identifier. Synchronous-fire is the simplest
  *     model so the scheduled callback runs inline and the test's next assertion sees post-rAF state.
@@ -192,10 +192,10 @@ describe("status.handlers: createInitialState", () => {
 
   test("returns the canonical empty state with rAF gates open and watchdog timestamps zeroed", () => {
 
-    /* The IIFE in status.ts does NOT call createInitialState; it hand-mirrors this shape as its own `const state` object literal (status.ts:55-63), while the tests
-     * use createInitialState as the default for HandlerContext fixtures. The two are parallel definitions kept in sync by hand, so the field shape has to stay
-     * stable: any new field added here must also be added to the IIFE's literal in status.ts, and vice versa. This assertion is exactly the drift guard - we assert
-     * every field so a regression that drops or renames any of them surfaces here.
+    /* The IIFE in status.ts does NOT call createInitialState; it hand-mirrors this shape as the `const state` literal at the top of the IIFE in
+     * generateStatusScript, while the tests use createInitialState as the default for HandlerContext fixtures. The two are parallel definitions kept in sync by
+     * hand: any new field added here must also be added to the IIFE's literal in status.ts, and vice versa. This assertion fixes createInitialState's shape, so
+     * a regression that drops or renames any of its fields surfaces here...but nothing automated keeps status.ts's literal in step with it.
      */
     const state = handlers.createInitialState();
 
@@ -1206,8 +1206,10 @@ describe("status.handlers: renderStreamsTable (DOM mutator)", () => {
 
   test("preserves Object.entries insertion order so streams appear in the order they were added", () => {
 
-    /* JavaScript's Object preserves insertion order for string keys. The renderer iterates Object.entries, which means the order of streamData mutation is the
-     * order of the rendered rows. We seed the streamData with explicit insertion order and assert that the rendered order matches.
+    /* JavaScript's Object preserves insertion order for non-integer string keys; integer-like keys come first, in ascending numeric order. The renderer iterates
+     * Object.entries, so for this fixture's alphabetic ids the order of streamData mutation is the order of the rendered rows. Production stream ids are numeric,
+     * so production rows follow ascending stream id, which matches the order streams were added only because ids increase. We seed the streamData with explicit
+     * insertion order and assert that the rendered order matches.
      */
     return (async (): Promise<void> => {
 
@@ -1722,8 +1724,9 @@ describe("status.handlers: handleStreamRemoved (SSE handler)", () => {
 
   test("does not throw when externals.updateRestartDialogStatus is undefined (config.ts not yet loaded)", () => {
 
-    /* The optional-chain ?.() guard handles the early-page-load race where status.ts opens its EventSource before config.ts has registered the trampoline. We
-     * confirm the handler completes cleanly with the externals.updateRestartDialogStatus left as undefined.
+    /* The optional-chain ?.() guard is defensive: the handler must not throw if the trampoline is absent. The emission order prevents that today, since
+     * config.ts's script is emitted before status.ts's, but the guard keeps the handler safe if that order changes. We confirm the handler completes cleanly with
+     * the externals.updateRestartDialogStatus left as undefined.
      */
     return (async (): Promise<void> => {
 
@@ -2341,8 +2344,9 @@ describe("status.handlers - module export inventory", () => {
   test("HANDLER_FUNCTIONS includes every emittable function the production script body needs", () => {
 
     // The HANDLER_FUNCTIONS array drives the emitted script body in generateStatusScript. Every function that needs to ship to the browser must be in this
-    // array - missing one means the runtime breaks at the call site. HANDLER_CONSTANTS and createInitialState are NOT emitted (createInitialState is called only
-    // by status.ts at IIFE start). The lower-bound check guards against an accidental drop without re-asserting the exact count on every additive change.
+    // array - missing one means the runtime breaks at the call site. HANDLER_CONSTANTS is emitted as const declarations rather than function sources, and
+    // createInitialState is not emitted at all because only the tests use it, while the IIFE keeps its own state literal. The lower-bound check guards against
+    // an accidental drop without re-asserting the exact count on every additive change.
     assert.ok(handlers.HANDLER_FUNCTIONS.length > 25, "HANDLER_FUNCTIONS contains the documented script-body functions");
 
     for(const fn of handlers.HANDLER_FUNCTIONS) {

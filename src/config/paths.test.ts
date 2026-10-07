@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * paths.test.ts: Unit tests for the centralized filesystem path resolution module. The module is the single source of truth for every path the application
- * touches; an unverified change would silently relocate user data, so we exercise every getter against a tmp-scoped data directory and lock the path-builder
- * contract for the Config-derived getters.
+ * touches; an unverified change would silently relocate user data, so we exercise each data-directory getter it imports against a tmp-scoped data directory
+ * and lock the path-builder contract for the Config-derived getters.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getChannelsFilePath, getChromeDataDir, getConfigFilePath, getDataDir, getDebugEnv, getDefaultLogFilePath, getExtensionDir, getHealthFilePath,
@@ -30,8 +30,8 @@ function setPlatform(value: string): void {
 
 const ORIGINAL_PLATFORM = process.platform;
 
-/* The data-dir state is module-level. Each test scopes its own value via withTempDir + initializeDataDir, but we still capture and restore the surrounding
- * value (and the env var) so the suite leaves the global state exactly as it found it.
+/* The data-dir state is module-level and paths.ts offers no way to reset it, so the suite restores only the PRISMCAST_DATA_DIR environment variable. The
+ * module-level data directory keeps whatever the last test set, which is harmless because each test file runs in its own process.
  */
 const ORIGINAL_ENV = process.env["PRISMCAST_DATA_DIR"];
 

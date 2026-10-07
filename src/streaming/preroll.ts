@@ -101,7 +101,8 @@ export function isPrerollReady(codec: CaptureCodec): boolean {
 }
 
 /**
- * Returns the number of preroll segments available for the specified codec. Used by the segmenter to determine the preroll-to-real segment index boundary.
+ * Returns the number of preroll segments available for the specified codec. Stream registration records the count on the stream's HLS state, from which the
+ * capture segmenter and the native proxy take it as the preroll-to-real segment index boundary.
  * @param codec - The preroll codec variant.
  * @returns The count of preroll media segments.
  */
@@ -123,8 +124,8 @@ export function getPrerollSegmentDuration(codec: CaptureCodec, index: number): n
 }
 
 /**
- * Returns the total duration of all preroll segments in seconds. Used by the fmp4Segmenter to compute PTS offsets that make Chrome's real content timestamps continue
- * from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary.
+ * Returns the total duration of all preroll segments in seconds. Used by the fmp4Segmenter to compute PTS offsets that make the remuxed capture's real content
+ * timestamps continue from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary.
  * @param codec - The preroll codec variant.
  * @returns The sum of all preroll segment durations in seconds.
  */
@@ -249,6 +250,8 @@ export async function generatePreroll(): Promise<void> {
  */
 async function generateVariant(ffmpegBin: string, codec: CaptureCodec, videoArgs: readonly string[], size: string): Promise<void> {
 
+  // A 60-frame GOP at the source's 30 fps puts a keyframe every 2 seconds, and with frag_keyframe that gives 2-second preroll segments, which match the default HLS
+  // segment duration and the 2-second fallbacks used in this module.
   const args = [
     "-hide_banner", "-nostats", "-loglevel", "warning",
     "-f", "lavfi", "-i", "color=black:size=" + size + ":rate=30:duration=" + String(PREROLL_TOTAL_DURATION),
@@ -333,8 +336,8 @@ export async function spawnAndCollect(ffmpegBin: string, args: string[], options
     }
   });
 
-  // Race stdout-collection against the process exit. streamToBuffer resolves when stdout closes; the exit listener decides the success/failure of the spawn itself,
-  // and the abort deadline settles the pair when FFmpeg hangs.
+  // Join stdout collection with the process exit: streamToBuffer resolves when stdout closes, the exit listener decides whether the spawn succeeded, and the abort
+  // deadline rejects the pair when FFmpeg hangs.
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Standard pattern for signal promises.
   const { promise: exitPromise, resolve: signalExit, reject: signalExitFailure } = Promise.withResolvers<void>();
 
@@ -450,8 +453,7 @@ function splitPrerollBuffers(data: Buffer): Nullable<PrerollVariant> {
     }
 
     // Extract duration from each segment's moof box. The offsetMoofTimestamps function with an empty offset map acts as a pure reader - it returns per-track
-    // durations without modifying the buffer (it writes back the same tfdt values it read since the offset is 0). A fresh map is created per segment to prevent
-    // state accumulation across iterations.
+    // durations without modifying the buffer (it writes back the same tfdt values it read since the offset is 0).
     for(const segment of mediaSegments) {
 
       // The segment buffer is moof+mdat concatenated. The moof is the first box - parse it to find its size.
@@ -550,20 +552,22 @@ export interface PrerollEntryOptions {
   // The preroll codec variant. Determines the URL path segment (e.g., "/preroll/h264/segment0.m4s").
   codec: CaptureCodec;
 
-  // File extension for preroll segments. ".m4s" for fMP4. Parameterized for future format flexibility.
+  // File extension for preroll segments. It must be ".m4s", the only extension the preroll segment route accepts...an entry built with any other extension points
+  // at a URL the route answers with a 404.
   extension: string;
 
   // Total number of preroll segments. Entries are produced for indices in [startIndex, prerollSegmentCount).
   prerollSegmentCount: number;
 
-  // First preroll index to include in the entries. Typically the composite window's start index.
+  // The zero-based preroll index to start from: the composite window's start minus the preroll's first index, so a resumed stream's window maps onto the preroll's
+  // own segment numbering.
   startIndex: number;
 }
 
 /**
  * Builds an array of playlist segment entries for preroll segments within the given index range. Each entry has an absolute URL pointing to the global /preroll/ route
- * and the duration extracted from the preroll segment cache. No per-segment metadata tags (DISCONTINUITY, PROGRAM-DATE-TIME, etc.) are set - preroll is synthetic
- * placeholder content.
+ * and the duration extracted from the preroll segment cache. The builder sets only the URL and duration, and the caller adds any marker its timeline needs (for
+ * example, a resumed stream's opening discontinuity). PROGRAM-DATE-TIME is deliberately left out, because preroll is synthetic placeholder content.
  *
  * @param options - Entry construction parameters.
  * @returns Ordered array of preroll segment entries for the builder.
@@ -588,8 +592,8 @@ export function buildPrerollEntries(options: PrerollEntryOptions): PlaylistSegme
  * Computes how many segments should be revealed given elapsed wall-clock time and a codec's segment durations. This is the pure reveal math, isolated from the
  * prerollVariants cache and from the clock so it can be exercised directly with plain arguments - no seeded variant, no timer mocking required. The initial window
  * (initialWindow segments) is revealed immediately so the client has enough content to begin playback per the HLS 3-from-end rule. Additional segments are revealed
- * one at a time as wall-clock time passes - each new segment appears when enough time has elapsed for the client to have consumed the prior content beyond the
- * initial window.
+ * one at a time as wall-clock time passes - a segment beyond the initial window appears once elapsed time reaches the summed duration of the segments past the
+ * initial window up to and including itself.
  *
  * @param totalSegments - The number of segments available (from variant.mediaSegments.length). Distinct from durations.length - the durations array is tracked
  *   separately and may differ in length.
@@ -602,8 +606,9 @@ export function computeReveal(totalSegments: number, durations: readonly number[
 
   let revealCount = Math.min(initialWindow, totalSegments);
 
-  // Compute the total duration of the initial window. Segments beyond this threshold are revealed progressively - each one becomes visible when elapsed time
-  // exceeds the cumulative duration of all segments before it, minus the initial window's duration (since those were available from the start).
+  // Compute the total duration of the initial window. Segments beyond the initial window are revealed progressively - each one becomes visible once elapsed time
+  // reaches the summed duration of the segments past the initial window up to and including itself. The initial window's own duration is excluded from that sum
+  // because those segments were available from the start.
   let initialWindowDuration = 0;
 
   for(let i = 0; i < Math.min(initialWindow, totalSegments); i++) {

@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * fmp4Segmenter.test.ts: Unit tests for the pure helpers in the fMP4 segmenter module. The two formatters (formatKeyframeStatsSummary, formatSessionStatsSummary) are
- * pure string-builders that earn full coverage here. The two discontinuity-sequence helpers (pruneDiscontinuityIndices, computeDiscontinuitySequence) are the SSOT for
- * keeping discontinuityIndices bounded over a long stream while preserving a correct, monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests
- * assert both properties at once. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments, stores them via hlsSegments.storeSegment,
- * and emits playlists via hlsSegments.updatePlaylist; it is driven here with synthetic ftyp/moov/moof/mdat boxes against a registered stream, asserting init-segment
- * storage, the fast-path first cut, the segment-duration boundary, final flush, and discontinuity marking. Real Chrome-capture fMP4 remains an e2e concern only for
- * codec/timescale fidelity.
+ * fmp4Segmenter.test.ts: Unit tests for the fMP4 segmenter module. createFMP4Segmenter pipes a Readable input through createMP4BoxParser, accumulates fragments,
+ * stores them via hlsSegments.storeSegment, and emits playlists via hlsSegments.updatePlaylist. It is driven here with synthetic boxes against a registered stream,
+ * asserting its cutting and storage, its continuity handoff (snapshot, segment history, discontinuity count) and its resumed-preroll windows. The formatters
+ * (formatKeyframeStatsSummary, formatSessionStatsSummary) are pure string-builders that earn full coverage here. The discontinuity-sequence helpers
+ * (pruneDiscontinuityIndices, computeDiscontinuitySequence) are the SSOT for keeping discontinuityIndices bounded over a long stream while preserving a correct,
+ * monotonic #EXT-X-DISCONTINUITY-SEQUENCE across the prune boundary - the tests assert both properties at once. Real Chrome-capture fMP4 remains an e2e concern
+ * only for codec/timescale fidelity.
  */
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
@@ -330,8 +330,8 @@ describe("discontinuity-sequence bounded growth and prune-boundary correctness",
 
   // This integrated test replays the outputSegment() prune loop and the generatePlaylist() sequence computation over a long synthetic stream, asserting two properties
   // at once: (1) discontinuityIndices stays bounded by the sliding window size, and (2) the emitted DISCONTINUITY-SEQUENCE matches an unbounded oracle at every
-  // step - including across the prune boundary where indices begin scrolling out of the set. The oracle reproduces the original unbounded behavior (a full set counted
-  // with idx < startIndex), so any divergence after pruning would surface immediately.
+  // step - including across the prune boundary where indices begin scrolling out of the set, the boundary the prune must respect. The oracle is a never-pruned set
+  // counted with idx < startIndex, so any divergence after pruning surfaces immediately.
   test("stays bounded while reproducing the unbounded discontinuity-sequence oracle at every step", () => {
 
     const maxSegments = 6;
@@ -398,8 +398,9 @@ describe("discontinuity-sequence bounded growth and prune-boundary correctness",
       assert.equal(bounded, oracle, "bounded sequence must equal the unbounded oracle at segment " + String(segmentIndex));
     }
 
-    // Bounded growth: a correct prune never lets the set exceed the number of indices that can coexist within one window span. With a discontinuity every fourth
-    // segment and a six-segment window, at most two indices are ever resident, far below the 125 a never-pruned set would accumulate.
+    // Bounded growth: a correct prune never lets the set exceed the number of indices that can coexist within one window span. With a discontinuity every
+    // discontinuityEvery segments and a maxSegments window, at most ceil(maxSegments / discontinuityEvery) indices are ever resident, far below the
+    // ceil(totalSegments / discontinuityEvery) a never-pruned set accumulates.
     assert.ok(maxBoundedSize <= maxSegments, "discontinuityIndices must stay bounded by the window span, saw " + String(maxBoundedSize));
     assert.equal(oracleIndices.size, Math.ceil(totalSegments / discontinuityEvery), "oracle accumulated every discontinuity, confirming the unbounded baseline");
 
@@ -783,10 +784,10 @@ describe("createFMP4Segmenter", () => {
 
   test("reports a continued capture whose initialization differs from the one it continues from, once", (t) => {
 
-    /* The field measurement, read as a count. The encoder coming back with other parameters is the event every client re-initializes on, and it is invisible in
-     * the log today. The row drives a continuation whose initialization genuinely differs and demands exactly one line, alongside the effects that must still
-     * follow it: the version bump the map URI is cache-busted with, and the discontinuity marker the playlist carries. The fresh-start row and the byte-identical
-     * row are its controls - both assert zero.
+    /* The field measurement, read as a count. The encoder coming back with other parameters is the event every client re-initializes on, and the segmenter
+     * reports it once at the moment it happens. The row drives a continuation whose initialization genuinely differs and demands exactly one line, alongside the
+     * effects that must still follow it: the version bump the map URI is cache-busted with, and the discontinuity marker the playlist carries. The fresh-start
+     * row and the byte-identical row are its controls - both assert zero.
      */
     const previousInitSegment = Buffer.concat([ makeBox("ftyp", Buffer.from("iso6")), makeMoov() ]);
 

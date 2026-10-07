@@ -6,10 +6,11 @@
 /* This module is the single source of truth for escape-style markup encoding. HTML escaping (used pervasively across the routes layer to embed user-provided
  * values in server-rendered pages) and XML escaping (used by the macOS launchd plist generator and the HDHomeRun device description) cover the same reserved
  * characters; only the apostrophe entity differs - HTML5 spells it &#39; and XML spells it &apos;. Centralizing both surfaces over a shared regex and a
- * Readonly entity map keeps the character class in one place so adding an entity to one flavor can't silently desync the other.
+ * Readonly entity map per flavor keeps the character class in one place, so every flavor matches the same characters.
  */
 
-// The shared character class for both HTML and XML escape sweeps. Defined once so the two escape variants never disagree about which characters they encode.
+// The shared character class for the HTML and XML escape sweeps. Defined once so every escape variant matches the same characters...each entity map still needs
+// an entry for every character here, because escapeMarkup passes a matched character with no entry through unescaped.
 const MARKUP_ENTITY_REGEX = /[&<>"']/g;
 
 // HTML5 entity map. The apostrophe entity is &#39; because the named entity &apos; was only added to HTML5 (older browsers fall back to the numeric reference).
@@ -34,7 +35,7 @@ const XML_ENTITIES: Readonly<Record<string, string>> = {
 
 /**
  * Shared escape body for both HTML and XML. Returns the input with every character in MARKUP_ENTITY_REGEX replaced by its entity from the supplied table. The
- * private factor here is intentional: it commits the two public escapers to the same regex and the same Record-based lookup so behavior never drifts between them.
+ * private factor here is intentional: it commits each public escaper to the same regex and the same Record-based lookup, so every flavor matches the same characters.
  * @param value - The string to escape.
  * @param entities - The entity table that owns the per-character substitution.
  * @returns The escaped string.

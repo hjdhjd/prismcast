@@ -46,10 +46,10 @@ const MAX_MANIFEST_FAILURES = 3;
 // self-resolve on the next fetch.
 const MAX_SEGMENT_FAILURES = 5;
 
-// Number of segment byte-fetches one track keeps in flight while its commit walk consumes the results in broadcast order. Three concurrent connections lift a
-// track's download throughput to roughly three times the per-connection pacing a CDN edge grants, which is what keeps a high-bitrate channel ahead of its own
-// production rate rather than accumulating a backlog that delays the next manifest poll. The bound is what keeps the gain cheap: at most three segments per
-// track are resident at once - six for a stream whose audio is a separate rendition, since each track runs its own window.
+// Number of segment byte-fetches one track keeps in flight while its commit walk consumes the results in broadcast order. Running that many connections at once
+// lifts a track's download throughput to roughly that many times the per-connection pacing a CDN edge grants, which is what keeps a high-bitrate channel ahead
+// of its own production rate rather than accumulating a backlog that delays the next manifest poll. The bound is what keeps the gain cheap: at most
+// PARALLEL_SEGMENT_FETCHES segments per track are resident at once - twice that when audio is a separate rendition, since each track runs its own window.
 const PARALLEL_SEGMENT_FETCHES = 3;
 
 // Manifest poll backoff base delay and cap. On success, the poll interval returns to the base delay (a fixed 3000ms, ~half a typical 6s segment). On failure, the delay
@@ -120,9 +120,8 @@ export interface NativeProxyOptions {
   // The channel name for logging.
   channelName: string;
 
-  // Optional clock for the polling cadence sleep. Defaults to the system clock; tests inject a virtual clock so the manifest poll loop's backoff resolves when
-  // the test advances past it rather than after real time. This mirrors the same default-arg port pattern used by retry.ts, timing.ts, and hlsSegments.ts - the
-  // production code path is unchanged when callers omit it.
+  // The clock every deadline, store stamp and poll delay this proxy arms runs on. The coordinator passes the chain's clock; a caller that passes none gets the
+  // system clock.
   clock?: Clock;
 
   // Container format of the upstream segments, as classified by the probe. It is fixed for the proxy's lifetime: an "fmp4" relay fetches and re-references the
@@ -168,7 +167,7 @@ export interface NativeProxy {
   // rather than inheriting an escalation the stream has already recovered from.
   clearRefreshFailures: () => void;
 
-  // Returns the number of consecutive segment fetch errors.
+  // Returns the combined consecutive failure count across both tracks' segment fetches and manifest polls.
   getConsecutiveErrors: () => number;
 
   // Returns true if the proxy hit its error threshold and stopped itself. The monitor checks this to trigger immediate L3 fallback instead of waiting for the
@@ -214,11 +213,12 @@ export interface NativeProxy {
   // refresh handle: arming a successor retires its predecessor.
   setTokenRefreshTimer: (timer: Disposable) => void;
 
-  // Stops the proxy and cancels the pending token refresh timer.
+  // Stops the proxy, cancels its open fetches, and cancels the pending token refresh timer.
   stop: () => void;
 
-  // TC39 explicit resource management hook, aliasing stop() so the proxy is a self-disposing node that composes uniformly with the other capture-mode resources
-  // (the capture session and the health monitor). Its teardown is self-contained - it owns the polling loop and token-refresh timer and releases exactly those.
+  // TC39 explicit resource management hook, aliasing stop() so the proxy can be released through the disposal protocol (a DisposableStack or "using"), as the
+  // capture session that takes its place in capture mode can. Its teardown is self-contained - it owns the polling loop, the token-refresh timer and the proxy's
+  // open fetches, and releases exactly those.
   [Symbol.dispose]: () => void;
 
   // Updates the audio variant URL after a token refresh. Only applicable for streams with separate audio renditions.
@@ -336,7 +336,8 @@ interface SegmentMetadata {
 // Proxy State Types.
 
 /**
- * Segment fetch error tracker with labels for log and error messages. Used independently for video and audio segment fetch paths with separate failure thresholds.
+ * Segment fetch error tracker with labels for log and error messages. Video and audio segment fetch paths each keep their own tracker, so each track has its
+ * own consecutive-failure count against the shared MAX_SEGMENT_FAILURES threshold.
  */
 interface SegmentFetchTracker {
 
@@ -431,7 +432,7 @@ interface InitTrackingState {
 
 /**
  * Composite playlist discontinuity tracking state. Independent source of truth for DISCONTINUITY-SEQUENCE computation in composite playlists that stitch fMP4 preroll
- * entries with MPEG-TS real entries.
+ * entries with the relayed source's real entries (MPEG-TS or fMP4).
  */
 interface CompositePlaylistState {
 
@@ -534,7 +535,7 @@ interface SegmentPipelineTrack {
 }
 
 /**
- * Options for building a composite playlist with fMP4 preroll entries and MPEG-TS real entries.
+ * Options for building a composite playlist with fMP4 preroll entries and the relayed source's real entries (MPEG-TS or fMP4).
  */
 interface CompositePlaylistOptions {
 
@@ -1480,10 +1481,10 @@ async function processAudioStream(ctx: ProxyContext, audio: AudioTrackingState, 
 
 /**
  * Builds a composite playlist with fMP4 preroll entries and the relayed source's real entries. Uses the same compositor and builder as the capture path's
- * generatePlaylist(), ensuring identical windowing behavior (maxPrerollInWindow cap, progressive falloff). The DISCONTINUITY tag at the preroll-to-real boundary
- * signals the transition between two independently-initialized runs of content, which is spec-compliant per RFC 8216 Section 4.3.3.3 - and when the relayed
- * source is itself fMP4, that boundary is also where its own initialization reference is re-emitted. VERSION:7 is used throughout to support EXT-X-MAP, and stays
- * backward-compatible with MPEG-TS entries once preroll falls off the window.
+ * generatePlaylist(), ensuring identical windowing behavior (the MAX_PREROLL_IN_WINDOW cap in streaming/preroll.ts, progressive falloff). The DISCONTINUITY
+ * tag at the preroll-to-real boundary signals the transition between two independently-initialized runs of content, which is spec-compliant per RFC 8216
+ * Section 4.3.3.3 - and when the relayed source is itself fMP4, that boundary is also where its own initialization reference is re-emitted. VERSION:7 is used
+ * throughout to support EXT-X-MAP, and stays backward-compatible with MPEG-TS entries once preroll falls off the window.
  *
  * @param options - Composite playlist configuration with segment data, preroll settings, and composite tracking state.
  * @returns The formatted composite m3u8 playlist string.
@@ -1493,7 +1494,7 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
   const { composite, prerollBaseUrl, prerollCodec, prerollSegmentCount, segmentEntries, segmentIndex, targetDuration, videoMetadata } = options;
 
   // Compute the sliding window start index via the compositor. The three-way max prevents negative indices, enforces the sliding window rule, and caps preroll
-  // entries at maxPrerollInWindow to force clients past preroll toward the live edge.
+  // entries at the preroll-in-window cap to force clients past preroll toward the live edge.
   const realSegmentCount = segmentEntries.length;
 
   const startIndex = computePrerollWindow({
@@ -1515,7 +1516,7 @@ function buildCompositePlaylist(options: CompositePlaylistOptions): string {
     prerollEntries = buildPrerollEntries({ baseUrl: prerollBaseUrl, codec: prerollCodec, extension: ".m4s", prerollSegmentCount, startIndex });
   }
 
-  // Build real MPEG-TS entries from the video metadata maps via the shared helper.
+  // Build the relayed source's real entries (MPEG-TS or fMP4) from the video metadata maps via the shared helper.
   const realEntries = segmentEntries.map((filename) => buildEntryFromMetadata(filename, videoMetadata, targetDuration));
 
   // Mark the preroll-to-real boundary on the first real entry when preroll entries are present in the window. This is a playlist-level concern (the stitching of
@@ -1778,7 +1779,8 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
   }
 
   /**
-   * Orchestrates the poll cycle: fetches video and audio manifests in parallel, stores segments, and generates playlists after both stores are updated.
+   * Orchestrates the poll cycle: fetches the video manifest first, then runs video segment processing in parallel with the audio poll (the audio manifest fetch
+   * and its segments), and generates playlists after both stores are updated.
    */
   async function pollManifest(): Promise<void> {
 
@@ -1909,7 +1911,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       return;
     }
 
-    // Schedule the next poll at MANIFEST_BACKOFF_BASE (3000ms, ~half a typical 6s segment) for timely detection of new segments.
+    // Schedule the next poll at MANIFEST_BACKOFF_BASE for timely detection of new segments.
     lifecycle.manifestBackoffMs = MANIFEST_BACKOFF_BASE;
 
     schedulePoll(MANIFEST_BACKOFF_BASE);
@@ -2005,7 +2007,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
    * Fetches and optionally decrypts a segment. This is the shared core used by both video and audio fetch paths, for media segments and for the initialization
    * segments an fMP4 source references. It handles the HTTP fetch, AES-128 decryption with key caching, and IV derivation. A caller with no key URL gets a plain
    * fetch, since the decryption block below gates on the key and the sequence argument only feeds keyed-IV derivation. Error tracking is the caller's
-   * responsibility since video and audio have independent failure thresholds.
+   * responsibility since video and audio keep separate consecutive-failure counts against the shared MAX_SEGMENT_FAILURES threshold.
    *
    * @param url - The segment URL.
    * @param sequence - The media sequence number (for IV derivation).
@@ -2125,10 +2127,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
   /**
    * Generates playlists from the stored segments. For streams without separate audio, generates a single variant playlist. When preroll is active (muxed audio only),
-   * produces a composite playlist with fMP4 preroll entries and MPEG-TS real entries bridged by a DISCONTINUITY tag. The preroll entries use the same fMP4 segments
-   * served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio, generates the video variant playlist
-   * and the master playlist referencing video.m3u8 and audio.m3u8 (no preroll - preroll is muxed and can't be split into separate renditions); the audio variant
-   * playlist is produced separately by generateAudioPlaylist(), which the poll loop calls alongside this function.
+   * produces a composite playlist with fMP4 preroll entries and the relayed source's real entries (MPEG-TS or fMP4) bridged by a DISCONTINUITY tag. The preroll
+   * entries use the same fMP4 segments served during the standalone preroll phase, ensuring smooth MEDIA-SEQUENCE progression. For streams with separate audio,
+   * generates the video variant playlist and the master playlist referencing video.m3u8 and audio.m3u8 (no preroll - preroll is muxed and can't be split into
+   * separate renditions); the audio variant playlist is produced separately by generateAudioPlaylist(), which the poll loop calls alongside this function.
    *
    * @param targetDuration - The #EXT-X-TARGETDURATION value from the service's manifest.
    */
@@ -2147,9 +2149,10 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
 
       if((prerollSegmentCount > 0) && (stream.hls.prerollStartTime !== null) && stream.hls.prerollBaseUrl) {
 
-        // Composite playlist with fMP4 preroll entries + MPEG-TS real entries. The prerollStartTime check ensures we only include preroll entries when the deferred
-        // timer has fired and the client is actually watching preroll. Without this check, fast native streams (where real content arrives before the preroll delay)
-        // would include unnecessary preroll entries. The compositor handles the sliding window with the maxPrerollInWindow cap.
+        // Composite playlist with fMP4 preroll entries and the relayed source's real entries (MPEG-TS or fMP4). The prerollStartTime check ensures we only
+        // include preroll entries when the deferred timer has fired and the client is actually watching preroll. Without this check, fast native streams (where
+        // real content arrives before the preroll delay) would include unnecessary preroll entries. The compositor handles the sliding window with the
+        // preroll-in-window cap.
         updatePlaylist(streamId, buildCompositePlaylist({
 
           composite,
@@ -2173,7 +2176,7 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
       updateVideoPlaylist(streamId, buildVariantPlaylist(segmentEntries, video.metadata, "segment", targetDuration));
 
       // Estimate bandwidth from stored segment sizes and durations. Sum total bytes and total duration across video segments, then convert to bits per second.
-      // Falls back to 5 Mbps when no duration data is available (first segment before durations are populated).
+      // Falls back to 5 Mbps when the video window holds no segment with a usable duration yet, such as an audio advance arriving before the first video segment.
       let bandwidth = 5000000;
       let totalBytes = 0;
       let totalDuration = 0;
@@ -2263,8 +2266,9 @@ export function createNativeProxy(options: NativeProxyOptions): NativeProxy {
     })();
   }
 
-  // The proxy's teardown: flip the lifecycle flag the polling awaiter checks, and cancel the pending token-refresh timer. Defined as a const so it can be exposed
-  // both as stop() (the established domain verb) and as [Symbol.dispose] (the TC39 protocol), making the proxy a self-disposing node without duplicating the body.
+  // The proxy's teardown: flip the lifecycle flag the polling awaiter checks, cancel the proxy's open fetches, and cancel the pending token-refresh timer.
+  // Defined as a const so it can be exposed both as stop() (the established domain verb) and as [Symbol.dispose] (the TC39 protocol), making the proxy a
+  // self-disposing node without duplicating the body.
   const stop = (): void => {
 
     lifecycle.stopped = true;

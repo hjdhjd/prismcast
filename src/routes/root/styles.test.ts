@@ -26,8 +26,8 @@ describe("generateLandingPageStyles", () => {
 
   test("does not contain template-literal artifacts from missing values", () => {
 
-    // The generator builds with array.join, not template literals, so neither artifact should ever appear. Both are red flags for stringifying a missing
-    // import (e.g., interpolating an undefined OPTIONAL_COLUMNS field).
+    // The generator builds with array.join, not template literals, so neither artifact should ever appear. The first assertion matches only the literal text
+    // "${undefined}"...an undefined OPTIONAL_COLUMNS field joined into a rule renders as the bare word "undefined" and passes it.
     const css = generateLandingPageStyles();
 
     assert.doesNotMatch(css, /\$\{undefined\}/, "no ${undefined} interpolation");
@@ -36,7 +36,7 @@ describe("generateLandingPageStyles", () => {
 
   test("includes the header, header-status, and version-container rule blocks", () => {
 
-    // These three class groups establish the page-level chrome layout. Their absence would mean the header section was dropped during a refactor.
+    // These class groups establish the page-level chrome layout. Their absence would mean the header section was dropped during a refactor.
     const css = generateLandingPageStyles();
 
     assert.match(css, /\.header\s*\{/, "header rule");
@@ -47,7 +47,7 @@ describe("generateLandingPageStyles", () => {
   test("includes the wizard modal class hierarchy", () => {
 
     // Wizard modals share a documented shell architecture (.wizard-modal -> .wizard-modal-content -> .wizard-header etc.). The shell builder relies on these
-    // classes being styled. Locking the four core classes keeps a refactor from removing one and silently breaking modal layout.
+    // classes being styled. Locking the core shell classes keeps a refactor from removing one and silently breaking modal layout.
     const css = generateLandingPageStyles();
 
     assert.match(css, /\.wizard-modal\s*\{/);
@@ -84,7 +84,7 @@ describe("generateLandingPageStyles", () => {
 
   test("includes toast notification animations and variants", () => {
 
-    // Toasts have four type variants (success/error/warning/info) plus slide-in/out animations. All four variants should be present.
+    // Toasts have type variants (success, error, warning, info) plus slide-in/out animations. Every toast type variant should be present.
     const css = generateLandingPageStyles();
 
     assert.match(css, /\.toast\s*\{/);

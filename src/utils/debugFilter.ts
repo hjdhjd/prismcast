@@ -17,7 +17,8 @@
  *   PRISMCAST_DEBUG=*,-streaming:ffmpeg,-streaming:segmenter  Everything except FFmpeg and segmenter messages.
  */
 
-// Whether any debug output is configured at all. Fast-path check avoids category string work when debug is off.
+// Whether any filter pattern is configured at all, an exclude-only pattern that enables no category included. Fast-path check avoids category string work when
+// no pattern is configured.
 let anyEnabled = false;
 
 // Whether wildcard (*) was specified - all categories pass unless explicitly excluded.
@@ -174,8 +175,9 @@ export function isCategoryEnabled(category: string): boolean {
 }
 
 /**
- * Fast-path check for whether any debug categories are configured. When this returns false, callers can skip category string construction entirely.
- * @returns True if at least one debug category is enabled.
+ * Fast-path check for whether any filter pattern is configured. When this returns false, callers can skip category string construction entirely. An
+ * exclude-only pattern counts as configured even though it enables no category, so a true answer does not mean any category passes isCategoryEnabled().
+ * @returns True if any filter pattern is configured, including an exclude-only pattern.
  */
 export function isAnyDebugEnabled(): boolean {
 

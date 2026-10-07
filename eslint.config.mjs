@@ -12,14 +12,14 @@ import path from "node:path";
  *   file whose path matches src/types/<...>/*.helpers.ts or src/types/<...>/*.helpers.test.ts.
  *
  * - testing-helpers-barrel-only: enforces a single canonical import path for the cross-cutting testing helpers. Tests outside src/testing/ must import from
- *   the barrel (src/testing.helpers.ts), not from individual submodules. The submodules are implementation details; pinning callers to the barrel keeps a
+ *   the barrel (src/testing.helpers.ts), not from individual submodules. The submodules are implementation details; holding callers to the barrel keeps a
  *   single canonical entry point and lets the implementation evolve without rippling through the suite.
  *
  * - clock-port: time is read and timers are armed through the library's Clock port. A direct wall-clock read, a platform timer call, a platform timeout
  *   signal, a platform timer handle held as a type, or an import of node:timers/promises outside a page-context callback is a completeness gap, because it is
- *   a moment a test cannot drive and production cannot redirect. The page-callback exemption is decided by ancestry - a read inside the callback the three
- *   page methods take as their first argument, or the one evaluateWithAbort takes as its second, runs in the browser rather than in Node - and the
- *   client-script and helper files are exempt by path.
+ *   a moment a test cannot drive and production cannot redirect. The page-callback exemption is decided by ancestry - a read inside the callback each page
+ *   method takes as its first argument, or the one evaluateWithAbort takes as its second, runs in the browser rather than in Node - and the client-script
+ *   and helper files are exempt by path.
  *
  * - config-write-entry: the configuration is written only through config/index.ts, by saveConfiguration for the settings surface and writeProcessFields
  *   for the fields the process owns, so the file and the running configuration move together. Outside src/config/index.ts, an import or a
@@ -329,7 +329,7 @@ export const rules = {
 
         Program(node) {
 
-          // ESLint 9 exposes the filename via context.filename; older builds expose getFilename(). We support both because the project may pin different
+          // ESLint 9 exposes the filename via context.filename; older builds expose getFilename(). We support both because the project may lock different
           // ESLint majors over time.
           const filename = context.filename ?? (typeof context.getFilename === "function" ? context.getFilename() : "");
 
@@ -411,7 +411,7 @@ export default hbPluginUtils({
 
   /* Project-level ESLint overrides applied after the homebridge-plugin-utils base. The block scoped to the TypeScript sources under src and test defers
    * dot-notation to the TS-aware rule so it stops fighting the tsconfig's noPropertyAccessFromIndexSignature - bracket access on index-signature
-   * properties is required by tsc and must be allowed by ESLint. The block scoped to the test files relaxes two rules: describe and test from node:test
+   * properties is required by tsc and must be allowed by ESLint. The block scoped to the test files relaxes these rules: describe and test from node:test
    * return Promise<void> by design (no-floating-promises would fire on every test invocation), and tests own their preconditions and use `value!` when
    * reading out fixture-shaped data (no-non-null-assertion). The block scoped to the src types directory enforces the project-local helper-location rule
    * against everything under it. The block scoped to the src and test TypeScript sources, excluding the testing helpers' own implementation directory,

@@ -40,8 +40,9 @@ import { suppressPageAudio } from "../browser/video.ts";
 import { systemClock } from "homebridge-plugin-utils";
 import { triggerShowNameUpdate } from "./showInfo.ts";
 
-/* This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode uses MP4/AAC capture from puppeteer-stream, which is then
- * segmented natively without any external dependencies. The stream initialization flow has three phases:
+/* This module handles HLS (HTTP Live Streaming) output using fMP4 (fragmented MP4) segments. HLS mode captures Matroska (the effective capture codec plus Opus)
+ * from puppeteer-stream, which an FFmpeg child remuxes to fMP4 (transcoding the audio to AAC) before the fMP4 segmenter cuts it. The stream initialization flow
+ * has these phases:
  *
  * Phase 1 - Registration (synchronous, in the request handler):
  *   The client requests a playlist. If no stream exists and preroll is available, a pending registry entry is registered immediately with a deferred preroll timer.
@@ -49,13 +50,15 @@ import { triggerShowNameUpdate } from "./showInfo.ts";
  *   stream setup completes (fallback path).
  *
  * Phase 2 - Browser setup (async, fire-and-forget from the request handler):
- *   setupStream() creates the browser page, navigates to the URL, initializes playback, and starts capture. This produces the StreamSetupResult with the capture
- *   stream, page, profile, and monitor. The pending registry entry is filled in with these references.
+ *   setupStream() creates the browser page, emulates the capture surface, acquires the capture and its FFmpeg remux, then navigates to the URL and initializes
+ *   playback. This produces the StreamSetupResult with the capture session, page, profile, and monitor. The pending registry entry is filled in with these
+ *   references.
  *
  * Phase 3 - Streaming pipeline (async, after browser setup):
  *   If the service's manifest is interceptable, native HLS streaming is attempted via startNativeProxy(). If native is viable, the capture pipeline is stopped and
- *   the proxy takes over. Otherwise, createCaptureSegmenter() creates the fMP4 segmenter and pipes the capture stream. When the first real playlist arrives
- *   (from either the segmenter or native proxy), the preroll timer is cancelled and the client receives live content on the next poll.
+ *   the proxy takes over. Otherwise, createCaptureSegmenter() creates the fMP4 segmenter and attaches it to the capture session, which pipes the FFmpeg remux's
+ *   output into it. When the first real playlist arrives (from either the segmenter or native proxy), the preroll timer is cancelled and the client receives live
+ *   content on the next poll.
  *
  * Shared streams: If multiple clients request the same channel (or the same ad-hoc URL with the same profile, selector, clickToPlay, and clickSelector), they share
  * one stream. The first client triggers stream creation, and subsequent clients get the existing playlist and segments. Ad-hoc streams are identified by a
@@ -308,7 +311,7 @@ export async function ensureChannelStream(channelName: string, req: Request, res
 
   // Check for an existing stream first. This must happen before channel validation so that ad-hoc streams (registered under synthetic keys like "play-a1b2c3d4") can
   // be served by the standard HLS playlist handler without failing the "Channel not found" check. A stream in channelToStreamId was already validated when it was
-  // started, so no re-validation is needed. With pending stream registration, this always returns a real stream ID (never a sentinel).
+  // started, so no re-validation is needed. A registered entry, pending or set up, always carries a real stream ID.
   const streamId = getChannelStreamId(channelName);
 
   if(streamId !== undefined) {
@@ -405,7 +408,8 @@ export async function handleHLSPlaylist(req: Request, res: Response): Promise<vo
 
 /**
  * Handles HLS segment requests. Returns the requested segment from memory. Supports the fMP4 initialization segment (init.mp4), capture-mode media segments
- * (.m4s), native-mode video segments (.ts), and audio segments for streams with separate audio renditions.
+ * (.m4s), native-mode media segments (.ts for an MPEG-TS source, .m4s for an fMP4 one) and the named initialization segments an fMP4 relay serves, and audio
+ * segments for streams with separate audio renditions.
  *
  * Route: GET /hls/:name/:segment
  *
@@ -629,11 +633,11 @@ export async function handlePlayStream(req: Request, res: Response): Promise<voi
 // Response Helpers.
 
 /**
- * Sends the playlist for a stream. With the deferred preroll timer, the playlist may not be available immediately after stream registration - it arrives when either
- * the timer fires (seeding preroll) or the segmenter produces real content, whichever comes first. This function awaits the playlistReady promise to handle that
- * window. For the blocking fallback path (no FFmpeg / no preroll), the playlist is guaranteed to exist because initializeStream blocks until the segmenter produces
- * it. A stream whose setup failed answers with that failure's status, so the client learns the tune was refused; a stream terminated for any other reason, or a
- * wait that timed out, answers 404.
+ * Sends the playlist for a stream. On both paths the playlist may not exist yet when this runs. On the preroll path it arrives when either the deferred timer fires
+ * (seeding preroll) or the segmenter produces real content, whichever comes first. On the blocking fallback path (no FFmpeg / no preroll), setup returns once the
+ * segmenter is attached or the native proxy has started, so the playlist arrives when the segmenter or proxy produces its first one. This function awaits the
+ * playlistReady promise with a bounded wait that covers both windows and also a setup that hangs. A stream whose setup failed answers with that failure's status,
+ * so the client learns the tune was refused; a stream terminated for any other reason, or a wait that timed out, answers 404.
  * @param streamId - The numeric stream ID.
  * @param clientAddress - Client address for tracking.
  * @param res - Express response object.
@@ -642,8 +646,8 @@ async function sendPlaylistResponse(streamId: number, clientAddress: string, res
 
   let playlist = getPlaylist(streamId);
 
-  // The playlist may not be populated yet if the deferred preroll timer hasn't fired and the segmenter hasn't produced content. Wait for the playlistReady promise
-  // which resolves when either source provides a playlist. The bounded wait covers pathological cases like setup hanging.
+  // The playlist may not be populated yet on either path: the deferred preroll timer may not have fired, and the segmenter or native proxy may not have produced
+  // its first playlist. Wait for the playlistReady promise, which resolves when any source provides a playlist. The bound also covers a setup that hangs.
   if(!playlist) {
 
     /* The reference a failed setup's status is read through, taken before the wait rather than after it. A setup failure records its status on this entry and then
@@ -897,10 +901,11 @@ function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): voi
  * @param url - The URL to navigate to.
  * @param profile - The site profile for video handling.
  * @param metadataComment - Optional comment to embed in FFmpeg output metadata.
- * @param onCircuitBreak - Callback for circuit breaker trips during replacement.
+ * @param onCircuitBreak - The stream's circuit-breaker callback, which the replacement pipeline's FFmpeg error handler reaches only after the swap has committed.
  * @param deps - The injected establishment collaborators; defaults to defaultTabReplacementDeps. Threaded so a test drives the real handler - its phase tracking,
  *               its discard path, and the swap itself - against a substituted establishment rather than a live Chrome.
- * @returns A handler function that performs tab replacement, or null if the stream no longer exists.
+ * @returns A handler that performs the replacement and resolves to the new page and context, or to null when the stream is gone or the attempt was abandoned
+ *          before the swap.
  */
 export function createTabReplacementHandler(
   numericStreamId: number,
@@ -938,8 +943,8 @@ export function createTabReplacementHandler(
      *
      * The phase is local to a single attempt, moves at most once, and is never reset: the monitor's retry runs this function again and gets a fresh one. While
      * the attempt is pending, an FFmpeg fault belongs to a pipeline that is not the stream yet, so it must not reach the circuit breaker - the stream it would
-     * terminate is the one still running happily on the old page. Once the swap has committed, the new pipeline IS the stream and a fault is treated exactly as
-     * it always has been.
+     * terminate is the one still running happily on the old page. Once the swap has committed, the new pipeline IS the stream and a fault reaches the circuit
+     * breaker.
      */
     const attempt: { phase: "committed" | "failed" | "pending" } = { phase: "pending" };
 
@@ -1065,7 +1070,7 @@ interface InitializeStreamOptions {
 }
 
 /**
- * Initializes a new HLS stream. This is the blocking wrapper used by callers that need to wait for the full setup to complete (pretune, MPEG-TS, ad-hoc play).
+ * Initializes a new HLS stream. This is the blocking wrapper used by callers that must wait for setup to finish.
  * Registers a pending stream entry with the channel-to-stream mapping, then awaits the full async setup.
  *
  * For the non-blocking path used by HLS playlist requests, see registerPendingStream() + completeStreamSetup() called from ensureChannelStream().
@@ -1079,9 +1084,9 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
   const { channel, channelName, url } = options;
 
   // Reserve a capacity slot before registering the pending entry. This is the same single-source-of-truth gate used by the preroll path, applied here so the
-  // blocking callers (pretune, MPEG-TS, ad-hoc play) gate capacity at the registration site - while the new stream is still excluded from the count - rather than
+  // callers that must wait for setup to finish gate capacity at the registration site - while the new stream is still excluded from the count - rather than
   // relying on a downstream self-counting check that would double-count this stream against its own slot and spuriously reject the final slot. On failure we throw
-  // the same StreamSetupError(503) the callers already handle, so their error responses and HDHomeRun headers are unchanged.
+  // the same StreamSetupError(503) the callers already handle, so their error responses and HDHomeRun headers come from the same refusal.
   if(!reserveStreamSlot()) {
 
     throw new StreamSetupError(
@@ -1135,10 +1140,10 @@ interface RegisterPendingStreamOptions {
 }
 
 /**
- * Registers a pending stream entry in the registry with deferred preroll. This is the synchronous Phase 1 of the two-phase stream initialization used by the HLS
- * playlist handler. The pending entry has a real stream ID but no playlist yet - the response is held until either the preroll timer fires (after PREROLL_DELAY_MS)
- * or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture services) skip preroll entirely, while slow
- * streams (Xfinity/Cox at 13-15s) get preroll content after the delay.
+ * Registers a pending stream entry in the registry with deferred preroll. This is the synchronous Phase 1 (registration) of the stream initialization the module
+ * header describes, used by the HLS playlist handler. The pending entry has a real stream ID but no playlist yet - the response is held until either the preroll
+ * timer fires (after PREROLL_DELAY_MS) or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture
+ * services) skip preroll entirely, while slow streams (Xfinity/Cox at 13-15s) get preroll content after the delay.
  * @param options - The channel, its key, the client's address, the request, and the preroll codec.
  * @returns The registered pending entry, which carries the stream's ids and settings down to its setup.
  */
@@ -1448,8 +1453,8 @@ async function startNativeProxy(options: NativeProxyOptions): Promise<Nullable<N
 
   // Consume the persisted capture-mode resume data for this channel. Resume data seeds an fMP4 segmenter's starting sequence and init segment for capture continuity
   // across restarts; createCaptureSegmenter consumes it on the capture path. On this native-upgrade path that segmenter is never created, so without this delete the
-  // resume entry would linger until TTL and could be mis-applied to a later capture-mode stream for the same channel. Native streaming carries its own MPEG-TS
-  // sequencing, so the capture resume state is obsolete the moment we commit to native.
+  // resume entry would linger until TTL and could be mis-applied to a later capture-mode stream for the same channel. Native streaming carries its own segment
+  // sequencing (MPEG-TS or fMP4, per the source), so the capture resume state is obsolete the moment we commit to native.
   deleteResumeData(channelName);
 
   // Update the registry entry to reflect native mode. For streams with separate audio, clear preroll state - preroll is muxed video+audio and can't be
@@ -1488,8 +1493,8 @@ async function startNativeProxy(options: NativeProxyOptions): Promise<Nullable<N
   // Start the native proxy. Init readiness is conditional on the container. An MPEG-TS source carries its own PAT/PMT codec configuration in every segment and
   // has no separate init to wait for, so readiness is signaled here and MPEG-TS clients are released immediately rather than blocking on waitForInitSegment()
   // until it times out. An fMP4 source does have an init, and the store signals readiness when the video track's first one lands - video because the consumer
-  // waiting on this signal is the remux path, which resolves the video init. A null container reaches this only on a feed the DRM path abandoned, so it takes
-  // the immediate signal rather than deadlocking readiness on an init that will never arrive.
+  // waiting on this signal is the remux path, which resolves the video init. The coordinator never returns a successful result without a container, so the
+  // immediate signal here covers only an MPEG-TS source.
   nativeResult.proxy.start();
 
   if(nativeResult.container !== "fmp4") {
@@ -1666,13 +1671,13 @@ interface CompleteStreamSetupOptions extends InitializeStreamOptions {
 }
 
 /**
- * Completes the async portion of stream initialization. Creates the browser page, navigates to the URL, sets up capture, creates the segmenter, and fills in the
- * pending registry entry. If the pending entry was terminated during setup (e.g., idle timeout) before this function reaches it, it releases the now-orphaned
- * setup resources via setup.cleanup() and returns null. On a thrown error, it does not clean up the pending entry itself - callers reach handleSetupFailure(), which
- * terminates the pending entry via terminateStream().
+ * Completes the async portion of stream initialization. Creates the browser page, emulates the capture surface, acquires the capture and its FFmpeg remux, then
+ * navigates to the URL and initializes playback, creates the segmenter, and fills in the pending registry entry. If the pending entry was terminated during setup
+ * (e.g., idle timeout) before this function reaches it, it releases the now-orphaned setup resources via setup.cleanup() and returns null. On a thrown error, it
+ * does not clean up the pending entry itself - callers reach handleSetupFailure(), which terminates the pending entry via terminateStream().
  *
- * This is the Phase 2 of the two-phase stream initialization. For the non-blocking HLS path, it runs as fire-and-forget via `void`. For the blocking path
- * (initializeStream), it is awaited directly.
+ * This covers Phases 2 and 3 (browser setup and the streaming pipeline) of the stream initialization the module header describes. For the non-blocking HLS path,
+ * it runs as fire-and-forget via `void`. For the blocking path (initializeStream), it is awaited directly.
  *
  * @param options - Stream setup options including the pending entry.
  * @returns The stream ID on success, or null if the stream was terminated during setup.

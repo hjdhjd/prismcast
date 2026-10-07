@@ -2,7 +2,7 @@
  *
  * profile-management.test.ts: Integration coverage for the profile/domain HTTP route handlers in src/routes/config/services.ts. Phase 1's profiles.test.ts
  * drives mutateProfiles directly - this suite exercises the wire-level surface that the UI actually hits, end-to-end through Express. The route handlers are
- * the concentrated entry point for every user-facing profile and domain change; a 4afa8a0-equivalent regression in any of them (POST that wholesale-replaces
+ * the concentrated entry point for every user-facing profile and domain change; a save-drops-state regression in any of them (POST that wholesale-replaces
  * profile state instead of merging, DELETE that orphans domain mappings) would slip past Phase 1's per-mutator coverage entirely.
  *
  * What's asserted:
@@ -135,7 +135,7 @@ describe("POST /config/profiles - create and update", () => {
      * cleans up stale domain mappings for the targeted profile and merges the new profile entry into the existing profiles map. Both happen in-place inside the
      * mutateProfiles callback: the stale-mapping loop deletes domains whose `profile` field matches the key, then the per-key write `data.profiles[key] = profile`
      * adds or replaces just that one entry without disturbing any other. A regression that wholesale-replaced profile state - that re-emitted the profiles map
-     * without copying every untouched entry - is precisely the 4afa8a0 class for the profiles surface.
+     * without copying every untouched entry - is the save-drops-state class upgrade-preservation.test.ts guards, here on the profiles surface.
      *
      * We seed three profiles (a, b, c), capture the full profiles.json bytes, POST an edit to profile-b, and assert that profile-a's and profile-c's per-key
      * JSON projections (via stringifySorted-equivalent JSON.stringify with sorted keys) are byte-identical pre/post. We compare per-entry rather than full-file

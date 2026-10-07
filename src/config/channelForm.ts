@@ -56,8 +56,9 @@ export interface ChannelFormValues {
 }
 
 /* Scalar field list shared by channelMatches and computePredefinedDelta. Keeping these in one const ensures both functions iterate the same field set, so adding
- * a new scalar field to ChannelFormValues requires a single-line addition here and nothing else. The `satisfies` constraint validates every entry is a real key
- * on both ResolvedChannel (for reads via channelScalar) and ChannelDelta (for writes in computePredefinedDelta), so renaming or removing a field surfaces here at compile
+ * a string-valued scalar field to ChannelFormValues needs only a line here. A boolean or numeric field also needs its normalization case in channelScalar, and a
+ * write rule in computePredefinedDelta if it does not use the null-clearing idiom. The `satisfies` constraint validates every entry is a real key on both
+ * ResolvedChannel (for reads via channelScalar) and ChannelDelta (for writes in computePredefinedDelta), so renaming or removing a field surfaces here at compile
  * time rather than silently orphaning the iteration.
  */
 const FORM_SCALAR_FIELDS = [

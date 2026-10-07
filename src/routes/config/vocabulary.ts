@@ -27,7 +27,8 @@ interface ClassBadge<Variant extends BadgeVariant> {
 // promises cannot drift apart.
 export const NEXT_STREAM_SCOPE = "streams that start after the save";
 
-// When a restart-class setting's saved value takes effect. Every sentence that says so composes from it, so those promises cannot drift apart.
+// When a restart-class setting's saved value takes effect. The restart badge's title, the Backup panel's import note and the restart sentence below compose from
+// it, so those promises cannot drift apart. The manual-restart log line and message in scheduleServerRestart are worded on their own and do not read it.
 export const RESTART_TIMING = "after PrismCast restarts";
 
 // Each reactivity class's badge on a settings field. Keyed by the class union, so a class added later cannot compile until it decides its badge, and each
@@ -41,8 +42,8 @@ export const REACTIVITY_BADGES = {
   restart: { label: "Restart", title: "Takes effect " + RESTART_TIMING + ".", variant: "restart" }
 } as const satisfies { readonly [Class in ReactivityClass]: Nullable<ClassBadge<Extract<BadgeVariant, Class>>> };
 
-// The sentence that tells the user when the settings marked Restart take effect, composed from the restart badge's label and its timing phrase. Every message
-// that says so reads this one sentence.
+// The sentence that tells the user when the settings marked Restart take effect, composed from the restart badge's label and its timing phrase. The client
+// script's restart-cancelled notice and import confirmation read this one sentence.
 export const RESTART_SETTINGS_SENTENCE = "Settings marked " + REACTIVITY_BADGES.restart.label + " take effect " + RESTART_TIMING + ".";
 
 // The attribute a pending-marker slot carries, naming its setting's path. Both sides of the slot, the server that renders it and the script that fills it, read

@@ -12,7 +12,7 @@ import tseslint from "typescript-eslint";
 const rules = eslintRules as Record<string, Parameters<RuleTester["run"]>[1]>;
 
 /* The TypeScript parser is what lets a fixture carry a typed page callback; the plain-JS default parser the sibling rules use would reject the annotations. The
- * options mirror the project's own flat config's ecmaVersion and module shape.
+ * options mirror the module shape of the project's own flat config, whose base sets ecmaVersion "latest"; these rows fix it at 2024.
  */
 const ruleTester = new RuleTester({
 

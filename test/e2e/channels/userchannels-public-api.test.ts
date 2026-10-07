@@ -78,7 +78,8 @@ describe("isChannelAvailable", () => {
 
     assert.equal(isChannelAvailable("abc"), false);
 
-    /* Re-enable so the post-test state is clean (other tests share the predefined catalog).
+    /* Re-enable so the post-test state is clean. The disabled list lives in the process-global CONFIG.channels.disabledPredefined, which later tests in this
+     * process inherit because neither createIntegrationContext nor initializePersistence resets it.
      */
     await enablePredefinedChannels(["abc"]);
   });

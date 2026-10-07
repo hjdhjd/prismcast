@@ -22,7 +22,7 @@
  *   - For fetch-shape verification (POST bodies, URL paths, methods), override window.fetch with a spy before triggering the operation. Asserting on persisted
  *     state via the bootApp listener is also acceptable but couples the test to the server response shape - the spy is preferred when only the call shape matters.
  *   - When a test reveals a real bug, assert current (buggy) behavior with a FIX-PENDING comment showing exactly which assertion to flip post-fix.
- *     Do NOT fix the production script in this suite - fixes are a separate authorized arc.
+ *     Fix the production script in its own change, never in this suite.
  *
  * Auto-open guard: the channels.ts IIFE auto-opens the Setup Wizard when the setup-modal carries data-setup-completed='false', which is the default for a fresh
  * data directory. setupChannelsRuntime() flips the attribute to 'true' BEFORE running the scripts so the wizard does not show during normal tests. The dedicated
@@ -37,7 +37,9 @@ import { generateBadge } from "../../../src/routes/components.ts";
 /**
  * Shared bootstrap for the suite. Boots a DOM context, flips the setup-modal's data-setup-completed attribute to 'true' so the channels.ts IIFE does not auto-open
  * the Setup Wizard during normal tests, then runs both shared.ts (channels.ts depends on its window.* utilities) and channels.ts. Tests that need the auto-open
- * behavior should call createDomTestContext directly and skip this helper. Returns the context with both scripts loaded and the channels namespace populated.
+ * behavior pass leaveSetupIncomplete: true, which leaves the attribute at its rendered default. Returns the context with both scripts loaded and the channels
+ * namespace populated.
+ * @param options - The DOM context options, plus leaveSetupIncomplete, which skips the attribute flip so the Setup Wizard's auto-open path runs.
  */
 async function setupChannelsRuntime(options?: DomTestContextOptions & { readonly leaveSetupIncomplete?: boolean }): Promise<DisposableDomTestContext> {
 
@@ -211,7 +213,7 @@ describe("channels.ts: subtab initialization", () => {
   test("registers window.switchChannelsSubtab as a function during IIFE init", async () => {
 
     /* The first thing the channels.ts IIFE does is wire createSubtabSwitcher with the channels-specific config and assign it to window.switchChannelsSubtab so
-     * routing code (e.g., status.ts hash handling, config.ts cross-tab actions) can switch to a channels subtab from outside this script.
+     * the tab script's hashchange routing (generateTabScript in src/routes/ui.ts) can switch to a channels subtab from outside this script.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -220,8 +222,8 @@ describe("channels.ts: subtab initialization", () => {
 
   test("persists subtab selection under the channels-specific localStorage key when switchChannelsSubtab fires", async () => {
 
-    /* The factory's storageKey is the SSOT for the channels subtab's localStorage namespace. We seed a button + panel that the production switcher does not
-     * know about (so we don't disturb the page's existing subtab state), call the switcher, and assert localStorage carries the expected key/value pair.
+    /* The factory's storageKey is the SSOT for the channels subtab's localStorage namespace. We switch to a subtab the server-rendered page already carries
+     * and assert localStorage carries the expected key/value pair.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -568,7 +570,7 @@ describe("channels.ts: window.saveProfile", () => {
 
   test("switching strategy does not resurrect the previous strategy's stale rendered value", async () => {
 
-    /* Risk-4 guard: the channelSelection rebuild subtracts the CHOSEN strategy's rendered field ids from the base copy before applying current values, so a field
+    /* The channelSelection rebuild subtracts the CHOSEN strategy's rendered field ids from the base copy before applying current values, so a field
      * cleared after switching strategies cannot carry through from the base. Seed tileClick with a playSelector, switch to thumbnailRow, clear the carried-over
      * playSelector in the re-rendered step-2 form, and assert the saved channelSelection drops playSelector while keeping the new strategy and an unrendered sub-field.
      */
@@ -1235,8 +1237,8 @@ describe("channels.ts: window.createTag", () => {
 
   test("surfaces server validation errors via the inline error div without a toast", async () => {
 
-    /* The error display path: data.success === false -> the error message is written to #tag-manager-error and shown. No toast is emitted in this path (per the
-     * implementation; toasts are reserved for non-tag-manager surfaces).
+    /* The error display path: data.success === false -> the error message is written to #tag-manager-error and shown. createTag reports a server validation
+     * error inline instead of with a toast, while a success still shows a toast through applyTagResponse.
      */
     await using ctx = await setupChannelsRuntime();
 
@@ -1336,9 +1338,8 @@ describe("channels.ts: window.startTagRename", () => {
     installFetchSpy(ctx);
     ctx.evaluate("window.startTagRename(document.getElementById('trn-pill2'), 'old')");
 
-    /* We construct and dispatch a synthetic keydown to mirror how a real Escape press would arrive. This dispatch is a no-op against the handler under test:
-     * production assigns inp.onkeydown, and happy-dom does not invoke a .onkeydown property handler from dispatchEvent (it only fires addEventListener-registered
-     * listeners). The direct inp2.onkeydown({ key: 'Escape', ... }) invocation below is the actual trigger, as the following comment explains.
+    /* We construct and dispatch a synthetic keydown to mirror how a real Escape press arrives. Production assigns inp.onkeydown, and happy-dom's dispatchEvent
+     * reaches that property handler through the element's property-listener map, so this dispatch is the real Escape trigger and restores the pill.
      */
     ctx.evaluate(
       "const inp = document.querySelector('#trn-host2 input.tag-rename-input');" +
@@ -1346,8 +1347,8 @@ describe("channels.ts: window.startTagRename", () => {
       "inp.dispatchEvent(ev);"
     );
 
-    /* The onkeydown reads e.key without checking event-type lifecycle: production uses inp.onkeydown = (e) => { ... }. dispatchEvent('keydown') on the input
-     * does not fire the .onkeydown property by default in happy-dom (it fires addEventListener-registered handlers). Use the property assignment directly.
+    /* The direct onkeydown call only guards a DOM that ignores property handlers on dispatch. Under happy-dom the dispatch above has already restored the pill,
+     * so the query finds no rename input and the call is skipped.
      */
     ctx.evaluate(
       "const inp2 = document.querySelector('#trn-host2 input.tag-rename-input');" +
@@ -1438,8 +1439,8 @@ describe("channels.ts: window.applyTagColumnFilter", () => {
      */
     await using ctx = await setupChannelsRuntime();
 
-    /* Replace any production tag-filter-checkboxes the page may already render so we control the input set. Use a unique scope id so other tests don't bleed.
-     * The handler queries by class without a scope, so we strip the existing checkboxes first.
+    /* Replace any production tag-filter-checkboxes the page may already render so we control the input set. The handler queries by class without a scope, so
+     * we strip the existing checkboxes first.
      */
     ctx.evaluate("document.querySelectorAll('.tag-filter-checkbox').forEach((el) => el.remove());");
     ctx.evaluate(
@@ -1699,7 +1700,7 @@ describe("channels.ts: setup wizard handlers", () => {
 
   test("finishSetup POSTs /config/channels/setup-completed, closes the wizard, and applies the returned patch via channelTable", async () => {
 
-    /* The finish path: POST setup-completed, receive a counts-only patch, apply it via channelTable.applyPatch, then close the wizard. The total-count element
+    /* The finish path: POST setup-completed, close the wizard, then apply the returned counts-only patch via channelTable.applyPatch. The total-count element
      * already exists on the page (it's part of the channel-table summary). We override fetch to return a patch with a known total and witness the application
      * via the rendered count text.
      */
@@ -1727,8 +1728,9 @@ describe("channels.ts: window.applyTagResponse", () => {
   test("updates the tag-manager-modal-content innerHTML and the tag-filter-menu innerHTML, then applies the patch", async () => {
 
     /* applyTagResponse is the cross-script helper used by both channels.ts (createTag, deleteTag, restoreTag, startTagRename) and config.ts (bulkToggleTag). It
-     * has three side effects: (1) modalBody -> #tag-manager-modal-content innerHTML, (2) filterContent -> #tag-filter-menu innerHTML, (3) patch ->
-     * channelTable.applyPatch. We assert all three.
+     * has these side effects: modalBody -> #tag-manager-modal-content innerHTML; filterContent -> #tag-filter-menu innerHTML, followed by a re-run of
+     * applyTagColumnFilter; patch -> channelTable.applyPatch; and a toast carrying the server's message or the caller's fallback. We assert the modal body, the
+     * filter menu, the patch and the toast.
      */
     await using ctx = await setupChannelsRuntime();
 

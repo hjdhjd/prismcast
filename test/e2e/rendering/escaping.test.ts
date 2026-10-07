@@ -33,10 +33,10 @@ describe("HTML escaping guarantees - table renderer", () => {
 
   test("a channel name with HTML special characters renders with every dangerous char escaped in the display row", async () => {
 
-    /* The renderer at table.ts:927 wraps channel.name in a <span class="channel-name-cell">...</span> after passing it through escapeHtml. With DANGEROUS_NAME
-     * as the channel name, the rendered HTML must contain the entity-encoded form (&lt;, &gt;, &amp;, &quot;, &#39;) and must NOT contain the raw < or > or
-     * unescaped " inside any attribute value position - the four canonical XSS vectors that escapeHtml exists to neutralize. A regression that bypasses the
-     * escape (e.g., a refactor that switches to a template literal for one of the cell builders) corrupts every row that surfaces user content.
+    /* The display-row builder in generateChannelRowHtml wraps channel.name in a <span class="channel-name-cell">...</span> after passing it through escapeHtml.
+     * With DANGEROUS_NAME as the channel name, the rendered HTML must contain the entity-encoded form (&lt;, &gt;, &amp;, &quot;, &#39;) and must NOT contain
+     * the raw < or > or unescaped " inside any attribute value position - the canonical XSS vectors that escapeHtml exists to neutralize. A regression that
+     * bypasses the escape (e.g., a refactor that switches to a template literal for one of the cell builders) corrupts every row that surfaces user content.
      */
     await using ctx = await createIntegrationContext();
 
@@ -64,7 +64,7 @@ describe("HTML escaping guarantees - table renderer", () => {
 
   test("a channel URL with quote and ampersand characters renders with the URL safely escaped in the edit row value attribute", async () => {
 
-    /* The edit row contains the channel URL inside an <input value="..."> attribute (table.ts:1180 -> generateTextField -> table.ts:131). A URL like
+    /* The edit row contains the channel URL inside an <input value="..."> attribute (the edit-row builder in generateChannelRowHtml -> generateTextField). A URL like
      * "https://example.test/path?a=1&b=2&c=\"3\"" carries both the ampersand (URL parameter separator) and the quote (a pathological but legal URL component
      * via percent-encoding upstream of us). The renderer must escape both so the attribute value is well-formed HTML. A regression here breaks the edit form's
      * field value (the input would render with an empty or truncated value) and is the kind of bug that only surfaces when a user happens to use unusual URLs.
@@ -108,9 +108,9 @@ describe("HTML escaping guarantees - table renderer", () => {
 
     const dangerousTag = "news <important> & \"hot\"";
 
-    // setTagRegistry routes through mutateChannels with a TagRegistry shape (deletedTags + tags) and triggers the post-write cache hydration that
-    // getActiveTagVocabulary - which the renderer calls - depends on. Mutating data.tagRegistry directly would skip the cache update path and produce a stale
-    // read; the tag vocabulary functions read from the module-level cache, not from the freshly-written file. Going through the public mutator is the rule.
+    // setTagRegistry is the public setter for the TagRegistry shape (deletedTags + tags): it sorts the registry before writing it through mutateChannels, whose
+    // post-write refresh updates the module-level cache that getActiveTagVocabulary - which the renderer calls - reads. Going through the public setter is the
+    // rule.
     await setTagRegistry({ deletedTags: [], tags: [dangerousTag] });
 
     const body = generateTagManagerBody();
@@ -120,7 +120,7 @@ describe("HTML escaping guarantees - table renderer", () => {
     assert.match(body, /class="badge badge-tag tag-editable"[^>]*>news &lt;important&gt; &amp; &quot;hot&quot;</,
       "the visible badge label must contain entity-encoded special characters");
 
-    // Negative: the literal unescaped tag must not appear anywhere - that would mean at least one of the four positions skipped escaping.
+    // Negative: the literal unescaped tag must not appear anywhere - that would mean at least one position the tag name is emitted in skipped escaping.
     assert.equal(body.includes(dangerousTag), false, "the raw unescaped tag string must not appear anywhere in the tag manager body");
   });
 });
@@ -130,10 +130,10 @@ describe("M3U escaping guarantees - playlist endpoint", () => {
   test("the M3U tvg-name attribute backslash-escapes embedded double-quote characters so the attribute terminates correctly", async () => {
 
     /* The M3U generator at src/routes/playlist.ts wraps every user-controlled attribute value in escapeM3uAttribute (src/utils/m3u.ts), which backslash-escapes
-     * the structural characters of an RFC 8216 quoted-string (the value-terminating `"` and the escape character `\`) and collapses forbidden CR/LF into a
-     * single space. A channel whose display name contains a literal double-quote (e.g., `ESPN "The Ocho"`) must emit `tvg-name="ESPN \"The Ocho\""` so the
-     * attribute terminates at the closing quote rather than at the embedded one - a regression that drops the escape recurs the original bug where downstream
-     * parsers (Channels DVR included) see a corrupted EXTINF line.
+     * the value-terminating `"` and the escape character `\` under the de facto extended-M3U convention (RFC 8216 itself forbids the quote and defines no
+     * escape) and collapses forbidden CR/LF into a single space. A channel whose display name contains a literal double-quote (e.g., `ESPN "The Ocho"`) must
+     * emit `tvg-name="ESPN \"The Ocho\""` so the attribute terminates at the closing quote rather than at the embedded one - a regression that drops the escape
+     * lets downstream parsers (Channels DVR included) see a corrupted EXTINF line.
      *
      * We compute the expected substring by calling escapeM3uAttribute directly on the seed name, so the test and the helper share a single source of truth.
      * If the helper's escape strategy ever changes (different sequence, percent-encoding, validation-time stripping), the test continues to assert the end-to-end
@@ -171,8 +171,9 @@ describe("M3U escaping guarantees - playlist endpoint", () => {
     // regression that re-introduces raw quoting even if the helper output happens to coincide with another substring.
     assert.doesNotMatch(extinfLine, /tvg-name="ESPN "The Ocho""/, "tvg-name attribute must not contain the raw unescaped name");
 
-    // Structural shape: the tvg-name attribute as a whole must be a valid RFC-8216-style quoted-string with backslash-escapes. The pattern matches the opening
-    // quote, then any sequence of escaped characters or non-quote characters, then the closing quote.
+    // Structural shape: the tvg-name attribute as a whole must be a well-formed quoted attribute under the extended-M3U backslash-escape convention (RFC 8216
+    // itself forbids the quote and defines no escape). The pattern matches the opening quote, then any sequence of escaped characters or non-quote characters,
+    // then the closing quote.
     assert.match(extinfLine, /tvg-name="(\\.|[^"])*"/, "tvg-name attribute must be a well-formed quoted-string with backslash-escapes");
   });
 });

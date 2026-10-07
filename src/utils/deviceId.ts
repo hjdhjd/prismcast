@@ -25,7 +25,7 @@ const DEVICEID_LOOKUP = [
 /**
  * Computes the DeviceID checksum matching libhdhomerun's hdhomerun_discover_validate_device_id. Even-positioned nibbles (0, 2, 4, 6) go through the lookup
  * table; odd-positioned nibbles (1, 3, 5, 7) are XORed directly. A valid DeviceID produces a checksum of zero.
- * @param nibbles - Array of 8 nibble values (0-15), most significant first.
+ * @param nibbles - Nibble values (0-15), most significant first. Any prefix is XORed by position; zero means valid only for a full 8-nibble ID.
  * @returns The checksum value. Zero indicates a valid DeviceID.
  */
 function computeChecksum(nibbles: number[]): number {
@@ -75,8 +75,7 @@ export function generateDeviceId(): string {
   const prefixBytes = crypto.randomBytes(3);
   const prefix = prefixBytes.toString("hex");
 
-  // Parse the prefix into nibbles and compute the partial checksum for the first 6 nibbles (positions 0-5). We compute this directly rather than padding to 8 and
-  // using computeChecksum(), because padding with zeros would include LOOKUP[0] for position 6 and skew the result.
+  // Parse the prefix into nibbles and compute the partial checksum for the first 6 nibbles (positions 0-5).
   const nibbles = Array.from(prefix, (ch) => parseInt(ch, 16));
 
   let partialChecksum = 0;

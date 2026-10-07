@@ -227,7 +227,7 @@ describe("fMP4 segmenter per-track offset application", () => {
   let streamId: number;
 
   // A nonzero offset basis for both tracks. Each initial value is chosen to differ from that track's moof tfdt so the finalized offset is nonzero: an absent or
-  // zero audio offset would keep the corrective rewrite from firing, and the mixed-moof assertion would pass vacuously even against the unfixed double-application code.
+  // zero audio offset would keep the corrective rewrite from firing, and the mixed-moof assertion would pass vacuously against a double-applying rewrite.
   const initialTrackTimestamps = new Map<number, bigint>([ [ 1, 90000n ], [ 2, 48000n ] ]);
 
   beforeEach(() => {
@@ -243,8 +243,8 @@ describe("fMP4 segmenter per-track offset application", () => {
   test("applies each track's offset exactly once in a moof mixing an already-initialized track with a newly initializing one", async () => {
 
     // Track 1 (video) is initialized on a video-only first moof (offset 90000 - 1000 = 89000). The second moof adds track 2 (audio, offset 48000 - 500 = 47500) while
-    // still carrying track 1. The corrective rewrite must offset only the newly initialized audio track, leaving the video track's single application intact. Against
-    // the unfixed full-map rewrite the video tfdt would be offset twice (3000 + 89000 + 89000 = 181000); the fix scopes the rewrite so it is offset once (92000).
+    // still carrying track 1. The corrective rewrite must offset only the newly initialized audio track, leaving the video track's single application intact. A
+    // rewrite that re-applied the full offset map would offset the video tfdt twice (3000 + 89000 + 89000 = 181000); the scoped rewrite offsets it once (92000).
     const onError = mock.fn();
     const onStop = mock.fn();
     const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
@@ -280,9 +280,9 @@ describe("fMP4 segmenter per-track offset application", () => {
 
   test("applies each track's offset exactly once when both tracks first appear together in the first moof (cold-tune parity)", async () => {
 
-    // The common cold-tune shape: Chrome declares both tracks and the first moof carries both. All tracks are new, so the first call is a pure pass-through and the
-    // corrective rewrite offsets both exactly once. This path is byte-identical between the scoped and unscoped rewrite - the assertion guards against a regression on
-    // it.
+    // The common cold-tune shape: the first moof carries both tracks. This fixture's moov declares none (see makeMoov), so each offset comes from its initial value.
+    // All tracks are new, so the first call is a pure pass-through and the corrective rewrite offsets both exactly once. Every track is finalized by this first moof,
+    // so the rewrite covers both, and the assertion guards this common path against a regression.
     const onError = mock.fn();
     const onStop = mock.fn();
     const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });

@@ -137,7 +137,7 @@ function makeDivergentDeps(clock: TestClock): MonitorDeps {
 }
 
 // The mark a browser carries once it can no longer start a capture, and the deps object that reports it. Every replacement decision consults that read, so a
-// frozen mark is what puts a row on a browser where no replacement can start. The codec answers match DIVERGENT_DEPS, so the mark is the only thing that differs
+// frozen mark is what puts a row on a browser where no replacement can start. The codec answers match makeDivergentDeps, so the mark is the only thing that differs
 // from the deps every other row starts from.
 const MARK: CaptureImpairment = { reason: "Could not start video source", since: 0 };
 
@@ -984,7 +984,7 @@ describe("executeNativeL3Fallback: the relay is released on exactly the exits th
   test("a stall inside the grace window holds the fallback at the ladder and enters nothing", async (t) => {
 
     /* The staleness ladder's own window read, which is the same discipline the fast path below applies to a dead relay. A stall persists tick after tick, so a
-     * ladder that escalated on every one of them would run the whole cycle - the pre-flip, the attempt, the revert, the window sync, the warning - twice a second
+     * ladder that escalated on every one of them would run the whole cycle - the pre-flip, the attempt, the revert, the window sync, the warning - on every tick
      * inside a window every other trigger is respecting. The sync count is the instrument, because it advances once per cycle that actually entered the fallback,
      * and the debug breadcrumb is what says the tick was seen and held rather than never reaching the decision at all.
      */
@@ -1040,7 +1040,7 @@ describe("executeNativeL3Fallback: the relay is released on exactly the exits th
 
     /* The fast path above the fallback reads the window itself rather than leaving it to the replacement primitive, because a relay that stopped itself stays
      * stopped: the condition holds on every tick from then on. Without the read here the whole cycle - the mode pre-flip, the attempt, the revert, the window
-     * sync - would run twice a second inside a window every other trigger is respecting. The sync count is the instrument, because it advances once per cycle
+     * sync - would run on every tick inside a window every other trigger is respecting. The sync count is the instrument, because it advances once per cycle
      * that actually entered the fallback.
      */
     const clock = new TestClock();

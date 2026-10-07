@@ -130,9 +130,8 @@ describe("startHdhrServer - disabled", () => {
     CONFIG.hdhr.port = 0;
     CONFIG.hdhr.deviceId = generateDeviceId();
 
-    // The function returns void in either path; we observe the no-server effect by attempting a probe and confirming the connection is refused. Since we set
-    // port to 0 (which is an invalid client target anyway), the simpler observation is that startHdhrServer resolves without throwing and stopHdhrServer is a
-    // no-op that doesn't crash.
+    // With emulation disabled, startHdhrServer returns without starting a server. It returns void in either path, so the row asserts that it resolves without
+    // throwing and that stopHdhrServer afterward is a safe no-op.
     await startHdhrServer();
 
     // stopHdhrServer must be a safe no-op when no server was started.
@@ -250,8 +249,9 @@ describe("startHdhrServer - port collision", () => {
 
   test("handles EADDRINUSE gracefully without throwing or starting a server", async () => {
 
-    // We claim a real port first so app.listen on the same port produces EADDRINUSE. The handler is supposed to swallow the error and log a warning rather than
-    // propagate it.
+    // We claim a real port first and point the HDHR server at it. The blocker listens on the helper's default 127.0.0.1 while the HDHR server binds
+    // CONFIG.server.host, and the helper's own comment notes that those two listeners can coexist, so the start may bind rather than hit EADDRINUSE. The row
+    // asserts only that startHdhrServer does not reject either way - on EADDRINUSE the handler swallows the error and logs a warning rather than propagating it.
     const reserved = await listenOnEphemeral();
 
     blocker = reserved.server;
@@ -261,7 +261,7 @@ describe("startHdhrServer - port collision", () => {
 
     await assert.doesNotReject(() => startHdhrServer(), "EADDRINUSE must be caught, not propagated");
 
-    // After the failed start, stopHdhrServer must still be safe to call (the server reference should be null).
+    // Whether the start failed or bound, stopHdhrServer must still be safe to call.
     await assert.doesNotReject(stopHdhrServer);
   });
 });

@@ -345,8 +345,8 @@ describe("LOG.withStreamId bound logger", () => {
 describe("LOG sentence normalization (info / warn / error)", () => {
 
   /* The logger guarantees that every non-debug sentence ends with exactly one terminator, and a trailing context object follows that terminator rather than
-   * taking one of its own. This suite asserts each branch of the normalizer so a future regression in the helper (or a removal of the call from logWithLevel)
-   * surfaces immediately. Debug intentionally bypasses the normalizer and is covered separately.
+   * taking one of its own. This suite asserts every branch of the normalizer that a non-empty message reaches, so a future regression in the helper (or a
+   * removal of the call from logWithLevel) surfaces immediately. Debug bypasses the normalizer, and the rows asserting that bypass sit in this suite too.
    */
   let captured: LogEntry[];
   let unsubscribe: () => void;
@@ -440,7 +440,7 @@ describe("LOG sentence normalization (info / warn / error)", () => {
 
   test("works with %s interpolation: format-string period + value period collapses to one", () => {
 
-    // The original regression: format string ends with "." and value also ends with "." - the assembled message would be ".." without the normalizer.
+    // A format string ending in a period plus a value ending in a period would assemble ".." - the normalizer collapses it to one.
     LOG.info("startup failed: %s", "Invalid URL.");
 
     assert.equal(captured[0]?.message, "startup failed: Invalid URL.");

@@ -184,9 +184,9 @@ describe("saveConfiguration - overlapping saves on the store's one queue", () =>
   });
 });
 
-/* One row per loss path the configuration layer's operations close (the design note's section "Wave 3 design"). Each starts its writes the way the path needs
- * them and asserts that the file and CONFIG hold every written value once the writes settle. The fifth path, the HDHomeRun handler's own device-id write, has
- * no row, because no handler writes the store.
+/* One row per way a write could be lost beside a save, each a path the configuration layer's operations close. Each starts its writes the way the path needs
+ * them and asserts that the file and CONFIG hold every written value once the writes settle. The HDHomeRun handler's own DeviceID write needs no row, because no
+ * handler writes the store.
  */
 describe("the loss paths - every write lands in the file and in CONFIG", () => {
 

@@ -62,12 +62,13 @@ function sendDiscoveryError(res: Response, label: string, error: unknown): void 
   sendError(res, 500, { error: "Channel discovery failed: " + message + "." });
 }
 
-/* ServiceDiscoveryDeps is the cross-module collaborator set the discovery route composes on: the provider-registry lookup that resolves a slug to its module, plus
- * the two precaching primitives the discovery walk delegates to - the guarded guide-page session and the discovery-outcome policy. It is injected as a default
- * parameter threaded from setupServicesEndpoint through the route handler into runDiscovery, so a test can substitute stubs at the same injection point - no loader mock
- * - while production uses the real defaultServiceDiscoveryDeps built from the functions this module already imports. getProviderBySlug earns its place here because the
- * provider registry is module-private with no registration hook, so injecting the lookup is the only way a test drives the route with a stub provider. This is the
- * collaborator-injection form of the library's Clock port, matching VideoTuneDeps in browser/video.ts and PrecachingDeps in browser/precaching.ts.
+/* ServiceDiscoveryDeps is the cross-module collaborator set the discovery route composes on: the provider-registry lookup that resolves a slug to its module, the
+ * precaching primitives the discovery walk delegates to - the guarded guide-page session and the discovery-outcome policy - and the collaborators that policy
+ * itself composes on. It is injected as a default parameter threaded from setupServicesEndpoint through the route handler into runDiscovery, so a test can
+ * substitute stubs at the same injection point - no loader mock - while production uses the real defaultServiceDiscoveryDeps built from the functions this module
+ * already imports. getProviderBySlug earns its place here because the provider registry is module-private with no registration hook, so injecting the lookup is
+ * the only way a test drives the route with a stub provider. This is the collaborator-injection form of the library's Clock port, matching VideoTuneDeps in
+ * browser/video.ts and PrecachingDeps in browser/precaching.ts.
  */
 export interface ServiceDiscoveryDeps {
 
@@ -171,7 +172,8 @@ interface LineupState {
 
 /**
  * Annotated discovery result that extends DiscoveredChannel with optional lineup state. When a discovered channel matches an existing channel in the user's
- * lineup (by canonical key), the lineup field provides the current service state. When absent, the channel is new (not in the lineup).
+ * lineup (by channelSelector, or by display name as a fallback, as annotateWithLineupState resolves it), the lineup field provides the current service state.
+ * When absent, the channel is new (not in the lineup).
  */
 interface AnnotatedChannel extends DiscoveredChannel {
 
@@ -266,7 +268,8 @@ function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: str
       }
     }
 
-    // Also match the canonical itself if its service tag matches (single-service channels or canonicals that point directly to this service).
+    // Also match the channel's active entry - the canonical, or the variant its selection or the filter fallback resolves to - when its service tag is the
+    // browsed one. This is how a stored :predefined selection, which the variant loop skips, still annotates the predefined service's lineup.
     if((currentTag === serviceSlug) && entry.channel.channelSelector) {
 
       indexState(entry.channel.channelSelector, state);

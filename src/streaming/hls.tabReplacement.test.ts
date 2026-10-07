@@ -223,9 +223,9 @@ describe("createTabReplacementHandler: the replacement builds before it tears do
 
   test("an establishment that fails leaves the existing capture running and the stream alive", async () => {
 
-    /* The acceptance behaviour, and the row that would have saved the two recordings lost to a browser that refused new capture starts. A handler that disposed
-     * first would satisfy the return value and the log line just as well, so the assertions that carry the weight are the two counts: the outgoing pipeline was
-     * never disposed and the outgoing page was never closed.
+    /* The acceptance behaviour. A handler that disposed first would lose the recording whenever establishment fails, yet it would satisfy the return value and
+     * the log line just as well, so the assertions that carry the weight are the counts: the outgoing pipeline was never disposed and the outgoing page was
+     * never closed.
      */
     const handler = makeHandler(async (): Promise<CreatePageWithCaptureResult> => { throw new Error("Chrome refused to start the capture."); });
 
@@ -340,8 +340,9 @@ describe("createTabReplacementHandler: the replacement builds before it tears do
 
   test("a second attempt after a failed one re-reads continuity from the still-live outgoing segmenter", async () => {
 
-    /* The retry semantics the monitor depends on. Because the first attempt disposed nothing, the second reads a segmenter that has gone on producing - so the
-     * two attempts must seed different values. A handler that hoisted the continuity read into a closure would seed both attempts identically.
+    /* The retry semantics the monitor depends on. Because the first attempt disposed nothing, the outgoing segmenter goes on producing, so the successful second
+     * attempt must seed from where that still-live segmenter has reached. A handler that hoisted the continuity read into a closure would seed the stale earlier
+     * index instead.
      */
     const establishment = makeEstablishment();
     let attempts = 0;
@@ -433,7 +434,7 @@ describe("createTabReplacementHandler: the replacement's own FFmpeg faults are r
   test("a fault after the swap reaches the circuit breaker exactly once", async () => {
 
     // The other polarity, and the reason the phase is a tri-state rather than a suppression flag: once the swap has committed, the new pipeline IS the stream, so
-    // a fault on it is a real stream failure and must escalate exactly as it always has.
+    // a fault on it is a real stream failure and must reach the circuit breaker exactly once.
     let breaks = 0;
     let raise: Nullable<(error: Error) => void> = null;
 

@@ -19,9 +19,11 @@ import { writeProcessFields } from "./index.ts";
  * variant entries, the browse modal sets it on user variant entries, and the schema-version migration stamps it on entries that lack it. buildServiceGroups
  * scans all channels once and groups by canonicalKey. One field, one mechanism, one code path.
  *
- * User overrides: When a user defines a channel with the same key as a predefined channel, both versions appear in the service dropdown. The user's custom version
- * is shown first (labeled "Custom") and is the default. The original predefined version uses a special key suffix (PREDEFINED_SUFFIX) to distinguish it from the
- * user's version. This allows users to switch between their custom definition and the original at any time.
+ * User overrides: When a user defines a channel with the same key as a predefined channel, the override's URL domain decides what the service dropdown shows. A
+ * same-domain property override (its URL on the predefined channel's domain or one of its variants') keeps the service's own label and gets no :predefined
+ * entry, and a single-service channel overridden this way gets no service group at all. An override on a foreign domain is shown first, labeled "Custom
+ * (domain)", and is the default; the original predefined version follows under a special key suffix (PREDEFINED_SUFFIX) that distinguishes it from the user's
+ * version, so the user can switch between their custom definition and the original at any time.
  *
  * User selections are stored in channels.json (in the data directory) under the `serviceSelections` key and persist across restarts.
  */
@@ -190,8 +192,8 @@ export function getChannelServiceTags(canonicalKey: string): string[] {
 }
 
 /**
- * Scans all service groups and collects unique service tags with display names. Display names are derived from the service field in DOMAIN_CONFIG entries that
- * have a serviceTag.
+ * Collects the unique service tags of every channel (the resolved channels plus the predefined ones) and of every user domain mapping, with display names. A
+ * tag's display name comes from the builtin DOMAIN_CONFIG first, then from the user domain mappings, and "direct" is labeled Channel Website.
  * @returns Array of { displayName, domain, iconUrl, tag } objects sorted alphabetically by display name, with "direct" always first.
  */
 export function getAllServiceTags(): { displayName: string; domain?: string; iconUrl?: string; tag: string }[] {
@@ -404,8 +406,9 @@ export function isChannelAvailableByService(canonicalKey: string): boolean {
 }
 
 /**
- * Checks if a channel in the merged map is a user override of a predefined channel. This uses object reference comparison - getAllChannels() spreads
- * PREDEFINED_CHANNELS directly into the result, so if the reference differs, a user channel has replaced the predefined one.
+ * Checks if a channel in the merged map is a user override of a predefined channel. This uses object reference comparison: the merged map that
+ * getMergedChannelMap() builds holds the PREDEFINED_CHANNELS entry itself for an unoverridden canonical, and overlayDelta() produces a new object for an
+ * override, so a reference that differs means a user entry replaced the predefined one.
  * @param key - The channel key to check.
  * @param channels - The merged channel map.
  * @returns True if the channel is a user override of a predefined channel.
@@ -422,8 +425,9 @@ function isUserOverride(key: string, channels: ChannelMap): boolean {
  * Builds service groups by scanning all channels and grouping by canonicalKey. The flattener sets canonicalKey on predefined variants, the browse modal sets it
  * on user variants, and the schema-version migration stamps it on entries that lack it. One field, one mechanism, one pass.
  *
- * User overrides of predefined channels (same key, different object reference) produce a two-entry group with "Custom" and the original predefined version,
- * even for single-service channels that don't have canonicalKey-based variants.
+ * User overrides of predefined channels (same key, different object reference) split by URL domain. A same-domain property override keeps the service's own
+ * label and gets no :predefined entry, and for a single-service channel with no canonicalKey-based variants it gets no group at all. An override on a foreign
+ * domain gets a "Custom (domain)" entry plus the :predefined path back to the original service, forming a two-entry group even for a single-service channel.
  *
  * After grouping, every stored service selection is validated against the rebuilt variant structure. Selections that no longer correspond to a real variant are
  * reverted to the canonical default. This is the single resolution boundary for stale selections; read-side resolvers stay pure.
@@ -814,7 +818,8 @@ export function setServiceSelections(selections: Record<string, string>): void {
 }
 
 /**
- * Gets all service selections from the in-memory cache. Cache is hydrated from disk on every successful mutate, so this is always consistent with the file.
+ * Gets all service selections from the in-memory cache. The cache is hydrated from the written data on every successful mutate, and buildServiceGroups may
+ * then revert stale selections in the cache ahead of the file. Startup persists that cleanup.
  * @returns Copy of the service selections object.
  */
 export function getServiceSelections(): Record<string, string> {
@@ -927,9 +932,10 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 }
 
 /**
- * Gets a channel with inheritance applied. Variant inheritance is resolved at load time by resolveStoredChannel in userChannels.ts - entries in channelsRef
- * are already fully merged with their canonical (variant values win when set, canonical fills in the rest). This function is a thin accessor that also
- * handles the synthetic :predefined suffix used when a user overrides a canonical but the service dropdown references the original predefined variant.
+ * Gets a channel with inheritance applied. Variant inheritance is resolved at load time by getMergedChannelMap in userChannels.ts (through resolveVariant) -
+ * entries in channelsRef are already fully merged with their canonical (variant values win when set, canonical fills in the rest). This function is a thin
+ * accessor that also handles the synthetic :predefined suffix used when a user overrides a canonical but the service dropdown references the original
+ * predefined variant.
  * @param key - The channel key (canonical, variant, or :predefined suffix).
  * @returns The complete channel, or undefined if the channel doesn't exist.
  */

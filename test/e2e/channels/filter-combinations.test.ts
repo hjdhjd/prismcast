@@ -13,10 +13,7 @@
  * Each test seeds a non-default value on each axis it cares about (via mutateEnabledServices / mutateChannelDisplayPrefs), renders the panel, and asserts
  * structural reflection of the dimension. The "preservation" tests mutate one axis after another and assert the previously-set axis is unchanged at render time.
  *
- * Channels DVR fixture: abcnews has variants {cox, directv, hulu, sling, xfinity, yttv} and no `site`/`direct` tag, so the service filter is the only thing
- * that determines whether it appears in getVisibleChannels - the canonical fixture for these filter-scoping tests. amcthrillers has only {sling, yttv} so it
- * falls out of getVisibleChannels under enabledServices=["hulu"].
- * abc has a `direct` tag (always enabled) so it survives any narrow service filter. The fixture is a real predefined channel set; no user channels are seeded.
+ * The fixtures are the Hulu service filter chip and the predefined channel catalog the panel renders; no user channels are seeded.
  */
 import { bootApp, createIntegrationContext, initializePersistence } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -32,8 +29,8 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
     /* The combinatorial baseline. Set a non-default value on every dimension and assert the rendered panel reflects all three:
      *   - enabledServices = ["hulu"] - the service filter chip for Hulu must appear.
      *   - sortField = "channelNumber", sortDirection = "desc" - the table's data-sort-field / data-sort-dir attributes must reflect this.
-     *   - visibleColumns = ["channelNumber"] - the table's class list must include hide-col-* for every NON-visible optional column (stationId, profile,
-     *     selector, hdhrEnabled, tags), and must NOT include hide-col-chnum for the visible one.
+     *   - visibleColumns = ["channelNumber"] - the table's class list must include the hide classes of a representative hidden pair (hide-col-stationid
+     *     and hide-col-tags), and must NOT include hide-col-chnum for the visible column.
      *
      * A regression in any single dimension would show up here as a failing assertion on its specific marker; a regression in dimension interaction (e.g., a
      * mutation pipeline that resets columns when filter is set) would surface as a divergence between the input mutations and the output markers.
@@ -174,8 +171,8 @@ describe("generateChannelsPanel - filter / sort / column visibility combinations
 
     const html = await response.text();
 
-    // Every optional column must carry its hide class. The loop below asserts all six optional-column hide classes explicitly against the rendered table
-    // classes, so the check is exhaustive rather than a sample.
+    // Every optional column must carry its hide class. The loop below asserts each optional column's hide class against the rendered table classes, from a
+    // list copied by hand from OPTIONAL_COLUMNS, so a column added there needs its hide class added here.
     const tableClassMatch = /<table class="([^"]+)"/.exec(html);
 
     assert.ok(tableClassMatch, "table element must be present even when visibleColumns is empty");

@@ -493,9 +493,10 @@ function extractFirstSampleFlags(data: Buffer, offset: number, size: number, def
 
 /**
  * Detects whether a moof box starts with a keyframe (sync sample) by examining the sample flags of the first sample in each trun box. The detection inspects all traf
- * boxes within the moof to handle multi-track containers (e.g., separate audio and video tracks). A non-keyframe signal from any traf (sample_depends_on === 1) takes
- * precedence because audio tracks are always independently decodable - the only source of sample_depends_on === 1 is a non-keyframe video track. This avoids needing
- * to map track IDs back to the moov box's codec metadata.
+ * boxes within the moof to handle multi-track containers (e.g., separate audio and video tracks). A non-keyframe signal from any traf - a first sample that
+ * evaluateSampleFlags classifies as non-sync, whether from sample_depends_on === 1 or from the sample_is_non_sync_sample bit - takes precedence, on the assumption
+ * that audio tracks never set either one, so the only source of the signal is a non-keyframe video track. This avoids needing to map track IDs back to the moov
+ * box's codec metadata.
  *
  * The function checks three flag sources in priority order per the ISO 14496-12 spec: trun first_sample_flags (0x004), trun per-sample flags (0x400), and tfhd
  * default_sample_flags (0x020).
@@ -548,9 +549,9 @@ export function detectMoofKeyframe(moofData: Buffer): Nullable<boolean> {
     });
   });
 
-  // A non-keyframe traf (video track with sample_depends_on === 1) overrides keyframe trafs. Audio tracks are always sync (sample_depends_on === 2, or 0 for unknown),
-  // so the presence of any non-keyframe signal is the definitive indicator that this fragment does not start with a video keyframe. TypeScript's control flow analysis
-  // cannot track mutations made inside the iterateChildBoxes callback, so these variables appear "always falsy" to the linter despite being set to true at runtime.
+  // A non-keyframe traf overrides keyframe trafs. Audio tracks are assumed never to set sample_depends_on === 1 or the non-sync bit, so the presence of any
+  // non-keyframe signal is taken as the indicator that this fragment does not start with a video keyframe. TypeScript's control flow analysis cannot track
+  // mutations made inside the iterateChildBoxes callback, so these variables appear "always falsy" to the linter despite being set to true at runtime.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if(hasExplicitNonKeyframe) {
 
@@ -675,14 +676,16 @@ export interface OffsetTrackResult {
   duration: bigint;
 
   // Chrome's original baseMediaDecodeTime read from the tfdt before the offset was applied. Used by the caller for lazy offset initialization on the first moof per
-  // track: offset = initialTrackTimestamp - originalTfdt.
+  // track, against the shared timeline position when the timescales are known, or as the fallback offset = initialTrackTimestamp - originalTfdt when they are not.
   originalTfdt: bigint;
 }
 
 /**
  * Applies a constant per-track offset to Chrome's original tfdt.baseMediaDecodeTime values. Reads Chrome's original tfdt, adds the per-track offset, and writes back.
  * During normal playback the offset is 0 (pure pass-through of Chrome's wall-clock-based timestamps). At tab replacement boundaries the offset bridges the PTS
- * discontinuity - it is computed once per track from the difference between the previous segmenter's "next expected" value and Chrome's new starting tfdt.
+ * discontinuity. The caller computes it once per track from the shared timeline position computeTimelinePosition derives, so the tracks share one reference, and
+ * falls back to the per-track difference between the previous segmenter's "next expected" value and Chrome's new starting tfdt (offset = initialTrackTimestamp -
+ * originalTfdt) when the timescales are unavailable.
  *
  * This approach preserves Chrome's inter-track synchronization. Chrome uses wall-clock-based timestamps that keep audio and video aligned regardless of frame drops.
  *

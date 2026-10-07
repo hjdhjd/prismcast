@@ -40,16 +40,16 @@ const { promises: fsPromises } = fs;
 /* Global variables maintain the application's runtime state across all operations. We minimize global state where possible, but some values must be shared across
  * the application lifecycle:
  *
- * - supervisor: The browser capture-readiness supervisor. It is the single source of truth for the shared Chrome instance and its lifecycle (absent / launching /
- *   ready / degraded / trialing), so all streaming sessions use one Chrome process via supervisor.acquire(). It holds one discriminated-union lifecycle state that
- *   captures the browser reference, its launch timestamp, and whether a launch is in flight, and routes every relaunch through one loop-safe governor.
+ * - supervisor: The browser capture-readiness supervisor. It is the single source of truth for the shared Chrome instance and its lifecycle (every phase from
+ *   absent to closing), so all streaming sessions use one Chrome process via supervisor.acquire(). It holds one discriminated-union lifecycle state that captures
+ *   the browser reference, its launch timestamp, and whether a launch is in flight, and routes every relaunch through one loop-safe governor.
  *
  * - currentChromeVersion: The one piece of per-browser metadata the adapter holds directly, captured when the browser becomes ready and surfaced by the
  *   health endpoint.
  *
  * Stream tracking and ID generation live in streaming/registry.ts for unified stream management across all output types (HLS, MPEG-TS, etc.). Filesystem path
- * resolution for persistent data (the Chrome profile and the streaming extension files) is centralized in config/paths.ts, whose getters create the data directory on
- * startup if it does not exist; it is resolved on demand rather than held as module state here.
+ * resolution for persistent data (the Chrome profile and the streaming extension files) is centralized in config/paths.ts and resolved on demand rather than held
+ * as module state here; ensureDataDirectory() below creates the data directory at startup.
  */
 
 // The Chrome version string (e.g., "Chrome/144.0.7559.110") captured when the browser becomes capture-ready in launchReadyBrowser. Cleared when the browser
@@ -94,12 +94,12 @@ function buildRelaunchPolicy(): LaunchGovernorPolicy {
   };
 }
 
-/* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (absent/launching/ready/degraded/trialing) that unifies the
- * browser reference, launch promise, and launch timestamp, and routes every relaunch through one loop-safe governor. The adapter injects the impure
- * ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), systemClock.now (time), buildRelaunchPolicy (live config
- * bounds), and onSupervisorStateChange (the loud degraded alarm and the recovery notice). All browser access flows through it: getCurrentBrowser is acquire(); the
- * non-launching reads derive from current() and currentLaunchTime(). The injected ports are hoisted function declarations, so referencing them here is safe even
- * though they are defined further down the module.
+/* The one browser capture-readiness supervisor for the process lifetime. It owns the lifecycle state (one discriminated union covering every phase from absent to
+ * closing) that unifies the browser reference, launch promise, and launch timestamp, and routes every relaunch through one loop-safe governor. The adapter
+ * injects the impure ports: launchReadyBrowser (spawn Chrome and run the readiness gate), closeBrowserInstance (teardown), systemClock.now (time),
+ * buildRelaunchPolicy (live config bounds), and onSupervisorStateChange (the loud degraded alarm and the recovery notice). All browser access flows through it:
+ * getCurrentBrowser is acquire(); the non-launching reads derive from current() and currentLaunchTime(). The injected ports are hoisted function declarations, so
+ * referencing them here is safe even though they are defined further down the module.
  */
 const supervisor = createBrowserSupervisor({ close: closeBrowserInstance, launch: launchReadyBrowser, now: (): number => systemClock.now(),
   onStateChange: onSupervisorStateChange, policy: buildRelaunchPolicy });
@@ -163,7 +163,8 @@ let captureProbe: Nullable<CaptureProbe> = null;
 
 /**
  * Injects the capture-readiness probe used as the capability tier of the launch gate. Called once from streaming/setup.ts at module load (which always precedes any
- * launch, since the streaming layer is imported during server startup). Separating the wiring from the call keeps browser/index.ts free of a streaming-layer import.
+ * launch, since the streaming layer is imported during server startup). Separating the wiring from the call keeps browser/index.ts from importing
+ * streaming/setup.ts, which already imports this module, so the dependency stays one-directional.
  * @param probe - The probe to run against a freshly-launched browser; it resolves when the browser can capture and rejects when it cannot.
  */
 export function setCaptureProbe(probe: CaptureProbe): void {
@@ -189,7 +190,7 @@ let streamTerminator: Nullable<StreamTerminator> = null;
 
 /**
  * Injects the authoritative stream terminator used when browser readiness is lost. Called once from streaming/lifecycle.ts at module load. Separating the wiring
- * from the call keeps browser/index.ts free of a streaming-layer import.
+ * from the call keeps browser/index.ts from importing streaming/lifecycle.ts, which already imports this module, so the dependency stays one-directional.
  * @param terminator - The function that tears down one stream and all of the resources it owns.
  */
 export function setStreamTerminator(terminator: StreamTerminator): void {
@@ -257,8 +258,9 @@ function cancelRestartQuietTimer(): void {
   restartTimers?.clear(RESTART_QUIET_KEY);
 }
 
-// Flag indicating that the browser is being closed intentionally via closeBrowser(). When true, the disconnect handler skips error logging and stream termination
-// since these are handled by the shutdown code path. This prevents false "unexpected disconnect" errors during graceful shutdown.
+// The process-wide graceful-shutdown state. app.ts shutdown() sets it early, and closeBrowser() sets it as a fallback for direct calls. While it is set, the
+// disconnect path stays quiet (no error log and no status emit) and the restart paths stand down; stream termination still runs. This prevents false
+// "unexpected disconnect" errors during graceful shutdown.
 let gracefulShutdownInProgress = false;
 
 /**
@@ -339,7 +341,7 @@ export function pickCarrierPage(pages: readonly Page[]): Nullable<Page> {
 }
 
 /* Which window Chrome's own tables call the shared one, keyed on the browser that owns it. The value belongs to CDP's window table and is never comparable with
- * the capture extension's chrome.windows ids: those are two independent tables, and this is the only place a value from the CDP side is held.
+ * the capture extension's chrome.windows ids: those are two independent tables, and this is the only place the shared window's identity is recorded.
  *
  * Keyed on the browser and never cleared, for the reason the own-window mark above is: the identity is a fact about how that browser was created, an entry dies
  * with the browser holding it, and a relaunch records its own. An id that outlived its browser is exactly what would place a capture tab in the wrong window
@@ -386,7 +388,7 @@ async function readPageWindow(page: Page): Promise<number | undefined> {
  * Records which window the shared one is, reading it from a page that sits in it.
  *
  * This is the one way an identity is written. The launch path calls it once the launch-era pages exist, so every browser this process publishes carries the
- * answer before anything asks for a capture tab, and a probe running against a browser of its own calls the same function rather than reaching for the map.
+ * answer before anything asks for a capture tab.
  * @param browser - The browser whose shared window is being recorded.
  * @param page - A page that sits in that window.
  */
@@ -618,8 +620,8 @@ export async function emitCurrentSystemStatus(): Promise<void> {
  * Registers a page as managed by PrismCast. This should be called immediately after creating a page via browser.newPage(). Registered pages are tracked for stale
  * page cleanup, while unregistered pages (manually opened, site popups, etc.) are left alone.
  *
- * Each registered page receives a unique ID that persists for the page's lifetime. This ID is used for comparison and staleness tracking, avoiding potential
- * issues with Page object reference identity.
+ * Each registered page receives a unique ID that persists for the page's lifetime, read back through the Page reference by getManagedPageId. The staleness map,
+ * the in-flight set and the stale page cleanup's decision core all work on this stable string key rather than on Page objects.
  * @param page - The Puppeteer Page to register.
  * @param options - Registration options. Set inFlight when an operation owns the page for its duration but nothing the stale page cleanup reads records that
  *   ownership - a stream setup that has not yet written its page into the registry, or a discovery walk whose page belongs to no stream at all - so the cleanup
@@ -713,14 +715,14 @@ export async function ensureDataDirectory(): Promise<void> {
   }
 
   // Purge on-disk artifacts retired in earlier releases. The data directory is the right boundary for this work - it runs once per startup, after the directory
-  // exists, before any subsequent step reads it. Future retirements add a single line to purgeLegacyArtifacts; the call site here does not change.
+  // exists, before any subsequent step reads it. Future retirements add an entry to RETIRED_ARTIFACTS; neither purgeLegacyArtifacts nor this call site changes.
   await purgeLegacyArtifacts();
 }
 
 /* The retirement registry. Each entry documents one on-disk artifact that earlier PrismCast versions wrote and the current code no longer maintains, along with
- * the version that retired it and a short explanation of what replaced it. Adding a future retirement is a single-line append - the loop in purgeLegacyArtifacts
- * picks it up automatically and the structured metadata becomes part of the codebase's history. The list is data, not logic: the "what" and "why" of every
- * retirement is captured here in one place rather than scattered across cleanup call sites.
+ * the version that retired it and a short explanation of what replaced it. Adding a future retirement is one entry appended to the list - the loop in
+ * purgeLegacyArtifacts picks it up automatically and the structured metadata becomes part of the codebase's history. The list is data, not logic: the "what"
+ * and "why" of every retirement is captured here in one place rather than scattered across cleanup call sites.
  */
 interface RetiredArtifact {
 
@@ -939,8 +941,7 @@ export function killStaleChrome(): void {
       }
     } catch(error: unknown) {
 
-      // ESRCH means the process does not exist - expected when there are no stale processes from a clean shutdown, or in Docker where the PID belongs to a
-      // previous container's PID namespace.
+      // ESRCH means the process exited between the process-table scan above and the signal, which is a benign race.
       if((error as NodeJS.ErrnoException).code !== "ESRCH") {
 
         LOG.warn("Failed to signal Chrome process %d: %s.", pid, formatError(error));
@@ -1256,9 +1257,12 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
 
     /* PrismCast owns process signals, so the launcher's own listeners are off. Left on, the puppeteer launcher installs handlers for SIGHUP, SIGINT, and SIGTERM
      * on the node process and, on SIGTERM or SIGHUP, ends Chrome's entire process group with SIGKILL - and on SIGINT it kills the group and then exits the process
-     * outright. Either way it races the shutdown handlers in app.ts and preempts closeBrowserInstance's SIGTERM ladder below, so Chrome gets no shutdown at all
-     * and forfeits whatever it had pending: a window placement inside its save debounce, its session state. With the listeners off, a signal reaches PrismCast's
-     * own handler, the graceful path runs, and Chrome exits through the ladder with its pending writes committed.
+     * outright. On SIGINT and SIGTERM it races the shutdown handlers in app.ts and preempts closeBrowserInstance's SIGTERM ladder below, so Chrome gets no shutdown
+     * at all and forfeits whatever it had pending: a window placement inside its save debounce, its session state. With the listeners off, SIGINT and SIGTERM reach
+     * PrismCast's own handlers, the graceful path runs, and Chrome exits through the ladder with its pending writes committed. PrismCast installs no SIGHUP
+     * handler, so a SIGHUP takes Node's default action and ends the process without the graceful path or the ladder. Left on, the launcher's listener would instead
+     * stop that termination, because a registered listener replaces Node's default action, and SIGKILL Chrome's group, leaving the server running with its browser
+     * gone. A Chrome that outlives the process is adopted by a live parent, so the next startup's stale-process sweep reads it as another owner's and spares it.
      */
     handleSIGHUP: false,
     handleSIGINT: false,
@@ -1296,8 +1300,8 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
       "--mute-audio"
     ],
 
-    // Use pipe mode for browser communication instead of WebSocket. Pipe mode is faster and more reliable, especially under load. It uses stdin/stdout for
-    // the DevTools Protocol connection rather than a network socket.
+    // Use pipe mode for browser communication instead of WebSocket. Pipe mode is faster and more reliable, especially under load. It runs the DevTools Protocol
+    // over a dedicated pair of pipes (file descriptors 3 and 4) rather than a network socket.
     pipe: true,
 
     // Persistent user data directory for Chrome profile. This directory stores cookies, local storage, and other session data. By persisting this across
@@ -1649,16 +1653,15 @@ onTabActivation((tabId: number): void => {
  */
 async function launchWithCustomArgs(opts: LaunchOptions): Promise<Browser> {
 
-  // When running as a packaged executable (process.pkg is set by the pkg bundler), we need to replace the extension paths. puppeteer-stream points
-  // opts.enableExtensions at its own node_modules-relative extension directory, which puppeteer-core installs via a CDP browser.installExtension() call after
-  // Chrome starts, rather than via --load-extension/--disable-extensions-except CLI flags - so that path still resolves inside node_modules, which does not
-  // exist at that location in the packaged executable. We route around it with Chrome's own native unpacked-extension flags, pointing them at our extracted
-  // extension files instead.
+  // When running as a packaged executable (process.pkg is set by the pkg bundler), we add Chrome's native unpacked-extension flags, --disable-extensions-except
+  // and --load-extension, each naming our extracted extension files. puppeteer-stream points opts.enableExtensions at its own node_modules-relative extension
+  // directory, which puppeteer-core passes to a CDP browser.installExtension() call after Chrome starts, and that path does not exist at that location in the
+  // packaged executable. This function leaves opts.enableExtensions as puppeteer-stream set it, so puppeteer-core still attempts that install, without awaiting it.
   if(process.pkg) {
 
     const extensionPath = getExtensionDir();
 
-    // Remove any existing extension arguments and add our own pointing to the extracted extension.
+    // Drop any extension flags the args already carry, so our pair pointing at the extracted extension appears exactly once.
     opts.args = (opts.args ?? [])
       .filter((arg: string): boolean => !arg.startsWith("--load-extension=") && !arg.startsWith("--disable-extensions-except="))
       .concat([ "--disable-extensions-except=" + extensionPath, "--load-extension=" + extensionPath ]);
@@ -1764,7 +1767,8 @@ async function detectBrowserCapabilities(browser: Browser): Promise<void> {
         });
 
         // Extract the meaningful GPU name. ANGLE wraps the actual GPU identity: "ANGLE (Vendor, GPU Name, API Version)". The GPU name is the second
-        // comma-separated field. For non-ANGLE renderers, use the device string from CDP.
+        // comma-separated field. A non-ANGLE renderer string is used as is, and the device string from CDP is used only when WebGL reports the masked
+        // "WebKit WebGL" or nothing at all.
         let renderer = webglRenderer;
         const anglePart = /^ANGLE \([^,]+, ([^,]+)/.exec(webglRenderer)?.[1];
 
@@ -1928,7 +1932,7 @@ function relinquishBrowserReadiness(streamTerminationReason: string): void {
 function handleBrowserDisconnect(): void {
 
   // Announce the unexpected disconnect before tearing down (the message says streams will be terminated, which relinquish then does). Suppressed during a full
-  // server shutdown, where closeBrowser() set the flag and the disconnect is intentional.
+  // server shutdown, where app.ts shutdown() (or closeBrowser() as a fallback) set the flag and the disconnect is intentional.
   if(!gracefulShutdownInProgress) {
 
     LOG.error("Browser disconnected unexpectedly. All active streams will be terminated.");
@@ -2191,8 +2195,9 @@ export async function getBrowserPages(): Promise<Page[]> {
  *
  * Chrome termination uses Puppeteer's ChildProcess handle and its `exit` event for detection:
  *
- * - browser.close() sends CDP Browser.close and waits for WebSocket teardown, which hangs 3-5 seconds even after Chrome exits.
- * - browser.disconnect() drops the WebSocket instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
+ * - browser.close() first runs puppeteer-stream's pass that closes every page but the extension's capture page and queries the extension's tabs, then sends CDP
+ *   Browser.close and waits for Chrome's process to exit, with no bound of its own on that wait.
+ * - browser.disconnect() drops the DevTools connection instantly but orphans Chrome as a Node child process, creating a zombie that process.kill(pid, 0) cannot detect.
  * - Synchronous polling (Atomics.wait) blocks the event loop, preventing Node from processing SIGCHLD to reap the child - Chrome becomes a zombie regardless
  *   of how SIGTERM was sent.
  *
@@ -2228,8 +2233,7 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
 
     if(!exitedAfterTerm) {
 
-      // SIGTERM didn't work within the bound. Escalate to SIGKILL. Orphaned Chrome processes (from a crashed parent or previous container) may not
-      // respond to SIGTERM.
+      // SIGTERM didn't work within the bound. Escalate to SIGKILL. A wedged or hung Chrome can fail to exit on SIGTERM within the bound.
       LOG.debug("browser:lifecycle", "Chrome did not exit after SIGTERM. Escalating to SIGKILL.");
 
       chromeProcess.kill("SIGKILL");
@@ -2239,8 +2243,8 @@ async function closeBrowserInstance(browser: Browser): Promise<void> {
     }
   }
 
-  // Disconnect the Puppeteer WebSocket after Chrome has exited. This cleans up Puppeteer's internal state (event listeners, pending CDP calls) without waiting for
-  // the WebSocket close handshake to complete on a dead connection. We catch the rejection: disconnect() on a connection whose underlying transport already died of
+  // Disconnect Puppeteer's DevTools connection (the CDP pipe) after Chrome has exited. This cleans up Puppeteer's internal state (event listeners, pending CDP
+  // calls) without waiting for an orderly close on a dead connection. We catch the rejection: disconnect() on a connection whose underlying transport already died of
   // an unclean Chrome exit can reject, and an unhandled rejection on this fire-and-forget call would crash the process during an otherwise-successful teardown.
   if(browser.connected) {
 
@@ -2303,8 +2307,8 @@ export async function closeBrowser(): Promise<void> {
  * 1. Only managed pages: We only consider pages that PrismCast created (tracked in managedPageIds). Pages opened manually by the user for debugging, or pages opened
  *    by streaming sites (OAuth popups, etc.) are left alone.
  *
- * 2. Target ID comparison: We use target IDs (strings) instead of Page object references for comparison. Puppeteer may return different wrapper objects for the
- *    same underlying page, making reference comparison unreliable.
+ * 2. Managed page IDs: Each managed page is assigned a string ID ("page-" plus a counter) by registerManagedPage and read back through the Page reference by
+ *    getManagedPageId. The staleness map, the in-flight set and the decision core all work on these stable string keys rather than on Page objects.
  *
  * 3. Grace period: Pages must be observed as potentially stale for a configurable grace period before being closed. This handles race conditions where pages are
  *    briefly untracked during stream initialization or cleanup.
@@ -2439,7 +2443,7 @@ export async function cleanupStalePages(now: number): Promise<void> {
     }
   } catch(error) {
 
-    // Cleanup failure is not critical - log a warning and try again next interval.
+    // Cleanup failure is not critical - log it at debug level and let the next interval retry.
     LOG.debug("browser:lifecycle", "Stale page cleanup failed: %s.", formatError(error));
   }
 }
@@ -2688,9 +2692,9 @@ function checkBrowserRestart(timers: TimerRegistry): void {
 }
 
 /**
- * Executes a browser restart: a final guard check, then the current instance is retired and torn down and a fresh one is launched in its place. Every cause shares
- * that whole sequence; only the log line that announces the restart differs, since only the cause knows why the browser is being replaced.
- * @param cause - Why the restart is running, for the announcement.
+ * Executes a browser restart: a final guard check, then the current instance is retired and torn down and a fresh one is launched in its place. The guard's
+ * idleness test and the log line that announces the restart both depend on the cause; the teardown and relaunch sequence is shared by every cause.
+ * @param cause - Why the restart is running, for the guard's idleness test and the announcement.
  */
 async function executeBrowserRestart(cause: BrowserRestartCause): Promise<void> {
 
@@ -2813,7 +2817,9 @@ export function stopBrowserRestartChecking(): void {
  * The extracted files are:
  * - background.js: The extension's service worker that handles media capture
  * - manifest.json: The extension manifest declaring permissions and capabilities
- * - options.html/options.js: Extension options page (not used by our automation, but required by the manifest)
+ * - options.html/options.js: The extension's capture host. options.js defines START_RECORDING on the page's global scope, puppeteer-stream opens options.html as
+ *   the extension page it resolves, the readiness handshake polls for START_RECORDING there, and every capture acquisition runs through it. The manifest also
+ *   declares it as options_page.
  */
 
 /**

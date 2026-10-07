@@ -2,18 +2,18 @@
  *
  * index.ts: HDHomeRun emulation lifecycle for PrismCast.
  *
- * When HDHomeRun emulation is enabled, PrismCast runs two complementary surfaces. The HTTP server (this module + discover.ts) responds to /device.xml,
+ * When HDHomeRun emulation is enabled, PrismCast runs complementary HTTP and UDP surfaces. The HTTP server (this module + discover.ts) responds to /device.xml,
  * /discover.json, /lineup.json, /lineup_status.json, and /status.json - the surface clients consume once they have located PrismCast by IP and port. The UDP
- * responder (udp.ts) answers SiliconDust LAN-discovery broadcasts on port 65001 so Plex finds PrismCast automatically without a manual address paste. The two
- * surfaces are not symmetric: UDP discovery is gated on the HTTP surface being bound, so the only independent choice is to disable LAN discovery while keeping HTTP
- * HDHR running (multi-tenant boxes, environments with a real HDHomeRun already on the network); discovery never runs without HTTP. Channels DVR also auto-discovers
- * via the UDP responder but its discovery assumes port 80 for the HTTP control
- * plane, so the lineup fetch fails unless hdhr.port is set to 80; Channels DVR users typically add PrismCast manually as a Custom Channels source.
+ * responder (udp.ts) answers SiliconDust LAN-discovery broadcasts on port 65001 so Plex finds PrismCast automatically without a manual address paste. The HTTP
+ * and UDP surfaces are not symmetric: UDP discovery is gated on the HTTP surface being bound, so the only independent choice is to disable LAN discovery while
+ * keeping HTTP HDHR running (multi-tenant boxes, environments with a real HDHomeRun already on the network); discovery never runs without HTTP. Channels DVR
+ * also auto-discovers via the UDP responder but its discovery assumes port 80 for the HTTP control plane, so the lineup fetch fails unless hdhr.port is set to
+ * 80; Channels DVR users typically add PrismCast manually as a Custom Channels source.
  *
  * The lifecycle is modeled as a reconciler owning self-disposing resource nodes. An HdhrController owns one HttpSurface and one UdpSurface; each surface fully
  * owns its socket, encapsulating its own bind/rebind/close cycling, and exposes [Symbol.asyncDispose]. The controller expresses policy ("HTTP on the desired
  * port; UDP up iff discoveryEnabled and HTTP is bound") and never reaches into how a surface binds or closes. reconcile() realizes the desired state it is handed
- * - CONFIG.hdhr at boot, the candidate running configuration on a save - and [Symbol.asyncDispose] is the terminal teardown. The two surfaces are the single
+ * - CONFIG.hdhr at boot, the candidate running configuration on a save - and [Symbol.asyncDispose] is the terminal teardown. The HTTP and UDP surfaces are the single
  * source of truth for "what HDHR is actually running" - there are no module-level socket globals.
  *
  * This module additionally registers a config-change handler under the "hdhr." prefix. Each setting's reactivity class decides whether a save applies it
@@ -82,7 +82,7 @@ interface HdhrReconcileResult {
 }
 
 /**
- * The HDHomeRun controller: a reconciler that owns the two emulation surfaces. reconcile() drives both surfaces to the desired state it is handed and reports
+ * The HDHomeRun controller: a reconciler that owns the HTTP and UDP emulation surfaces. reconcile() drives both surfaces to the desired state it is handed and reports
  * what failed to reach it; [Symbol.asyncDispose] is the terminal teardown that brings both down.
  */
 interface HdhrController extends AsyncDisposable {
@@ -258,13 +258,13 @@ function createHttpSurface(): HttpSurface {
 }
 
 /**
- * Creates the HDHomeRun controller. The controller owns the two surface nodes for the whole process lifetime; their sockets cycle internally as reconcile drives
+ * Creates the HDHomeRun controller. The controller owns the HTTP and UDP surface nodes for the whole process lifetime; their sockets cycle internally as reconcile drives
  * them. Failures at any surface are reported up, not thrown - the broader application continues to work even if HDHR emulation cannot bind.
  * @returns An HdhrController node.
  */
 function createHdhrController(): HdhrController {
 
-  // The two HDHomeRun surfaces this controller owns. Created once and live for the controller's lifetime; the controller expresses desired state (policy) and
+  // The HTTP and UDP surfaces this controller owns. Created once and live for the controller's lifetime; the controller expresses desired state (policy) and
   // never reaches into how a surface binds, rebinds, or closes (mechanism).
   const http = createHttpSurface();
   const udp = createUdpSurface();

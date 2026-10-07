@@ -574,10 +574,10 @@ describe("the running filter and the persisted list", () => {
 
 describe("getServiceTagForChannel: missing-channel fallback", () => {
 
-  /* getServiceTagForChannel first consults the runtime serviceGroups map (returning a variant's pre-computed tag when the key is grouped), then falls back to a
-   * direct URL-domain derivation via channelsRef / PREDEFINED_CHANNELS. When the key resolves to no channel in either source, the function does NOT throw - it
-   * returns the "direct" sentinel. We assert that fallback here: rebuild the groups from an empty channel map so channelsRef is empty and no group matches, then
-   * assert an obviously-unknown key yields "direct".
+  /* getServiceTagForChannel first consults the runtime serviceGroups map (returning the exact key's pre-computed tag when its group lists it), then resolves the
+   * channel through resolveLookupChannel (getResolvedChannel, then PREDEFINED_CHANNELS) and derives its tag through resolveServiceTag. When the key resolves to
+   * no channel in either source, the function does NOT throw - it returns the "direct" sentinel. We assert that fallback here: rebuild the groups from an empty
+   * channel map so channelsRef is empty and no group matches, then assert an obviously-unknown key yields "direct".
    */
 
   let originalSelections: Record<string, string>;

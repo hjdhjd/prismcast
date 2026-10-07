@@ -8,7 +8,7 @@ import type { CaptureCodec } from "../types/index.ts";
 import type { GpuCapabilities } from "../browser/display.ts";
 import { getGpuCapabilities } from "../browser/display.ts";
 
-// Re-export the CaptureCodec type so existing consumers can import from either module.
+// Re-export the CaptureCodec type so streaming and native modules can take the codec type from the module that decides it.
 export type { CaptureCodec } from "../types/index.ts";
 
 /* This module is the single source of truth for capture codec behavior. The capture's codec decision, getEffectiveCaptureCodec(), combines the user's codec

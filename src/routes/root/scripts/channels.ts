@@ -75,8 +75,7 @@ export function generateChannelsSubtabScript(): string {
     "        }",
     "      }",
     // Rehydrate the rendered profile fields from the registry: boolean flags into flags, text selectors into fieldValues. This is truthy-only capture, so an
-    // explicit-false or explicit-null value of a RENDERED field is not represented (a known, unchanged limitation); every field the wizard does not render survives
-    // via baseProfileFields below.
+    // explicit false or null in a RENDERED field is not represented; every field the wizard does not render survives via baseProfileFields below.
     "      const flags = {};",
     "      const fieldValues = {};",
     "      for(const wf of window.__wizardFields) {",
@@ -558,8 +557,8 @@ export function generateChannelsSubtabScript(): string {
 
     // Save the profile to the server. Concurrent edits of the same profile resolve last-save-wins: the rebuild starts from the snapshot fetched when the wizard opened,
     // matching the server's whole-replace semantics. The profile is a copy of the full fetched profile (empty for a new one) with only the wizard's rendered vocabulary
-    // deleted and re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server's
-    // whole-replace semantics are unchanged; a field outside the SiteProfile allowlist that passes through here surfaces as an explicit validation error rather than a
+    // deleted and re-applied, so every field the wizard does not render round-trips unchanged while a cleared rendered field is a real deletion. The server
+    // replaces the whole profile, and a field outside the SiteProfile allowlist that passes through here surfaces as an explicit validation error rather than a
     // silent one.
     "  window.saveProfile = async (andTest) => {",
     "    const s = profileWizard.state;",
@@ -570,8 +569,9 @@ export function generateChannelsSubtabScript(): string {
     "    for(const vk of vocabulary) { delete profile[vk]; }",
     "    profile.extends = s.baseProfile;",
     // Rebuild channelSelection rather than dropping it: preserve the base's unrendered sub-fields (listSelector, scrollSelector, scrollTarget) by starting from a copy
-    // and removing only the CHOSEN strategy's rendered field ids, so a strategy switch cannot leave stale rendered values behind. When the strategy is 'none' no
-    // channelSelection key is written at all - the sub-fields configure a strategy the user just removed.
+    // and removing only the CHOSEN strategy's rendered field ids. A strategy switch leaves no stale rendered value behind only because every wizard strategy renders
+    // the same field ids (WIZARD_STRATEGIES in routes/config/services.ts)...a strategy with a field id the others lack would carry that value across a switch. When
+    // the strategy is 'none' no channelSelection key is written at all - the sub-fields configure a strategy the user just removed.
     "    if(s.strategy !== 'none') {",
     "      const saveStrat = window.__wizardStrategies.find((st) => st.id === s.strategy);",
     "      const cs = Object.assign({}, (s.baseProfileFields && s.baseProfileFields.channelSelection) || {});",

@@ -25,7 +25,8 @@ import { systemClock } from "homebridge-plugin-utils";
  *
  * Keyframe detection is available for diagnostics by setting KEYFRAME_DEBUG to true. When enabled, each moof's traf/trun sample flags are parsed (ISO 14496-12) to
  * determine whether fragments start with sync samples (keyframes). Statistics are logged at stream termination and per-segment warnings are emitted for segments that
- * don't start with a keyframe. When disabled, the moof data is passed through without inspection.
+ * don't start with a keyframe. When disabled, the keyframe sample-flag parse is skipped; the moof is still read for its per-track durations and its tfdt rewritten
+ * by the timestamp offset pass.
  */
 
 // Set to true to enable keyframe detection and statistics. This parses traf/trun sample flags in each moof to track keyframe frequency and log per-segment warnings.
@@ -60,9 +61,9 @@ export interface SegmentHistory {
  *
  * Every member is individually optional because absence carries meaning, and different producers in fact hold different subsets: a tab replacement snapshots a
  * live segmenter and has every member, while a resume from disk carries an index, the timestamps and init version when the persisted entry is still readable at
- * the segmenter's creation, the segment history its member describes, and never session statistics. The priorSessionStats member is the sharpest case - its
- * presence is what tells the constructor a live prior session is continuing, which is what increments the tab replacement counter, so a resume that fabricated
- * an empty stats object would mint a phantom replacement into every resumed stream's session summary.
+ * the segmenter's creation, the previous init segment when no preroll precedes, the segment history its member describes, and never session statistics. The
+ * priorSessionStats member is the sharpest case - its presence is what tells the constructor a live prior session is continuing, which is what increments the
+ * tab replacement counter, so a resume that fabricated an empty stats object would mint a phantom replacement into every resumed stream's session summary.
  */
 export interface SegmenterContinuity {
 
@@ -110,8 +111,8 @@ export interface FMP4SegmenterOptions {
   // Callback when the segmenter stops (stream ended or error).
   onStop: () => void;
 
-  // If true, the first segment from this segmenter should have a discontinuity marker. Used after tab replacement to signal codec/timing change. When the
-  // continuity carries a previous init segment, the marker is suppressed if the new init segment is byte-identical to it.
+  // If true, the first segment from this segmenter should have a discontinuity marker. Set when the first segment opens a new timeline: after a tab replacement,
+  // a resume, or a preroll. When the continuity carries a previous init segment, the marker is suppressed if the new init segment is byte-identical to it.
   pendingDiscontinuity?: boolean;
 
   // The base URL for constructing absolute preroll segment URIs in the composite playlist (e.g., "http://192.168.1.100:5589"). Null when no preroll is active.
@@ -169,10 +170,11 @@ export interface KeyframeStats {
  */
 export interface SessionStats {
 
-  // Number of moofs that failed timestamp processing (caught by try/catch in the moof handler). Non-zero values indicate malformed fMP4 data from Chrome.
+  // Number of moofs that failed timestamp processing (caught by try/catch in the moof handler). Non-zero values indicate malformed fMP4 from the FFmpeg remux.
   malformedMoofCount: number;
 
-  // Number of segment-level A-V sync measurements. Each segment boundary contributes one measurement.
+  // Number of segment-level A-V sync measurements. Each segment boundary at which two or more tracks have known timescales and active counters contributes one
+  // measurement; a stream with no such boundary leaves it at zero and its session summary empty.
   syncSpreadCount: number;
 
   // Maximum observed inter-track timing spread in milliseconds.
@@ -259,7 +261,7 @@ interface SegmenterState {
   // Whether we have received the complete init segment.
   hasInit: boolean;
 
-  // Total number of moof boxes where keyframe detection returned null (indeterminate).
+  // Total number of moof boxes where keyframe status could not be determined, whether detection returned null or failed to parse.
   indeterminateCount: number;
 
   // Boxes collected for the init segment (ftyp + moov).
@@ -269,8 +271,9 @@ interface SegmenterState {
   // successor can compare its own init segment against it byte for byte, and for the getInitSegment() getter the resume state persists it through.
   initSegment: Nullable<Buffer>;
 
-  // Monotonic version counter for the init segment URI. Incremented each time the init content changes (new stream startup or different codec parameters after tab
-  // replacement). Used in #EXT-X-MAP:URI="init.mp4?v=N" to force HLS clients to re-fetch the init when it changes, preventing timescale mismatches.
+  // Monotonic version counter for the init segment URI. Incremented each time the init content changes (new stream startup, or different codec parameters in a
+  // capture that continues an earlier one - a tab replacement or a resume). Used in #EXT-X-MAP:URI="init.mp4?v=N" to force HLS clients to re-fetch the init when
+  // it changes, preventing timescale mismatches.
   initVersion: number;
 
   // Total number of moof boxes that started with a keyframe.
@@ -295,12 +298,13 @@ interface SegmenterState {
   // Total number of moof boxes that did not start with a keyframe.
   nonKeyframeCount: number;
 
-  // Normalized reference position in seconds for offset computation during tab replacement. Computed once when the moov is parsed by converting
-  // initialTrackTimestamps to seconds via timescales and averaging across tracks. All per-track offsets are derived from this single position to eliminate the
-  // inter-track bias that would otherwise be frozen from the old segmenter's A-V jitter at the moment of replacement. Null for fresh streams (offset = 0).
+  // Normalized reference position in seconds the per-track offsets derive from, computed once when the moov is parsed. It is set from the continued counters (a
+  // tab replacement or a resume) by converting initialTrackTimestamps to seconds via timescales and averaging across tracks, and overridden by the preroll's total
+  // duration when a preroll precedes. Deriving every per-track offset from this single position eliminates the inter-track bias that independent offsets would
+  // freeze from the old segmenter's A-V jitter at the handoff. Null when the segmenter continues no counters and has no preroll, which leaves every offset at 0.
   normalizedReferencePositionSec: Nullable<number>;
 
-  // Whether the next segment should have a discontinuity marker (consumed when first segment is output).
+  // Whether the next segment should have a discontinuity marker (consumed when the next segment is output).
   pendingDiscontinuity: boolean;
 
   // Running count of discontinuities whose segment index has scrolled below the sliding-window floor and been pruned from discontinuityIndices. The HLS
@@ -358,12 +362,13 @@ interface SegmenterState {
   // Running total of keyframe intervals in milliseconds. Used with keyframeCount to compute the average.
   totalKeyframeIntervalMs: number;
 
-  // Per-track constant offsets applied to Chrome's original tfdt values. Zero during normal playback (pure pass-through). During tab replacement, derived from
-  // normalizedReferencePositionSec to ensure all tracks anchor to the same second-position, eliminating inter-track bias. Computed lazily on first moof per track.
+  // Per-track constant offsets applied to the remux's original tfdt values. Zero when the segmenter continues no counters and has no preroll (pure pass-through).
+  // Otherwise derived from normalizedReferencePositionSec so all tracks anchor to the same second-position, eliminating inter-track bias, or from the track's own
+  // continued counter when no reference is available. Computed lazily on first moof per track.
   trackOffsets: Map<number, bigint>;
 
-  // Tracks which track IDs have had their offset computed. Offsets are computed lazily on the first moof per track because Chrome's first tfdt value isn't known
-  // until it arrives.
+  // Tracks which track IDs have had their offset computed. Offsets are computed lazily on the first moof per track because the remux's first tfdt value isn't
+  // known until it arrives.
   trackOffsetsInitialized: Set<number>;
 
   // Per-track timescale values parsed from the moov box. Keyed by track_ID. Populated once when the moov box is received. Converts accumulated trun durations (in
@@ -386,8 +391,8 @@ interface SegmenterState {
 // Keyframe Stats Formatting.
 
 /**
- * Formats keyframe statistics into a human-readable summary for the termination log. Returns an empty string if no moof boxes were processed. The format mirrors the
- * recovery metrics summary style used in monitor.ts.
+ * Formats keyframe statistics into a human-readable summary for the termination log. Returns an empty string if no moof boxes were processed. The format mirrors
+ * formatRecoveryMetricsSummary() in recovery.ts, which the termination log in lifecycle.ts composes alongside it.
  *
  * Example output:
  * - "Keyframes: 2490 of 2490 moofs (100.0%), interval 1.9-2.1s avg 2.0s."
@@ -698,8 +703,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         url: "segment" + String(i) + ".m4s"
       };
 
-      // Add discontinuity marker and re-emit the init segment reference at preroll-to-real boundaries and recovery events. The preroll-to-real boundary is handled
-      // via the existing pendingDiscontinuity mechanism - outputSegment() marks the starting segment index, the first real segment's, when it outputs that segment.
+      // Add discontinuity marker and re-emit the init segment reference at preroll-to-real boundaries and recovery events. The preroll-to-real boundary is marked
+      // through pendingDiscontinuity - outputSegment() marks the starting segment index, the first real segment's, when it outputs that segment.
       if(state.discontinuityIndices.has(i)) {
 
         entry.discontinuity = true;
@@ -771,7 +776,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       return;
     }
 
-    // If this segment follows a tab replacement, record its index for discontinuity marking.
+    // If a marker is pending (a continuation, a preroll boundary, or a recovery event through markDiscontinuity), record this segment's index for discontinuity
+    // marking.
     if(state.pendingDiscontinuity) {
 
       state.discontinuityIndices.add(state.segmentIndex);
@@ -961,7 +967,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
         state.initBoxes.push(box.data);
 
-        // Check if we have both ftyp and moov.
+        // The moov completes the init segment (the ftyp, when present, precedes it in initBoxes).
         if(box.type === "moov") {
 
           // Output the init segment.
@@ -986,7 +992,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           }
 
           // Version the init URI for HLS cache busting. Incrementing the version makes the #EXT-X-MAP URI different from the previous playlist, forcing clients
-          // to re-fetch the init segment. This prevents timescale mismatches when Chrome's MediaRecorder picks a different timescale between capture sessions.
+          // to re-fetch the init segment. This prevents timescale mismatches when the FFmpeg remux's track timescales differ between capture sessions.
           if(initChanged) {
 
             state.initVersion++;
@@ -1058,7 +1064,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           }
 
           // Compute the normalized reference position the per-track offsets derive from when this segmenter continues earlier counters. computeTimelinePosition,
-          // the timeline conversion in the parser module, converts the counters to seconds via the new moov's timescales (which Chrome keeps consistent across
+          // the timeline conversion in the parser module, converts the counters to seconds via the new moov's timescales (which the remux keeps consistent across
           // captures), then averages across tracks to produce a single shared position - the same position the resume line reports from persisted counters.
           // Deriving all per-track offsets from this shared reference eliminates the inter-track bias that per-track independent offsets would freeze from the old
           // segmenter's A-V jitter at the moment of replacement. A null result, when no track carries both a counter and a timescale, leaves the reference unset.
@@ -1067,11 +1073,11 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             state.normalizedReferencePositionSec = computeTimelinePosition({ timescales: state.trackTimescales, trackTimestamps: initialTrackTimestamps });
           }
 
-          // When preroll is active, override the normalized reference position with the total preroll duration in seconds. This makes Chrome's real content PTS
-          // continue from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary. Without this, Chrome's MediaRecorder starts at
-          // PTS 0, causing CDVR's remuxer to detect a PTS reset and apply a sentinel pts_offset (1152921504606840.75) that breaks the Apple TV's timeline display.
-          // With continuous PTS, the remuxer sees smooth progression and computes a normal offset. This overrides any resume-based reference because the new session's
-          // preroll PTS timeline takes precedence over the old session's timestamps.
+          // When preroll is active, override the normalized reference position with the total preroll duration in seconds. This makes the remuxed capture's real
+          // content PTS continue from where the preroll ended, eliminating the PTS discontinuity at the preroll-to-live boundary. Without this, the remuxed capture
+          // starts at PTS 0, causing CDVR's remuxer to detect a PTS reset and apply a sentinel pts_offset (1152921504606840.75) that breaks the Apple TV's timeline
+          // display. With continuous PTS, the remuxer sees smooth progression and computes a normal offset. This overrides any resume-based reference because the
+          // new session's preroll PTS timeline takes precedence over the old session's timestamps.
           if(state.prerollSegmentCount > 0) {
 
             state.normalizedReferencePositionSec = getPrerollTotalDurationSec(state.prerollCodec);
@@ -1110,17 +1116,19 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         }
       }
 
-      // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to Chrome's original values. This preserves Chrome's wall-clock-based
-      // inter-track sync rather than regenerating timestamps from trun durations (which accumulates drift). The offset is 0 during normal playback (pure pass-through).
-      // During tab replacement, offsets are derived from a normalized reference position (mean of all tracks' old positions in seconds) to eliminate inter-track
-      // bias - see normalizedReferencePositionSec. Wrapped in try/catch so a malformed moof never crashes the segmenter - the segment passes through with Chrome's
-      // original timestamps, which is better than dropping it entirely.
+      // Rewrite tfdt.baseMediaDecodeTime in each traf by adding a constant per-track offset to the remux's original values. This preserves the remux's
+      // wall-clock-based inter-track sync rather than regenerating timestamps from trun durations (which accumulates drift). The offset is 0 when the segmenter
+      // continues no counters and has no preroll (pure pass-through). When it continues earlier counters (a tab replacement or a resume) or follows a preroll,
+      // offsets are derived from a normalized reference position (the shared position in seconds every track anchors to) to eliminate inter-track bias - see
+      // normalizedReferencePositionSec.
+      // Wrapped in try/catch so a malformed moof never crashes the segmenter - the segment passes through with the remux's original timestamps, which is better
+      // than dropping it entirely.
       try {
 
         const trackResults = offsetMoofTimestamps(box.data, state.trackOffsets);
 
         // Two-pass offset handling. The first call above applied every already-known track's stored offset in place, leaving any track first seen in this moof at
-        // Chrome's original tfdt (an absent trackId is a 0n no-op write). This loop computes and stores each newly seen track's offset and records it in newOffsets -
+        // the remux's original tfdt (an absent trackId is a 0n no-op write). This loop computes and stores each newly seen track's offset and records it in newOffsets -
         // the offsets finalized this moof, and only those. The corrective call below applies exactly newOffsets, so a track the first call already offset stays
         // untouched (absent from newOffsets, a 0n no-op) while a track initialized here is offset exactly once. No track's offset can be applied twice regardless of
         // how tracks stagger their first trafs across moofs.
@@ -1136,8 +1144,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             const timescale = state.trackTimescales.get(trackId);
             let offset = 0n;
 
-            // Compute the per-track offset. When a normalized reference position is available (tab replacement with valid timescales), derive the offset from
-            // the shared reference to eliminate inter-track bias. Otherwise fall back to per-track independent offsets (fresh stream or moov parse failure).
+            // Compute the per-track offset. When a normalized reference position is available (continued counters or a preroll, with valid timescales), derive
+            // the offset from the shared reference to eliminate inter-track bias. Otherwise fall back to the track's own continued counter, or to 0 when it has none.
             if((state.normalizedReferencePositionSec !== null) && timescale) {
 
               offset = BigInt(Math.round(state.normalizedReferencePositionSec * timescale)) - result.originalTfdt;
@@ -1160,8 +1168,8 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           }
         }
 
-        // Corrective rewrite, scoped to the tracks initialized this moof. Those tracks still hold Chrome's original tfdt (the first call left them at 0n), so this
-        // single re-call with newOffsets applies each of their offsets exactly once. Already-known tracks are absent from newOffsets and pass through as 0n no-op
+        // Corrective rewrite, scoped to the tracks initialized this moof. Those tracks still hold the remux's original tfdt (the first call left them at 0n), so
+        // this single re-call with newOffsets applies each of their offsets exactly once. Already-known tracks are absent from newOffsets and pass through as 0n no-op
         // writes, so they cannot be offset a second time. Skipped entirely when no newly initialized track carries a nonzero offset.
         if(needsRewrite) {
 
@@ -1175,14 +1183,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
           state.videoTrafsInCurrentSegment = true;
         }
 
-        // Track "next expected" for future tab replacement handoff and accumulate durations for EXTINF.
+        // Track "next expected" for the continuity snapshot a successor reads and the resume state getTrackTimestamps() persists, and accumulate durations for EXTINF.
         for(const [ trackId, result ] of trackResults) {
 
           const trackOffset = state.trackOffsets.get(trackId) ?? 0n;
 
           state.trackTimestamps.set(trackId, result.originalTfdt + trackOffset + result.duration);
 
-          // Accumulate duration for media-time EXTINF computation. No sanity check needed - Chrome's timestamps are trusted.
+          // Accumulate duration for media-time EXTINF computation. No sanity check needed - the remux's trun durations are trusted.
           if(result.duration > 0n) {
 
             const prev = state.segmentTrackDurations.get(trackId) ?? 0n;

@@ -118,7 +118,8 @@ export type StatusEventType = "channelUpdate" | "snapshot" | "streamAdded" | "st
 
 /**
  * Typed event map for status notifications. Ensures event names and argument types are checked at compile time. The channelUpdate payload is intentionally
- * opaque - statusEmitter is a transport, and the patch shape is owned by routes/config/channels/healthBridge.ts (sender) and channelTable.applyPatch (receiver).
+ * opaque - statusEmitter is a transport, and the patch shape is ChannelTablePatch in routes/config/channels/table.ts, built by its senders (the health bridge
+ * and the logo population) and applied by channelTable.applyPatch.
  */
 interface StatusEmitterEventMap {
 
@@ -227,9 +228,9 @@ export function emitStreamRemoved(streamId: number): void {
 
 /**
  * Emits a stream health changed event with the current stream status. Stores and emits the status to ensure SSE clients and snapshots have current data. Silently
- * drops updates for streams that have already been removed by emitStreamRemoved() to prevent zombie entries. During healthy playback the monitor calls this every
- * ~2 seconds anyway, so emitting unconditionally rather than filtering by health-state change has negligible bandwidth impact while eliminating staleness during
- * recovery/buffering periods.
+ * drops updates for streams that have already been removed by emitStreamRemoved() to prevent zombie entries. During healthy playback the monitor calls this on
+ * every health check (playback.monitorInterval) anyway, so emitting unconditionally rather than filtering by health-state change has negligible bandwidth impact
+ * while eliminating staleness during recovery/buffering periods.
  * @param status - The updated stream status.
  */
 export function emitStreamHealthChanged(status: StreamStatus): void {
@@ -319,7 +320,7 @@ export function getStreamStatus(streamId: number): StreamStatus | undefined {
 }
 
 /**
- * Removes a stream from the status tracking without emitting an event. Used during cleanup when the stream has already been removed.
+ * Removes a stream from the status tracking without emitting an event.
  * @param streamId - The ID of the stream to remove.
  */
 export function removeStreamStatus(streamId: number): void {

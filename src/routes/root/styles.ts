@@ -56,7 +56,7 @@ export function generateLandingPageStyles(): string {
     ".channels-subtab-panel { display: none; }",
     ".channels-subtab-panel.active { display: block; }",
 
-    // Empty state styling for Providers panel.
+    // Empty state styling for panels with nothing to list (Custom Profiles, tag manager).
     ".empty-state { text-align: center; padding: 40px 20px; color: var(--text-secondary); }",
     ".empty-state-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 8px 0; }",
     ".empty-state-text { font-size: 14px; margin: 0; max-width: 500px; margin-left: auto; margin-right: auto; line-height: 1.5; }",
@@ -188,7 +188,7 @@ export function generateLandingPageStyles(): string {
     ".import-summary-table td { padding: 4px 0; }",
     ".import-summary-label { color: var(--text-muted); }",
 
-    // Settings panel description styling (replaces redundant header titles).
+    // Settings panel description styling, the panel's lead text in place of a header title.
     ".settings-panel-description { margin: 0; font-size: 15px; color: var(--text-primary); }",
     ".settings-panel-description p { margin: 0; }",
     ".description-hint { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }",
@@ -442,7 +442,7 @@ export function generateLandingPageStyles(): string {
     ".toolbar-icon-btn svg { flex-shrink: 0; vertical-align: middle; }",
     ".channel-summary { text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }",
 
-    // Dropdown menu used by the Import button in the channel toolbar.
+    // The shared dropdown primitive used by every toolbar and popover menu on the page.
     ".dropdown { position: relative; display: inline-block; }",
     ".dropdown-menu { display: none; position: absolute; top: 100%; left: 0; z-index: 1000; min-width: 180px; padding: 4px 0; margin-top: 2px; ",
     "background: var(--surface-overlay); border: 1px solid var(--border-default); border-radius: var(--radius-md); ",
@@ -614,7 +614,7 @@ export function generateLandingPageStyles(): string {
     ".changelog-list li:last-child { margin-bottom: 0; }",
     ".changelog-modal-buttons { display: flex; gap: 12px; justify-content: flex-end; }",
 
-    // Browse Channels modal styles. Channel-list-specific styles remain browse-prefixed. Shared modal styles (description, hint, provider grid, spinner, empty
+    // Browse Channels modal styles. Channel-list-specific styles are browse-prefixed. Shared modal styles (description, hint, provider grid, spinner, empty
     // state) are in the wizard section above as wizard-* classes.
 
     // Provider display container. Inline-flex with center alignment ensures the icon and text are vertically centered regardless of image height.

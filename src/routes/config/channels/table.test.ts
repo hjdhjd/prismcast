@@ -123,7 +123,7 @@ describe("buildChannelTableState", () => {
 
   test("accepts a pre-fetched listing parameter rather than recomputing", () => {
 
-    // The parameter is documented as an optimization - tests can verify it doesn't affect the result by passing an empty listing.
+    // Passing an empty listing proves the builder counts the listing it is handed rather than recomputing it, because the real listing is non-empty.
     const state = buildChannelTableState([]);
 
     assert.equal(state.counts.total, 0);
@@ -201,7 +201,7 @@ describe("login icon tri-state rendering", () => {
     await initializeUserChannels();
 
     /* Reload health state from the fresh (empty) data dir so domain auth residue from other test files cannot color the rows rendered here. The load takes the
-     * row's clock, which stamps the marks below at a fixed instant and puts their debounced flush on virtual time rather than a two-second platform timer.
+     * row's clock, which stamps the marks below at a fixed instant and puts their debounced flush on virtual time rather than the debounce's platform timer.
      */
     clock = new TestClock(1700000000000);
 

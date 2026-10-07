@@ -2,7 +2,7 @@
  *
  * hls-playlist-registry.test.ts: HTTP-level integration coverage for the playlist served from registry-backed HLS state. The integration boundary tested
  * here is seeded registry state on one side and the m3u8 body emitted by GET /hls/:name/stream.m3u8 on the other - the wire-facing contract that Channels
- * DVR consumes. Two failure classes are asserted by this suite:
+ * DVR consumes. This suite asserts these failure classes:
  *
  *   1. Wire-level drift between buildPlaylist's output and what the route actually serves. Anything that would mangle the body in transit (encoding, header
  *      mismatch, premature truncation, accidental rewrite) shows up here as a body assertion miss.
@@ -11,14 +11,14 @@
  *      asserting that the saved index materializes as the served playlist's MEDIA-SEQUENCE - the operational symptom Channels DVR sees when the resume
  *      contract breaks.
  *
- * Why HTTP (option c) instead of driving buildPlaylist directly: the suite is hls-playlist-registry.test.ts (describe block "HLS playlist served from
+ * Why HTTP instead of driving buildPlaylist directly: the suite is hls-playlist-registry.test.ts (describe block "HLS playlist served from
  * registry-backed state") and the architectural integration point is the route handler reading registry state and emitting bytes. Calling buildPlaylist
  * directly would prove only the formatter's pure-function behavior - which is unit-tier coverage. Driving fmp4Segmenter directly would test the segmenter,
  * not the registry-to-route path. The registry-to-route entry point used here (register a stream entry with seeded HLSState, set the channel-to-stream
  * index, GET) is the same entry point every production caller traverses; it bypasses only the browser/ffmpeg setup the integration tier deliberately does
  * not host.
  *
- * Note on Test 4 (resume): the production code that reads the resume position into a stream entry lives inside registerPendingStream() and runs
+ * Note on the resume test: the production code that reads the resume position into a stream entry lives inside registerPendingStream() and runs
  * unconditionally on every pending registration; only its consumption inside the deferred preroll-timer callback is gated on isPrerollReady(codec). Driving
  * registerPendingStream() directly would require a full Express Request and the deferred-timer machinery, which is browser/FFmpeg territory. Instead, the
  * test calls the function the registration calls - the public getResumePosition() accessor - and seeds hls.resumePosition on the synthetic entry from that
@@ -120,7 +120,7 @@ describe("HLS playlist served from registry-backed state", () => {
     assert.match(firstBody, /^#EXT-X-MEDIA-SEQUENCE:0$/m, "first serve reflects the initial sequence");
     assert.match(firstBody, /^segment0\.m4s$/m, "first serve includes the initial first segment");
 
-    // Window advances: oldest segment shifts off, new one appended; sequence advances by 3.
+    // Window advances by three: all three earlier segments shift off and three new ones are appended, so the sequence advances to 3.
     const advanced = buildPlaylist({ mediaSequence: 3, targetDuration: 4, version: 7 }, [
       { duration: 4, url: "segment3.m4s" },
       { duration: 4, url: "segment4.m4s" },
@@ -183,15 +183,15 @@ describe("HLS playlist served from registry-backed state", () => {
 
   test("a saved resume position materializes as the served playlist's MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE", async () => {
 
-    /* The 1589811 regression class at the wire layer: after a restart, the next playlist served for a previously-streamed channel must start at the saved
+    /* The resume contract at the wire layer: after a restart, the next playlist served for a previously-streamed channel must start at the saved
      * sequence so Channels DVR's recording continues from where it left off, and its discontinuity sequence must continue from the saved count so it never
      * falls below what a client last read. The persistence side (save/load round-trip) is covered in hls-resume.test.ts; this test asserts the consumption
      * side - the seed reaches the wire as MEDIA-SEQUENCE and DISCONTINUITY-SEQUENCE.
      *
-     * The flow mirrors production: the resume map is populated via saveResumeState/loadResumeState (the persistence path that runs at process startup), and
-     * the entry's hls.resumePosition is read from the public getResumePosition() accessor - the exact same call registerPendingStream() makes. We then build
-     * a playlist with its media sequence and discontinuity sequence seeded from that position and assert the body emitted on the wire reflects them, so a
-     * count dropped by the save, the load, the peek or the position's copy reads 0 here.
+     * The flow mirrors production: the resume map is populated through saveResumeState and loadResumeState (the save that runs at shutdown and the load that
+     * runs at the next startup), and the entry's hls.resumePosition is read from the public getResumePosition() accessor - the exact same call
+     * registerPendingStream() makes. We then build a playlist with its media sequence and discontinuity sequence seeded from that position and assert the
+     * body emitted on the wire reflects them, so a count dropped by the save, the load, the peek or the position's copy reads 0 here.
      */
     await using ctx = await createIntegrationContext();
 
@@ -199,7 +199,7 @@ describe("HLS playlist served from registry-backed state", () => {
 
     const { urlFor } = await bootApp(ctx);
 
-    // The 1589811 value is the canonical regression marker - any drift in the resume contract surfaces here as a wrong sequence on the wire.
+    // An arbitrary large, non-zero index, chosen so an off-by-one or a zeroed value surfaces here as a wrong sequence on the wire.
     const priorIndex = 1589811;
     const priorCount = 5;
 
@@ -292,9 +292,9 @@ describe("HLS segment serving from registry-backed state", () => {
 
   test("an unknown segment, missing init, or unknown stream each yield 404", async () => {
 
-    /* The 404 boundary: three distinct not-found conditions must each answer 404. A known stream missing the requested media segment, a known stream that has no
-     * init segment stored yet, and a request for a channel with no registered stream all fail the registry lookup. This asserts that none of them leak a 200 with an
-     * empty or stale body, and that the unknown-stream path (no channel-to-stream mapping) is distinguished from a mapped stream missing the segment.
+    /* The 404 boundary: each not-found condition must answer 404. A known stream missing the requested media segment and a known stream that has no init
+     * segment stored yet pass the channel-to-stream lookup and fail the segment-store read; a request for a channel with no registered stream fails the
+     * channel-to-stream lookup itself. This asserts that each answers 404 and none of them leaks a 200 with an empty or stale body.
      */
     await using ctx = await createIntegrationContext();
 

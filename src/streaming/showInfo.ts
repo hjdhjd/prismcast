@@ -1,6 +1,6 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * showInfo.ts: Channels DVR API integration for show name and channel logo lookup.
+ * showInfo.ts: Channels DVR API integration for DVR host discovery, device channel mappings, show name lookup, and channel logo population.
  */
 import { CONFIG, writeProcessFields } from "../config/index.ts";
 import type { ChangeRejection, ConfigChange } from "../config/reactivity.ts";
@@ -14,7 +14,7 @@ import { emitChannelUpdate } from "./statusEmitter.ts";
 import { getAllStreams } from "./registry.ts";
 import { registerConfigChangeHandler } from "../config/reactivity.ts";
 
-/* This module integrates with the Channels DVR API for two purposes: show name lookup and channel logo population.
+/* This module integrates with the Channels DVR API for show name lookup and channel logo population. Its DVR host and device mappings also serve pretune.
  *
  * Show names are determined from two sources:
  *
@@ -177,12 +177,13 @@ interface TmsStationResult {
 
 // State.
 
-/* The poller's timers, on the library's lifetime-bound registry: the show-name poll under "poll", the 24-hour logo refresh under "logos", and the debounced
+/* The poller's timers, on the library's lifetime-bound registry: the show-name poll under "poll", the daily logo refresh under "logos", and the debounced
  * trigger under "trigger". Null while the poller is stopped, so the binding is also the statement of whether it is running.
  */
 let timers: Nullable<TimerRegistry> = null;
 
-// The clock the poller's own reads take their instant from. Set at start and reset at stop, so an operation that begins under one poller never mixes two clocks.
+// The clock the poller's own reads take their instant from, set at start and reset at stop. Each operation reads its instant once at its start, so its cache
+// aging stays on one clock, while each request's bound arms on whichever clock the poller holds when the request is made.
 let pollingClock: Clock = systemClock;
 
 // Cache of show names by stream ID.
@@ -214,9 +215,9 @@ export function getDvrHost(): Nullable<string> {
  * changing nothing in the file and dispatching the handler once more, which starts a second logo population.
  *
  * The host must be host-only - never `host:port`. The port lives at `CONFIG.channelsDvr.port` exclusively. Inputs containing a colon are rejected
- * with a debug log rather than silently stripped, because a colon-bearing host indicates a caller-side bug (auto-discovery should be feeding IPs, not
- * `IP:port` strings) and silent stripping would mask it. The schema migration to `channelsDvr.host` splits any legacy `host:port` value at read time, so this
- * function only sees host-only inputs in the steady state.
+ * with a debug log rather than silently stripped. A `host:port` string is a caller-side bug that stripping would mask, and an IPv6 client address, which
+ * discovery passes through unchanged, is rejected as well: fetchFromDvr joins the host and the port with a bare colon, so an unbracketed IPv6 host could not
+ * form a usable URL in any case.
  *
  * @param host - The DVR server hostname or IP address. Must NOT include a port.
  */
@@ -254,7 +255,7 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
   // The DVR host is the running configuration's, which the boot read from the file, so the logos populate from it at once when one is known.
   populateRunningChannelLogos();
 
-  // Run immediately on startup, then every 30 seconds.
+  // Run immediately on startup, then on every poll interval.
   void updateShowNames();
 
   timers.setInterval("poll", () => {
@@ -262,7 +263,7 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
     void updateShowNames();
   }, POLL_INTERVAL_MS);
 
-  // Start the 24-hour logo refresh. A start with no DVR host known populates nothing above; the handler a discovered host's write or a save dispatches populates
+  // Start the daily logo refresh. A start with no DVR host known populates nothing above; the handler a discovered host's write or a save dispatches populates
   // once a host becomes known.
   timers.setInterval("logos", () => {
 
@@ -275,7 +276,7 @@ export function startShowInfoPolling(clock: Clock = systemClock): void {
  */
 export function stopShowInfoPolling(): void {
 
-  // Disposing the registry drains the two intervals and any pending trigger together, and makes a later arm on it inert.
+  // Disposing the registry drains every interval and any pending trigger together, and makes a later arm on it inert.
   timers?.dispose();
   timers = null;
   pollingClock = systemClock;
@@ -322,8 +323,8 @@ export function clearShowName(streamId: number): void {
 // Internal Functions.
 
 /**
- * Updates show names for all active streams. Discovery phase tries each unique client address as a potential Channels DVR server. Lookup phase uses the cached DVR
- * host for all streams, enabling non-DVR clients (e.g., Plex) to display show names.
+ * Updates show names for all active streams. Discovery phase tries each unique client address as a potential Channels DVR server. Lookup phase uses the DVR
+ * host the running configuration holds for all streams, enabling non-DVR clients (e.g., Plex) to display show names.
  */
 async function updateShowNames(): Promise<void> {
 
@@ -352,8 +353,8 @@ async function updateShowNames(): Promise<void> {
     }
   }
 
-  // Discovery phase: try each unique client address to find or confirm a DVR host. Device mappings are cached with a 5-minute TTL, so non-DVR hosts only incur a
-  // network timeout on the first attempt and every 5 minutes thereafter.
+  // Discovery phase: try each unique client address to find or confirm a DVR host. Device mappings are cached for the mapping cache's refresh window, so non-DVR
+  // hosts only incur a network timeout on the first attempt and once per window thereafter.
   await Promise.all(
     Array.from(discoveryHosts).map(async (host) => {
 
@@ -384,10 +385,10 @@ async function updateShowNames(): Promise<void> {
 }
 
 /**
- * Updates show names for streams from a single DVR host.
+ * Updates show names for every active stream from the DVR host's recordings and guide.
  * @param host - The DVR server hostname or IP address.
  * @param port - The DVR's API port.
- * @param hostStreams - Array of streams from this host with their channel keys.
+ * @param hostStreams - Every active stream with its channel key, whichever client started it.
  * @param now - The instant the calling update read at its start, threaded so the whole operation ages the cache against one reading.
  */
 async function updateShowNamesForHost(host: string, port: number, hostStreams: { channelKey: string; id: number }[], now: number): Promise<void> {
@@ -506,15 +507,15 @@ export function matchesM3uDevice(deviceChannelIds: Set<string>, prismcastChannel
   const maxSize = Math.max(deviceChannelIds.size, prismcastChannelKeys.size);
   const overlapRatio = overlapCount / maxSize;
 
-  // Written as a negated less-than so that the both-empty case (overlapRatio = NaN) accepts: `!(NaN < 0.8)` is true, while `NaN >= 0.8` is false. In practice
-  // getDeviceMappings only reaches this function for devices with a non-empty Channels list, so the NaN branch fires only when prismcastChannelKeys is also
-  // empty.
+  // Written as a negated less-than so that the both-empty case (overlapRatio = NaN) accepts: `!(NaN < 0.8)` is true, while `NaN >= 0.8` is false. The NaN case
+  // needs both sets empty, so it cannot arise from getDeviceMappings, which passes only devices with a non-empty Channels list...the negated form exists for a
+  // direct caller that passes two empty sets.
   return { matches: !(overlapRatio < 0.8), maxSize, overlapCount, overlapRatio };
 }
 
 /**
- * Gets device channel mappings for a DVR host, refreshing the cache if needed. The cache is keyed by host alone, so the channelsDvr. handler clears it when a
- * save changes the host or the port.
+ * Gets device channel mappings for a DVR host, refreshing the cache if needed. The cache is keyed by host alone and was fetched at the running port, so the
+ * channelsDvr. handler clears it when a change includes the port; a host change leaves it, because a host's entry stays valid at the same port.
  * @param host - The DVR server hostname or IP address.
  * @param port - The DVR's API port.
  * @param now - The instant the cache's freshness is measured against.
@@ -721,8 +722,8 @@ function populateRunningChannelLogos(): void {
 /**
  * Populates the channel logo cache in two tiers. Tier 1 fetches logo URLs from the DVR's /devices endpoint (covers all channels in the M3U playlist). Tier 2 runs
  * TMS station name searches for any remaining channels with station IDs not covered by tier 1. Runs when a DVR host becomes known or changes, when a save changes
- * the port, and every 24 hours to pick up network rebrands. The host and the port are arguments, so the handler a save or a process write dispatches can hand it
- * the candidate's values while the running configuration still holds the previous ones.
+ * the port, and on the daily logo refresh to pick up network rebrands. The host and the port are arguments, so the handler a save or a process write dispatches
+ * can hand it the candidate's values while the running configuration still holds the previous ones.
  * @param host - The DVR server hostname or IP address.
  * @param port - The DVR's API port.
  */
@@ -732,7 +733,7 @@ async function populateChannelLogos(host: string, port: number): Promise<void> {
   const now = pollingClock.now();
 
   // Tier 1: fetch device data and extract logos. getDeviceMappings() handles the /devices fetch, device matching, and logo extraction into the cache as a side
-  // effect. The 5-minute mapping cache means we don't re-fetch if show name polling already called this recently.
+  // effect. The mapping cache's refresh window means we don't re-fetch if show name polling already called this recently.
   await getDeviceMappings(host, port, now);
 
   // Tier 2: search TMS by channel name for channels with station IDs not covered by tier 1. This covers disabled channels, channels without an enabled service,

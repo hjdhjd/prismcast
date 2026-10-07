@@ -84,9 +84,9 @@ const deps: CreatePageWithCaptureDeps = {
   syncWindowVisibility: async (): Promise<void> => { /* No window to settle. */ }
 };
 
-/* A minimal Page for the static-capture pipeline: goto and evaluateOnNewDocument are all it is asked for, close is what an establishment's unwind asks of it when
- * the establishment rejects, and the disconnected browser resolves the overlay poll's tick taxonomy to a clean stop rather than leaving a fire-and-forget promise
- * pending past the row.
+/* A minimal Page for the static-capture pipeline. It answers the members that pipeline touches (setBypassCSP, the injected video selector's
+ * evaluateOnNewDocument, the capture lock's isClosed check, and goto), plus close, which is what an establishment's unwind asks of it when the establishment
+ * rejects.
  */
 function makeStubPage(): Page {
 
@@ -152,7 +152,7 @@ describe("createPageWithCapture: a disposed pipeline never fires its error callb
   test("a stdout error on a live pipeline is still reported exactly once", async () => {
 
     // The not-over-silenced direction. A gate that suppressed unconditionally would leave a genuinely dying capture invisible to the recovery ladder, so this row
-    // is what keeps the fix from being a blanket mute.
+    // is what keeps the gate from being a blanket mute.
     const capture = await establish();
 
     ffmpeg.stdout.emit("error", new Error("read ECONNRESET on a pipe nobody is reading any more"));

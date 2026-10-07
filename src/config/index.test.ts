@@ -284,9 +284,8 @@ describe("validateConfiguration", () => {
 
   test("a bounded setting below its metadata floor is refused, and the error quotes the floor the metadata declares", () => {
 
-    /* logging.maxSize is the setting whose metadata floor and whose startup floor are furthest apart, so it is the one that shows which of the two the boot
-     * reads. The value below is inside the metadata's own range test only if the floor is read from the metadata; a startup path carrying its own smaller
-     * number would accept it and boot with a log file too small to hold anything useful, while the settings form refused the very same value on save.
+    /* The boot must read logging.maxSize's floor from its metadata - a value one below that floor is refused with the floor named - so a startup path with its
+     * own smaller number would boot a log too small to be useful while the form refused the same value.
      */
     const floor = getSettingByPath("logging.maxSize")?.min;
 
@@ -316,9 +315,9 @@ describe("validateConfiguration", () => {
 
 /* The boot's capture and DeviceID corrections, driven through initializeConfiguration on an in-memory store. Each row boots from the stored file it names on
  * the store double of index.helpers.ts, which normalizes its held file after each mutation as the real store's write hook does, so a row reads the file a write
- * stored. HDHomeRun is enabled by default, so a row whose subject is not the DeviceID seeds a valid one, and its boot corrects nothing for it. Each row starts
- * with no environment variable the merge consults, and the suite restores the environment and boots from an empty file after each row, so CONFIG holds the
- * defaults again for the suites below.
+ * stored. HDHomeRun is enabled by default, so a row that must show no write, or no DeviceID line, seeds a valid id; the other capture rows let the boot's one
+ * write carry the generated id as well. Each row starts with no environment variable the merge consults, and the suite restores the environment and boots from
+ * an empty file after each row, so CONFIG holds the defaults again for the suites below.
  */
 describe("initializeConfiguration - the boot's capture correction", () => {
 
@@ -749,9 +748,7 @@ describe("STARTUP_BOUNDED_SETTINGS", () => {
 
   test("every startup-validated setting's default value sits inside the bounds its metadata declares", () => {
 
-    /* The bounds and the defaults are separate declarations, and a default outside its own bounds would refuse to boot a server nobody had configured. This is
-     * the row that would have caught the logging.maxSize floor rising above its default, had it risen that far.
-     */
+    // A default outside its own bounds would refuse to boot an unconfigured server, so every default is held inside its metadata bounds.
     for(const settingPath of [ ...STARTUP_BOUNDED_SETTINGS, "hdhr.port" ]) {
 
       const setting = getSettingByPath(settingPath);
@@ -849,7 +846,7 @@ describe("displayConfiguration", () => {
   test("startup block lines are emitted without trailing periods (tabular display, not sentences)", () => {
 
     /* The block goes through displayLine which deliberately bypasses the logger's sentence-normalization contract. This locks the no-trailing-period behavior
-     * so a future regression that routed the rows back through LOG.info (and re-introduced trailing periods on every tabular row) would surface immediately.
+     * so a regression that routes the rows through LOG.info, adding trailing periods, fails here.
      */
     displayConfiguration();
 

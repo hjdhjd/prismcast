@@ -60,8 +60,8 @@ const gotoUrls: string[] = [];
 const overlayHandlingCalls: StartOverlayHandlingOptions[] = [];
 const pageEvents: string[] = [];
 
-// The lineup writes the real discovery-outcome recorder issues while the route drives it. Captured through the injected port rather than performed, so the suite
-// exercises the recorder for real without writing a file into the data directory.
+// The lineup port the real discovery-outcome recorder would write through. The driven provider's validator rejects every walk, so no write is expected; capturing
+// the port keeps any write in memory rather than in the data directory.
 const persistedLineups: { channels: PersistedLineupChannel[]; slug: string }[] = [];
 
 let barePort = 0;
@@ -87,9 +87,9 @@ function sequencedUrl(slug: string, query = ""): string {
   return urlFor(sequencedPort, "/services/" + slug + "/channels" + query);
 }
 
-/* Builds a stub Page satisfying the surface the guarded guide-page session touches. Every operation pushes to pageEvents so the delegation test can assert the order
- * of the mute injection, the navigation, and the close; goto also records its target URL. The double-cast documents that the session touches this subset, not the
- * full Page shape.
+/* Builds a stub Page satisfying the surface the guarded guide-page session touches. The mute injection, the navigation and the close push to pageEvents so the
+ * delegation test can assert their order, and goto also records its target URL; the remaining members are inert answers the session's reads need and record
+ * nothing. The double-cast documents that the session touches this subset, not the full Page shape.
  */
 function makeStubPage(): Page {
 
@@ -113,9 +113,9 @@ const stubBrowser = { newPage: async (): Promise<Page> => makeStubPage() } as un
 /* The PrecachingDeps the REAL withProviderGuidePage runs against in the delegating deps below: getCurrentBrowser hands back a stub browser whose newPage returns a
  * recording page, createDiscoveryPage delegates straight to that newPage so the real creator's window handling stays out of a route test, startOverlayHandling
  * records each poll's phase and abort signal in place of a live poll, emulateLayoutSurface answers with a fixed surface in place of a device-metrics override,
- * and the managed-page bookkeeping, shutdown probe, window sync, and provider lookups are the remaining members the helper's dependency closure requires. Only
- * the browser accessor, the page creation, the layout declaration, and the overlay poll are exercised; the rest are inert because the discovery success path
- * never revalidates a domain or drives a real window.
+ * and the clock arms the walk deadline and the overlay poll's timers. The browser accessor, page creation, layout declaration, overlay poll and clock are
+ * exercised; every other member exists because PrecachingDeps requires it and is inert, since the discovery success path never revalidates a domain, persists a
+ * lineup, or drives a real window.
  */
 const stubPrecachingDeps: PrecachingDeps = {
 

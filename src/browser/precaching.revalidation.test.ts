@@ -142,9 +142,10 @@ let deps: PrecachingDeps = makeDeps(clock);
 // The teardown for the health store establishment each describe below holds, assigned by that describe's setup.
 let disposeHealthStore: () => Promise<void>;
 
-// Builds a stub Page satisfying the surface the guarded guide-page session touches. The evaluate stub reports "no consent overlay / no containers" so empty
-// discoveries classify unknown; the revalidation happy paths return non-empty discoveries and never reach classification. Every page operation pushes to pageEvents
-// so the withProviderGuidePage tests can assert the order of the mute injection, the navigation, and the close.
+// Builds a stub Page satisfying the surface the guarded guide-page session touches. The evaluate stub answers false to every probe, and the embed-gate probe reads
+// any answer other than null as a located gate, so an empty walk against this page classifies as a consent overlay and the session never retries it. The
+// revalidation happy paths return non-empty discoveries and never reach classification. Every page operation pushes to pageEvents so the withProviderGuidePage
+// tests can assert the order of the mute injection, the navigation, and the close.
 function makeStubPage(): Page {
 
   return {
@@ -305,8 +306,8 @@ describe("revalidateDomainAuth", () => {
   test("runs discovery for the matching provider and clears the flag to verified on success (the happy path)", async () => {
 
     /* Traced path: the full flow - flag present, no guards trip, the provider matches by extracted guide domain, precacheService discovers a non-empty lineup, and
-     * recordDiscoveryOutcome's non-empty arm marks the domain verified through the criterion-1 chokepoint. This is the needsLogin -> verified round trip the
-     * login-end observer exists to produce.
+     * recordDiscoveryOutcome's non-empty arm marks the domain verified through markDomainAuth, the single mutation point. This is the needsLogin -> verified round
+     * trip the login-end observer exists to produce.
      */
     markDomainAuthRequired("stub-revalidate.test");
 
@@ -417,7 +418,7 @@ describe("precacheService - window sync on discovery-page cleanup", () => {
   });
 
   /* Both login states are exercised at this call site because the call is unconditional: precacheService decides nothing about the window, it asks the policy, and
-   * the policy is what accounts for a login session. The login-active arm is the one that proves it - a re-introduced guard would suppress the call there and this
+   * the policy is what accounts for a login session. The login-active arm is the one that proves it - a login-mode guard here would suppress the call there and this
    * test would fail. What the window then ends up as is decideWindowVisibility's login arm, asserted in windowSync.test.ts, not here.
    */
   test("asks for a window sync even while login mode is active", async () => {
@@ -437,7 +438,7 @@ describe("precacheService - window sync on discovery-page cleanup", () => {
 
   test("asks for a window sync when login mode is inactive", async () => {
 
-    // The complementary arm, which the retired login guard already allowed through.
+    // The complementary arm.
     await precacheService(makeStubProvider(async (): Promise<DiscoveredChannel[]> => ONE_CHANNEL), deps);
 
     assert.equal(windowSyncCalls, 1, "the discovery page cleanup syncs the window");
@@ -475,7 +476,7 @@ describe("startPrecaching - graceful-shutdown guard", () => {
 
   test("schedules no timer during graceful shutdown even with configured precache services", () => {
 
-    /* Traced path: the isGracefulShutdown() guard between the empty-services check and the precacheInProgress flag. launchBrowser() can be reached during teardown;
+    /* Traced path: the isGracefulShutdown() guard requestPrecache checks first, ahead of the pending-cycle merge. A browser launch can be reached during teardown;
      * without this guard the scheduled cycle would fire after the browser is closed and relaunch Chrome. The row's own clock is the instrument: a queued cycle
      * shows up on it directly, and the guard is proven the sole gate by scheduling normally the moment it is lifted.
      */
@@ -500,7 +501,7 @@ describe("startPrecaching - graceful-shutdown guard", () => {
  * the delay and finding that the walk never happened - not by inspecting a handle.
  *
  * The counter every row reads is precacheService invocations per provider, taken from the cache clear each invocation performs. It counts attempts rather than
- * guide walks, which keeps the assertions about the schedule rather than about the guarded session's own empty-walk retry underneath it. The rows nested last
+ * guide walks, which keeps the assertions about the schedule rather than about what the guarded session does with each walk. The rows nested last
  * drive the same schedule from a save's request beside a launch's, since a save's cycle and a pending re-attempt share it.
  */
 describe("the deferred discovery re-attempt", () => {
@@ -823,8 +824,9 @@ describe("the deferred discovery re-attempt", () => {
    * window over it would take their clicks. So the automatic walks stand aside while a session is on screen and come back for the services afterwards, on the
    * same deferred schedule the rows above drive. The user-initiated browse endpoint is deliberately not gated: the user asked for that window.
    *
-   * These rows drive the real login module through startLoginMode and clearLoginState, because the guard production reads is that module's own flag; the timer
-   * capture is installed first, so the session's fifteen-minute timeout is captured rather than left running against the process.
+   * These rows drive the real login module through startLoginMode and clearLoginState, because the guard production reads is that module's own flag. The stub
+   * login dependencies supply no clock, so the session's fifteen-minute timeout arms on the system clock rather than on the row's TestClock, which the scheduler
+   * and the walk deadlines run on. It never fires within a row: clearLoginState, called in each row and again in the afterEach, disposes it.
    */
   describe("standing aside for a login session", () => {
 
@@ -911,8 +913,8 @@ describe("the deferred discovery re-attempt", () => {
 
       await fire(PRECACHE_DELAY);
 
-      // Counted as precacheService invocations, exactly as the rows above count them: an empty walk gets the session's own reload-and-retry, so the walk count
-      // for an empty service is two and says nothing about the schedule.
+      // Counted as precacheService invocations, exactly as the rows above count them, because the attempt is the unit the scheduler owes. The stub page classifies
+      // an empty walk as a consent overlay, so no empty-walk retry runs here.
       assert.deepEqual(attempts, { "deferred-first": 1, "deferred-second": 1 }, "the cycle attempted both services, and both came back empty");
 
       // The session opens inside the re-attempt's delay, so the pass meets it on its first service.
@@ -1760,8 +1762,8 @@ describe("precacheService - navigation and cleanup", () => {
 
   test("navigates to the guide URL when the provider does not handle its own navigation", async () => {
 
-    /* Traced path: the handlesOwnNavigation branch in precacheService. A provider that does not intercept its own navigation relies on precacheService to drive the
-     * page to the guide URL before discovery; dropping the goto would leave discovery running against a blank page.
+    /* Traced path: the handlesOwnNavigation branch in withProviderGuidePage, reached through precacheService. A provider that does not intercept its own navigation
+     * relies on that helper to drive the page to the guide URL before discovery; dropping the goto would leave discovery running against a blank page.
      */
     const gotoCalls: { options: unknown; url: string }[] = [];
     const page = {
@@ -1825,8 +1827,8 @@ describe("precacheService - navigation and cleanup", () => {
 
   test("resolves when page.close throws after the browser disconnects during discovery", async () => {
 
-    /* Traced path: the try/catch around page.close() in precacheService's finally. If the browser disconnects mid-discovery the page is already gone and close()
-     * rejects; swallowing it keeps a per-service teardown failure from turning a successful discovery into a rejected precache.
+    /* Traced path: the try/catch around page.close() in withProviderGuidePage's finally, reached through precacheService. If the browser disconnects mid-discovery
+     * the page is already gone and close() rejects; swallowing it keeps a per-service teardown failure from turning a successful discovery into a rejected precache.
      */
     const page = {
 
@@ -2141,7 +2143,7 @@ describe("withProviderGuidePage", () => {
   });
 });
 
-/* An empty discovery walk is the failure this arc exists to answer: a rail or grid whose lazy content never populated inside the walk's budget leaves the provider
+/* An empty discovery walk is the failure this retry exists to answer: a rail or grid whose lazy content never populated inside the walk's budget leaves the provider
  * untunable for the life of the process. The session gives it one more attempt, but only when the page it left behind offers no explanation - a confirmed sign-in
  * wall or a standing consent banner explains the emptiness completely, and reloading past that evidence would replace a recordable diagnosis with a fresh,
  * undismissed banner.

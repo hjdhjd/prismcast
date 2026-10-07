@@ -274,8 +274,8 @@ describe("POST /config/channels/modify - remove keeps a channel that resolves to
 
     const { urlFor } = await bootApp(ctx);
 
-    /* Seed the selection to the Hulu variant of "abc", a multi-service predefined channel (it also has yttv/sling/xfinity/cox variants plus its own direct
-     * canonical). The seed mutation commits and repopulates the module service-selection cache with abc -> abc-hulu.
+    /* Seed the selection to the Hulu variant of "abc", a multi-service predefined channel with several service variants plus its own direct canonical. The seed
+     * mutation commits and repopulates the module service-selection cache with abc -> abc-hulu.
      */
     await mutateChannels((data) => {
 

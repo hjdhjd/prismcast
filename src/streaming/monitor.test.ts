@@ -1,9 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * monitor.test.ts: Unit tests for the playback health monitor's tick discipline. monitorPlaybackHealth offers no injection point for its recovery actions - they
- * drive a real Chrome through the browser layer - so the coverage here is the part that is drivable without one: how the monitor schedules and bounds its health
- * reads, and what it does with a read that fails or a recovery that finishes after the stream is already gone. The assertions run the real module against a Page double
- * and a virtual clock, so what they exercise is the shipped code path, not a re-implementation of it.
+ * monitor.test.ts: Unit tests for the playback health monitor. monitorPlaybackHealth takes its browser-boundary collaborators through MonitorDeps (the clock, the
+ * capture-impairment mark, the codec answers and the window sync) and its recovery hand-offs through the onTabReplacement and onCircuitBreak callbacks, so the
+ * coverage here is everything those injection points make drivable without a live Chrome: how the monitor schedules and bounds its health reads, what it does with
+ * a read that fails or a recovery that finishes after the stream is already gone, the status it emits, the resolution ladder's decisions, and the tab-replacement
+ * and breaker decisions on a browser that is or is not marked as unable to start captures. The assertions run the real module against a Page double and a virtual
+ * clock, so what they exercise is the shipped code path, not a re-implementation of it.
  *
  * Two mechanics make that possible and are baked into every assertion below. The clock advances in steps no larger than one monitor interval, because a single large
  * step fires the interval once and silently skips the nested timer firings a real run would see. And microtasks are flushed between a settlement and the next
@@ -13,8 +15,9 @@
  * The clock each row drives is the one its deps carry. The monitor arms its tick through that clock and reads every grace window, every mark, and every recovery
  * instant from it, so one advance moves the whole timeline a row is asserting on and no platform timer is involved at all.
  *
- * The recovery-action interiors (tab replacement, source reload, fullscreen reinforcement, segment-health escalation) still need a real browser and a live
- * capture pipeline, and stay with the e2e tier. The pure decision helpers they rest on - checkCircuitBreaker, getIssueCategory, formatIssueType,
+ * Segment-health escalation and the native fallback are driven through the same injection points in monitor.twoPhase.test.ts. Only the browser-bound interiors
+ * of the recovery actions - what tab replacement, source reload and fullscreen reinforcement do to a live page and its capture pipeline - need a real browser,
+ * and stay with the e2e tier. The pure decision helpers the monitor rests on - checkCircuitBreaker, getIssueCategory, formatIssueType,
  * recordRecoveryAttempt/Success, getRecoveryMethod - live in recovery.ts and are covered by recovery.test.ts.
  */
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";

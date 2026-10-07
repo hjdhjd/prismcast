@@ -11,7 +11,7 @@ import tseslint from "typescript-eslint";
 
 const rules = eslintRules as Record<string, Parameters<RuleTester["run"]>[1]>;
 
-// The project's own sources parse under the TypeScript parser, so the rows do too, with the flat config's ecmaVersion and module shape.
+// The project's own sources parse under the TypeScript parser, so the rows do too, with the flat config's module shape and an ecmaVersion of 2024.
 const ruleTester = new RuleTester({
 
   languageOptions: {

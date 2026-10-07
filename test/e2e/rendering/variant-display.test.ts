@@ -1,16 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * variant-display.test.ts: Integration coverage for variant-dropdown rendering under the service filter. The renderer at
- * src/routes/config/channels/table.ts (line ~951) marks each <option> with the `hidden` attribute when its service tag is filtered out by isServiceTagEnabled,
- * which is the contract that closes the d2ee7be regression class - "provider filter not applied to predefined variant dropdown options" rendered every option
- * regardless of the active filter, leaving users to select services they never enabled. The unit suite for services.ts asserts isServiceTagEnabled in isolation;
- * this suite asserts the renderer's actual emission of `hidden` against a real channel listing assembled by the production buildServiceGroups pipeline.
+ * variant-display.test.ts: Integration coverage for variant-dropdown rendering under the service filter. The multi-service branch of generateChannelRowHtml in
+ * src/routes/config/channels/table.ts marks each <option> with the `hidden` attribute when its service tag is filtered out by isServiceTagEnabled. That is the
+ * contract this suite protects: an option whose tag the running filter excludes carries hidden, so users cannot pick a service they did not enable. The unit
+ * suite for services.ts asserts isServiceTagEnabled in isolation; this suite asserts the renderer's actual emission of `hidden` against a real channel listing
+ * assembled by the production buildServiceGroups pipeline.
  *
- * Test 4 verifies directly (rather than assuming) what the dropdown renders as `selected` when the user's stored selection points at a service that is currently
- * filtered out. resolveServiceKey() in services.ts:969-991 falls back via findFirstEnabledVariant to the first variant whose tag is enabled; this is the
- * documented behavior, and the test asserts it. Note: a regression that re-shapes that fallback (e.g., to "leave the stored selection selected even when filtered"
- * or to "fall back to the canonical key without consulting the filter") would surface here as a different option carrying `selected`. The narrative comment in
- * Test 4 documents the contract so a future reader knows the assertion is by design, not chance.
+ * The stale-selection fallback test verifies directly (rather than assuming) what the dropdown renders as `selected` when the user's stored selection points at
+ * a service that is currently filtered out. resolveServiceKey() in services.ts falls back via findFirstEnabledVariant to the first variant whose tag is enabled;
+ * this is the documented behavior, and the test asserts it. Note: a regression that re-shapes that fallback (e.g., to "leave the stored selection selected even
+ * when filtered" or to "fall back to the canonical key without consulting the filter") would surface here as a different option carrying `selected`. The
+ * narrative comment in that test documents the contract so a future reader knows the assertion is by design, not chance.
  *
  * Why no harness `bootApp`: the dropdown rendering is a pure server-side string-producing function (generateChannelRowHtml), exactly like channels-table.test.ts.
  * Booting an HTTP listener would obscure the surface under test - we want to see the renderer's output, not Express's response shape.
@@ -70,11 +70,11 @@ describe("variant dropdown rendering under the service filter", () => {
 
   test("variant options outside enabledServices carry the hidden attribute; enabled options do not", async () => {
 
-    /* The d2ee7be rule directly: with enabledServices = [hulu, sling], the dropdown for abcnews (a multi-service channel with cox/directv/hulu/sling/
+    /* The hidden-option rule directly: with enabledServices = [hulu, sling], the dropdown for abcnews (a multi-service channel with cox/directv/hulu/sling/
      * xfinity/yttv variants and no `direct` always-on tag) must mark every variant whose tag is not in {hulu, sling} as hidden, and leave hulu and sling
      * unhidden. We use abcnews specifically because it has no `site` entry - the alphabetically-first service (cox) is its canonical, and cox-tagged variants
      * are subject to the filter exactly like every other variant. Channels with `direct` (e.g., abc, which has a site URL) would short-circuit isServiceTagEnabled
-     * for their direct variant - that case is the subject of Test 3, not this one.
+     * for their direct variant - that case is the subject of the direct-tag test, not this one.
      */
     await using ctx = await createIntegrationContext();
 
@@ -108,7 +108,8 @@ describe("variant dropdown rendering under the service filter", () => {
 
     /* Filter cleared - isServiceTagEnabled returns true for every tag. Every variant option, regardless of tag, must render without the hidden attribute. This
      * is the "no filter" baseline that the previous test's hidden-on-some assertion is measured against; a renderer that emitted hidden unconditionally (e.g.,
-     * a refactor that flipped the conditional) would pass Test 1 by accident on the filtered-out tags but fail Test 2 by emitting hidden everywhere.
+     * a refactor that flipped the conditional) would pass the filtered-options test by accident on the filtered-out tags but fail this one by emitting hidden
+     * everywhere.
      */
     await using ctx = await createIntegrationContext();
 
@@ -131,8 +132,8 @@ describe("variant dropdown rendering under the service filter", () => {
 
     /* By-design behavior: isServiceTagEnabled returns true for tag "direct" regardless of enabledServices, because direct-streaming sources (network-owned site
      * URLs like abc.com) do not require a subscription and should always be available. abc has a site
-     * variant alongside its cox/directv/hulu/etc. variants; the site variant carries the `direct` tag. Even with enabledServices = [hulu] - which would
-     * otherwise hide every option - the `direct` option must render without hidden.
+     * variant alongside its cox/directv/hulu/etc. variants; the site variant carries the `direct` tag. With enabledServices = [hulu], every option except
+     * hulu and direct carries hidden, and the `direct` option must stay unhidden even though the filter does not name it.
      *
      * A regression that "tightened" isServiceTagEnabled to consult only enabledServices.includes() would silently break this: users who set a narrow service
      * filter would suddenly lose access to the direct sources in their dropdowns. This test fails loud at that moment.
@@ -154,10 +155,11 @@ describe("variant dropdown rendering under the service filter", () => {
 
   test("when the stored selection's tag is filtered out, the dropdown selects the first-enabled variant", async () => {
 
-    /* Documented fallback contract from src/config/services.ts resolveServiceKey() (lines 982-1004): when the stored serviceSelection points at a variant whose
-     * tag is no longer in enabledServices, the resolver returns findFirstEnabledVariant(canonical) - the first variant in the group whose tag is enabled. The
-     * renderer at table.ts:943 calls resolveServiceKey to compute currentSelection, and marks the matching option as `selected`. Therefore, with the user's
-     * stored selection on yttv but enabledServices excluding yttv, the rendered dropdown's `selected` option must be the first-enabled variant, not yttv.
+    /* Documented fallback contract from src/config/services.ts resolveServiceKey(): when the stored serviceSelection points at a variant whose tag is no
+     * longer in enabledServices, the resolver returns findFirstEnabledVariant(canonical) - the first variant in the group whose tag is enabled. The
+     * multi-service branch of generateChannelRowHtml in table.ts calls resolveServiceKey to compute currentSelection, and marks the matching option as
+     * `selected`. Therefore, with the user's stored selection on yttv but enabledServices excluding yttv, the rendered dropdown's `selected` option must be
+     * the first-enabled variant, not yttv.
      *
      * The yttv option itself still appears in the dropdown - filtered options are hidden, not removed - and it must carry `hidden`. We assert both: the
      * `selected` flag landed on the fallback variant, and yttv's `hidden` flag is set. This asserts the resolver-renderer contract end-to-end so a future
@@ -165,7 +167,7 @@ describe("variant dropdown rendering under the service filter", () => {
      * surface the divergence.
      *
      * Variant-iteration order: buildServiceGroups pushes the canonical entry first, then appends the remaining variant keys sorted alphabetically
-     * (services.ts:455, variantKeys.sort()). For abcnews the canonical is the cox entry (keyed as bare abcnews) followed by abcnews-directv, abcnews-hulu,
+     * (variantKeys.sort() in services.ts). For abcnews the canonical is the cox entry (keyed as bare abcnews) followed by abcnews-directv, abcnews-hulu,
      * abcnews-sling, abcnews-xfinity, abcnews-yttv. With enabledServices = [hulu], findFirstEnabledVariant scans the variants array and returns the first one
      * whose tag is in enabledServices. The asserted fallback is therefore the hulu variant (abcnews-hulu).
      */
@@ -200,7 +202,7 @@ describe("variant fallback contract under service filter", () => {
   /* These tests assert the variant fallback CONTRACT - the rule the renderer uses when the user's stored selection (or the canonical's own service tag) lands
    * outside the active enabledServices filter. The contract is implemented in src/config/services.ts:
    * resolveServiceKey() returns findFirstEnabledVariant(canonicalKey) when the resolved service tag is filtered out, and falls through to the canonical/selection
-   * when no variant is enabled (services.ts:982-1004, 1012-1035). The renderer at table.ts:943 passes the resolveServiceKey output to mark `selected` on the matching
+   * when no variant is enabled. The multi-service branch of generateChannelRowHtml in table.ts passes the resolveServiceKey output to mark `selected` on the matching
    * <option>. The cumulative observation: the variant cell does NOT emit any cell-level indicator (banner, pill, "unavailable" badge) - the only signal of fallback
    * is which option carries `selected` and which carry `hidden`.
    *
@@ -212,8 +214,8 @@ describe("variant fallback contract under service filter", () => {
    *   3. Canonical-tag-filtered, no user selection: alphabetically-first enabled variant wins (the resolveServiceKey "no selection + canonical filtered" branch).
    *   4. Direct-as-fallback - with a filter that excludes every non-direct tag, the canonical's `direct` tag is always enabled and wins as the fallback.
    *
-   * Test 1 confirms directly that the cell does NOT emit an "unavailable" badge. If a future redesign adds a badge, the assertion fails and the renderer's
-   * contract change must be intentional (the test is updated alongside the renderer).
+   * The negative-observation test confirms directly that the cell does NOT emit an "unavailable" badge. If a future redesign adds a badge, the assertion
+   * fails and the renderer's contract change must be intentional (the test is updated alongside the renderer).
    *
    * The renderer's behavior matches the design intent: binding follows the service filter while identity persists. There is no cell-level "unavailable"
    * indicator - the dropdown's `selected` and `hidden` flags are the only signal.
@@ -274,7 +276,7 @@ describe("variant fallback contract under service filter", () => {
      * resolveServiceKey - if the resolver erroneously fell back even when the selection was enabled, this test would fail loudly.
      *
      * Using the same channel and the same enabledServices as the canonical-fallback test (the "no user selection + canonical's tag filtered out" test,
-     * enumerated as #3 in the suite header) - only the stored selection differs. The dropdown rendering is otherwise identical, so the contract assertion is precise:
+     * described in the suite header) - only the stored selection differs. The dropdown rendering is otherwise identical, so the contract assertion is precise:
      * selection-enabled vs selection-filtered is the single variable.
      */
     await using ctx = await createIntegrationContext();
@@ -298,14 +300,14 @@ describe("variant fallback contract under service filter", () => {
     /* The "no selection" branch of resolveServiceKey: when serviceSelections.get(canonicalKey) is undefined and the canonical's own tag is filtered out, the
      * resolver returns findFirstEnabledVariant(canonicalKey). For abcnews (no site entry), the canonical's URL is the cox URL (cox is the alphabetically-first
      * service among abcnews's variants); its tag is "cox". With enabledServices = [hulu], the canonical is filtered out. findFirstEnabledVariant scans the
-     * group's variants in alphabetical order (set by buildServiceGroups at services.ts:455) and returns the first whose tag is in enabledServices.
+     * group's variants in alphabetical order (set by buildServiceGroups in services.ts) and returns the first whose tag is in enabledServices.
      *
      * The variants for abcnews are: abcnews (canonical, cox tag - cox is the alphabetically-first service so it keys the bare canonical and emits no
      * abcnews-cox variant), then abcnews-directv, abcnews-hulu, abcnews-sling, abcnews-xfinity, abcnews-yttv. Iteration encounters abcnews first (cox -
      * filtered), then abcnews-directv (filtered), then abcnews-hulu (enabled). Therefore the dropdown's `selected` lands on abcnews-hulu.
      *
      * Note: this test uses no setServiceSelection call; serviceSelections is empty for abcnews. The resolver branches on the absence of a selection, not on the
-     * filter status of an explicit selection - distinct from test 1's "selection-filtered" branch.
+     * filter status of an explicit selection - distinct from the "selection-filtered" branch the stale-selection tests cover.
      */
     await using ctx = await createIntegrationContext();
 

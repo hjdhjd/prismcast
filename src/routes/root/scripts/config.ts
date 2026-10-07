@@ -8,7 +8,7 @@ import { VIDEO_QUALITY_PRESETS } from "../../../config/presets.ts";
 
 /**
  * Generates the configuration subtab script block containing the form handling, preset auto-fill, and import/export client-side logic. Functions are exposed on
- * window so inline event handlers and other tab scripts can invoke them.
+ * window so the action dispatcher's registerAction handlers and the other tab scripts (status.ts, channels.ts) can call them.
  * @returns HTML script block with configuration subtab functions.
  */
 export function generateConfigSubtabScript(): string {
@@ -47,7 +47,7 @@ export function generateConfigSubtabScript(): string {
     presetBlocks.join(",\n"),
     "  };",
 
-    // When quality preset changes, auto-fill bitrate and frame rate with preset values.
+    // When quality preset changes, auto-fill bitrate and frame rate with preset values. This is attached as a change listener on the preset select.
     "  function onPresetChange(presetId) {",
     "    const values = presetValues[presetId];",
     "    if(!values) return;",
@@ -875,9 +875,10 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  };",
 
-    // Inline cell editing for channel number and station ID. Clicking an editable cell replaces its content with a text input. Enter or blur PATCHes the channel
-    // record at /config/channels/:key with a typed partial update. Escape cancels and restores the original value. The cell's data attributes carry the field
-    // name, channel key, and current value so the handler is generic across both fields.
+    // Inline cell editing for channel number and station ID. Clicking an editable cell replaces its content with an input, a number input for the channel number
+    // and a text input for the station ID. Enter or blur PATCHes the channel record at /config/channels/:key with a typed partial update. Escape cancels and
+    // restores the original value. The cell's data attributes carry the field name, channel key, and current value so one handler serves the channel number and
+    // station ID cells alike.
     "  window.startInlineEdit = (td) => {",
     "    if(td.querySelector('input.inline-edit')) return;",
     "    const field = td.getAttribute('data-field');",
@@ -898,7 +899,7 @@ export function generateConfigSubtabScript(): string {
     "      saving = true;",
     "      const newValue = input.value.trim();",
     "      if(newValue === value) { cancel(); return; }",
-    // Build a typed partial-update body. channelNumber is parsed as an integer (null clears). stationId uses "" for empty converted to null.
+    // Build a typed partial-update body. channelNumber is parsed as an integer, and an empty stationId or channelNumber is sent as null to clear the field.
     "      const body = {};",
     "      if(field === 'channelNumber') body.channelNumber = newValue ? parseInt(newValue, 10) : null;",
     "      else if(field === 'stationId') body.stationId = newValue || null;",
@@ -1076,7 +1077,9 @@ export function generateConfigSubtabScript(): string {
     "  };",
 
     // Auto-number visible channels sequentially based on the current sort order. Reads the starting number from the input in the Quick Actions dropdown. When
-    // the input is empty, clears all channel numbers from visible channels instead of assigning them.
+    // the input is empty, clears all channel numbers from visible channels instead of assigning them. "Visible" here and in the HDHR and tag bulk actions below
+    // means the server's set - channels that are enabled and available under the service filter - because these requests send no row list. The client-side tag
+    // column filter does not narrow that set, so rows it hides are still numbered, toggled or tagged.
     "  window.autoNumberChannels = async () => {",
     "    const startInput = document.getElementById('auto-number-start');",
     "    const raw = startInput ? startInput.value.trim() : '1';",
@@ -1168,6 +1171,8 @@ export function generateConfigSubtabScript(): string {
     "    return tagPortal;",
     "  }",
 
+    // We save the inline tag dropdown's edits in this before-close hook. Every checkbox toggle is batched into a single PATCH when the dropdown closes,
+    // and comparing the sorted tag list against the sorted list captured at open skips the request when the toggles net out to no change.
     "  async function saveTagDropdownIfChanged() {",
     "    if(!activeTagDropdown) return;",
     "    const portal = getTagPortal();",
@@ -1356,6 +1361,8 @@ export function generateConfigSubtabScript(): string {
     "  };",
 
     // Update bulk assign options in the Quick Actions select to only show enabled services. Toggles the hidden attribute on option elements based on the filter.
+    // Safari ignores hidden on option elements, and this select gets no rebuild like the one channelTable.filter performs on the row selects, so in Safari the
+    // bulk assign select is not filtered and still lists every service.
     "  function updateBulkAssignOptions(enabledTags) {",
     "    const select = document.getElementById('bulk-assign-select');",
     "    if(!select) return;",
@@ -1603,7 +1610,8 @@ export function generateConfigSubtabScript(): string {
     "    for(const tagToggle of tagToggles) tagToggle.indeterminate = true;",
 
     // Run channelTable.filter() on page load when a service filter is active. The server renders filtered options with the hidden attribute, but Safari ignores it on
-    // option elements. This initial pass removes those options from the DOM to enforce the filter.
+    // option elements. This initial pass removes those options from the channel rows' selects to enforce the filter; the bulk assign select only has its options
+    // marked hidden, which Safari does not honor.
     "    const initFilterTags = channelTable.getEnabledFilterTags();",
     "    if(initFilterTags.length > 0) { channelTable.filter(initFilterTags); updateBulkAssignOptions(initFilterTags); }",
     "    const addUrlInput = document.getElementById('add-url');",
@@ -1717,8 +1725,9 @@ export function generateConfigSubtabScript(): string {
     "    if(modal) modal.style.display = 'none';",
     "  }",
 
-    // Start polling login status to detect when tab is closed externally. Errors are logged only on the first failure per polling session - a dead endpoint
-    // would otherwise spam the console at 1Hz. The flag resets at each startLoginStatusPolling() call so subsequent sessions get a fresh log.
+    // Start polling login status to detect when tab is closed externally. Errors are logged only on the first failure of each run of consecutive failures - a
+    // dead endpoint would otherwise spam the console at 1Hz. Both a successful poll and a new startLoginStatusPolling() call reset the flag, so the next failure
+    // after either is logged again.
     "  function startLoginStatusPolling() {",
     "    stopLoginStatusPolling();",
     "    let errorLogged = false;",
@@ -1771,8 +1780,8 @@ export function generateConfigSubtabScript(): string {
     "    }",
     "  }",
 
-    // Checkbox list: collect checked values into the hidden input and update the modified indicator. Called by onchange on individual checkboxes within a
-    // checkbox-list-grid. The hidden input holds the JSON-encoded array and participates in the standard form submission.
+    // Checkbox list: collect checked values into the hidden input and update the modified indicator. Called through the data-change-action dispatcher for each
+    // checkbox within a checkbox-list-grid. The hidden input holds the JSON-encoded array and participates in the standard form submission.
     "  window.updateCheckboxList = (checkbox) => {",
     "    const group = checkbox.closest('.form-group');",
     "    if(!group) return;",
@@ -1799,9 +1808,11 @@ export function generateConfigSubtabScript(): string {
     "  });",
 
     /* Action registrations. Each binds an ACTIONS name to a window-exposed handler defined above; the project-wide dispatcher in shared.ts looks up the handler
-     * by name when a click / change / keydown / submit event lands on a matching [data-<event>-action] element. Handlers express only the action's intent -
-     * event mechanics (default prevention and dropdown close) live declaratively on the trigger element via the event-type-scoped
-     * data-<event>-prevent-default and data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs.
+     * by name when a click / change / keydown / submit event lands on a matching [data-<event>-action] element. The event mechanics a trigger always needs
+     * (default prevention and dropdown close) live declaratively on the trigger element via the event-type-scoped data-<event>-prevent-default and
+     * data-<event>-close-dropdown attributes that the dispatcher processes before the handler runs. A mechanic that depends on the event stays in its handler...the
+     * service picker closes the dropdown only once a service is chosen. The form submit functions also call preventDefault themselves, repeating what their
+     * forms' data-submit-prevent-default already does.
      */
     "  window.registerAction('" + ACTIONS.autoNumberChannels + "', () => autoNumberChannels());",
     "  window.registerAction('" + ACTIONS.bulkAssignService + "', (target) => {",

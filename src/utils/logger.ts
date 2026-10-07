@@ -42,7 +42,8 @@ export function isConsoleLogging(): boolean {
 }
 
 /* Debug logging is controlled by the category-based filter system in debugFilter.ts. The --debug CLI flag enables all categories (equivalent to
- * PRISMCAST_DEBUG=*), while the PRISMCAST_DEBUG environment variable allows fine-grained category selection.
+ * PRISMCAST_DEBUG=*), the PRISMCAST_DEBUG environment variable allows fine-grained category selection, and the /debug page sets the filter at runtime and
+ * persists it in the configuration.
  */
 
 /**
@@ -55,8 +56,8 @@ export function setDebugLogging(enabled: boolean): void {
 }
 
 /**
- * Returns whether any debug logging is currently enabled.
- * @returns True if any debug categories are enabled, false otherwise.
+ * Returns whether any debug filter pattern is configured. An exclude-only pattern counts, so a true answer does not mean a category is enabled.
+ * @returns True if any debug filter pattern is configured, including an exclude-only pattern, false otherwise.
  */
 export function isDebugLogging(): boolean {
 
@@ -113,7 +114,7 @@ function formatSentence(message: string, args: readonly unknown[]): string {
 
 /* The logger commits to emitting exactly one sentence terminator on every non-debug line so callers do not have to reason about whether the format string or an
  * interpolated value carries the punctuation. This encodes the "non-debug logs are complete sentences" project rule as logger behavior rather than as per-call-site
- * discipline - a producer changing its message punctuation can no longer silently regress an interpolated log line, and the differing punctuation conventions
+ * discipline - a producer changing its message punctuation cannot silently regress an interpolated log line, and the differing punctuation conventions
  * between formatError (which strips trailing punctuation) and userMessage/validator strings (which carry it) become invisible to callers. Debug stays raw because
  * debug is fragments by convention. The terminator closes the sentence, and a trailing context object follows it: a line in the house form, a complete sentence
  * with its details in a context object, ends with the object rather than with a period after it.
@@ -200,8 +201,8 @@ function logWithLevel(level: LogEntry["level"], color: LogColor, message: string
 
 /**
  * Emits an already-formatted message body through the full logger pipeline: stream-ID prefix composition, SSE subscriber emission, and console-or-file routing.
- * Shared between logWithLevel (which normalizes first) and displayLine (which deliberately bypasses normalization for tabular display). Factoring this out keeps
- * the two callers from drifting on prefix shape, SSE routing, or color handling.
+ * Shared between logWithLevel (which normalizes first) and displayLine (which deliberately bypasses normalization for tabular display). One shared emitter keeps
+ * every caller from drifting on prefix shape, SSE routing, or color handling.
  * @param level - The log level (drives console method routing and category tagging).
  * @param color - Color name for styleText, or null for the default terminal color.
  * @param formatted - The fully-prepared message body (post-normalization if applicable).
@@ -307,8 +308,9 @@ interface BoundLogger {
 export const LOG = {
 
   /**
-   * Logs a debug message in cyan, filtered by category. Debug messages are only output when the specified category is enabled via the PRISMCAST_DEBUG environment
-   * variable or the --debug CLI flag (which enables all categories). Use this for verbose diagnostic information that would clutter normal logs.
+   * Logs a debug message in cyan, filtered by category. Debug messages are output only when the debug filter in debugFilter.ts enables the specified category.
+   * The filter is set by the PRISMCAST_DEBUG environment variable, by the --debug CLI flag (which enables all categories), or from the /debug page, whose filter
+   * is persisted in the configuration and applied at startup. Use this for verbose diagnostic information that would clutter normal logs.
    *
    * Stream ID is automatically included if running within a stream context (established by runWithStreamContext()).
    * @param category - The debug category (e.g., "tuning:hulu", "recovery:tab", "streaming:segmenter").

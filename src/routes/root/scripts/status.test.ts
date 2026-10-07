@@ -96,11 +96,11 @@ describe("generateStatusScript", () => {
     assert.match(script, /function formatClients\(s\b/);
   });
 
-  test("declares the recovering-level label resolver with all four documented levels", () => {
+  test("declares the recovering-level label resolver with a case arm per ladder level and the level >= 4 branch", () => {
 
-    // getRecoveringLabel is the level-based mapping for in-progress recovery. Its switch has four case arms - 1, 2, 3, and a defensive 4+ default - covering the
-    // three documented escalation levels. We confirm each case arm is present in source. The parameter regex is loose to tolerate the type-annotation-to-whitespace
-    // substitution Node's strip-types performs.
+    // getRecoveringLabel is the level-based mapping for in-progress recovery. Its switch has a case arm for each of the escalation ladder's levels 1, 2, and 3,
+    // and its default holds a level >= 4 branch for levels past the ladder's maximum. We confirm each case arm and the level >= 4 branch are present in source.
+    // The parameter regex is loose to tolerate the type-annotation-to-whitespace substitution Node's strip-types performs.
     const script = generateStatusScript();
 
     assert.match(script, /function getRecoveringLabel\(level\b/);

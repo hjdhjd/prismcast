@@ -113,9 +113,9 @@ function getDisplay(ctx: DisposableDomTestContext, id: string): string {
 }
 
 /**
- * Seeds the settings form with a single synthetic input that participates in submitSettingsForm's dot-path collection. The form is the production-rendered
- * #settings-form element; we append a fresh input/select before each submit test so the FormData walk picks up only what the test seeded. Tests that need the
- * production-rendered settings inputs operate against the existing DOM - this helper is for tests that want a controlled known input set.
+ * Seeds the settings form with a single synthetic input that participates in submitSettingsForm's dot-path collection. The helper inserts one field at the end
+ * of the production-rendered #settings-form element and leaves every production-rendered input in place, so FormData still collects those inputs. A caller
+ * that wants a controlled FormData set clears the form's innerHTML first; a caller that appends beside the production inputs gets both.
  */
 function appendFormField(ctx: DisposableDomTestContext, html: string): void {
 
@@ -503,10 +503,9 @@ describe("config.ts: preset application (onPresetChange via streaming-qualityPre
 
   test("changing the quality preset auto-fills bitrate (Mbps) and frame rate fields", async () => {
 
-    /* The preset table is keyed by preset id and emits {streaming-videoBitsPerSecond, streaming-frameRate}. The handler sets each input.value from the preset
-     * map. Bitrate is divided by 1M server-side, so the test asserts the Mbps representation. We pick the largest preset (4K) to ensure deterministic value
-     * mapping; tests that depend on exact preset numbers should use the preset id from VIDEO_QUALITY_PRESETS - here we just confirm the values are non-default
-     * after the change.
+    /* The preset table is keyed by preset id and emits {streaming-videoBitsPerSecond, streaming-frameRate}, with the bitrate converted to Mbps when the script
+     * is generated. The handler sets each input.value from the preset map. We select the first preset other than the current one and assert that at least one
+     * of the auto-filled fields changed...a test that depends on exact preset numbers should take its preset id from VIDEO_QUALITY_PRESETS.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -592,8 +591,8 @@ describe("config.ts: window.submitSettingsForm", () => {
 
     installFetchSpy(ctx, saveResponse());
 
-    /* Submit through the public surface: dispatch a synthetic 'submit' event on the form; the inline onsubmit calls submitSettingsForm. We invoke the function
-     * directly with a synthetic event whose preventDefault is a no-op.
+    /* We call window.submitSettingsForm directly with a stub event whose preventDefault does nothing, rather than going through the form's delegated
+     * data-submit-action.
      */
     ctx.evaluate("window.submitSettingsForm({ preventDefault: () => {} })");
     await ctx.flushAsync();
@@ -617,8 +616,7 @@ describe("config.ts: window.submitSettingsForm", () => {
   test("clears prior field errors before posting (.error and .form-error.dynamic stripped)", async () => {
 
     /* clearFieldErrors runs at the top of submitSettingsForm. We seed an input with .error and a sibling .form-error.dynamic, submit, and assert both are gone
-     * post-submit. We use a delayed-resolution fetch to inspect mid-flight state, but the simpler assertion is the post-submit state - clearFieldErrors runs
-     * synchronously before fetch is even called.
+     * post-submit. clearFieldErrors runs synchronously before the fetch is called, so checking the state after submit is enough.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -2095,7 +2093,7 @@ describe("config.ts: window.startUpgrade", () => {
 
   test("upgradeable + zero streams POSTs /upgrade and toasts based on the response", async () => {
 
-    /* No streams, no confirm, just go: GET /upgrade/info -> POST /upgrade. We confirm both calls and a positive toast on success+willRestart.
+    /* No streams, no confirm, just go: GET /upgrade/info -> POST /upgrade. We confirm both calls fire.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -2203,9 +2201,10 @@ describe("config.ts: window.updateCheckboxList", () => {
   test("collects the checked .checkbox-list-grid checkboxes into the hidden input as a JSON array string", async () => {
 
     /* The handler walks every checkbox in the form-group's grid and writes a JSON-serialized array of checked values into the hidden input. The settings page
-     * may already render its own data-checkbox-list inputs (for streaming.includedClients etc.), which would shadow our fixture under document.querySelector;
-     * we strip every existing data-checkbox-list element first, then insert a clean isolated form-group. We also explicitly set .checked = true after parsing
-     * because happy-dom v20 does not always reflect the `checked` attribute into the property for checkboxes inserted via insertAdjacentHTML.
+     * already renders its own data-checkbox-list inputs for its checkboxList settings (streaming.captureCodecs and channels.precacheServices among them), which
+     * would shadow our fixture under document.querySelector; we strip every existing data-checkbox-list element first, then insert a clean isolated form-group.
+     * We also explicitly set .checked = true after parsing because happy-dom does not always reflect the `checked` attribute into the property for checkboxes
+     * inserted via insertAdjacentHTML.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -2312,13 +2311,12 @@ describe("config.ts: form input listeners (validation + modified indicator wirin
   test("typing into a number input that exceeds its max adds the .error class via validateInput", async () => {
 
     /* The IIFE-init wires every form input/select to fire validateInput + updateModifiedIndicator on input/change. validateInput adds .error when value is out
-     * of range. We seed a fresh number input with min/max, dispatch input, and assert the class.
+     * of range. We find a server-rendered bounded number input, set it past its max, dispatch input, and assert the class.
      */
     await using ctx = await setupConfigRuntime();
 
-    /* Re-attach the validation listeners on the new input. The IIFE has already run for existing inputs; for a freshly-injected fixture we have to register the
-     * listeners ourselves. Instead, we leverage one of the production-rendered number inputs - they already have data-default and the listener wired. Look up
-     * any existing form number input via querySelector; production renders multiple in the streaming and HDHR sections.
+    /* The IIFE attached the validation listener to every server-rendered input when the page initialized, so we look up a bounded number input in
+     * #settings-form rather than injecting one, which would carry no listener. Production renders several in the streaming and HDHR sections.
      */
     const probe = ctx.evaluate(
       "(() => {" +
@@ -2332,9 +2330,8 @@ describe("config.ts: form input listeners (validation + modified indicator wirin
 
     if(!probe) {
 
-      /* Settings page renders no bounded number input; this is a structural prerequisite. We skip the assertion on the production wiring and instead assert the
-       * function directly: validateInput is closure-scoped so we cannot call it; the only public surface is via the input event. Without a bounded number input,
-       * the test cannot exercise the validateInput error branch. Mark the assumption explicitly.
+      /* A missing bounded number input is a precondition failure. validateInput is closure-scoped, so the input event is its only public surface, and without a
+       * bounded number input the test cannot reach validateInput's error branch...so it fails loudly rather than passing without exercising it.
        */
       assert.fail("settings page must render at least one bounded number input for this validation test (test infrastructure precondition)");
     }
@@ -2394,9 +2391,10 @@ describe("config.ts: dependent fields wiring (data-depends-on)", () => {
   test("unchecking a parent checkbox adds .depends-disabled to elements with data-depends-on=<parent>", async () => {
 
     /* updateDependentFields runs on parent checkbox change. We seed a parent + dependent fixture, flip the parent unchecked, dispatch change, and assert the
-     * dependent gains .depends-disabled and child inputs have tabIndex=-1.
+     * dependent gains .depends-disabled.
      *
-     * The handler is wired via the IIFE's form-input loop. We seed inside #settings-form so the listener has been attached at init time.
+     * config.ts attaches the change listener to each checkbox only when the page initializes, so a checkbox injected afterward carries none until the test
+     * wires one below.
      */
     await using ctx = await setupConfigRuntime();
 
@@ -2425,8 +2423,8 @@ describe("config.ts: dependent fields wiring (data-depends-on)", () => {
     /* Note: the above wiring is the very logic config.ts implements. We replicate it here only because the production listener on freshly-injected DOM is not
      * attached. For tests of the wiring contract proper, we exercise updateDependentFields indirectly via a production-rendered parent checkbox below.
      *
-     * Pick a server-rendered checkbox with at least one [data-depends-on] sibling. If none exist, we skip this assertion path - the contract is exercised by the
-     * synthesized fixture above which directly mirrors the production handler body.
+     * Pick a server-rendered checkbox with at least one [data-depends-on] sibling. If none exist, we skip this assertion path, and only the synthetic fixture's
+     * check below runs, which exercises the test's replica rather than config.ts.
      */
     const productionParent = ctx.evaluate(
       "(() => {" +
@@ -2451,8 +2449,8 @@ describe("config.ts: dependent fields wiring (data-depends-on)", () => {
       assert.equal(dep, true, "production-rendered dependent must gain .depends-disabled when parent unchecks");
     }
 
-    /* Synthetic fallback: assert the synthesized fixture also reacts. This proves the contract independent of whether the production page renders any depends-on
-     * pair at suite time.
+    /* Synthetic fixture: this checks only the test's own replica of updateDependentFields wired above, not config.ts. When the page renders no depends-on pair,
+     * this block is the only assertion that runs and the production wiring goes unexercised.
      */
     ctx.evaluate(
       "const cb = document.getElementById('udf-parent');" +

@@ -48,7 +48,7 @@ describe("generateChannelsSubtabScript", () => {
 
   test("exposes the profile management handlers (delete, edit, save, openWizard)", () => {
 
-    // The Custom Profiles subtab is driven by these four handlers. deleteUserProfile and editUserProfile work against /config/profiles. saveProfile is the
+    // The Custom Profiles subtab is driven by these handlers. deleteUserProfile and editUserProfile work against /config/profiles. saveProfile is the
     // wizard's final-step submit handler. openWizard opens the modal in create mode.
     const script = generateChannelsSubtabScript();
 
@@ -60,8 +60,8 @@ describe("generateChannelsSubtabScript", () => {
 
   test("exposes the service pack import/export modal handlers", () => {
 
-    // Service packs round-trip through these six handlers: startServiceImport opens the file picker, closeImportModal dismisses it, executeImport sends
-    // the payload, and the export trio (startServiceExport, closeExportModal, executeExport) mirrors the same flow for download.
+    // Service packs round-trip through these handlers: startServiceImport opens the file picker, closeImportModal dismisses it, executeImport sends
+    // the payload, and the export handlers (startServiceExport, closeExportModal, executeExport) mirrors the same flow for download.
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /window\.startServiceImport\s*=/);
@@ -105,7 +105,7 @@ describe("generateChannelsSubtabScript", () => {
 
   test("exposes the Setup Wizard handlers (openSetupWizard, skipSetup, finishSetup)", () => {
 
-    // The Setup Wizard auto-opens on first visit when setupCompleted=false. The three handlers cover open + skip + finish paths.
+    // The Setup Wizard auto-opens on first visit when setupCompleted=false. These handlers cover the open, skip and finish paths.
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /window\.openSetupWizard\s*=/);
@@ -115,7 +115,7 @@ describe("generateChannelsSubtabScript", () => {
 
   test("exposes the tag manager modal handlers (open, close, create, delete, restore, rename)", () => {
 
-    // The tag manager modal lives entirely in this script. createTag, deleteTag, restoreTag, and startTagRename are the four mutation paths.
+    // The tag manager modal lives entirely in this script. The mutation paths are createTag, deleteTag, restoreTag and startTagRename.
     const script = generateChannelsSubtabScript();
 
     assert.match(script, /window\.openTagManager\s*=/);

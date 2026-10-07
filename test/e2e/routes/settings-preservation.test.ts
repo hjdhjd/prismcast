@@ -1,24 +1,24 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * settings-preservation.test.ts: HTTP-level integration coverage for the settings-form save path. The handler at POST /config receives a form-shape body
- * (CONFIG_METADATA fields), merges it into the existing config via mergeConfigValues, and persists. The historical bug 4afa8a0 wiped non-form fields
- * (disabledPredefined, enabledServices, hdhr.deviceId) when the save was wholesale-overwriting the existing config; the merge-based fix preserves them.
+ * (CONFIG_METADATA fields), merges it into the existing config via mergeConfigValues, and persists. Because the save merges into the existing config, fields
+ * the form does not carry (disabledPredefined, enabledServices, hdhr.deviceId) survive it.
  *
  * persistence/upgrade-preservation.test.ts already covers the same rules by driving mutateConfig directly. This suite adds end-to-end HTTP coverage so a
- * regression in the route-handler path (e.g., the body-parser change, the validation step, the merge call site) surfaces here even when the underlying
+ * regression in the route-handler path (e.g., the body parsing, the validation step, the merge call site) surfaces here even when the underlying
  * mutateConfig rule still holds.
  *
  * The preservation coverage is split into cohesive blocks:
  *
- *   1. Hand-picked named-fingerprint tests for the highest-leverage 4afa8a0-class fields (disabledPredefined, enabledServices, hdhr.deviceId,
+ *   1. Hand-picked named-fingerprint tests for the highest-leverage non-form fields (disabledPredefined, enabledServices, hdhr.deviceId,
  *      channelsDvr.host) plus the empty-form-body no-op boundary. These remain on purpose, even though the parameterized sweep below also covers each of those
- *      fields - the named tests carry historical-incident context in their messages and serve as low-cost belt-and-suspenders against the most user-visible
- *      regression class. If the parameterized sweep ever skips or mis-seeds one of those fields, the named test still catches the underlying bug.
+ *      fields - the named tests give the most user-visible fields their own failure messages and serve as low-cost belt-and-suspenders against the most
+ *      user-visible regression class. If the parameterized sweep ever skips or mis-seeds one of those fields, the named test still catches the underlying bug.
  *
- *   2. Suite 17 - parameterized preservation sweep driven directly off PROCESS_FIELDS, the production table of the fields the process writes. Adding a
- *      field is one entry in src/config/userConfig.ts (the table) plus one line in this file's seed table; the sweep then automatically asserts preservation
- *      for the new field. The drift-check test at the top of the sweep block fails loudly if the seed table and the table get out of sync. This is the
- *      structural counter to the next 4afa8a0: a regression on a field nobody hand-picked for a test surfaces here automatically the moment it's added.
+ *   2. The parameterized preservation sweep driven directly off PROCESS_FIELDS, the production table of the fields the process writes. Adding a field is one
+ *      entry in src/config/userConfig.ts (the table) plus one line in this file's seed table; the sweep then automatically asserts preservation for the new
+ *      field. The drift-check test at the top of the sweep block fails loudly if the seed table and the table get out of sync, so a regression on a field
+ *      nobody hand-picked for a test surfaces here automatically the moment the field is added.
  *
  *   3. The list-settings sweep, the same shape over every CONFIG_METADATA setting whose default is an array. A list setting is an ordinary metadata setting,
  *      so the table sweep does not reach it, and its drift check derives the paths from the metadata, so a list setting added later fails until it gets a
@@ -154,8 +154,9 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
 
   test("an empty form body is a no-op against the existing config (no fields to merge)", async () => {
 
-    /* Boundary: the handler iterates CONFIG_METADATA fields and skips any value that comes back undefined. An empty body produces no field reads, no merge,
-     * and an unchanged on-disk config. We seed dirty state then post {} - the channels.json-adjacent state must survive untouched.
+    /* Boundary: the handler iterates CONFIG_METADATA fields and skips any value that comes back undefined. With an empty body every field read comes back
+     * undefined, so the merge has nothing to apply and the on-disk config is unchanged. We seed dirty state then post {} - the non-form fields in config.json
+     * must survive untouched.
      */
     await using ctx = await createIntegrationContext();
 
@@ -187,14 +188,13 @@ describe("POST /config - settings-form save preserves non-form fields", () => {
   });
 });
 
-/* Test-side seed values, keyed by PROCESS_FIELDS path. Kept in this file (not in the production module) so test fixture data stays out of production code, per
- * the operational rule. A dedicated drift-check test at the top of the sweep asserts this table's keys exactly match the production table's keys - any new
- * field added to PROCESS_FIELDS without a matching seed here fails the suite loudly before any sub-test runs, and any orphan seed without a matching entry fails
- * the same way.
+/* Test-side seed values, keyed by PROCESS_FIELDS path. Kept in this file (not in the production module) so test fixture data stays out of production code. A
+ * dedicated drift-check test at the top of the sweep asserts this table's keys exactly match the production table's keys - any new field added to
+ * PROCESS_FIELDS without a matching seed here fails the suite loudly before any sub-test runs, and any orphan seed without a matching entry fails the same way.
  *
  * Each value is chosen to differ from its DEFAULTS counterpart so filterDefaults preserves it (the seed must differ from the default to survive default-filtering).
- * schemaVersion and migrationsApplied are framework-managed metadata; the values used here mirror what the runtime would already write (current schema version
- * 3 / a synthetic migration-applied marker), so they round-trip without colliding with the file-store framework's migration runner.
+ * schemaVersion and migrationsApplied are framework-managed metadata; the values used here mirror what the runtime would already write (the current config
+ * schema version and a synthetic migration-applied marker), so they round-trip without colliding with the file-store framework's migration runner.
  */
 const SEED_VALUES: Record<string, unknown> = {
 
@@ -213,16 +213,17 @@ const SEED_VALUES: Record<string, unknown> = {
 
 describe("POST /config - parameterized preservation sweep over PROCESS_FIELDS", () => {
 
-  /* Suite 17 - the structural counter to "the next 4afa8a0 lands on a field nobody hand-picked for a test." The sweep iterates the production table directly,
-   * seeds a non-default value for each entry, POSTs a settings form that touches a different CONFIG_METADATA field (server.port: 9999 - the canonical Phase 1
-   * pattern), and asserts the seeded value survives byte-identical on disk. The table is the single source of truth; a new field added to the table is
-   * automatically covered by this sweep without any test edit beyond adding its seed value to the seed table above.
+  /* The structural guard against a preservation regression landing on a field nobody hand-picked for a test. The sweep iterates the production table
+   * directly, seeds a non-default value for each entry, POSTs a settings form that touches a different CONFIG_METADATA field (server.port: 9999 - the same
+   * body the named tests above post), and asserts the seeded value survives byte-identical on disk. The table is the single source of truth; a new field
+   * added to the table is automatically covered by this sweep without any test edit beyond adding its seed value to the seed table above.
    */
 
   test("test-side seed table and the PROCESS_FIELDS table agree on coverage", () => {
 
-    /* Drift check: the seed table's keys must equal the production table's keys exactly - no missing seeds (would fail with a confusing per-field error in a
-     * sub-test below), no orphan seeds (would silently grow the table with stale entries). Comparing sorted arrays surfaces each failure mode in one assertion.
+    /* Drift check: the seed table's keys must equal the production table's keys exactly. A missing seed makes its sub-test below seed and compare undefined,
+     * so the row passes without testing anything, and this check is the only thing that catches the gap. An orphan seed would silently grow the table with
+     * stale entries. Comparing sorted arrays surfaces each failure mode in one assertion.
      */
     const fieldPaths = Object.keys(PROCESS_FIELDS).toSorted();
     const seedPaths = Object.keys(SEED_VALUES).toSorted();

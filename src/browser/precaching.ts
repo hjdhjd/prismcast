@@ -562,9 +562,10 @@ interface WithProviderGuidePageOptions {
   /* Runs after the discovery walk completes, with the still-open (and now poll-quiet) page and the discovered channels. Used to record the discovery outcome while
    * the page still holds its evidence.
    *
-   * The third argument carries a classification the session already performed and whose page state is the one worth recording - which happens on exactly one path,
-   * where an empty walk classified as blocked and the session declined to reload. Every other path leaves it absent, and the recorder classifies the page in front
-   * of it, which is what keeps a retried walk's outcome describing the page the retry actually saw.
+   * The third argument carries a classification the session already performed and whose page state is the one worth recording. That happens on these paths: an
+   * empty walk whose page classified as blocked, where no reload is attempted, and an empty walk whose page classified as unknown but whose reload before the retry
+   * failed, where the first walk's classification still describes the page. Every other path leaves it absent, and the recorder classifies the page in front of
+   * it, which is what keeps a retried walk's outcome describing the page the retry actually saw.
    */
   readonly afterWalk?: (page: Page, channels: DiscoveredChannel[], classification?: BlockedPageClassification) => Promise<void>;
 
@@ -769,8 +770,8 @@ export async function withProviderGuidePage(provider: ProviderModule, options: W
       ({ channels, classification } = await retryAfterEmptyWalk({ deps, page, profile, provider }));
     }
 
-    // The hook runs once, on whichever result stands - and receives the first walk's classification only when the retry declined to reload, so the page it is
-    // handed and the classification it records always describe the same moment.
+    // The hook runs once, on whichever result stands - and receives the first walk's classification only when no second walk ran (the page classified as blocked,
+    // or the reload before the retry failed), so the page it is handed and the classification it records always describe the same moment.
     await afterWalk?.(page, channels, classification);
 
     return channels;
@@ -816,8 +817,8 @@ export async function precacheService(provider: ProviderModule, deps: Precaching
 
       LOG.info("Precached %s: %d channels (%ss).", provider.label, channels.length, (serviceElapsed() / 1000).toFixed(1).replace(/\.0$/, ""));
 
-      // Record the outcome while the page is still open - an empty result classifies the page it walked, unless the session already classified it and declined to
-      // reload, in which case that verdict travels here rather than being re-derived from a page the reload would have changed.
+      // Record the outcome while the page is still open - an empty result classifies the page it walked, unless the session already classified it and no second
+      // walk followed (the page classified as blocked, or the reload before the retry failed), in which case that verdict travels here rather than being re-derived.
       await recordDiscoveryOutcome(provider, channels, page, deps, classification);
     }
   }, deps);

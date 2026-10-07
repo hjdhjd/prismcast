@@ -59,7 +59,8 @@ let purposes: BrowserPurpose[] = [];
 
 /**
  * Builds the injected collaborators for one case, with a browser accessor that records the purpose it was asked for and then rejects with the case's error. The
- * remaining members are the ones createPageWithCapture would reach if the acquisition succeeded; none of them runs, because it does not.
+ * remaining members are the ones createPageWithCapture would reach if the acquisition succeeded. Apart from the leading window sync, which runs before the browser
+ * is acquired, none of them runs, because the acquisition refuses first.
  * @param failure - The rejection the browser accessor raises.
  * @returns The injected collaborators.
  */

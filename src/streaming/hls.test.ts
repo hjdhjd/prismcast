@@ -1,10 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * hls.test.ts: Unit tests for the synchronous helpers in the HLS request handler module. hls.ts orchestrates the entire HLS streaming pipeline (channel
- * validation, pending-stream registration, native vs capture path selection, segmenter creation, monitor wiring) and the orchestration entrypoints
- * (handleHLSPlaylist, handleHLSSegment, ensureChannelStream, initializeStream, startHLSStream, completeStreamSetup) require a real Chrome browser, FFmpeg
- * subprocess, and Express runtime to exercise as written. The unit-testable surface here is the module's pure, browser-free helpers, which translate inputs to
- * values without touching the browser or the registry beyond config lookups.
+ * hls.test.ts: Unit tests for the HLS request handler module. The file covers the validation and response helpers (validateChannel, sendValidationError), the
+ * capacity predicate (hasStreamCapacity), the segment route over registered entries (handleHLSSegment), buildResumeContinuity including a row over a live
+ * segmenter, the setup-failure description and response (describeSetupFailure, sendSetupFailure), and the playlist wait's answer to a setup failure
+ * (handleHLSPlaylist with handleSetupFailure). The browser-bound entry points (ensureChannelStream, initializeStream, completeStreamSetup) need a real Chrome
+ * browser, FFmpeg subprocess, and Express runtime to exercise as written, so they are left out here.
  *
  * The login-mode 503 branch lives in a sibling file (hls.loginMode.test.ts), which drives the real isLoginModeActive() flag through the setLoginDeps()
  * dependency injection point - the same one browser/index.ts wires at startup - with a stub browser and page, rather than substituting the accessor.
@@ -34,7 +34,7 @@ closePuppeteerStreamWssOnIdle();
 
 describe("validateChannel", () => {
 
-  // Snapshot CONFIG.channels.disabledPredefined and the serviceSelections cache so tests that mutate either restore them in afterEach. Module-level state is
+  // Snapshot CONFIG.channels.disabledPredefined and restore it in afterEach, and reset the service selections to empty after each row. Module-level state is
   // shared across the test process; without restoration, sibling tests in this file (or sibling test files) would observe leaked state.
   let savedDisabled: string[] = [];
 
@@ -168,9 +168,8 @@ describe("sendValidationError", () => {
 
   test("does NOT crash when the response double is non-fluent (does not return self)", () => {
 
-    // Defensive: the canonical makeReqRes spy returns res from status() so handlers can chain. A future regression could break that, or the production code
-    // could be invoked against a stub that does not chain - verify sendValidationError tolerates a response whose setters return undefined. We construct a
-    // minimal inline double here rather than going through makeReqRes precisely because makeReqRes IS fluent.
+    // Defensive: verify sendValidationError tolerates a response whose terminal setters return undefined. This minimal inline double chains through status(),
+    // where sendValidationError chains, and returns undefined from the terminal json() and send(), so the row checks that nothing reads the terminal result.
     const captured = { body: undefined as unknown, status: 0 };
 
     const res = {
@@ -197,10 +196,10 @@ describe("sendValidationError", () => {
 
 describe("hasStreamCapacity", () => {
 
-  /* hasStreamCapacity is the pure single source of truth for the concurrent-stream capacity decision, extracted so the boundary arithmetic is pinnable without a
-   * browser. The reservation it backs (reserveStreamSlot) is evaluated at the registration site BEFORE the new stream's pending entry is registered, so the count
-   * passed in always excludes the stream being admitted. Because the decision is centralized here and evaluated on that self-excluded count, the final free slot
-   * is always admitted rather than rejected.
+  /* hasStreamCapacity is the pure single source of truth for the concurrent-stream capacity decision, a standalone predicate, so the boundary arithmetic can
+   * be asserted without a browser. The reservation it backs (reserveStreamSlot) is evaluated at the registration site BEFORE the new stream's pending entry is
+   * registered, so the count passed in always excludes the stream being admitted. Because the decision is centralized here and evaluated on that self-excluded
+   * count, the final free slot is always admitted rather than rejected.
    */
 
   test("admits the final slot - activeCount one below the limit returns true (the boundary regression)", () => {

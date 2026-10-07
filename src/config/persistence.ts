@@ -12,13 +12,13 @@
  *   - Pluggable pre-write integrity validators
  *   - Centralized release-boot snapshot coordination across all registered stores
  *
- * Each persisted file (channels, config, profiles, health) declares its data shape, default value, parser, current schema version, ordered migration list, and
- * (optionally) an integrity validator. The framework wires the rest. Adding a new store is a one-line registration in createFileStore; adding a new migration
- * is a one-line entry in the store's migration map.
+ * Each persisted file declares its data shape, default value, parser, current schema version, ordered migration list, and (optionally) an integrity
+ * validator. The framework wires the rest. Adding a new store is a one-line registration in createFileStore; adding a new migration is a one-line entry in the
+ * store's migration map.
  *
  * The framework is backend-agnostic by construction: every operation it performs (atomic temp+rename, backup copy, snapshot copy, post-write readback) is
  * expressible against any durable store that offers stat/read/write/copy/rename/unlink with a path namespace. The abstraction surface is StorageBackend below;
- * the default fs-backed adapter lives in persistence.context.ts. Production stores get the default backend implicitly via the createFileStore default parameter.
+ * the default fs-backed adapter lives in persistence.context.ts. Production stores get the shared default backend when options.backend is omitted.
  */
 import { LOG, stringifySorted } from "../utils/index.ts";
 import { createDefaultStorageBackend } from "./persistence.context.ts";
@@ -80,7 +80,7 @@ const defaultStorageBackend = createDefaultStorageBackend();
 // Types.
 
 /**
- * Error thrown by `mutate()` when the backing file contains invalid JSON and recovery from .bak also failed. Route handlers can catch this specifically to
+ * Error thrown by `mutate()` and `mutateThen()` when the backing file contains invalid JSON and no usable .bak exists. Route handlers can catch this specifically to
  * return 400 instead of 500. Background code paths that swallow errors via try/catch will handle it like any other Error.
  */
 export class FileStoreParseError extends Error {
@@ -207,7 +207,8 @@ export interface FileStoreOptions<T> {
   label: string;
 
   // Ordered schema migrations keyed by target schema version. The runner applies migrations whose target is greater than the file's current version, in
-  // ascending order, until the file reaches currentSchemaVersion. Each migration must be paired with an entry in setSchemaVersion's contract.
+  // ascending order, until the file reaches currentSchemaVersion. The map must hold one migration for every intermediate target version up to
+  // currentSchemaVersion, because a gap throws at the first read that needs it.
   migrations?: Record<number, Migration<T>>;
 
   // Parse raw file content into the in-memory type. Called by read() after a successful file read. Should be permissive about reading older shapes - migrations
@@ -221,8 +222,8 @@ export interface FileStoreOptions<T> {
   // applies. Typically appends to a `migrationsApplied: string[]` field on the persisted shape so operators can see which migrations have run.
   recordMigration?: (data: T, description: string) => void;
 
-  // Writes the file's schema version into the data. Required when migrations is provided. Called after each migration applies and after the runner finishes
-  // upgrading.
+  // Writes the file's schema version into the data. Required when migrations is provided. Called once after each migration applies, with that migration's
+  // target version.
   setSchemaVersion?: (data: T, version: number) => void;
 
   // Pre-write integrity validator. Receives the parsed pre-mutation state (deep-cloned snapshot) and the post-mutation, pre-beforeWrite state (the raw mutated
@@ -240,8 +241,9 @@ export interface FileStoreOptions<T> {
 export interface FileStore<T> {
 
   /**
-   * Verifies migrations are up-to-date and persists the upgrade if any were applied. A no-op on repeat - when the file is already at the current schema
-   * version this is a single read with no write. Called once per store at startup by the release boot coordinator after snapshots have been captured.
+   * Verifies the file on disk is at the current schema version and parses, persisting a pending migration or a recovered backup through a queued write. A
+   * no-op on repeat: a file that is current and parses costs a single read with no write. Called once per store at startup by the release boot coordinator
+   * after snapshots have been captured.
    * @returns The migration result so callers can log per-store outcomes.
    */
   ensureMigrated(): Promise<MigrationResult>;
@@ -251,6 +253,8 @@ export interface FileStore<T> {
    * place. The store handles atomicity, serialization, corruption guard, backup, validation, and beforeWrite transforms.
    * @param fn - Mutation function. Receives current data. Modify in place; return value is ignored.
    * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard).
+   * @throws Error if the main file exists but could not be read (read-failure guard), if the post-write integrity check finds the file does not match the
+   * write, or if the write or its readback fails with an I/O error.
    */
   mutate(fn: (current: T) => void): Promise<void>;
 
@@ -265,6 +269,8 @@ export interface FileStore<T> {
    * @param fn - Mutation function. Receives current data, modifies it in place, and returns the follow-up to run once the write has landed.
    * @returns The follow-up's result.
    * @throws FileStoreParseError if the file contains invalid JSON and no usable backup is available (corruption guard), and whatever the follow-up rejects with.
+   * @throws Error if the main file exists but could not be read (read-failure guard), if the post-write integrity check finds the file does not match the
+   * write, or if the write or its readback fails with an I/O error.
    */
   mutateThen<R>(fn: (current: T) => () => Promise<R>): Promise<R>;
 
@@ -321,7 +327,8 @@ export async function ensureAllMigrated(): Promise<void> {
  * - **Atomic writes:** data is written to a `.tmp` file and renamed over the original. `rename()` is atomic on POSIX and NTFS.
  * - **Serialization:** a promise chain ensures only one `mutate()` or `mutateThen()` runs at a time, a `mutateThen()` holding it through its follow-up.
  *   Concurrent callers queue behind the active operation.
- * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if both the main file and its `.bak` are unparseable, preventing save-over-corrupt cascades.
+ * - **Corruption guard:** `mutate()` throws `FileStoreParseError` if the main file is unparseable and no usable `.bak` exists (missing or itself
+ *   unparseable), preventing save-over-corrupt cascades.
  * - **Read-failure guard:** `mutate()` throws when the main file exists but could not be read, because the read then answers with defaults, and writing over
  *   the file would replace its contents with them. `readError` on the read result marks that outcome for a caller reading on its own.
  * - **Backup rotation:** before each write, the current file is copied to `.bak`. One-deep rotation provides a recovery path for the previous good version.
@@ -329,7 +336,8 @@ export async function ensureAllMigrated(): Promise<void> {
  *   `recoveredFromBackup` on the result so callers can surface the event. The recovery is announced by the read that performed it, once per read; the
  *   internal `load()` is the same read without the announcement, for a caller that needs the facts alone. The read writes nothing: the durable restore belongs
  *   to the write queue, and it lands there through `ensureMigrated()` at boot or through the next `mutate()`, whose own write replaces the corrupt main with
- *   good data. Only when both files are unparseable does the result fall back to defaults with `parseError: true`.
+ *   good data. Only when the main file is unparseable and no usable `.bak` exists (missing or itself unparseable) does the result fall back to defaults
+ *   with `parseError: true`.
  * - **Versioned snapshots:** `snapshot(label)` writes a copy of the current file into a `snapshots/` subdirectory, named `<file>.<label>`, safe to call more
  *   than once for the same label. After each successful create the directory is pruned to at most SNAPSHOT_RETENTION entries per file (by mtime).
  * - **Declarative migrations:** when `migrations` and `currentSchemaVersion` are provided, `read()` runs any pending migrations in memory and returns the
@@ -806,8 +814,8 @@ export function createFileStore<T>(options: FileStoreOptions<T>): FileStore<T> {
 
     const filePath = options.path();
 
-    // Read the current file state. read() will transparently recover from .bak when the main file is corrupt and run any pending migrations; only when both
-    // main and .bak fail to parse does parseError surface here.
+    // Read the current file state. read() will transparently recover from .bak when the main file is corrupt and run any pending migrations; only when the
+    // main file is unparseable and no usable .bak exists (missing or itself unparseable) does parseError surface here.
     const result = await read();
 
     // Corruption guard: refuse to modify a file that cannot be parsed and could not be recovered from backup. Prevents the cascade where a corrupt file gets

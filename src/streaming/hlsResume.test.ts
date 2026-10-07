@@ -282,7 +282,7 @@ describe("loadResumeState", () => {
 
   test("discards corrupt JSON and continues with an empty map", async () => {
 
-    // Negative test: a malformed file is silently discarded with a warning. The map stays empty.
+    // Negative test: a malformed file is discarded with a warning rather than thrown. The map stays empty.
     const filePath = path.join(tempDir, "hls-resume.json");
 
     await writeFile(filePath, "{ not valid json", "utf-8");
@@ -789,7 +789,7 @@ describe("saveResumeState", () => {
 });
 
 /* assertEqual is a thin wrapper over assert.equal that gives the test bodies above a familiar Vitest-style call shape. We keep it inline rather than promoting to
- * testing.helpers.ts because no other test file currently needs this shorthand.
+ * testing.helpers.ts because no other test file needs this shorthand.
  */
 function assertEqual<T>(actual: T, expected: T, message?: string): void {
 

@@ -1,10 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * preroll.test.ts: Unit tests for the preroll compositor and accessor functions in preroll.ts. The pure-function exports - getPrerollSegmentCount,
- * getPrerollSegmentDuration, getPrerollTotalDurationSec, getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computePrerollWindow, buildPrerollEntries,
- * computeProgressiveReveal - earn full coverage here. setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and
- * each 404 branch. spawnAndCollect's deadline and collection semantics are exercised directly with Node child processes; only real-FFmpeg encoding
- * (generatePreroll) remains deferred to e2e.
+ * preroll.test.ts: Unit tests for the preroll compositor and accessor functions in preroll.ts. The pure functions computePrerollWindow, buildPrerollEntries and
+ * computeReveal earn full coverage here. The variant-cache readers - getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec,
+ * getPrerollMaxDuration, getPrerollCodec, isPrerollReady, computeProgressiveReveal and generatePrerollPlaylist - are covered on their no-variant branches only,
+ * because seeding a variant needs FFmpeg, which no automated tier runs; their populated-variant paths and generatePreroll itself go unexercised by the suites.
+ * setupPrerollRoutes is also unit-tested here against an Express stub, covering route registration and the no-variant 404 branch. spawnAndCollect's deadline and
+ * collection semantics are exercised directly with Node child processes.
  */
 import { buildPrerollEntries, computePrerollWindow, computeProgressiveReveal, computeReveal, generatePrerollPlaylist, getPrerollCodec, getPrerollMaxDuration,
   getPrerollSegmentCount, getPrerollSegmentDuration, getPrerollTotalDurationSec, isPrerollReady, setupPrerollRoutes, spawnAndCollect } from "./preroll.ts";
@@ -168,8 +169,8 @@ describe("computePrerollWindow", () => {
   test("counts the window from the preroll's first index on a resumed stream, so the preroll keeps the media sequence its playlist served", () => {
 
     /* A stream resumed at index 500 behind a preroll of 15 holds its preroll at indices 500 to 514 and its first real segment at 515. After that segment the
-     * preroll cap, counted from the preroll's first index, starts the window at 512. A window that ignored the preroll's first index would start at the
-     * sliding-window term, 506, and list indices the stream never produced.
+     * preroll cap, counted from the preroll's first index, starts the window at 512. Counting the cap from index 0 instead would start the window at the
+     * sliding-window term, 506, and let nine preroll entries into the window instead of three, which defeats the cap.
      */
     const start = computePrerollWindow({
 
@@ -238,7 +239,7 @@ describe("buildPrerollEntries", () => {
 
   test("uses the extension parameter for the segment file extension", () => {
 
-    // Parameterized for future format flexibility - locks the contract that .m4s vs other extensions is caller-controlled.
+    // Locks that the entry URL carries whatever extension the caller passes. Only ".m4s" is served, because the preroll segment route accepts no other extension.
     const entries = buildPrerollEntries({
 
 
@@ -335,8 +336,8 @@ describe("computeReveal", () => {
 
   test("falls back to a 2-second duration for entries missing from a short durations array", () => {
 
-    /* totalSegments is 6 but durations only covers the first 4 entries (the initial window). Segments 4 and 5 fall through the "?? 2" fallback at both
-     * summation sites. If the fallback were dropped, durations[4] would be undefined and the cumulative-duration arithmetic would produce NaN, which fails
+    /* totalSegments is 6 but durations only covers the first 4 entries (the initial window). Segments 4 and 5 fall through the progressive loop's "?? 2"
+     * fallback. If the fallback were dropped, durations[4] would be undefined and the cumulative-duration arithmetic would produce NaN, which fails
      * every "<" comparison and would reveal all 6 segments immediately at elapsedSec 0 instead of holding at the initial window.
      */
     const durations = [ 2, 2, 2, 2 ];
@@ -373,8 +374,7 @@ describe("generatePrerollPlaylist", () => {
 
   test("returns an empty string for the alternate codec when neither variant is generated", () => {
 
-    // Companion to the previous test: locks the contract that both codec branches share the same early-return semantics. A regression that hard-coded
-    // "h264" in the readiness check would still pass the test above but fail here.
+    // Companion to the previous test: the alternate codec takes the same early return when no variant has been generated.
     const playlist = generatePrerollPlaylist({ baseUrl: "http://example.test:5589", codec: "hevc", now: BASE_TIME_MS, prerollStartTime: BASE_TIME_MS,
       resumePosition: null });
 
@@ -425,7 +425,7 @@ describe("setupPrerollRoutes", () => {
 
   test("init.mp4 returns 404 when the variant Map has no entry for a recognized codec (variant not generated)", () => {
 
-    /* Even when the codec param is recognized, the prerollVariants Map starts empty in tests because generatePreroll() is never called. The handler hits the
+    /* Even for a codec a variant could exist for, the prerollVariants Map starts empty in tests because generatePreroll() is never called. The handler hits the
      * `if(!variant)` 404 branch.
      */
     const stub = makeExpressStub();
@@ -446,7 +446,7 @@ describe("setupPrerollRoutes", () => {
 
   test("segment route returns 404 'Preroll not available.' for an unknown codec param", () => {
 
-    // Same codec validation as init.mp4. The segment route's own filename validation only runs after the codec/variant gate passes.
+    // The variant lookup is the same as init.mp4's, and the segment route's filename validation only runs after it finds a variant.
     const stub = makeExpressStub();
 
     setupPrerollRoutes(stub.app as Express);
@@ -492,12 +492,11 @@ describe("spawnAndCollect", () => {
      * operator. The deadline runs from the spawn, so a child killed before its script even executes still rejects through the same path - nothing here depends on
      * the child getting anywhere.
      *
+     * The child traps SIGTERM and ignores it, the wedged-encoder shape the production comment describes. The row does not by itself prove the kill is SIGKILL: the
+     * rejection comes from the abort error Node raises once the kill signal is sent, before the child exits, so an ignored SIGTERM would reject the same way.
+     *
      * The deadline arms on a virtual clock at its full production width, so the advance below is the only thing that can fire it: a deadline reaching the child
      * by any other route would take a real minute and end this row on the runner's own timeout instead of on the assertion.
-     *
-     * The child installs a SIGTERM handler that does nothing, which is the wedged encoder the production comment describes: a process that ignores the polite
-     * signal. Passing therefore proves the kill carries SIGKILL strength rather than merely that some signal was sent, since SIGKILL is the one a process cannot
-     * trap. The handler costs the success path nothing - an untrappable kill lands just as fast.
      */
     const clock = new TestClock();
 

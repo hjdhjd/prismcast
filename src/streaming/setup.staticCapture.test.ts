@@ -62,10 +62,11 @@ let openContexts: OpenSharedWindowTabContext[] = [];
 let acquiredOptions: CaptureStreamOptions[] = [];
 
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
- * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
- * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder);
- * the poll's tick-error taxonomy reads page.browser().connected, so the stub reports a disconnected browser to resolve the tick to "stop" and let the
- * fire-and-forget poll settle cleanly rather than leaving a rejected promise pending after the test.
+ * and nothing else on the success path measures the page. For the non-static control, channel selection succeeds as a no-op under the default "none" strategy,
+ * and the tune path then fails fast in video-context resolution or playback setup, which need the live DOM the stub lacks, so no staticCapture poll is recorded.
+ * That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder); the poll's tick-error taxonomy reads
+ * page.browser().connected, so the stub reports a disconnected browser to resolve the tick to "stop" and let the fire-and-forget poll settle cleanly rather than
+ * leaving a rejected promise pending after the test.
  */
 function makeStubPage(): Page {
 
@@ -81,10 +82,11 @@ function makeStubPage(): Page {
   } as unknown as Page;
 }
 
-/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome),
- * acquireCaptureStream records the options it was asked for and yields a real PassThrough so the real createCaptureSession has a stream to own (no extension
- * protocol), startOverlayHandling records each poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of
- * CDP traffic, emulateCaptureSurface records the density step and answers with a fixed surface so the capture constraints it feeds stay total, and
+/* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage throws, so a regression that creates the page directly
+ * on the browser fails loudly (no Chrome), openSharedWindowTab records the context it was asked for and returns the recording stub page, acquireCaptureStream
+ * records the options it was asked for and yields a real PassThrough so the real createCaptureSession has a stream to own (no extension protocol),
+ * startOverlayHandling records each poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP
+ * traffic, emulateCaptureSurface records the density step and answers with a fixed surface so the capture constraints it feeds stay total, and
  * installActivationHeal and reaffirmCaptureSurface record the activation heal and the surface re-affirmation rather than performing them. createPageWithCapture
  * defaults every one of these to the real functions; substituting them here is what keeps the call off a live browser, and recording the acquisition alongside the
  * rest is what makes their order observable.
@@ -184,10 +186,11 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
 
   test("launches no staticCapture-phase poll for a non-static profile (the deciding field)", async () => {
 
-    // The complementary control: a non-static profile takes the tune path, whose channel selection fails fast here (the stub's evaluate rejects), so no
-    // startOverlayHandling call is recorded through the injected collaborators - and specifically none under the staticCapture phase. The tune path's own overlay poll
-    // runs through video.ts's real collaborators, not this test's injected collaborators, so it never reaches overlayCalls. If the static poll were launched
-    // unconditionally rather than gated on profile.staticCapture, this run would record a staticCapture call regardless.
+    // The complementary control: a non-static profile takes the tune path, which fails fast against the stub page in video-context resolution or playback setup
+    // (the stub has no live DOM), not in channel selection, which the default "none" strategy skips. So no startOverlayHandling call is recorded through the
+    // injected collaborators - and specifically none under the staticCapture phase. The tune path's own overlay poll runs through video.ts's real collaborators,
+    // not this test's injected collaborators, so it never reaches overlayCalls. If the static poll were launched unconditionally rather than gated on
+    // profile.staticCapture, this run would record a staticCapture call regardless.
     const profile = makeProfile({ staticCapture: false });
 
     await assert.rejects(createPageWithCapture({ profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "tune-test",
@@ -207,7 +210,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
      * call order is the assertion: moving either step below capture acquisition reorders these entries and fails here. The closing entry is the pass that ends the
      * establishment, which carries the page it just built so the executor can use that tab's CDP session rather than hunting for an open page.
      *
-     * The two re-affirmation steps bracket capture acquisition for a reason of their own. Acquisition selects the capture's tab - the capture extension targets
+     * The surface re-affirmation steps bracket capture acquisition for a reason of their own. Acquisition selects the capture's tab - the capture extension targets
      * whichever tab is active - so the composition it starts from is the window's fitted view of the page; the re-issue that follows moves it to the emulated
      * surface. The activation heal is installed before all of that, so the page carries its focus listener from its first document onward. The static branch this
      * test drives reaches both, which is what makes the assertion valid here.

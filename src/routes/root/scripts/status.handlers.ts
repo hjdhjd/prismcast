@@ -10,8 +10,8 @@
  *   - ClientState (this file) - the mutable record of streamData / systemData / expandedStreams / staleness counters / rAF gates
  *   - ClientExternals (this file) - the readonly handle to sibling-script window.* APIs (channelTable, dropdowns, copyToClipboard, etc.)
  *   - HANDLER_CONSTANTS (this file) - the registry of script-side constants (health color CSS vars, label maps, row tints) emitted into the script body
- *   - HANDLER_FUNCTIONS (this file) - the registry of free-standing handler functions (formatters, renderers, DOM mutators, and SSE handlers) whose .toString()
- *     output is concatenated into the emitted script body
+ *   - HANDLER_FUNCTIONS (this file) - the registry of free-standing handler functions (formatters, renderers, DOM mutators, and SSE handlers) plus the imported
+ *     functions shipped by their source, whose .toString() output is concatenated into the emitted script body
  *   - generateStatusScript (status.ts) - the boundary; the only place that builds strings, that wires window.*, and that constructs the EventSource
  *
  * Why this file exists. Free-standing handler functions are directly importable and callable from Node tests with synthetic context literals, which avoids the
@@ -349,8 +349,10 @@ function getDomain(url: string): string {
 }
 
 // Resolve the recovery-level label for a stream in the recovering state. Kept as a dedicated helper because the mapping is level-based, not string-based, so it
-// cannot fold into the same lookup map as the top-level health labels. Escalation level semantics defined in monitor.ts: L1=play/unmute, L2=source reload,
-// L3=page navigation (escalationLevel maxes at 3); the case 4+ arm below is defensive padding beyond that max.
+// cannot fold into the same lookup map as the top-level health labels. The escalation ladder lives in streaming/recovery.ts (getRecoveryMethod and
+// computeNextRecoveryLevel): L1=play/unmute, L2=source reload, L3=page navigation. Only levels 1 and 2 reach the browser as "recovering", because
+// deriveStreamHealth reports level 3 and above as "error", and native streams, which have no ladder, send level 2 as a severity code for any recovering state.
+// The level 3 and level 4+ arms below never run for a stream the server reports as recovering; they label levels the server does not send in that state.
 function getRecoveringLabel(level: number): string {
 
   switch(level) {
@@ -879,8 +881,10 @@ function handleStreamHealthChanged(data: StreamSummary, ctx: HandlerContext): vo
     return;
   }
 
-  // These four fields are exactly the ones updateStreamRow's targeted-update path does not touch - they live in the stream-info cell (the logo, the
-  // native/hardware badge, and the codec label) - so a change to any of them requires the full table rebuild rather than the cheap per-cell update.
+  // The fields compared below are drawn in the stream-info cell (the logo, and the native or hardware badge with its codec label), which updateStreamRow's
+  // targeted-update path does not touch, so a change to any of them requires the full table rebuild rather than the cheap per-cell update. The channel name is
+  // drawn in that cell too, from channel, serviceName and url, but those are not compared, so an event that fills in a pending channel name takes the cheap path
+  // and the name stays as first drawn until the next full render.
   const structuralChange = (prev.logoUrl !== data.logoUrl) || (prev.streamingMode !== data.streamingMode) ||
     (prev.hardwareAccelerated !== data.hardwareAccelerated) || (prev.captureCodec !== data.captureCodec);
 
@@ -1059,7 +1063,9 @@ type EmittableFn = (...args: never[]) => unknown;
  * The script-side function registry. generateStatusScript() emits each entry's .toString() output in order. Order is hoisting-irrelevant for function
  * declarations but reflects the logical groups: pure formatters, state-derived renderers, DOM mutators (updateSystemStatus / buildStreamPopoverContent /
  * updateStreamPopover), the render-scheduler pair, more DOM mutators (renderStreamsTable / updateStreamRow / toggleStreamDetails / updateDurations), SSE
- * handlers, then trampolines and lifecycle helpers. Adding a new function means appending here and using its identifier in the IIFE; nothing else changes.
+ * handlers, trampolines and lifecycle helpers, then the shipped badge builder and the attribute serializer it calls. Adding a function defined in this file
+ * means appending here and using its identifier in the IIFE; nothing else changes. An imported entry ships its defining module's source, so that body is bound
+ * by the same rule: it may reference only its parameters, the other shipped functions, escapeHtml and browser builtins.
  *
  * The exported individual functions remain importable for tests; this registry is just the emission order for the script body.
  */

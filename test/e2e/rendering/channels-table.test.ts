@@ -195,7 +195,7 @@ describe("generateChannelRowHtml - data-default reset-button contract for custom
   test("HTML-escapes the data-default value to defend against quote injection from logoUrl", async () => {
 
     // Boundary: a customized logoUrl with embedded quotes or HTML-special characters would, if not escaped, break out of the value attribute on the input. The
-    // escapeHtml(value) call at table.ts:131 is the defense; we exercise it by setting a logoUrl that contains an embedded '&' character which must surface as
+    // escapeHtml(value) call in generateTextField is the defense; we exercise it by setting a logoUrl that contains an embedded '&' character which must surface as
     // &amp; in the rendered value attribute (the assertion below matches value="...&amp;...").
     await using ctx = await createIntegrationContext();
 

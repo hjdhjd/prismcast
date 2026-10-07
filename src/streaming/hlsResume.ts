@@ -82,7 +82,7 @@ const resumeMap = new Map<string, ResumeEntry>();
 
 /**
  * Loads resume state from disk into memory. Called once at startup after config loading. The file is deleted immediately after reading - it only needs to exist
- * between shutdown and the next startup. If the file is missing or corrupt, the map stays empty and all streams start at 0 (today's behavior).
+ * between shutdown and the next startup. If the file is missing or corrupt, the map stays empty and all streams start at sequence 0.
  * @param now - The instant the TTL is measured against.
  */
 export function loadResumeState(now: number): void {
@@ -106,7 +106,7 @@ export function loadResumeState(now: number): void {
     fs.unlinkSync(filePath);
   } catch {
 
-    // Non-fatal - the file will be overwritten on next shutdown.
+    // Non-fatal - the file is overwritten at the next shutdown that has something to save, and in any case its entries fall outside the TTL by the next load.
   }
 
   let parsed: Record<string, ResumeEntryJSON>;
@@ -163,10 +163,11 @@ export function loadResumeState(now: number): void {
 }
 
 /**
- * Reads resume data for a channel without removing it from the map, and without logging: announcing the resume is the caller's, through logStreamResume. Returns
- * the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. Its readers are getResumePosition, which never consumes
- * the entry, and the capture segmenter's creation, which calls deleteResumeData() once its segmenter is attached. Keeping the read apart from the delete means
- * resume data survives if segmenter creation fails - the next stream start can retry with the same resume state instead of starting from scratch.
+ * Reads resume data for a channel without logging, and without removing a live entry from the map, though an entry that has expired since the load is evicted on
+ * read. Announcing the resume is the caller's, through logStreamResume. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume
+ * data is available. Its readers are getResumePosition, which never consumes the entry, and the capture segmenter's creation, which calls deleteResumeData() once
+ * its segmenter is attached. Keeping the read apart from the delete means resume data survives if segmenter creation fails - the next stream start can retry with
+ * the same resume state instead of starting from scratch.
  * @param channelName - The channel key to look up.
  * @param now - The instant the TTL is measured against.
  * @returns The resume data, which seeds the capture segmenter and carries the position the registration reads, or null.
@@ -180,7 +181,7 @@ export function peekResumeData(channelName: string, now: number): Nullable<Resum
     return null;
   }
 
-  // Check TTL in case time has passed since loadResumeState(). Expired entries are cleaned up by deleteResumeData() or the next loadResumeState().
+  // Re-check the TTL, since time may have passed since loadResumeState(). An entry that has expired since the load is evicted here, so later reads skip it.
   if((now - entry.timestamp) > RESUME_TTL) {
 
     resumeMap.delete(channelName);
@@ -188,6 +189,8 @@ export function peekResumeData(channelName: string, now: number): Nullable<Resum
     return null;
   }
 
+  // The init version advances by one so the resumed session's init segment gets a fresh URI...a client holding the prior session's init re-fetches it rather
+  // than reusing a cached one.
   return {
 
     discontinuityCount: entry.discontinuityCount,

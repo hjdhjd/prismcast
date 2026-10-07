@@ -1,11 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.classification.test.ts: Setup-tier tests for capture-infrastructure classification across both of the establishment's failure phases.
+ * setup.classification.test.ts: Setup-tier tests for how a capture-infrastructure failure from each of the establishment's failure phases reaches the client.
  *
- * The classification lives at the acquisition chokepoint - inside createPageWithCapture's own two catch blocks - so that every caller of the acquisition gets it.
- * A chokepoint with two rethrow points can quietly lose a phase: a helper wired into one catch and not the other, or a rethrow that converts the error and takes
- * its signature with it. So both phases are driven here, each with a failure the pattern list recognises, and each is read through the one client-facing
- * consequence the judgment drives - the 503 that tells Channels DVR to back off rather than the 500 it would retry straight into.
+ * A failure from any phase leaves createPageWithCapture through its catch blocks, and each rethrow point can quietly lose a phase: a rethrow that converts the
+ * error takes its signature with it. So every phase is driven here, each with a failure the pattern list recognises, and each is read through setupStream's
+ * status mapping - the 503 that tells Channels DVR to back off rather than the 500 it would retry straight into. What is asserted here is that the failure
+ * survives the rethrows with its signature intact and reaches that mapping as a 503. The catches' own hand-off to the capture verdict is stubbed to answer with
+ * none and is not observed, so these rows do not guard it.
  *
  * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup-tier suites use, so no Chrome and no CDP are involved: the acquisition
  * phase fails by rejecting the capture acquisition, and the establishment phase fails by rejecting the navigation that follows a successful acquisition.
@@ -127,10 +128,10 @@ before(async () => {
   // A single navigation attempt keeps the failure immediate rather than spending the retry ladder's backoff sleeps on a stub that will never succeed.
   CONFIG.streaming.maxNavigationRetries = 1;
 
-  // Both rows drive a genuine setup failure, whose error line is expected and not what they measure.
+  // Every row drives a genuine setup failure, whose error line is expected and not what they measure.
   const original = LOG.error.bind(LOG);
 
-  LOG.error = (): void => { /* The failure line is expected on both paths. */ };
+  LOG.error = (): void => { /* The failure line is expected on every path. */ };
   restoreError = (): void => { LOG.error = original; };
 
   initializeDataDir(await mkdtemp(path.join(os.tmpdir(), "prismcast-classification-")));
@@ -148,11 +149,11 @@ beforeEach(() => {
   navigationFailure = null;
 });
 
-describe("setupStream - capture-infrastructure classification across both establishment phases", () => {
+describe("setupStream - capture-infrastructure classification across each establishment phase", () => {
 
   test("an acquisition-phase capture failure is classified and reaches the client as a back-off", async () => {
 
-    // The phase the classification has always covered: Chrome refusing the capture start itself. The 503 is what Channels DVR reads as "wait and retry" rather
+    // The acquisition phase: Chrome refusing the capture start itself. The 503 is what Channels DVR reads as "wait and retry" rather
     // than as a broken channel it should keep hammering.
     acquisitionFailure = new Error("Cannot capture a tab with an active stream.");
 
@@ -164,8 +165,8 @@ describe("setupStream - capture-infrastructure classification across both establ
   test("an establishment-phase capture failure is classified too, and reaches the client the same way", async () => {
 
     /* The phase that is easiest to lose. The playback-initialization safety net and the capability probe both surface here, past acquisition, and the pattern
-     * list names both - but this failure travels through two rethrows before any caller sees it. The row goes red if the establishment catch drops its
-     * classification, or if a rethrow converts the error into something the pattern list does not recognise.
+     * list names both - but this failure travels through each rethrow point before any caller sees it. The row goes red if a rethrow converts the error into
+     * something the pattern list does not recognise, so the failure no longer reaches setupStream's status mapping as a 503.
      */
     navigationFailure = new Error("Playback initialization timed out.");
 
@@ -176,7 +177,7 @@ describe("setupStream - capture-infrastructure classification across both establ
 
   test("a site failure that is not capture infrastructure still reaches the client as a plain error", async () => {
 
-    // The control that keeps the two rows above from being satisfied by a path that answers 503 to everything. A site that simply will not load is the channel's
+    // The control that keeps the rows above from being satisfied by a path that answers 503 to everything. A site that simply will not load is the channel's
     // problem, not the capture system's, and the client should see it as such.
     navigationFailure = new Error("The site returned an unexpected page.");
 

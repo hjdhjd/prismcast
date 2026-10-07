@@ -273,7 +273,8 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
           writeLogEntry("info", "Post-removal entry " + String(i) + ".", null);
         }
 
-        // The check fires on the write whose count is a multiple of SIZE_CHECK_FREQUENCY. It schedules a void promise; we await flush to ensure the queue has drained.
+        // The check fires on the write whose count is a multiple of SIZE_CHECK_FREQUENCY, as a voided promise whose stat does not go through the write chain.
+        // Awaiting the flush is a settling point only: it drains the write chain, not the check, so the row relies on the check's stat settling within it.
         await flushLogBuffer();
 
         // The console.warn should have fired with an "Error checking log file size" message reporting the ENOENT.
@@ -297,7 +298,8 @@ describe("checkAndTrimFile - debug-active gate and missing-file recovery", () =>
 describe("trimLogFile end-to-end - on-disk size after writeCount triggers a trim", () => {
 
   /* The pure cut algorithm is tested by computeTrimmedLogContent. The orchestration shell (read + temp-write + atomic rename) is exercised here by writing
-   * enough content to push past maxSize, triggering a trim via the size-check counter, and asserting the on-disk file ends up at half maxSize or less.
+   * enough content to push past maxSize, triggering a trim via the size-check counter, and asserting the on-disk file shrinks below the seed and ends at or
+   * below maxSize.
    */
 
   afterEach(async () => {

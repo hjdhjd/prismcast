@@ -1,7 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * index.test.ts: Unit tests for the testable, non-Chrome-driving pieces of browser/index.ts. The module is dominated by Chrome lifecycle code (launchReadyBrowser,
- * detectBrowserCapabilities, cleanupStalePages, executeBrowserRestart, prepareExtension), which all require Puppeteer integration and are deferred to e2e.
+ * detectBrowserCapabilities, cleanupStalePages, executeBrowserRestart, prepareExtension), which all require Puppeteer integration, and no automated suite exercises
+ * them: the integration tier under test/ never launches Chrome.
  *
  * The unit tests here cover the synchronous accessor surface that does not touch Chrome:
  *
@@ -10,7 +11,7 @@
  *   - getChromeVersion (the cached version string accessor)
  *   - getBrowserInstance / getCaptureImpairment / isBrowserConnected (the synchronous status accessors)
  *   - findChromeProcessesUsingProfile (the pure discovery filter killStaleChrome composes)
- *   - findProfileHolder (the pure holder test killStaleChrome's lock-file removal reads)
+ *   - findProfileHolder (the pure holder test cleanStaleProfileFiles reads)
  *   - cleanStaleProfileFiles (the one lock-file removal the sweep and the teardown reach, held to the holder test, driven on a temp profile directory)
  *   - buildLaunchOptions (the launch-option assembly that reads CONFIG)
  *   - emulateCaptureSurface (the per-capture-page surface declaration, driven through a recording page double)
@@ -603,9 +604,10 @@ describe("buildLaunchOptions", () => {
 
   test("turns off the launcher's own SIGHUP, SIGINT, and SIGTERM listeners so PrismCast owns process signals", () => {
 
-    /* All three are asserted because each one hands a different signal back to PrismCast's handlers, and a launch that carried only two would still let the third
-     * signal end Chrome's process group with SIGKILL before the graceful path could run. Asserting false rather than the keys' absence is the point: the launcher
-     * defaults every one of them to true, so an omitted key is silently the wrong behavior.
+    /* All three are asserted because a launch that carried only two would still let the launcher end Chrome's process group with SIGKILL on the third signal:
+     * for SIGINT and SIGTERM that preempts PrismCast's graceful path, and for SIGHUP, which PrismCast does not handle, the launcher's listener would SIGKILL
+     * Chrome's group and, by being registered at all, stop Node's default termination, leaving the server running on a browser killed out from under it. Asserting
+     * false rather than the keys' absence is the point: the launcher defaults every one of them to true, so an omitted key is silently the wrong behavior.
      */
     const options = buildLaunchOptions();
 
@@ -1754,9 +1756,10 @@ describe("emitCurrentSystemStatus", () => {
 
   test("does not throw and reports the expected runtime metrics shape on the SSE bus when state changes", async () => {
 
-    // The function reads runtime metrics and emits a SystemStatus to the SSE bus. The emitter dedupes by browser.connected and streams.active, so consecutive
-    // calls with identical values fire only once - we wrap a single call here and verify either no emission (already-cached values match) or a well-shaped one.
-    // Either outcome confirms the function does not throw and the emitted shape matches the documented contract when it does emit.
+    // The function reads runtime metrics and emits a SystemStatus to the SSE bus. The emitter dedupes on the fields the page header renders (connectivity, the
+    // capture-impairment mark, active streams and the stream limit), so consecutive calls with identical values fire only once - we wrap a single call here and
+    // verify either no emission (already-cached values match) or a well-shaped one. Either outcome confirms the function does not throw and the emitted shape
+    // matches the documented contract when it does emit.
     const captured: { event: string; data: unknown }[] = [];
 
     const unsubscribe = subscribeToStatus((event, data) => {
@@ -2156,7 +2159,7 @@ describe("isBrowserIdleForRestart", () => {
   });
 });
 
-/* Deferred to e2e (require Puppeteer/Chrome integration):
+/* Not exercised by any automated suite, because each path below requires Puppeteer/Chrome integration and the integration tier under test/ never launches Chrome:
  *
  * - getCurrentBrowser, launchReadyBrowser, launchWithCustomArgs, detectBrowserCapabilities (every step here drives Puppeteer or executes JS in a real browser context).
  *
@@ -2166,7 +2169,7 @@ describe("isBrowserIdleForRestart", () => {
  *
  * - executeBrowserRestart (full restart cycle drives closeBrowser + getCurrentBrowser).
  *
- * - getBrowserPages (browser.pages() against a real session). The window-visibility executor is not deferred: its factory takes injected primitives and an
+ * - getBrowserPages (browser.pages() against a real session). The window-visibility executor is exercised: its factory takes injected primitives and an
  *   injected page resolver, so windowSync.test.ts drives the whole loop with fakes and only the resolver wired in here needs a real browser.
  *
  * - prepareExtension (filesystem operations against the packaged executable layout).

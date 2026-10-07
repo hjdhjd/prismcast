@@ -22,7 +22,7 @@ describe("runConsistencyProbeAtStartup", () => {
   test("changes nothing across repeated invocations", async () => {
 
     // Boundary: calling the probe a second time must not double-count or fail. Under the unit-test default, every check returns no issues, so the probe
-    // short-circuits at the empty-issues guard before any logging... and since the probe only reports, a repeated call has nothing it could change either.
+    // short-circuits at the empty-issues guard before any logging...and since the probe only reports, a repeated call has nothing it could change either.
     await runConsistencyProbeAtStartup();
     await assert.doesNotReject(() => runConsistencyProbeAtStartup());
   });

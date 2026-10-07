@@ -518,7 +518,7 @@ function generateAdvancedFields(idPrefix: string, options: AdvancedFieldOptions 
 }
 
 /**
- * Generates JavaScript variables for channel selector datalist population. Produces four variables: `channelSelectorsByDomain` maps URL hostnames to known
+ * Generates JavaScript variables for channel selector datalist population. Produces the datalist variables: `channelSelectorsByDomain` maps URL hostnames to known
  * channel selector values (from predefined channels and cached service discovery), `serviceByDomain` maps service guide URL hostnames to service slugs for
  * client-side async discovery, `serviceGuideUrl` maps service slugs to their guide URLs for URL correction hints, and `predefinedByDomain` maps domains to
  * predefined channel summaries so the manual add form can show inline hints without a server round-trip. Embedded as a `<script>` block in the channels panel.
@@ -694,7 +694,7 @@ function generateTagManagementModal(): string {
 }
 
 /**
- * Generates the Browse Channels 2-step wizard modal. Step 1 is the service picker grid, step 2 is channel discovery and management. Channel state detection
+ * Generates the Browse Channels wizard modal. Steps: the service picker grid, then channel discovery and management. Channel state detection
  * (new, switch, current) is handled server-side by the annotated discovery response - no client-side matching logic is needed. Service and guide URL data are
  * embedded as JSON data blocks for the client-side wizard controller.
  * @returns HTML string for the browse modal.
@@ -726,7 +726,7 @@ function generateBrowseModal(): string {
 }
 
 /**
- * Generates the Service Setup 3-step wizard modal. Steps: Services (multi-select), Sign In (sequential auth), Channels (summary + finish). The
+ * Generates the Service Setup wizard modal. Steps: Services (multi-select), Sign In (sequential auth), Channels (summary + finish). The
  * setupCompleted flag is embedded as a data attribute so the client can auto-show the wizard on first visit.
  * @returns HTML string for the setup wizard modal.
  */
@@ -1216,7 +1216,8 @@ export interface ChannelTablePatch {
 
 /**
  * Computes the complete channel table state - summary counts and scope toggle counts - from the current channel listing. This is the server-side single source
- * of truth for all count computation, replacing the client-side DOM-scanning approach. Called once per mutation as part of building a patch.
+ * of truth for all count computation: the client applies these counts directly and never derives them from the DOM. Called once per mutation as part of
+ * building a patch.
  * @param listing - Optional pre-fetched listing. When omitted, fetches from getChannelListing(). Passing the listing avoids a redundant computation when
  *   buildChannelTablePatch already has it.
  * @returns The channel table counts and scope toggle counts.
@@ -1966,8 +1967,7 @@ export function generateChannelsPanel(channelMessage?: string, channelError?: bo
   // client-side after fetching discovered channels from the services endpoint.
   lines.push(generateBrowseModal());
 
-  // Service Setup wizard modal. Follows the same wizard pattern as the service profile builder. Three steps: pick services, authenticate, browse channels.
-  // The setupCompleted flag is embedded as a data attribute so the client can auto-show the wizard on first visit.
+  // Service Setup wizard modal. Follows the same wizard pattern as the service profile builder.
   lines.push(generateSetupWizardModal());
 
   // Tag Management modal. A simple dialog for creating, deleting, and restoring organizational tags. Client-side handlers drive the CRUD operations via the

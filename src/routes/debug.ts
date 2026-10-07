@@ -64,7 +64,7 @@ type RowVariant = "header" | "leaf" | "standalone";
 
 /**
  * A pure data description of one row on the page. The renderer takes this and produces the HTML; all escaping happens inside the renderer so callers pass raw
- * values. This is the single shape every row variant funnels through, which is what makes the four-track grid template on ".debug-section" the sole source of
+ * values. This is the single shape every row variant funnels through, which is what makes the named-track grid template on ".debug-section" the sole source of
  * truth for column alignment - there is no second markup path that could drift.
  */
 interface RowSpec {
@@ -137,7 +137,7 @@ function buildCategoryNodes(): readonly CategoryNode[] {
 }
 
 /**
- * Generates the page-specific CSS styles for the debug endpoint. Layout is owned by ".debug-section" - a CSS Grid with four named tracks. Each ".debug-row"
+ * Generates the page-specific CSS styles for the debug endpoint. Layout is owned by ".debug-section" - a CSS Grid with named column tracks. Each ".debug-row"
  * inherits those tracks via subgrid, so the column geometry exists in exactly one rule and every row participates in the same coordinate system. Variants
  * (header, leaf, standalone) place their cells into the appropriate named tracks via modifier classes; description-column alignment falls out of the grid
  * template itself rather than depending on per-row CSS staying in sync.
@@ -162,14 +162,14 @@ function generateDebugStyles(): string {
     "  word-break: break-all; }",
     ".debug-status-label { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }",
 
-    // Section cards. ".debug-section" is the grid container that owns the four-track column template; every row inside it inherits these tracks via subgrid,
+    // Section cards. ".debug-section" is the grid container that owns the named-track column template; every row inside it inherits these tracks via subgrid,
     // so the column x-positions are computed once per card and shared across all of the card's rows.
     ".debug-pane { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }",
     ".debug-section { background: var(--surface-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px;",
     "  display: grid; column-gap: var(--debug-col-gap); row-gap: var(--debug-row-gap);",
     "  grid-template-columns: [indent] var(--debug-indent-col) [checkbox] var(--debug-checkbox-col) [label] var(--debug-label-col) [desc] 1fr; }",
 
-    // The row template. Rows span all four section columns and inherit those tracks via "grid-template-columns: subgrid", so every cell across every row
+    // The row template. Rows span every one of the section's column tracks and inherit those tracks via "grid-template-columns: subgrid", so every cell across every row
     // (across every section) lives in the same coordinate system. There is no second column declaration anywhere.
     ".debug-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }",
 

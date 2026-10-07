@@ -1,16 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * non-targeted-isolation.test.ts: Per-entry byte-preservation guarantee for channels.json under any mutation. The cross-store-isolation suite asserts file-level
+ * non-targeted-isolation.test.ts: Per-entry preservation guarantee for channels.json under any mutation. The cross-store-isolation suite asserts file-level
  * isolation across stores; this suite asserts the within-channels.json analog: a mutation that targets a specific subset of channel keys must leave every other
- * key's on-disk entry byte-identical pre/post. The check catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
- * re-keys entries, re-orders tag arrays, or rewrites whitespace - because those suites only assert the targeted side of the change.
+ * key's on-disk entry unchanged pre/post. The check catches a class of bug invisible to the existing crud/bulk suites - serializer drift that silently
+ * rewrites a value, changes a type, re-orders tag arrays, or drops an entry - because those suites only assert the targeted side of the change.
  *
- * Comparison strategy: parse channels.json, project each channel entry through stringifySorted (the same serializer prepareChannelsForWrite hands to the
- * file-store framework's beforeWrite path before it writes to disk), and compare per-entry strings. This produces the strongest possible byte-identity
- * assertion against parsed output without coupling to
- * full-file bytes - which always change because the targeted entry changes - and survives whitespace/key-order regressions a deepEqual on parsed objects would
- * miss. The on-disk channels.json shape is flat per the prepareChannelsForWrite contract (channel entries top-level alongside schemaVersion / migrationsApplied
- * / serviceSelections / tagRegistry), so the projection iterates only the keys we explicitly named at seed time rather than every top-level key.
+ * Comparison strategy: parse channels.json, project each named channel entry through stringifySorted (the serializer the file-store framework applies to the
+ * beforeWrite hook's output, the hook being prepareChannelsForWrite), and compare per-entry strings. Comparing per entry avoids coupling to full-file bytes,
+ * which always change because the targeted entry changes. The projection sorts keys at every depth and applies its own indentation, so it sees value, type and
+ * array-order changes and entries that disappear, but not the file's own whitespace or key order. The on-disk channels.json shape is flat per the
+ * prepareChannelsForWrite contract (channel entries top-level alongside schemaVersion / migrationsApplied / serviceSelections / tagRegistry), so the projection
+ * iterates only the keys we explicitly named at seed time rather than every top-level key.
  */
 import { bootApp, createIntegrationContext, initializePersistence, readPersistedJson } from "../../helpers/integration.helpers.ts";
 import { describe, test } from "node:test";
@@ -19,10 +19,10 @@ import assert from "node:assert/strict";
 import { stringifySorted } from "../../../src/utils/format.ts";
 
 /**
- * Snapshots the on-disk projection of the named channel entries through stringifySorted - the same serializer prepareChannelsForWrite hands to the file-store
- * framework. Two snapshots taken around a mutation can be compared per-key with assert.equal: equal strings prove byte-identity for that entry's projection,
- * inequality surfaces any drift (key reorder, value rewrite, type change). Missing keys are recorded as the literal string "<absent>" so a regression that
- * accidentally deletes an entry distinguishes from one that mutates it.
+ * Snapshots the on-disk projection of the named channel entries through stringifySorted - the serializer the file-store framework applies to the output of
+ * the beforeWrite hook, prepareChannelsForWrite. Two snapshots taken around a mutation can be compared per-key with assert.equal: equal strings prove the
+ * entry's projection is unchanged, and inequality surfaces a value rewrite, a type change or an array reorder. Missing keys are recorded as the literal string
+ * "<absent>" so a regression that accidentally deletes an entry distinguishes from one that mutates it.
  */
 async function snapshotEntries(ctx: { dataDir: string }, keys: readonly string[]): Promise<Record<string, string>> {
 
@@ -36,9 +36,9 @@ describe("channels.json non-targeted byte-preservation", () => {
   test("bulk auto-number leaves disabled-predefined customizations byte-identical", async () => {
 
     /* Seed customizations on two channels that will be filtered out by visibility (disabled-predefined) and one that will receive a new number. Auto-number
-     * iterates getVisibleChannels - disabled predefineds are excluded - so the disabled entries' on-disk bytes must not change. The serializer hits every
-     * non-targeted top-level key on every write, so a regression that re-orders fields or strips whitespace would surface here even when the targeted entry
-     * is being written correctly.
+     * iterates getVisibleChannels - disabled predefineds are excluded - so the disabled entries' on-disk values must not change. The serializer hits every
+     * non-targeted top-level key on every write, so a regression that rewrites a value, changes a type or reorders an array in one of them would surface here
+     * even when the targeted entry is being written correctly.
      */
     await using ctx = await createIntegrationContext();
 

@@ -1,17 +1,14 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * precaching.test.ts: Unit tests for the precaching coordinator's no-op gates and the discovery-outcome recorder in precaching.ts. The module exports
+ * precaching.test.ts: Unit tests for the precaching coordinator's empty-list gate and the discovery-outcome recorder in precaching.ts. The module exports
  * startPrecaching (the gated scheduler tested here), stopPrecaching (the shutdown-time canceller), precacheService (the per-service primitive), and
- * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching inspects the CONFIG.channels.precacheServices list and the
- * module-level precacheInProgress flag before scheduling the precache cycle; the tests here cover those two gates. The remaining gate, the isGracefulShutdown()
- * check, and the full runPrecacheCycle/precacheService flow (driven through the PrecachingDeps injection point) are covered in the sibling
- * precaching.revalidation.test.ts. The unit tests here lock the gate-behavior contract so that future refactors of the gates do not silently regress.
+ * recordDiscoveryOutcome (the discovery-outcome policy, covered by the matrix below). startPrecaching checks only the CONFIG.channels.precacheServices list before
+ * handing its request to requestPrecache; the tests here cover that gate and the single cycle it lets through. When the list is empty, the function returns
+ * immediately with no side effects (no timer scheduled, no log lines, no internal flag mutated).
  *
- *   1. CONFIG.channels.precacheServices: when empty, the function returns immediately with no side effects (no timer scheduled, no log lines, no internal flag
- *      mutated).
- *
- *   2. The module-level precacheInProgress flag: when true, the function defers. The flag is set when startPrecaching schedules the cycle (before the timer fires) and
- *      cleared in runPrecacheCycle's finally block.
+ * requestPrecache's merge-or-record logic - the isGracefulShutdown() drop, the merge into a pending cycle, and the request recorded while a run holds the
+ * precacheInProgress guard - is covered in the sibling precaching.revalidation.test.ts, along with the full runPrecacheCycle/precacheService flow driven through
+ * the PrecachingDeps injection point. The unit tests here lock the gate-behavior contract so that a refactor of the gate cannot silently regress it.
  */
 import type { AuthWallIndicators, DiscoveredChannel, Nullable, ProviderModule } from "../types/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -125,7 +122,8 @@ describe("startPrecaching", () => {
   test("schedules a deferred cycle when precacheServices is non-empty (timer queued)", () => {
 
     // Boundary: with at least one service configured, the function arms the cycle on the clock its dependencies carry. Reading the clock's ledger proves the arm
-    // without firing it - firing the cycle would drive Puppeteer, so that path is deferred to e2e.
+    // without firing it - firing the cycle is precaching.revalidation.test.ts's job, which drives it on a TestClock through injected PrecachingDeps, so this row
+    // stops at the arm.
     const clock = new TestClock();
 
     CONFIG.channels.precacheServices = ["never-registered-slug"];
@@ -188,7 +186,7 @@ describe("recordDiscoveryOutcome", () => {
 
     /* Traced path: channels.length === 0 -> classifyBlockedPage returns authWall via the provider host indicator -> the recorder's authWall case calls
      * markDomainAuthRequired(extractDomain(guideUrl)) and emits the WARN. Dropping the mark would leave the state read null; dropping the WARN drops the operator
-     * signal this arc exists to create.
+     * signal this warning exists to provide.
      */
     const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
     const provider = makeProvider({ authWallIndicators: { hosts: ["auth.case-wall.test"] }, guideUrl: "https://www.case-wall.test/guide" });
@@ -245,7 +243,7 @@ describe("recordDiscoveryOutcome", () => {
 
   test("a non-empty result with no validatePrecache marks the domain verified (today's semantics)", async () => {
 
-    // Traced path: channels.length > 0 -> the !provider.validatePrecache disjunct -> markDomainAuth. This is the pre-existing verified mark, unchanged.
+    // Traced path: channels.length > 0 -> the !provider.validatePrecache disjunct -> markDomainAuth. This is the verified mark.
     const provider = makeProvider({ guideUrl: "https://www.case-plain.test/guide" });
 
     await recordDiscoveryOutcome(provider, ONE_CHANNEL, makePage("https://www.case-plain.test/guide"), recorderDeps);
@@ -480,16 +478,8 @@ describe("recordDiscoveryOutcome", () => {
 
 /* Deferred to e2e (require Puppeteer/Chrome integration):
  *
- * precaching.revalidation.test.ts already covers runPrecacheCycle's deps threading through to precacheService, precacheService's navigation, mute injection,
- * cleanup ordering, and the window sync on discovery-page cleanup, and the precacheInProgress guard's positive case, all through the PrecachingDeps injection point
- * without a real browser. What remains genuinely deferred is:
- *
- * - runPrecacheCycle's succeeded/empty/skipped counters and the completion sentence they compose, which requires driving a full multi-service cycle rather than
- *   the single-service deps-threading check above.
- *
- * - The service-filter skip path (skipping services the running service filter excludes) - exercised inside runPrecacheCycle.
- *
- * - Per-provider error isolation (one provider failing while others succeed) - requires a real browser to populate the discovery flow.
- *
- * - The real Puppeteer mechanics of page.evaluateOnNewDocument and page.goto against an actual page, which the injection point stubs out.
+ * precaching.revalidation.test.ts covers runPrecacheCycle's deps threading through to precacheService, full multi-service cycles and the completion sentence their
+ * counters compose, the service-filter skip, precacheService's navigation, mute injection, cleanup ordering, and the window sync on discovery-page cleanup, and the
+ * precacheInProgress guard's positive case, all through the PrecachingDeps injection point without a real browser. What remains deferred is the real Puppeteer
+ * mechanics of page.evaluateOnNewDocument and page.goto against an actual page, which the injection point stubs out.
  */

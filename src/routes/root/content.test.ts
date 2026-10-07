@@ -71,7 +71,7 @@ describe("generateOverviewContent", () => {
 
   test("returns a non-empty HTML string with multiple section blocks", () => {
 
-    // Overview is the largest tab by content - around eight <h3>-led sections covering the user guide. A length floor of 2000 catches an empty/truncated
+    // Overview is the largest tab by content - a series of <h3>-led sections covering the user guide. A length floor of 2000 catches an empty/truncated
     // generator without locking in a brittle exact byte count.
     const html = generateOverviewContent("http://localhost:5589");
 
@@ -125,7 +125,10 @@ describe("generateOverviewContent", () => {
 
   test("does not produce template-literal artifacts in the rendered HTML", () => {
 
-    // Sanity check for stringified missing values from the providerInfo lookup: undefined leaked into a string or [object Object] from a coerced object.
+    /* Sanity check for these rendering artifacts. The first assertion matches only the literal text "${undefined}" in the output...it does not catch an undefined
+     * value joined with + or passed through join, which renders as the bare word "undefined". The second catches [object Object] from an object coerced into a
+     * string.
+     */
     const html = generateOverviewContent("http://localhost:5589");
 
     assert.doesNotMatch(html, /\$\{undefined\}/);
@@ -174,7 +177,7 @@ describe("generateHelpContent", () => {
 
   test("includes Homebrew, npm, and Docker upgrade command examples", () => {
 
-    // The Updating PrismCast section documents three install methods. The literal command examples are part of the user-visible content.
+    // The Updating PrismCast section documents an upgrade command for each install method. The literal command examples are part of the user-visible content.
     const html = generateHelpContent();
 
     assert.match(html, /brew upgrade prismcast/);
@@ -193,10 +196,10 @@ describe("generateHelpContent", () => {
 
 describe("generateApiReferenceContent", () => {
 
-  test("returns HTML with all eight API category groups", () => {
+  test("returns HTML with every API category group", () => {
 
-    // The API index has nine named groups: Streaming, Playlist, Channels, Services, Profiles, Authentication, Management, Settings, Diagnostics. We verify
-    // each section heading anchor is present so all categories surface for users.
+    // The API index groups its endpoints into named categories: Streaming, Playlist, Channels, Services, Profiles, Authentication, Management, Settings and
+    // Diagnostics. We verify every category group's heading anchor is present so each category surfaces for users.
     const html = generateApiReferenceContent();
     const anchors = [ "api-streaming", "api-playlist", "api-channels", "api-services", "api-profiles", "api-auth", "api-management", "api-settings",
       "api-diagnostics" ];
@@ -247,7 +250,7 @@ describe("generateChannelsTabContent", () => {
 
   test("returns HTML with both subtab panels", () => {
 
-    // The tab has two subtabs: 'channels' (default active) and 'custom-profiles'. Both panels and the subtab bar buttons render unconditionally on every page.
+    // The tab's subtabs are 'channels' (default active) and 'custom-profiles'. Each subtab panel and its subtab bar button render unconditionally on every page.
     const html = generateChannelsTabContent();
 
     assert.match(html, /class="channels-subtab-bar"/);
@@ -291,8 +294,8 @@ describe("generateLogsContent", () => {
 
   test("returns HTML with the log viewer container and level filter dropdown", () => {
 
-    // The Logs tab has a #log-container that the SSE script populates and a #log-level select that filters by severity. The four levels (All, error, warn, info)
-    // are rendered as <option> elements.
+    // The Logs tab has a #log-container that the SSE script populates and a #log-level select that filters by severity. Each level (All, error, warn, info) is
+    // rendered as an <option> element.
     const html = generateLogsContent();
 
     assert.match(html, /id="log-container"/);

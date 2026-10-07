@@ -1,8 +1,8 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * statusEmitter.test.ts: Unit tests for the SSE status emitter. statusEmitter.ts owns the singleton EventEmitter that broadcasts stream and system status to connected
- * SSE clients. The emitter maintains current state in two module-scoped Maps (streamStatuses by stream ID, cachedSystemStatus) so new clients receive a snapshot on
- * connect. The tests lock the snapshot/event contract: emit-then-snapshot reflects the latest state, removed streams stop appearing, the zombie-update guard rejects
+ * SSE clients. The module keeps current state in a Map of stream statuses by ID and a cached system status, so new clients receive a snapshot on connect. The
+ * tests lock the snapshot/event contract: emit-then-snapshot reflects the latest state, removed streams stop appearing, the zombie-update guard rejects
  * status for removed streams, and the systemStatusChanged dedupe emits only when a field the page header renders changes - the fields RenderedSystemStatus
  * declares - so a status that differs only in what no client renders stays off the wire.
  */
@@ -509,7 +509,7 @@ describe("removeStreamStatus", () => {
 
   test("clears the stored status without emitting an event", () => {
 
-    // Used during cleanup paths that have already emitted streamRemoved elsewhere. Distinguishes from emitStreamRemoved which both clears and emits.
+    // Distinguishes removeStreamStatus from emitStreamRemoved, which both clears and emits.
     const events: { event: StatusEventType; data: unknown }[] = [];
     const unsubscribe = subscribeToStatus((event, data) => {
 

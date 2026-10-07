@@ -21,7 +21,8 @@ import { isDeepStrictEqual } from "node:util";
  * 4. Hard-coded defaults (defined in DEFAULTS)
  *
  * This design follows the standard convention where CLI flags override everything. Docker deployments can use environment variables, standalone installations can
- * use the config file via the web UI at /config, and operators can always override any setting with a CLI flag.
+ * use the config file via the web UI at /config, and the CLI flags override the settings they cover (port, Chrome data directory, log file) above every other
+ * layer.
  */
 
 /* The millisecond spans this file states more than once: the upper bounds several bounded settings share, and the rolling windows DEFAULTS opens. Each is named
@@ -56,7 +57,7 @@ export interface SettingMetadata {
   // submittedValue*displayDivisor.
   displayDivisor?: number;
 
-  // Number of decimal places for display when using displayDivisor. Defaults to 0 for integers, 2 for floats.
+  // Number of decimal places for display when using displayDivisor. Defaults to 1 for integers and 2 for floats, so a value like 1500ms displays as 1.5s.
   displayPrecision?: number;
 
   // Human-friendly unit for display when displayDivisor is set (e.g., "seconds" instead of "ms"). Overrides unit for display purposes.
@@ -923,8 +924,9 @@ export interface UserConfigLoadResult {
 
 /* The config file path is resolved via the centralized paths module (config/paths.ts). The data directory is initialized at startup before config loading.
  * Configuration persistence uses a transactional file store that provides atomic writes, serialized mutations, corruption protection, and backup rotation.
- * Every write the running process makes goes through config/index.ts, by saveConfiguration() or writeProcessFields(), each a store mutation that refuses to
- * write over a file it could not parse or read, which prevents the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
+ * Every settings and process-field write goes through config/index.ts, by saveConfiguration() or writeProcessFields(); the boot's correcting write and the
+ * release migrations write through the store directly. Each is a store mutation that refuses to write over a file it could not parse or read, which prevents
+ * the class of bugs where a corrupt file gets silently overwritten with nearly-empty data.
  */
 
 /* Current schema version for config.json. Migrations are declared in configMigrations below; the framework runs them in order from the file's stored version
@@ -1330,9 +1332,9 @@ export async function readConfig(): Promise<UserConfigLoadResult> {
  * modifies it in place. The store handles atomicity, serialization, corruption guard, backup, schema migration, and normalizeStoredConfig via the framework.
  *
  * This writes the file and nothing else. It is the store-level write a test calls to seed a file, to exercise the store's write hook, or to stand in for a
- * writer outside the configuration layer, as the ordering suite's concurrent write does. Every write the running process makes goes through config/index.ts
- * instead, by saveConfiguration() for the settings surface or writeProcessFields() for the fields the process owns, each through mutateConfigThen(), so the
- * file and the running configuration move together.
+ * writer outside the configuration layer, as the ordering suite's concurrent write does. Every write the running process makes, the release migrations
+ * aside, goes through config/index.ts instead, by saveConfiguration() for the settings surface or writeProcessFields() for the fields the process owns, and by
+ * the boot's correcting write, each through mutateConfigThen(), so the file and the running configuration move together.
  * @param fn - Mutation function. Receives current config. Modify in place; return value is ignored. A throw inside it writes nothing.
  * @throws FileStoreParseError if config.json contains invalid JSON and no usable backup exists, and an Error if config.json could not be read.
  */
@@ -1343,9 +1345,10 @@ export async function mutateConfig(fn: (current: UserConfig) => void): Promise<v
 
 /**
  * Serialized read-modify-write operation on config.json whose follow-up runs once the write has landed, while the store's queue is still held, so no other
- * write reads the file until the follow-up settles. Its caller is the configuration layer in config/index.ts, whose save and process write each move the
- * running configuration in the follow-up of their write: a save's reconcile and a process write's commit. Nothing the follow-up awaits may write config.json, because
- * that write would wait on the queue the follow-up holds and never settle.
+ * write reads the file until the follow-up settles. Its callers are in the configuration layer in config/index.ts: the save and the process write, which each
+ * move the running configuration in the follow-up of their write (a save's reconcile and a process write's commit), and the boot's correcting write, whose
+ * follow-up resolves at once. Nothing the follow-up awaits may write config.json, because that write would wait on the queue the follow-up holds and never
+ * settle.
  * @param fn - Mutation function. Receives current config, modifies it in place, and returns the follow-up. A throw inside it writes nothing and runs no
  *   follow-up.
  * @returns The follow-up's result.
@@ -1533,8 +1536,9 @@ function parseEnvValue(value: string, type: SettingMetadata["type"]): Nullable<b
 
   /* The host, path, and free-string arms below run their value through the shared data-collection sanitizer, which is the treatment the settings form and the
    * config import already give those same types. The environment deserves it for the same reason they do - a value carrying padding or a non-printable
-   * character is almost never what the operator meant - and it deserves it more, because this is the one ingress with no validation behind it: an environment
-   * value is written straight into the configuration, so anything unusual in it lands there silently instead of being refused with a message.
+   * character is almost never what the operator meant. For host and free-string values the sanitizer is the only cleaning they get, because no validator stands
+   * behind them: such a value is written straight into the configuration, so anything unusual in it lands there silently. Bounded and path values are still
+   * validated after the merge, and a bad one is refused with a message.
    */
   switch(type) {
 
@@ -1855,7 +1859,9 @@ export function mergeConfiguration(userConfig: UserConfig, cliOverrides?: CliOve
  * - ADVANCED_SECTION_META defines Advanced section display names and order
  *
  * Common tasks:
- * - Add a new setting: Add to CONFIG_METADATA under the appropriate category. It automatically appears in the Advanced tab under the matching section.
+ * - Add a new setting: Add to CONFIG_METADATA under the appropriate category. It appears in the Advanced tab under its category's section when the category
+ *   has an ADVANCED_SECTION_META entry; a setting in any other category renders only once it is promoted to SETTINGS_TAB_SECTIONS or its category is added to
+ *   ADVANCED_SECTION_META.
  * - Promote a setting to Settings tab: Add its path to the appropriate section in SETTINGS_TAB_SECTIONS. It moves from Advanced to Settings.
  * - Reorder Settings sections: Reorder entries in SETTINGS_TAB_SECTIONS.
  * - Reorder Advanced sections: Reorder entries in ADVANCED_SECTION_META.
@@ -2192,8 +2198,8 @@ const PROCESS_FIELD_TABLE = {
  * Every configuration field the process writes, keyed by dot path in ASCII order. The drift tests in userConfig.test.ts hold the state keys equal to exactly
  * the leaves DEFAULTS defines outside CONFIG_METADATA, so a leaf added to the configuration without an entry here, or an entry left behind for a leaf that
  * moved into the metadata, fails at test time rather than throwing inside a save. A state field's class follows the same rule a setting's declared class does,
- * read off the field's own readers. Suite 17 in test/e2e/routes/settings-preservation.test.ts iterates the table directly, so a new entry is covered by its
- * preservation sweep once the entry's seed value joins that file's SEED_VALUES table.
+ * read off the field's own readers. The parameterized preservation sweep in test/e2e/routes/settings-preservation.test.ts iterates the table directly, so a new
+ * entry is covered by that sweep once the entry's seed value joins that file's SEED_VALUES table.
  */
 export const PROCESS_FIELDS: Readonly<Record<string, ProcessField>> = PROCESS_FIELD_TABLE;
 

@@ -1,11 +1,11 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * services.test.ts: Unit tests for the service channel discovery route in services.ts. setupServicesEndpoint registers GET /services/:slug/channels which
- * dispatches to a provider's discoverChannels function inside a temporary browser page. The full discovery path requires a real Chrome browser and a live
- * service guide - that coverage lives in the e2e suite. Here we cover the synchronous validation branches that run before any browser interaction: unknown
- * slug returns 404 with a descriptive error, and the documented response shape for the unknown-slug branch is locked. We also cover the lineup annotation a
- * provider's warm cache answers, which runs before any browser work too, against the real channel store in a temp data directory: the alternatives each
- * channel reports and the lineups a user override's :predefined entry and selection annotate a discovered channel in.
+ * dispatches to a provider's discoverChannels function inside a temporary browser page. The full discovery walk requires a real Chrome browser and a live
+ * service guide, and no automated suite covers it; the e2e suite covers only the route's error envelope. Here we cover the synchronous validation branches that
+ * run before any browser interaction: unknown slug returns 404 with a descriptive error, and the documented response shape for the unknown-slug branch is
+ * locked. We also cover the lineup annotation a provider's warm cache answers, which runs before any browser work too, against the real channel store in a temp
+ * data directory: the alternatives each channel reports and the lineups a user override's :predefined entry and selection annotate a discovered channel in.
  */
 import type { AddressInfo, Server } from "node:net";
 import type { DiscoveredChannel, ProviderModule } from "../types/index.ts";

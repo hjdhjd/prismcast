@@ -10,10 +10,11 @@
  *     goes through window.toggleStreamPopover, so the trampoline binding pattern is never exercised.
  *
  * The bug class this suite catches lives in that gap. In particular: when the emitted script is parsed as a classic <script> block, function declarations at top
- * level become properties of the global object. The IIFE then assigns window.toggleStreamPopover = () => toggleStreamPopover(ctx), which - if the arrow body's
- * bare-identifier lookup resolves through the now-shadowed global - calls itself instead of the underlying handler. A single click on the header button blows
- * the stack with RangeError. Neither sibling suite reproduces this because neither evaluates the emitted script in a classic-script context with the function
- * declarations and the window assignments living in the same global scope.
+ * level become properties of the global object. A naive assignment window.toggleStreamPopover = () => toggleStreamPopover(ctx) would shadow that global, so the
+ * arrow body's bare-identifier lookup would resolve back to the arrow and call itself instead of the underlying handler...a single click on the header button
+ * would blow the stack with RangeError. The IIFE avoids this by capturing each handler in a local before binding the trampoline. Neither sibling suite
+ * reproduces the hazard because neither evaluates the emitted script in a classic-script context with the function declarations and the window assignments
+ * living in the same global scope.
  *
  * The harness loads the served landing-page HTML, stubs EventSource on the synthetic Window (happy-dom does not implement it), runs the shared utilities
  * script to install the externals (channelTable, dropdowns, copyToClipboard) that the status IIFE captures at init time, then runs the status script. Tests
@@ -125,15 +126,15 @@ describe("status.ts: emitted IIFE wiring (script-tag runtime)", () => {
 
   test("window.copyOverviewPlaylistUrl invokes the underlying handler without infinite recursion", async () => {
 
-    /* Same trampoline pattern again. This is the last window.* binding the IIFE installs today. Every trampoline the IIFE installs is covered as a set, so
-     * adding another should extend this suite alongside the IIFE change.
+    /* Same trampoline pattern again. This completes the set of trampolines the IIFE binds; adding another should extend this suite alongside the IIFE change.
      */
     await using ctx = await setupStatusIifeRuntime();
 
     assert.equal(ctx.evaluate("typeof window.copyOverviewPlaylistUrl"), "function", "copyOverviewPlaylistUrl must be wired as a function on window");
 
-    // Missing #overview-playlist-url is fine - the handler body bails out before invoking copyToClipboard.
-    assert.doesNotThrow(() => ctx.evaluate("window.copyOverviewPlaylistUrl()"), "copyOverviewPlaylistUrl must not throw when the playlist url element is absent");
+    // The served page renders #overview-playlist-url, so this call delegates to the real copyToClipboard from shared.ts; the test checks only that the
+    // trampoline does not recurse.
+    assert.doesNotThrow(() => ctx.evaluate("window.copyOverviewPlaylistUrl()"), "copyOverviewPlaylistUrl must not throw when the playlist url element is present");
   });
 
   test("window.copyOverviewPlaylistUrl reaches the handler body and delegates to ctx.externals.copyToClipboard", async () => {

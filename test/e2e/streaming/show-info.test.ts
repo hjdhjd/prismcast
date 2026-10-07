@@ -228,9 +228,9 @@ function installDvrFetchStub(state: DvrStubState): void {
  * This matters beyond the logo tests themselves: populateChannelLogos' tier-2 pass only makes a network round trip for channels that reach it WITHOUT a
  * cached logo, so leaving tier 1 sparse (the naive "only set a Logo for the one channel this test cares about" approach) would force a sequential TMS fetch
  * for every other station-id-bearing channel in PrismCast's lineup on every population in this suite. Since populateChannelLogos is fired fire-and-forget (void), that
- * sweep can straggle past the test's own completion and, once afterEach restores globalThis.fetch to the real implementation, resolve against a live network call - which
- * is what produced the multi-minute process hang this design was built to eliminate. Defaulting every channel to a baseline logo bounds every test's tier-2 work to at
- * most the handful of channels a test deliberately excludes.
+ * sweep can straggle past the test's own completion and, once afterEach restores globalThis.fetch to the real implementation, resolve against a live network call
+ * and hold the process open for minutes. Defaulting every channel to a baseline logo bounds every test's tier-2 work to at most the handful of channels a test
+ * deliberately excludes.
  * @param deviceId - The DeviceID to assign to the fabricated M3U device.
  * @param options - Per-channel logo shaping. See BuildFullDeviceOptions.
  * @returns The fabricated device fixture plus its channel-key-to-GuideNumber map.
@@ -302,8 +302,9 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
   afterEach(async () => {
 
-    // stopShowInfoPolling() runs unconditionally regardless of whether a given test ever started polling - its cache/host clears are the reset chokepoint
-    // for this module's state. It runs first so no queued interval callback can fire against a stream we are about to unregister below.
+    // stopShowInfoPolling() runs unconditionally regardless of whether a given test ever started polling - its cache clears are the reset point for this
+    // module's state, and the DVR host is reset per row by initializeConfiguration(). It runs first so no queued interval callback can fire against a stream we
+    // are about to unregister below.
     stopShowInfoPolling();
 
     for(const id of activeStreamIds) {
@@ -323,9 +324,9 @@ describe("showInfo: Channels DVR API integration (show names, DVR host persisten
 
   describe("the poller's timers run on the injected clock", () => {
 
-    /* These two rows drive the poller's cadence and debounce directly, which the rows below cannot: they observe fire-and-forget chains on real time by design,
-     * where these assert WHEN a timer comes due. Both hand startShowInfoPolling a virtual clock, so every cadence the poller owns runs on one timeline the row
-     * advances explicitly, and the stub's per-path call counter is what makes a fetch that a cadence produced countable.
+    /* The rows in this block drive the poller's cadence and debounce directly, which the rows below cannot: they observe fire-and-forget chains on real time by
+     * design, where these assert WHEN a timer comes due. Each row hands startShowInfoPolling a virtual clock, so every cadence the poller owns runs on one
+     * timeline the row advances explicitly, and the stub's per-path call counter is what makes a fetch that a cadence produced countable.
      */
 
     // The instant each row's virtual clock is seeded at, matching the baseline the sibling streaming suites anchor on.

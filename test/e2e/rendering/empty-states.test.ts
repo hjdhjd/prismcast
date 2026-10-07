@@ -6,12 +6,12 @@
  * (a) no crash, (b) structurally valid output, (c) the documented empty-state messaging or shape (where applicable).
  *
  * The integration value over unit-tier coverage is wiring the production renderers to real CONFIG / channel / profile state initialized through the boot
- * sequence. A renderer that crashes only when data flows through the full initialization pipeline (e.g., when getProfiles() returns the bare default profile
- * rather than a populated array) shows up here, not in unit tests of the renderer itself.
+ * sequence. A renderer that crashes only when data flows through the full initialization pipeline (e.g., an empty user-channel store or a profile store with
+ * no user entries) shows up here, not in unit tests of the renderer itself.
  *
- * No renderer assumes at least one row: each surface either renders an explicit empty-state message (Custom Profiles panel: "No custom services installed"),
- * draws from an always-non-empty source (the tag vocabulary always carries the predefined tags), or returns an envelope that explicitly accommodates zero items
- * (GET /streams: { count: 0, limit, streams: [] }). The "all columns hidden" and "service filter excluding every non-direct channel" tests below are
+ * No renderer assumes at least one row: each surface either renders an explicit empty-state message (Custom Profiles panel: "No custom services installed";
+ * the tag surfaces: "No tags defined." when every predefined tag is deleted and no user tag exists), or returns an envelope that explicitly accommodates zero
+ * items (GET /streams: { count: 0, limit, streams: [] }). The "all columns hidden" and "service filter excluding every non-direct channel" tests below are
  * intentionally redundant with adjacent suites' coverage to provide an empty-state-specific assertion locus - if a future regression made those scenarios
  * crash, the failure surfaces here even if the adjacent suite's assertion happens to still pass.
  */
@@ -71,11 +71,8 @@ describe("empty-state rendering across tabs", () => {
   test("tag filter content and tag manager render cleanly with no user tags (predefined vocabulary only)", async () => {
 
     /* Empty USER vocabulary - the user has not created any custom tags. The active vocabulary is then exactly the predefined-tag set (PREDEFINED_TAGS minus
-     * deletedTags). Both the filter dropdown and the tag manager body render against this default state without crashing, and the tag manager omits the
-     * deleted-tags section because none have been deleted.
-     *
-     * The sentinel for "tag manager empty section omitted" is the absence of a deletedTags-specific structural class. If the renderer always emitted the
-     * deleted section even when empty, that would be a UI smell - cluttering the manager with an empty subsection - though not a hard crash.
+     * deletedTags). Both the filter dropdown and the tag manager body render against this default state without crashing, and the assertions below check that
+     * the filter checkboxes, the Show None toggle, and the tag-manager rows are present.
      */
     await using ctx = await createIntegrationContext();
 

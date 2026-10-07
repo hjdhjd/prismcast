@@ -36,14 +36,15 @@ export const WINDOW_STATE_POLL_MS = 25;
 export const WINDOW_RESTORE_CEILING_MS = 2000;
 
 /**
- * Executes a CDP (Chrome DevTools Protocol) operation with proper session lifecycle management. This helper handles the common pattern of:
+ * Executes a CDP (Chrome DevTools Protocol) operation against the window holding a page. This helper handles the common pattern of:
  * 1. Creating a CDP session attached to the page's target
  * 2. Getting the browser window ID for the page
  * 3. Calling the provided operation with the session and window ID
  * 4. Gracefully handling errors when the page is closed during the operation
  *
- * The session is created fresh for each call rather than being reused because CDP sessions become invalid when the page navigates or closes. Creating a new
- * session ensures we always have a valid connection.
+ * Each call attaches a fresh session and never detaches it...the session stays attached until the page's target goes away. A fresh session per call keeps
+ * callers stateless, so no caller holds a session that a page close would leave dangling. The price is one more attached session on the page for every call,
+ * which is why the window lookup in index.ts caches its answer per page rather than calling again on every tune.
  * @param page - The Puppeteer page object to create a CDP session for.
  * @param operation - An async function that receives the CDP session and window ID. The operation can use any CDP commands via session.send().
  * @returns The result of the operation, or undefined if the page was closed or an error occurred.
@@ -94,7 +95,7 @@ export async function withCDPSession<T>(
 }
 
 /* The shape Chrome answers Browser.getWindowBounds with. Every field is optional because the response carries whatever the window manager has for the window,
- * and the two derivations below each decide for themselves how much of it they require.
+ * and each derivation below decides for itself how much of the report it requires.
  */
 interface WindowBoundsReport {
 
@@ -228,8 +229,8 @@ export async function minimizeWindow(page: Page): Promise<void> {
 
 /**
  * Un-minimizes the browser window, restoring it to normal state. The window belongs on screen while a capture stream is reading the compositor's output for it, and
- * while a user is completing TV provider authentication in it. The capability probe calls this directly to make its environment representative of the one capture
- * runs in; every other caller goes through the window-visibility executor, which owns the policy.
+ * while a user is completing TV provider authentication in it. The GPU capability probe (detectBrowserCapabilities in browser/index.ts) calls this directly to make
+ * its environment representative of the one capture runs in; every other caller goes through the window-visibility executor, which owns the policy.
  *
  * The contract is a confirmed state, not a fired command: this resolves once Chrome reports the window restored, or once the ceiling lapses with a warning and the
  * window left in whatever state it does report. On macOS a restore runs asynchronously against the acknowledgement of the command that asked for it, and a capture

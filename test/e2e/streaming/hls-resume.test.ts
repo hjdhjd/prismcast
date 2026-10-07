@@ -1,9 +1,9 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * hls-resume.test.ts: Integration coverage for the HLS resume mechanism. The unit tier covers individual functions; this suite verifies the round-trip
- * persistence: save resume state at shutdown, load it at the next startup, retrieve via the public accessors. The 1589811 fix (decrement resume index so
- * Channels DVR doesn't drop the last completed segment) is the canonical bug class - a regression in the saved segmentIndex value would silently lose the
- * last segment of every recording.
+ * persistence: save resume state at shutdown, load it at the next startup, retrieve via the public accessors. The saved segmentIndex is the canonical bug
+ * class: shutdown saves the segmenter's index less one, so the resumed playlist still includes the last completed segment and Channels DVR does not drop
+ * it, and a regression in that value would silently lose the last segment of every recording.
  */
 import { createIntegrationContext, initializePersistence, pathInDataDir } from "../../helpers/integration.helpers.ts";
 import { deleteResumeData, getResumePosition, loadResumeState, peekResumeData, saveResumeState } from "../../../src/streaming/hlsResume.ts";

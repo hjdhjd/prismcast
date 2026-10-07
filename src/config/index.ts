@@ -23,7 +23,8 @@ import path from "node:path";
  * 4. Hard-coded defaults (defined in userConfig.ts)
  *
  * This design follows the standard convention where CLI flags override everything. Docker deployments can use environment variables, standalone installations can
- * use the web UI at /config, and operators can always override any setting with a CLI flag.
+ * use the web UI at /config, and CLI flags win wherever one exists (--port, --chrome-data-dir, --log-file), so an operator can override those without touching
+ * the file or the environment.
  *
  * The settings are organized by functional area:
  *
@@ -33,14 +34,15 @@ import path from "node:path";
  * - hls: HLS output tuning (segment duration, buffer depth, idle timeout)
  * - playback: Health monitoring intervals and recovery timing thresholds
  * - recovery: Retry backoff parameters and circuit breaker configuration
- * - channels: Predefined channel enable/disable state, table sort, and service filter
+ * - channels: Channel and service selection state, and the channels table's display preferences
  * - channelsDvr: Connection settings for the user's external Channels DVR server
  * - hdhr: HDHomeRun emulation settings (port, device ID, LAN discovery)
- * - logging: File-based logging behavior (debug filter, HTTP request log level)
- * - paths: Filesystem locations for Chrome profile and extension data
+ * - logging: Log file and log output behavior
+ * - paths: Filesystem overrides for the Chrome profile directory and the log file
  *
- * Configuration is initialized at startup via initializeConfiguration(), which loads the user config file, merges with defaults, applies environment overrides and
- * CLI overrides, and validates all values. If validation fails, the process exits with a descriptive error message.
+ * Configuration is initialized at startup via initializeConfiguration(), which loads the user config file, merges it with the defaults, applies environment and
+ * CLI overrides, and normalizes the result. The boot then calls validateConfiguration(), which throws so the startup path exits with the complete list of
+ * invalid values.
  */
 
 /**
@@ -110,16 +112,16 @@ let envOrCliDebugOverride = false;
 /**
  * Initializes the configuration by loading the user config file, merging with defaults, applying environment variable overrides, and applying CLI overrides. This
  * must be called at startup before any code accesses CONFIG. After initialization, the CONFIG object contains the final merged values. A file whose stored
- * capture values need a correction, or whose HDHomeRun DeviceID the boot corrected, is written once through the store, the one write storing either correction
- * or both, unless the store could not read the file or the configuration carries a hard error.
+ * capture values need a correction, or whose HDHomeRun DeviceID the boot corrected, is written once through the store, the one write storing every correction
+ * the file needs, unless the store could not read the file or the configuration carries a hard error.
  * @param cliOverrides - Optional CLI flag overrides, applied at the highest priority level.
- * @param io - The config store the boot reads from and makes its one correcting write through, which stores a capture correction, a DeviceID correction, or both.
+ * @param io - The config store the boot reads from and makes its one correcting write through.
  */
 export async function initializeConfiguration(cliOverrides?: CliOverrides, io: ConfigStore = defaultConfigStore): Promise<void> {
 
-  // Load user configuration from file. Schema migrations (legacy provider field renames, foxcom -> foxone in enabledServices) run automatically inside the
-  // file store framework via the declarative configMigrations registry; ensureMigrated (called by the release boot coordinator at startup) persists any
-  // upgrades to disk before this function runs. The data returned here is always at CURRENT_CONFIG_SCHEMA_VERSION.
+  // Load user configuration from file. Every migration declared in configMigrations runs automatically inside the file store framework; ensureMigrated (called
+  // by the release boot coordinator at startup) persists any upgrades to disk before this function runs. The data returned here is always at
+  // CURRENT_CONFIG_SCHEMA_VERSION.
   const result = await io.readConfig();
 
   configParseError = result.parseError;
@@ -163,9 +165,9 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
 
   /* One write stores what the file itself needs and changes nothing else. The store corrects the stored capture values on every write, so a file whose own
    * capture values need a correction gets a write that lets the store's hook store and log it, and a DeviceID the boot corrected is set on the file that write
-   * reads, so the one write stores either correction or both. A value the environment supplies asks for no write, because it is never stored. The write runs
-   * only when the store read the file itself, because the boot has already said the store refuses writes on a file it could not read or parse, and only when
-   * the configuration has no hard error, because the boot never writes a configuration it is about to refuse.
+   * reads. A value the environment supplies asks for no write, because it is never stored. The write runs only when the store read the file itself, because
+   * the boot has already said the store refuses writes on a file it could not read or parse, and only when the configuration has no hard error, because the boot
+   * never writes a configuration it is about to refuse.
    */
   const fileNeedsWrite = (collectStoredCaptureCorrections(result.config).length > 0) || (deviceIdCorrection !== null);
 
@@ -175,7 +177,7 @@ export async function initializeConfiguration(cliOverrides?: CliOverrides, io: C
 
       await io.mutateConfigThen((current) => {
 
-        // The store's write hook makes the capture correction, and the corrected DeviceID is set here, so the one write stores either correction or both.
+        // The store's write hook makes the capture correction, and the corrected DeviceID is set here.
         if(deviceIdCorrection !== null) {
 
           if(!isPlainObject(current.hdhr)) {
@@ -667,11 +669,11 @@ function logConfigurationCorrection(correction: ConfigurationCorrection): void {
 
 /**
  * Applies a persisted debug filter to the live runtime filter, when no higher-priority env/CLI source owns it and the filter differs from what is currently
- * active. This is the global side effect split out of normalizeConfig. The boot applies the filter it read, and a save applies one only through
- * applyDebugFilterChange, its registered handler, which the reconcile dispatches only when the save's gap holds the filter. A save that leaves the filter alone
- * therefore leaves the runtime filter as it stands, which matters because the debug page applies its filter to the runtime before its save is queued: a save
- * queued ahead of that one, or the page's own save refused, must not put the persisted filter back over it. A changed filter delivered through /config/import
- * takes effect live the same way, and an emptied persisted filter clears the runtime filter (initDebugFilter("") disables it).
+ * active. This is the global side effect normalizeConfig deliberately leaves out, so a build stays pure. The boot applies the filter it read, and a save
+ * applies one only through applyDebugFilterChange, its registered handler, which the reconcile dispatches only when the save's gap holds the filter. A save
+ * that leaves the filter alone therefore leaves the runtime filter as it stands, which matters because the debug page applies its filter to the runtime before
+ * its save is queued: a save queued ahead of that one, or the page's own save refused, must not put the persisted filter back over it. A changed filter
+ * delivered through /config/import takes effect live the same way, and an emptied persisted filter clears the runtime filter (initDebugFilter("") disables it).
  * @param filter - The persisted filter, canonical as the build left it.
  */
 function applyPersistedDebugFilter(filter: string): void {
@@ -726,9 +728,10 @@ export function getDefaults(): Config {
   return structuredClone(DEFAULTS);
 }
 
-/* Before starting the server, we validate all configuration values to catch errors early. Invalid configurations like negative timeouts or out-of-range bitrates
- * would cause subtle runtime failures that are difficult to diagnose. By validating upfront, we provide clear error messages and prevent the server from starting
- * in a misconfigured state.
+/* Before starting the server, we refuse the configuration values the server cannot run with: the settings in STARTUP_BOUNDED_SETTINGS, the path overrides, and
+ * the HDHomeRun port while emulation is enabled. Values like an out-of-range bitrate or timeout would cause subtle runtime failures that are difficult to
+ * diagnose, so we report them with clear error messages and keep the server from starting in a misconfigured state. STARTUP_BOUNDED_SETTINGS explains why
+ * the scope is narrower than every bounded setting.
  *
  * Validation runs at startup after configuration initialization. If validation fails, the process exits with a non-zero code and a descriptive error message listing
  * all invalid values.
@@ -843,7 +846,7 @@ export const STARTUP_BOUNDED_SETTINGS: readonly string[] = [
   "recovery.relaunchFailureWindow",
   "recovery.relaunchHealthHold",
 
-  // Stall threshold, the one float among these.
+  // Stall threshold, a float setting, so validateBoundedSetting checks it with validateNumber.
   "playback.stallThreshold",
 
   // Timer intervals. The floor keeps a timer from polling too tightly, and the ceiling keeps a stall or a stale page from going unattended longer than recovery

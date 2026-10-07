@@ -226,8 +226,8 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
   test("every row in the pane contains exactly one input, one label, and one description span", async () => {
 
     // Structural rule: the row template emits a 1:1:1:1 shape - one wrapper div, one checkbox, one label, one description span - for every variant. This
-    // is what lets the four-track grid place every cell into the same column on every row. If the renderer ever drifts (e.g., header rows stop emitting an
-    // empty desc span), the counts diverge and this test fails before the visual misalignment can ship.
+    // is what lets the named-track grid slot each variant's cells into their tracks and land every row's description in the shared [desc] column. If the
+    // renderer ever drifts (e.g., header rows stop emitting an empty desc span), the counts diverge and this test fails before the visual misalignment can ship.
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
     const paneMatch = (/<div class="debug-pane">([\s\S]*?)<form id="debug-form"/).exec(body);
@@ -271,9 +271,9 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
     }
   });
 
-  test("CSS owns the four-track grid on .debug-section and rows inherit via subgrid", async () => {
+  test("CSS owns the named-track grid on .debug-section and rows inherit via subgrid", async () => {
 
-    // The CSS the layout depends on: the section is the grid container that declares the column tracks (named for self-documentation), and every .debug-row
+    // The CSS the layout depends on: the section is the grid container that declares the named column tracks the cell rules place into, and every .debug-row
     // inherits those tracks via "grid-template-columns: subgrid". This is the single source of truth for column geometry; if either side is missing the
     // layout falls back to per-row "auto" sizing and descriptions drift across variants.
     const res = await fetch(urlFor("/debug"));
@@ -286,7 +286,7 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
   test("checkboxes carry no inline onchange handlers (change events flow through the delegated listener)", async () => {
 
     // A single delegated change listener on .debug-pane handles every checkbox; the rendered HTML must not embed inline onchange handlers (which would
-    // duplicate the dispatch logic into the markup and re-introduce the function-name surface we removed).
+    // duplicate the dispatch logic into the markup and put a function name in the markup that the script must match).
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
     const checkboxTags = body.match(/<input type="checkbox"[^>]*>/g) ?? [];
@@ -302,7 +302,7 @@ describe("setupDebugEndpoint - GET /debug (HTML page render)", () => {
   test("action buttons carry no inline onclick handlers (clicks flow through the delegated listener)", async () => {
 
     // The action-bar buttons declare their intent via data-debug-action and the delegated click listener on .debug-actions reads it. The rendered HTML must
-    // not embed inline onclick handlers, which would re-introduce a function-name surface between the markup and the script.
+    // not embed inline onclick handlers, which would tie the markup to the names of global functions in the script.
     const res = await fetch(urlFor("/debug"));
     const body = await res.text();
     const buttonTags = body.match(/<button[^>]*>/g) ?? [];

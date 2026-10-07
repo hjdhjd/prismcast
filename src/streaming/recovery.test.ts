@@ -1,7 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * recovery.test.ts: Unit tests for the issue-classification primitives in recovery.ts - RECOVERY_METHODS sentinel, getIssueDescription, getRecoveryMethod,
- * formatIssueType, getIssueCategory, and isCaptureInfrastructureError. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in
+ * recovery.test.ts: Unit tests for the pure recovery decisions in recovery.ts: issue classification, health derivation, the recovery trigger and escalation ladder,
+ * native staleness, resolution degradation, and the tiny-segment floor. Metrics tracking lives in recovery.metrics.test.ts; circuit-breaker primitives live in
  * recovery.circuitBreaker.test.ts.
  */
 import { CAPTURE_PROBE_TIMEOUT_MESSAGE, STREAM_INIT_TIMEOUT_MESSAGE } from "./setup.ts";
@@ -15,8 +15,8 @@ import type { VideoState } from "../types/index.ts";
 import assert from "node:assert/strict";
 
 /* makeVideoState builds a VideoState literal with sensible defaults. Tests override only the fields they care about, mirroring the factory pattern from the
- * test conventions. We keep this inline rather than a separate streaming.helpers.ts because no other test file currently needs VideoState construction; if a
- * second consumer appears we'll lift it out.
+ * test conventions. The factory stays local to this file because VideoState construction is needed only here; lift it into a shared helper when a second suite
+ * needs it.
  */
 function makeVideoState(overrides: Partial<VideoState> = {}): VideoState {
 
@@ -41,8 +41,8 @@ describe("RECOVERY_METHODS", () => {
 
   test("declares the four expected method names with stable string values", () => {
 
-    // The constant is also consumed by recordRecoveryAttempt/recordRecoverySuccess via the ATTEMPT_FIELDS and SUCCESS_FIELDS mappings; changing any value here
-    // would break the metrics counter routing, so we lock the string identities.
+    // These strings are the log labels in every recovery start, success, and failure message, so we lock their identities against an unnoticed change in log
+    // output.
     assert.equal(RECOVERY_METHODS.pageNavigation, "page navigation", "pageNavigation literal");
     assert.equal(RECOVERY_METHODS.playUnmute, "play/unmute", "playUnmute literal");
     assert.equal(RECOVERY_METHODS.sourceReload, "source reload", "sourceReload literal");
@@ -362,7 +362,7 @@ describe("computeNextRecoveryLevel", () => {
 
 describe("classifyNativeSegmentHealth", () => {
 
-  // A target duration of 1000ms puts the staleness tiers at 2000ms (stalled), 4000ms (first escalation), and 6000ms.
+  // A target duration of 1000ms puts the staleness tiers at 2000ms (stalled) and 4000ms (escalation); L2 versus L3 past 4000ms is decided by recoveryAttempts.
   const targetDurationMs = 1000;
 
   test("active fetch errors report 'recovering' with no escalation, outranking any staleness", () => {

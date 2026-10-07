@@ -313,7 +313,8 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
     "    document.dispatchEvent(new CustomEvent('tabactivated', { detail: { category: category } }));",
     "  }",
 
-    // Expose switchTab globally for subtab script to use.
+    // Expose switchTab as window.switchMainTab, the page-level handle for switching the main tab from outside this closure. Subtab controllers do not call
+    // it...they react to the tabactivated event above, and the hashchange handler below reaches them through their own window.switch*Subtab registrations.
     "  window.switchMainTab = switchTab;",
 
     // Attach click handlers to tabs.
@@ -387,7 +388,7 @@ export function generateTabScript(options: TabScriptOptions = {}): string {
 }
 
 /**
- * Generates a tab button HTML element.
+ * Generates a tab button HTML element. The category and label are inserted as raw markup without escaping, so both must be server-controlled constants.
  * @param category - The category identifier for the tab.
  * @param label - The display label for the tab.
  * @param isActive - Whether this tab is initially active.
@@ -420,7 +421,8 @@ export function generateTabPanel(category: string, content: string, isActive: bo
 }
 
 /**
- * Generates the common page wrapper HTML structure with head, styles, and body. Automatically includes theme styles for dark mode support.
+ * Generates the common page wrapper HTML structure with head, styles, and body. Automatically includes theme styles for dark mode support. The title is inserted as
+ * raw markup without escaping, so it must be a server-controlled constant.
  * @param title - The page title.
  * @param styles - CSS styles to include in the head.
  * @param bodyContent - HTML content for the body.

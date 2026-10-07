@@ -3,11 +3,12 @@
  * app.test.ts: Unit tests for the Express application builder module. Almost everything in app.ts is wired into a process-level lifecycle - the HTTP server,
  * the Chrome browser, the file logger, the SIGINT/SIGTERM handlers, the polling intervals - so the lifecycle is the first surface, driven only where a unit row
  * can reach it. startServer itself cannot be invoked safely from a unit test (it spawns Chrome, binds the port, registers signal handlers, and calls
- * process.exit on failure), so it is deferred to e2e coverage. releaseInstanceSlot is exercised on its ownership path, the critical-correctness case: a process
- * that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file record and refuses to remove a file whose
- * PID does not match this process), and that guarantee holds no matter how the module graph was loaded. startBootServices, the boot's tail, is driven through its
- * injected steps, so each of its shutdown checks is observed at its own boundary with recording stubs standing in for the services, the listener and HDHomeRun,
- * and closeMainServer, shutdown's step for the listener, is driven after such a boot, so the server the boot binds is the one shutdown closes.
+ * process.exit on failure), and no automated suite exercises it, because it needs a live Chrome. releaseInstanceSlot is exercised on its ownership path, the
+ * critical-correctness case: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
+ * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
+ * startBootServices, the boot's tail, is driven through its injected steps, so each of its shutdown checks is observed at its own boundary with recording stubs
+ * standing in for the services, the listener and HDHomeRun, and closeMainServer, shutdown's step for the listener, is driven after such a boot, so the server
+ * the boot binds is the one shutdown closes.
  *
  * The HTTP request-logging rules are the second surface tested here. The skip predicates, the per-level decision and the elapsed-time renderer are pure of the
  * Express plumbing - they take a plain record or a request object and return a decision - so every level's rule set is exercised without booting the server.
@@ -47,8 +48,9 @@ import { startHdhrServer } from "./hdhr/index.ts";
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-/* The data-dir state and the PRISMCAST_DATA_DIR env var are module-level. We capture and restore the surrounding values so the suite leaves the global state
- * exactly as it found it. Each test scopes its own data directory via withTempDir + initializeDataDir.
+/* The hooks clear the PRISMCAST_DATA_DIR env var before each test and restore the surrounding value after it, so the suite leaves the variable exactly as it
+ * found it. The data directory config/paths.ts resolves is module-level and deliberately persists across rows: the row after the ownership row relies on the
+ * resolution that row left behind. Only the ownership row scopes its own data directory, via withTempDir + initializeDataDir.
  */
 const ORIGINAL_ENV = process.env["PRISMCAST_DATA_DIR"];
 
@@ -140,8 +142,8 @@ describe("releaseInstanceSlot", () => {
 });
 
 /* startServer is not run here. It launches Chrome via puppeteer-core, binds the configured port, registers process-level signal handlers, spawns ffmpeg
- * children, and may call process.exit on failure - any of which is incompatible with a unit-test context - so the integration tier covers it via the test/e2e/
- * harness. Its tail, startBootServices, takes its steps as injected dependencies, and the rows below drive the boot's tail through them: each step is a
+ * children, and may call process.exit on failure - any of which is incompatible with a unit-test context - and no automated suite exercises it, because it
+ * needs a live Chrome. Its tail, startBootServices, takes its steps as injected dependencies, and the rows below drive the boot's tail through them: each step is a
  * recording stub, the shutdown check reads the browser module's own state, which a row sets through setGracefulShutdown, and the listen stub returns an
  * http.Server that never listens, so no row binds a port, starts a background service or reaches the CDP module's process-wide upgrade server.
  */

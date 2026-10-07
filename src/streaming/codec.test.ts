@@ -1,9 +1,10 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * codec.test.ts: Unit tests for the capture codec module in codec.ts. Every export derives from the user's allowlist on CONFIG.streaming.captureCodecs and the
- * GPU capabilities cached in browser/display.ts. Tests save and restore that global state around each case so they're independent of one another and of any
- * other test files that touch CONFIG. The capabilities read null until detection first runs and setGpuCapabilities cannot set them back, so the rows for
- * that state run first in the file, ahead of every capability write, in the fresh process node:test gives each file.
+ * codec.test.ts: Unit tests for the capture codec module in codec.ts. getEffectiveCaptureCodec and the exports built on it read the user's allowlist on
+ * CONFIG.streaming.captureCodecs and the GPU capabilities cached in browser/display.ts; isCaptureCodecSupported reads the GPU capabilities alone. Tests save
+ * and restore the global state around each case so they're independent of one another and of any other test files that touch CONFIG. The capabilities read
+ * null until detection first runs and setGpuCapabilities cannot set them back, so the rows for that state run first in the file, ahead of every capability
+ * write, in the fresh process node:test gives each file.
  */
 import type { CaptureCodec, Nullable } from "../types/index.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";

@@ -108,8 +108,8 @@ describe("generateConfigSubtabScript", () => {
 
   test("exposes the settings form submit and reset paths", () => {
 
-    // submitSettingsForm intercepts the <form onsubmit>. resetSetting/resetTabToDefaults/resetAllToDefaults reset values client-side without persisting until
-    // the user clicks Save.
+    // submitSettingsForm is the handler the action dispatcher calls for the settings form's data-submit-action. resetSetting/resetTabToDefaults/resetAllToDefaults
+    // reset values client-side without persisting until the user clicks Save.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /window\.submitSettingsForm\s*=/);
@@ -120,8 +120,8 @@ describe("generateConfigSubtabScript", () => {
 
   test("exposes the export and import handlers for settings, channels, and M3U", () => {
 
-    // The Backup subtab uses two export/import pairs (exportConfig/importConfig, exportChannels/importChannels) plus a standalone importM3U handler with no
-    // matching export counterpart.
+    // The Backup subtab uses the JSON export/import pairs (exportConfig/importConfig, exportChannels/importChannels). importM3U has no matching export
+    // counterpart and is triggered from the import dropdown in the Channels tab toolbar.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /window\.exportConfig\s*=/);
@@ -157,8 +157,9 @@ describe("generateConfigSubtabScript", () => {
 
   test("exposes the inline edit and inline tag dropdown handlers", () => {
 
-    // startInlineEdit drives table-cell editing, toggleInlineTagDropdown opens the inline tag editor portal, and updateTagsHidden synchronizes the hidden tag
-    // input from the dropdown checkboxes. Tag-manager modal handlers (createTag/deleteTag/restoreTag/startTagRename) live in channels.ts, not here.
+    // startInlineEdit drives table-cell editing, and toggleInlineTagDropdown opens the inline tag editor portal, which saves its tags by PATCH when it closes.
+    // updateTagsHidden copies the channel edit form's tag checkboxes into that form's hidden tags input. Tag-manager modal handlers
+    // (createTag/deleteTag/restoreTag/startTagRename) live in channels.ts, not here.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /window\.startInlineEdit\s*=/);
@@ -168,7 +169,7 @@ describe("generateConfigSubtabScript", () => {
 
   test("exposes the channel login flow on window", () => {
 
-    // startChannelLogin opens login mode with a provider URL, endLogin closes login mode and the modal.
+    // startChannelLogin opens login mode for a channel key, endLogin closes login mode and the modal.
     const script = generateConfigSubtabScript();
 
     assert.match(script, /window\.startChannelLogin\s*=/);

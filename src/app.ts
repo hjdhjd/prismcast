@@ -172,7 +172,8 @@ function setupGracefulShutdown(): void {
     await backgroundServices?.disposeAsync();
     stopPrecaching();
 
-    // Terminate all streams. terminateStream() handles all cleanup including page closure and registry removal.
+    // Terminate all streams. terminateStream() runs every per-stream cleanup except the page close, which it skips during graceful shutdown because
+    // closeBrowser() below closes every page.
     const streams = getAllStreams();
 
     // Collect resume state from active streams before termination destroys the segmenters. Each entry captures sequence numbers and timestamps so the next startup
@@ -521,9 +522,10 @@ async function buildApp(): Promise<Express> {
 }
 
 /* PrismCast instance guard. Only one server instance should run at a time - a second instance would launch a competing Chrome process, bind to the same port,
- * and corrupt shared state. The guard delegates to the runtime-identity primitive in utils/runtimeIdentity.ts, which composes PID liveness with the current
- * boot session ID to classify the on-disk identity file. Stale records from reboots, container restarts, crashes, and ungraceful shutdowns are recovered
- * transparently: the next claim() overwrites them. A held-live record (same boot, alive PID) is the only state that rejects a startup.
+ * and corrupt shared state. The guard delegates to the runtime-identity primitive in utils/runtimeIdentity.ts, which composes PID liveness, the current boot
+ * session ID and the writer's command-line fingerprint to classify the on-disk identity file. Stale records from reboots, container restarts, crashes, and
+ * ungraceful shutdowns are recovered transparently: the next claim() overwrites them. A held-live record (same boot, alive PID, and that PID not proven by its
+ * command-line fingerprint to be another program) is the only state that rejects a startup.
  *
  * Ownership is verified structurally inside release(): the function reads the on-disk record and only removes the file when its PID matches this process's
  * PID. The file content is itself the source of truth, so a rejected duplicate startup's exit handler cannot accidentally delete the legitimate holder's file.

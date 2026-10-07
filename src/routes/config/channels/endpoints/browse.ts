@@ -4,7 +4,7 @@
  *
  * The browse modal on the Channels tab shows available channels from each service and lets the user add new channels, enable disabled predefineds, switch a
  * channel's active service, or revert a channel away from a service. Every supported operation is dispatched from a single request body so a bulk selection
- * can be applied atomically.
+ * is applied in one request, with the channel and service-selection changes landing as one write.
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";

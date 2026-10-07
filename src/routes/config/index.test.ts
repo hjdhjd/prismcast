@@ -1,12 +1,14 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * index.test.ts: Unit tests for the configuration endpoint coordinator. The module exports three pieces of real logic - categorizeProfiles (a pure
- * grouping helper), scheduleServerRestart (which branches on PRISMCAST_SERVICE and the active stream count and may schedule a delayed exit), and
- * describeConfigurationOutcome (which lets a scheduled restart's message stand alone, reports a refusal with its first reason, and otherwise composes the
- * saved sentence with one sentence for the settings applied live and one for the settings that apply to new streams).
- * setupConfigEndpoint is exercised at the synchronous wiring level against an Express stub that records route registrations. The remaining exports are
- * barrel re-exports verified only as identity-typed function references. The actual route handlers require a live Express app; we flag their per-handler
- * behavior as integration-level rather than exercise it here.
+ * index.test.ts: Unit tests for the configuration endpoint coordinator. The module's real logic is categorizeProfiles (a pure grouping helper),
+ * scheduleServerRestart (which branches on PRISMCAST_SERVICE and the active stream count and may schedule a delayed exit), describeConfigurationOutcome
+ * (which lets a scheduled restart's message stand alone, reports a refusal with its first reason, and otherwise composes the saved sentence with one sentence
+ * for the settings applied live and one for the settings that apply to new streams), and applyConfigurationChange (the save, status emission and
+ * restart-scheduling entry point). This file covers categorizeProfiles, scheduleServerRestart and describeConfigurationOutcome directly;
+ * applyConfigurationChange is covered through the settings and debug route rows and the e2e settings reactivity suite.
+ * setupConfigEndpoint is exercised at the synchronous wiring level against an Express stub that records route registrations, and the barrel re-exports are
+ * verified only as identity-typed function references. The actual route handlers require a live Express app; we flag their per-handler behavior as
+ * integration-level rather than exercise it here.
  */
 import type { ApplyConfigurationResult, RestartResult } from "./index.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
@@ -211,10 +213,10 @@ describe("scheduleServerRestart", () => {
 
   test("returns the deferred result when running as a service AND active streams exist", () => {
 
-    /* Note: we cannot deterministically inject an active stream count without coupling to streaming/registry internals or mocking modules. The active-
-     * streams branch is exercised functionally elsewhere; here we lock the no-streams branch shape and document that the deferred branch follows the
-     * same return-value contract: deferred=true, willRestart=true, activeStreams=N>0, message includes the stream count. The synchronous return shape
-     * for the no-streams case is the assertion this test actually verifies - active-streams formatting is straightforward String concatenation.
+    /* Note: we cannot deterministically inject an active stream count without coupling to streaming/registry internals or mocking modules, so the
+     * active-streams (deferred) branch is not exercised here or anywhere else in the suite. Here we lock the no-streams branch shape and document that the
+     * deferred branch is meant to follow the same return-value contract: deferred=true, willRestart=true, activeStreams=N>0, message includes the stream
+     * count. The synchronous return shape for the no-streams case is the only assertion this test actually verifies.
      */
     mock.timers.enable({ apis: ["setTimeout"] });
     process.env["PRISMCAST_SERVICE"] = "1";
@@ -258,8 +260,8 @@ describe("scheduleServerRestart", () => {
 
   test("does not schedule a setTimeout on the manual-restart path", () => {
 
-    /* Boundary: when not running as a service, the function returns immediately without scheduling any timer. The previous assertion ("we are still alive")
-     * would survive a refactor that scheduled an irrelevant timer in the manual branch. We assert the contract directly via setTimeout call count.
+    /* Boundary: when not running as a service, the function returns immediately without scheduling any timer. Asserting the setTimeout call count holds the
+     * contract directly; a liveness check would pass even if the manual branch scheduled an unrelated timer.
      */
     Reflect.deleteProperty(process.env, "PRISMCAST_SERVICE");
 

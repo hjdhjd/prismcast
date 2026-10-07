@@ -67,7 +67,9 @@ type LoggerState =
  */
 
 /* The file logger's module state: the lifecycle state that says where a line goes, plus the bookkeeping of the file it is open on. The initializeFileLogger()
- * call during server startup sets up every one of them, and setMaxLogSize() replaces the size cap when a saved limit changes it.
+ * call during server startup sets the lifecycle state, the clock and the size cap, and setMaxLogSize() replaces the size cap when a saved limit changes it. The
+ * buffer, the write counter and the write chain start from their module initializers and shutdownFileLogger() resets them; a failed initialization also empties
+ * the buffer.
  */
 
 // Where the logger is in its lifecycle. Only transition() assigns it, which is what gives the flush timer a single owner.
@@ -78,7 +80,8 @@ let state: LoggerState = { kind: "window" };
  */
 let writeBuffer: string[] = [];
 
-// Writes since the last file size check, beside the state for the same reason the buffer is - the write path bumps it once per line.
+// The running count of lines the open and closing states buffer, whose multiples of SIZE_CHECK_FREQUENCY trigger the periodic size check, reset at shutdown. It
+// sits beside the state for the same reason the buffer does - that write path bumps it once per buffered line.
 let writeCount = 0;
 
 /* Tail of the write-ordering chain, the open file's bookkeeping rather than a member of its state. Every asynchronous mutation of the log file (buffer flushes
@@ -95,7 +98,8 @@ let writeChain: Promise<void> = Promise.resolve();
 const SHUTDOWN_DRAIN_BOUND_MS = 5000;
 
 // Maximum log file size in bytes, set by initialization and by setMaxLogSize(). It is configuration the size check and the trim read rather than lifecycle, so
-// it stays beside the state.
+// it stays beside the state. The initial value is a placeholder nothing reads: the size check and the trim run only in the open state, which initialization
+// enters after assigning the configured cap.
 let maxLogSize = 1048576;
 
 /* The clock the flush interval arms on and the pause stamps read, set during initialization. It is per-run configuration the way the size cap is, so it stays
@@ -167,9 +171,8 @@ function openFilePath(): Nullable<string> {
 // Initialization.
 
 /**
- * Initializes the file logger. Creates the log file if it does not exist. Must be called after the data directory is ensured to exist. A call is the one
- * initialization of the process: it enters open, leaving the window's entries in the buffer for the first flush to append, or off, discarding them. Either
- * outcome leaves the startup window behind.
+ * Initializes the file logger. Creates the log file and its parent directory when either is missing. A call is the one initialization of the process: it enters
+ * open, leaving the window's entries in the buffer for the first flush to append, or off, discarding them. Either outcome leaves the startup window behind.
  * @param logPath - Absolute path to the log file, resolved by the caller via getLogFilePath().
  * @param maxSize - Maximum log file size in bytes from CONFIG.logging.maxSize.
  * @param clock - The clock the flush interval arms on and the pause stamps read; defaults to the system clock.
@@ -255,7 +258,8 @@ function formatLogEntry(level: string, message: string, color: LogColor, categor
 }
 
 /**
- * Writes a log entry to the buffer. Entries are flushed to disk periodically.
+ * Writes a log entry where the lifecycle state sends it. The window holds it for the first flush, dropping the oldest held entry past STARTUP_BUFFER_LIMIT; open
+ * and closing buffer it for the periodic or final flush, and a paused file drops it until the retry delay passes; closed appends it synchronously; off discards it.
  * @param level - Log level ("info", "warn", "error", "debug").
  * @param message - The formatted log message.
  * @param color - Color name accepted by node:util.styleText, or null for the default terminal color.
@@ -312,7 +316,8 @@ export function writeLogEntry(level: string, message: string, color: LogColor, c
     case "closed": {
 
       /* The logger has shut down and this line still belongs to the run that just ended, so it goes to that run's file. The append is synchronous because
-       * nothing asynchronous is left to carry it: the flush timer is stopped, the write chain has drained, and the process may exit on the next tick.
+       * nothing asynchronous is left to carry it: the flush timer is stopped, the write chain has drained or its bounded wait has lapsed, and the process may exit
+       * on the next tick. A lapsed drain can leave a trim's rename pending, which would replace the file under this append.
        */
       try {
 

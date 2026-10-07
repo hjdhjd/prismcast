@@ -464,7 +464,8 @@ describe("createHLSState", () => {
 
   test("the segment emitter has a max listener limit of 20", () => {
 
-    // Locks the multi-MPEG-TS-client capacity. Default Node EventEmitter caps at 10 - if the implementation accidentally drops setMaxListeners, this test surfaces it.
+    // Locks the raised listener-leak warning threshold. Node's default of 10 only triggers a MaxListenersExceededWarning and never refuses a listener, so the limit is
+    // raised to keep a normal multi-client stream from printing a spurious warning - if the implementation accidentally drops setMaxListeners, this test surfaces it.
     const state = createHLSState();
 
     assert.equal(state.segmentEmitter.getMaxListeners(), 20);

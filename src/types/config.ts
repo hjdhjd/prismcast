@@ -33,7 +33,8 @@ export interface BrowserConfig {
 export interface PathsConfig {
 
   // Absolute path override for Chrome's user data directory (profile, cookies, cache), or null to use the default location inside the data directory. When null,
-  // the directory is <dataDir>/chromedata. Setting this allows storing Chrome data on a different volume or sharing a profile across instances.
+  // the directory is <dataDir>/chromedata. Setting this allows storing Chrome data on a different volume, or reusing one profile across installs that never run
+  // at the same time.
   chromeDataDir: Nullable<string>;
 
   // Absolute path override for the log file, or null to use the default location (<dataDir>/prismcast.log). Setting this allows writing logs to a different
@@ -166,7 +167,7 @@ export interface HLSConfig {
 }
 
 /**
- * Channels configuration controlling which predefined channels are enabled.
+ * Channels configuration: channel table preferences, the service filter, precaching, the setup flow's completion, and which predefined channels are disabled.
  */
 export interface ChannelsConfig {
 
@@ -205,14 +206,12 @@ export interface ChannelsConfig {
  * Port is user-configurable via `CONFIG_METADATA` because Channels DVR's port is user-configurable per their docs and a non-default port would otherwise be
  * unreachable from PrismCast.
  *
- * Single-instance shape today. Multi-DVR support, if/when added in a future release, migrates this to `{ instances: ChannelsDvrInstance[] }` via the
- * schema-migration framework. Don't proliferate patterns that fight the eventual array shape - keep all DVR-targeted code consuming this single canonical
- * config location.
+ * All DVR-targeted code reads this one config location.
  */
 export interface ChannelsDvrConfig {
 
   // Auto-discovered Channels DVR hostname or IP. Empty string means "not yet discovered." Populated by `showInfo.setDvrHost()` when a matching M3U device is
-  // found on a candidate host. Host-only - never includes a port. Future maintainers: do NOT add this to `CONFIG_METADATA`; auto-discovery owns the value.
+  // found on a candidate host. Host-only - never includes a port. The process owns this value through auto-discovery, so it stays out of `CONFIG_METADATA`.
   host: string;
 
   // TCP port for the user's Channels DVR API. Default 8089 (the canonical Channels DVR port). Override when the user has changed the DVR's listen port from
@@ -266,8 +265,9 @@ export const HTTP_LOG_LEVELS = [ "none", "errors", "filtered", "all" ] as const;
  */
 export interface LoggingConfig {
 
-  // Active debug filter pattern persisted from the /debug UI. When non-empty at startup and no higher-priority source (PRISMCAST_DEBUG env var or --debug CLI
-  // flag) is active, this pattern is applied via initDebugFilter(). Managed by the /debug endpoint, not shown in the Settings/Advanced config UI.
+  // Persisted debug filter pattern. The boot applies it via initDebugFilter(), and any save that changes it - from the /debug page or a config import -
+  // applies it live, in both cases unless a higher-priority source (PRISMCAST_DEBUG env var or --debug CLI flag) owns the filter. An empty filter clears the
+  // runtime filter. Not shown in the Settings/Advanced config UI.
   debugFilter: string;
 
   // Controls HTTP request logging level. "none" disables HTTP request logging, "errors" logs only 4xx and 5xx responses, "filtered" logs important requests
@@ -362,10 +362,10 @@ export interface StreamingConfig {
  */
 export interface Config {
 
-  // Browser launch and viewport configuration.
+  // Chrome executable and launch timing.
   browser: BrowserConfig;
 
-  // Channel enable/disable configuration.
+  // Channel table preferences, the service filter, precaching, setup completion, and which predefined channels are disabled.
   channels: ChannelsConfig;
 
   // Connection settings for the user's external Channels DVR server.

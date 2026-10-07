@@ -3,10 +3,10 @@
  * showInfo.test.ts: Unit tests for the show name and channel logo subsystem. showInfo.ts integrates with the Channels DVR API to discover the active DVR host,
  * fetch active recording jobs and program guide entries, and populate channel logos in two tiers. The module exposes a small public API (getDvrHost, setDvrHost,
  * getShowName, clearShowName, triggerShowNameUpdate, fetchFromDvr, getDeviceMappings, matchesM3uDevice, updateChannelLogo) plus the start/stop polling
- * lifecycle. Tests focus on the pure helpers (getShowName/clearShowName, getDvrHost/setDvrHost, fetchFromDvr success/timeout paths, matchesM3uDevice's overlap
- * boundaries) and avoid the polling start/stop which spawns intervals. The DVR host is the running configuration's, and setDvrHost writes it through a process
- * write, so each host row runs in a temporary data directory of its own and boots the configuration from that directory's empty file through the real store;
- * the rows covering a save that changes the host or the port run in test/e2e/streaming/show-info.test.ts.
+ * lifecycle. Tests focus on the show-name cache, the DVR host accessor and its configuration write, fetchFromDvr's success, failure and lapse paths, and
+ * matchesM3uDevice's overlap boundaries, and avoid the polling start/stop which spawns intervals. The DVR host is the running configuration's, and setDvrHost
+ * writes it through a process write, so each host row runs in a temporary data directory of its own and boots the configuration from that directory's empty
+ * file through the real store; the rows covering a save that changes the host or the port run in test/e2e/streaming/show-info.test.ts.
  */
 import { CONFIG, initializeConfiguration } from "../config/index.ts";
 import { TestClock, settle } from "homebridge-plugin-utils/testing";
@@ -333,8 +333,8 @@ describe("matchesM3uDevice", () => {
   test("matches at exactly 80% overlap", () => {
 
     // Device and prismcast sets are both size 5, sharing 4 entries (a, b, c, d). maxSize is 5, so overlapRatio is exactly 0.8. The accept test is
-    // `!(overlapRatio < 0.8)`, which must accept the boundary value itself - a regression to `overlapRatio >= 0.8` would also pass this case, but a regression
-    // that rounds or truncates the ratio before comparing would not.
+    // `!(overlapRatio < 0.8)`, which must accept the boundary value itself - a regression to `overlapRatio >= 0.8` would also pass this case, but a strict
+    // `overlapRatio > 0.8`, which rejects the boundary, would not.
     const deviceChannelIds = new Set([ "a", "b", "c", "d", "f" ]);
     const prismcastChannelKeys = new Set([ "a", "b", "c", "d", "e" ]);
 
