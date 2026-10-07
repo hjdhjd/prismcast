@@ -7,7 +7,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { getAllServiceTags, getCanonicalKey, getChannelServiceLabel, getEnabledServices, getResolvedChannel, getServiceGroup, getServiceSelection,
-  getServiceTagForChannel, mutateEnabledServices } from "../../../../config/services.ts";
+  getServiceTagForChannel, hasPredefinedSuffix, mutateEnabledServices } from "../../../../config/services.ts";
 import { getChannelListing, mutateServiceSelections, setServiceSelection } from "../../../../config/userChannels.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { LOG } from "../../../../utils/index.ts";
@@ -142,7 +142,8 @@ export function registerServiceRoutes(app: Express): void {
         continue;
       }
 
-      const matchingVariant = group.variants.find((v) => (getServiceTagForChannel(v.key) === serviceTag));
+      // A :predefined entry is the path back to the original service rather than a service the channel offers, so a bulk assign never picks it.
+      const matchingVariant = group.variants.find((v) => !hasPredefinedSuffix(v.key) && (getServiceTagForChannel(v.key) === serviceTag));
 
       if(matchingVariant) {
 

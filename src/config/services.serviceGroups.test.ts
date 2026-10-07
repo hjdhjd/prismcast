@@ -5,7 +5,7 @@
  * channelSort.test.ts.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { buildServiceGroups, getEnabledServices, getServiceGroup, getServiceSelections, resolveServiceKey, setEnabledServices,
+import { buildServiceGroups, getEnabledServices, getServiceGroup, getServiceSelections, hasPredefinedSuffix, resolveServiceKey, setEnabledServices,
   setServiceSelections } from "./services.ts";
 import { PREDEFINED_CHANNELS } from "../channels/index.ts";
 import type { ResolvedChannelMap } from "../types/index.ts";
@@ -106,9 +106,7 @@ describe("buildServiceGroups: user-override scenarios A and B", () => {
 
     /* Scenario A: no synthetic :predefined entry, and the canonical's variant entry uses the service label rather than "Custom (...)".
      */
-    const hasPredefinedSuffix = group.variants.some((v) => v.key.endsWith(":predefined"));
-
-    assert.equal(hasPredefinedSuffix, false, "Scenario A does not emit a :predefined variant");
+    assert.equal(group.variants.some((v) => hasPredefinedSuffix(v.key)), false, "Scenario A does not emit a :predefined variant");
 
     const canonicalVariant = group.variants.find((v) => v.key === "nbc");
 

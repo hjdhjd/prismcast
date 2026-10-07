@@ -27,20 +27,32 @@ import { writeProcessFields } from "./index.ts";
  */
 
 // Suffix appended to channel keys to reference the original predefined channel when a user has overridden it. For example, "espn:predefined" references the original
-// predefined ESPN channel when the user has created a custom "espn" entry. Exported so other modules (e.g., channelForm) can detect synthetic entries via the
-// canonical constant instead of stringly-typed substring checks.
+// predefined ESPN channel when the user has created a custom "espn" entry. hasPredefinedSuffix is the one test for the suffix and stripPredefinedSuffix the one
+// strip, and the constant is exported for building a synthetic key.
 export const PREDEFINED_SUFFIX = ":predefined";
 
 /**
+ * Reports whether a channel key carries the :predefined suffix, the synthetic key of the entry that points back to the original predefined channel in a user
+ * override's service group.
+ * @param key - The channel key.
+ * @returns True when the key carries the :predefined suffix.
+ */
+export function hasPredefinedSuffix(key: string): boolean {
+
+  return key.endsWith(PREDEFINED_SUFFIX);
+}
+
+/**
  * Strips the :predefined suffix from a channel key if present, returning the base key. Synthetic keys like "pbs:predefined" are created when a user overrides a
- * predefined channel - the original predefined entry gets this suffix to coexist with the user's custom version in the service dropdown. Functions that look up
- * channel data by key must strip the suffix to find the actual channel entry.
+ * predefined channel - the original predefined entry gets this suffix to coexist with the user's custom version in the service dropdown. The base key finds the
+ * service group a synthetic key belongs to, but the channel stored under the base key is the user's custom version, so a lookup that needs the original
+ * predefined channel resolves the synthetic key through getResolvedChannel instead.
  * @param key - The channel key, possibly with :predefined suffix.
  * @returns The base key without the suffix.
  */
 function stripPredefinedSuffix(key: string): string {
 
-  return key.endsWith(PREDEFINED_SUFFIX) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
+  return hasPredefinedSuffix(key) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
 }
 
 // Module-level storage for service groups, keyed by canonical channel key.
@@ -85,32 +97,36 @@ function resolveServiceTag(channel: Channel): string {
 }
 
 /**
- * Gets the service tag for a channel key. For channels in a service group, reads the pre-computed tag from the group variant entry (computed at group-building
- * time by buildServiceGroups). For standalone channels not in any group, derives the tag from the channel's URL domain. Callers normally pass canonical or plain
- * variant keys, but :predefined synthetic keys are also resolved: the suffix is stripped to locate the group and the matching variant is found by either the
- * original :predefined key or the stripped key.
+ * Resolves a channel key to the channel a lookup by key reads: getResolvedChannel's answer, which for a :predefined key is the original predefined channel a
+ * selection of that key tunes, else the predefined catalog's entry for a plain key the resolved map lacks, such as a lookup made before the first service-group
+ * build.
+ * @param key - The channel key, possibly with the :predefined suffix.
+ * @returns The channel, or undefined when the key resolves to none.
+ */
+function resolveLookupChannel(key: string): ResolvedChannel | Channel | undefined {
+
+  return getResolvedChannel(key) ?? PREDEFINED_CHANNELS[key];
+}
+
+/**
+ * Gets the service tag for a channel key. A key in a service group reads the tag buildServiceGroups computed for its own entry, which for a :predefined key is the
+ * original predefined service's. Any other key reads the tag resolveServiceTag derives for the channel resolveLookupChannel resolves, so a :predefined key whose
+ * group carries no entry of its own reads the original predefined channel, and a key that resolves to no channel reads "direct".
  * @param key - The channel key.
  * @returns The service tag string.
  */
 export function getServiceTagForChannel(key: string): string {
 
-  const effectiveKey = stripPredefinedSuffix(key);
-  const group = serviceGroups.get(effectiveKey);
+  // The group is found by the base key, but only the exact key matches: a user override's group lists the custom canonical ahead of its :predefined entry, so
+  // the base key's entry would answer a :predefined key with the custom URL's tag.
+  const variant = serviceGroups.get(stripPredefinedSuffix(key))?.variants.find((v) => (v.key === key));
 
-  // For channels in a group, read the pre-computed tag from the variant entry.
-  if(group) {
+  if(variant) {
 
-    const variant = group.variants.find((v) => (v.key === key) || (v.key === effectiveKey));
-
-    if(variant) {
-
-      return variant.tag;
-    }
+    return variant.tag;
   }
 
-  // For standalone channels not in any group, derive from the channel's URL domain.
-  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
-
+  const channel = resolveLookupChannel(key);
 
   if(!channel) {
 
@@ -122,15 +138,15 @@ export function getServiceTagForChannel(key: string): string {
 
 /**
  * Returns the auth domain for a channel key. Domain is the natural auth boundary - browser cookies and sessions scope to it. Multi-channel services work correctly
- * because all their channels share one domain, and canonical channels work correctly because each has its own domain.
+ * because all their channels share one domain, and canonical channels work correctly because each has its own domain. The key resolves through
+ * resolveLookupChannel, as the service tag's does, so a :predefined key reads the original predefined channel a selection of that key tunes rather than the
+ * user's custom version.
  * @param key - The channel key.
  * @returns The extracted domain from the channel's URL, or empty string if the channel or URL cannot be resolved.
  */
 export function getAuthDomainForChannel(key: string): string {
 
-  const effectiveKey = stripPredefinedSuffix(key);
-  const channel = channelsRef[effectiveKey] ?? PREDEFINED_CHANNELS[effectiveKey];
-
+  const channel = resolveLookupChannel(key);
 
   if(!channel?.url) {
 
@@ -158,7 +174,7 @@ export function getChannelServiceTags(canonicalKey: string): string[] {
 
       // Skip predefined suffix variants - the :predefined variant represents the original service being reverted to, not an independently offered
       // service, so its tag is excluded even when it differs from the canonical's current tag.
-      if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
+      if(hasPredefinedSuffix(variant.key)) {
 
         continue;
       }
@@ -781,8 +797,7 @@ export function hasMultipleServices(key: string): boolean {
  */
 export function getCanonicalKey(key: string): string {
 
-  // Strip predefined suffix if present before looking up the group.
-  const baseKey = key.endsWith(PREDEFINED_SUFFIX) ? key.slice(0, -PREDEFINED_SUFFIX.length) : key;
+  const baseKey = stripPredefinedSuffix(key);
   const group = serviceGroups.get(baseKey);
 
   return group?.canonicalKey ?? baseKey;
@@ -818,10 +833,13 @@ export function getServiceSelection(canonicalKey: string): string | undefined {
 }
 
 /* The default selection lookup consults the module-level serviceSelections cache, which mirrors the last committed configuration. Injecting it as a default
- * parameter of resolveServiceKey keeps every read-only caller (the tuning, playlist, and table-rendering hot paths) unchanged, while letting a caller that is
- * mid-mutation supply its own draft instead. It is a stable module const so the default carries no per-call allocation on the hot path.
+ * parameter of resolveServiceKey keeps every read-only caller (the tuning, playlist, and table-rendering hot paths) unchanged, while letting a caller resolve a
+ * channel under a selection the cache does not hold. It is a stable module const so the default carries no per-call allocation on the hot path.
  */
 const readModuleServiceSelection = (canonicalKey: string): string | undefined => serviceSelections.get(canonicalKey);
+
+// The selection lookup that finds no selection for any channel, so resolveServiceKey resolves a channel the way it resolves once its selection is cleared.
+const readNoServiceSelection = (): undefined => undefined;
 
 /**
  * Resolves a canonical channel key to the actual channel key based on the current service selection. If a specific service is selected for this channel, returns
@@ -829,12 +847,13 @@ const readModuleServiceSelection = (canonicalKey: string): string | undefined =>
  * service is filtered out.
  *
  * The selection source is injected via getSelection, defaulting to the committed module cache. Stale-selection cleanup belongs to buildServiceGroups(), which
- * validates stored selections against the rebuilt variant structure on startup and after runtime mutations. A caller resolving inside a mutation that has already
- * changed the selection must pass a lookup over its draft (for example (key) => data.serviceSelections[key]); otherwise the resolution reflects the stale committed
- * cache and, for instance, clearing a selection mid-transaction would resolve back to the just-removed variant.
+ * validates stored selections against the rebuilt variant structure on startup and after runtime mutations. A caller that needs the resolution under a
+ * selection the cache does not hold passes its own lookup: hasAlternativeService passes readNoServiceSelection to resolve a channel as it stands once its
+ * selection is cleared, which is how the browse remove decides inside the mutation that clears the selection, where the committed cache would still resolve
+ * to the just-removed variant.
  * @param canonicalKey - The canonical channel key.
- * @param getSelection - Looks up the stored selection for a canonical key. Defaults to the committed module cache; pass a draft lookup when resolving inside a
- *   mutation that has changed the selection.
+ * @param getSelection - Looks up the stored selection for a canonical key. Defaults to the committed module cache; pass another lookup to resolve under a
+ *   selection the cache does not hold.
  * @returns The resolved service key to use for streaming.
  */
 export function resolveServiceKey(canonicalKey: string, getSelection: (canonicalKey: string) => string | undefined = readModuleServiceSelection): string {
@@ -862,6 +881,20 @@ export function resolveServiceKey(canonicalKey: string, getSelection: (canonical
 }
 
 /**
+ * Reports whether a channel resolves to a service other than the given one once its service selection is cleared: to the first enabled variant other than a
+ * :predefined entry when the filter excludes the canonical's service and such a variant exists, and to the canonical default otherwise. The browse modal's
+ * remove action clears the selection and disables or deletes the channel when this is false, and the browse lineup reports the same answer to the client as the
+ * channel's alternatives, so the modal's preview of an uncheck and the remove read one decision.
+ * @param canonicalKey - The canonical channel key.
+ * @param serviceTag - The service tag being removed.
+ * @returns True when the channel keeps a service other than serviceTag with no selection stored.
+ */
+export function hasAlternativeService(canonicalKey: string, serviceTag: string): boolean {
+
+  return getServiceTagForChannel(resolveServiceKey(canonicalKey, readNoServiceSelection)) !== serviceTag;
+}
+
+/**
  * Finds the first enabled variant for a channel when the current selection's service is filtered out. Iterates the group's variants and returns the first whose
  * service tag is enabled.
  * @param canonicalKey - The canonical channel key.
@@ -878,7 +911,8 @@ function findFirstEnabledVariant(canonicalKey: string): string | undefined {
 
   for(const variant of group.variants) {
 
-    if(variant.key.endsWith(PREDEFINED_SUFFIX)) {
+    // The :predefined entry is the path back to the original service rather than a service the channel offers, so the filter fallback never lands on it.
+    if(hasPredefinedSuffix(variant.key)) {
 
       continue;
     }
@@ -903,9 +937,9 @@ export function getResolvedChannel(key: string): ResolvedChannel | undefined {
 
   // Handle the :predefined suffix - return the original predefined channel when the user has overridden the canonical but selects the predefined service. The
   // suffix is only meaningful for canonical keys, so the lookup target is structurally a CanonicalChannel (which is a valid ResolvedChannel).
-  if(key.endsWith(PREDEFINED_SUFFIX)) {
+  if(hasPredefinedSuffix(key)) {
 
-    const predefined = PREDEFINED_CHANNELS[key.slice(0, -PREDEFINED_SUFFIX.length)];
+    const predefined = PREDEFINED_CHANNELS[stripPredefinedSuffix(key)];
 
     return (predefined && (predefined.canonicalKey === undefined)) ? predefined : undefined;
   }

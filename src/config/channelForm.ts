@@ -13,8 +13,8 @@
  * here never creates a circular dependency.
  */
 import type { ChannelDelta, ResolvedChannel } from "../types/index.ts";
-import { PREDEFINED_SUFFIX, getServiceGroup, resolvePredefinedVariant } from "./services.ts";
 import { getChannelEffectiveTags, getEffectiveHdhrEnabled, sortTags } from "./userChannels.ts";
+import { getServiceGroup, hasPredefinedSuffix, resolvePredefinedVariant } from "./services.ts";
 import { isDeepStrictEqual } from "node:util";
 
 /**
@@ -221,7 +221,7 @@ export function findMatchingVariant(canonicalKey: string, formValues: ChannelFor
   for(const variant of serviceGroup.variants) {
 
     // Skip the canonical entry (handled by the no-op-save check upstream) and synthetic :predefined entries (they represent canonical data, already covered).
-    if((variant.key === canonicalKey) || variant.key.endsWith(PREDEFINED_SUFFIX)) {
+    if((variant.key === canonicalKey) || hasPredefinedSuffix(variant.key)) {
 
       continue;
     }

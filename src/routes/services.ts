@@ -7,7 +7,7 @@ import type { Express, Request, Response } from "express";
 import { LOG, waitWithTimeout } from "../utils/index.ts";
 import { defaultPrecachingDeps, recordDiscoveryOutcome, withProviderGuidePage } from "../browser/precaching.ts";
 import { getChannelListing, getChannelLogo, isPredefinedChannel } from "../config/userChannels.ts";
-import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, isServiceTagEnabled,
+import { getChannelServiceLabel, getResolvedChannel, getServiceGroup, getServiceTagForChannel, hasAlternativeService, hasPredefinedSuffix,
   resolveServiceKey } from "../config/services.ts";
 import { getProviderBySlug, normalizeChannelName } from "../browser/channelSelection.ts";
 import { sendError, sendNotFoundError } from "./config/http/envelope.ts";
@@ -153,8 +153,9 @@ interface LineupState {
   // Whether the channel is currently enabled in the lineup.
   enabled: boolean;
 
-  // Whether the channel has at least one other enabled service variant besides the browsed service. Used by the client to determine the visual state
-  // when unchecking a "current" channel: indeterminate if alternatives exist (channel persists), empty if not (channel will be disabled).
+  // Whether the channel keeps a service other than the browsed one once the browsed service is removed, as hasAlternativeService answers and the browse
+  // remove handler acts on. Used by the client to determine the visual state when unchecking a "current" channel: indeterminate if alternatives exist
+  // (channel persists), empty if not (channel will be disabled).
   hasAlternatives: boolean;
 
   // Channel logo URL from the DVR logo cache. Used by the client to render logos alongside channel names via channelDisplayHtml.
@@ -225,28 +226,11 @@ function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: str
     const displayName = entry.channel.name ?? canonicalKey;
     const source = isPredefinedChannel(canonicalKey) ? "predefined" : "user";
 
-    // Check the service group for variants. Used both for channelSelector matching and for computing hasAlternatives.
+    // Check the service group for variants, which the channelSelector matching below reads.
     const group = getServiceGroup(canonicalKey);
 
-    // Determine whether the channel has at least one enabled service besides the browsed service. Check the canonical's own tag first, then iterate
-    // the group's variants. This uses the existing service tag and filter infrastructure.
-    const canonicalTag = getServiceTagForChannel(canonicalKey);
-    let hasAlternatives = (canonicalTag !== serviceSlug) && isServiceTagEnabled(canonicalTag);
-
-    if(!hasAlternatives && group) {
-
-      for(const variant of group.variants) {
-
-        const variantTag = getServiceTagForChannel(variant.key);
-
-        if((variantTag !== serviceSlug) && isServiceTagEnabled(variantTag)) {
-
-          hasAlternatives = true;
-
-          break;
-        }
-      }
-    }
+    // Whether the channel keeps a service other than the browsed one once the browsed service is removed, the decision the browse remove handler acts on.
+    const hasAlternatives = hasAlternativeService(canonicalKey, serviceSlug);
 
     const state: LineupState = {
 
@@ -259,6 +243,14 @@ function annotateWithLineupState(channels: DiscoveredChannel[], serviceSlug: str
     if(group) {
 
       for(const variant of group.variants) {
+
+        // The :predefined entry is the path back to the original service rather than a service the channel offers, so this loop never matches the browsed
+        // service through it...a stored :predefined selection that resolveServiceKey keeps matches below instead, through the listing entry getChannelListing
+        // resolves to that channel.
+        if(hasPredefinedSuffix(variant.key)) {
+
+          continue;
+        }
 
         if(getServiceTagForChannel(variant.key) === serviceSlug) {
 

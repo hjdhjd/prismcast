@@ -8,7 +8,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { LOG, generateChannelKey, sanitizeString } from "../../../../utils/index.ts";
-import { getServiceTagForChannel, resolveServiceKey } from "../../../../config/services.ts";
+import { getServiceTagForChannel, hasAlternativeService } from "../../../../config/services.ts";
 import { isPredefinedChannel, mutateChannels, updatePredefinedChannels, validateChannelUrl } from "../../../../config/userChannels.ts";
 import { sendSuccess, sendValidationError } from "../../http/envelope.ts";
 import { PREDEFINED_CHANNELS } from "../../../../channels/index.ts";
@@ -34,8 +34,8 @@ interface ModifyEntry {
  * stationId, etc.).
  *
  * Per-affiliate identity (e.g., a local Chicago Fox affiliate that needs its own station ID) is modeled as a separate canonical channel rather than as a
- * variant carrying override identity. The browse modal's "add" action (no canonicalKey) is the path for that case; "switch"/"enable" actions create variants
- * which inherit identity from their canonical.
+ * variant carrying override identity. The browse modal's "add" action (no canonicalKey) is the path for that case; a "switch" or "enable" action to a service
+ * other than the canonical's own creates a variant, which inherits identity from its canonical.
  * @param entry - The raw entry fields as submitted by the browse modal.
  * @param name - The sanitized display name (used for standalone canonicals only; variants inherit the name from the canonical).
  * @param url - The sanitized URL.
@@ -121,8 +121,9 @@ export function registerBrowseRoutes(app: Express): void {
         const name = sanitizeString(entry.name?.trim() ?? "");
         const serviceSlug = entry.serviceSlug?.trim() ?? "";
 
-        // Enable re-enables a disabled predefined channel, then falls through to switch logic to set the service selection. Switch changes the service selection to
-        // point to the browsed service's variant, creating the variant as a user channel if needed.
+        // Enable re-enables a disabled predefined channel, then falls through to switch logic to set the service selection. Switch points the selection at the
+        // channel's entry on the browsed service: the canonical itself when the browsed service is the canonical's own, and otherwise the browsed service's variant,
+        // created as a user channel if needed.
         if((action === "switch") || (action === "enable")) {
 
           const canonicalKey = entry.canonicalKey?.trim() ?? "";
@@ -134,27 +135,39 @@ export function registerBrowseRoutes(app: Express): void {
             continue;
           }
 
-          const variantKey = canonicalKey + "-" + serviceSlug;
+          /* Selecting the canonical is stored as no selection, so a switch to the canonical's own service clears the selection and writes no variant. A variant
+           * there would duplicate the canonical, and beside a user override whose custom URL shares that service's domain the normalizer would move the selection
+           * to that variant and strip the custom URL. The tag is read from the committed service groups, as the remove's decision is: a switch names a
+           * channel the committed listing holds, and no earlier entry of the batch rebinds an existing canonical.
+           */
+          if(getServiceTagForChannel(canonicalKey) === serviceSlug) {
 
-          // If no variant exists for this service, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant (service-
-          // specific fields only, no identity fields).
-          if(!allKeys.has(variantKey)) {
+            Reflect.deleteProperty(data.serviceSelections, canonicalKey);
+          } else {
 
-            data.channels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
-              sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
-            allKeys.add(variantKey);
+            const variantKey = canonicalKey + "-" + serviceSlug;
+
+            // If no variant exists for this service, create one as a user channel. The canonicalKey parameter tells buildUserChannel to produce a variant
+            // (service-specific fields only, no identity fields).
+            if(!allKeys.has(variantKey)) {
+
+              data.channels[variantKey] = buildUserChannel(entry, name, sanitizeString(entry.url?.trim() ?? ""),
+                sanitizeString(entry.channelSelector?.trim() ?? ""), canonicalKey);
+              allKeys.add(variantKey);
+            }
+
+            // Selecting a variant: store the explicit selection. variantKey is canonicalKey + "-" + serviceSlug, so it's never equal to canonicalKey here.
+            data.serviceSelections[canonicalKey] = variantKey;
           }
 
-          // Selecting a variant: store the explicit selection. variantKey is canonicalKey + "-" + serviceSlug, so it's never equal to canonicalKey here.
-          data.serviceSelections[canonicalKey] = variantKey;
           switched++;
           affectedKeys.add(canonicalKey);
 
           continue;
         }
 
-        // Service removal. Three-tier fallback: clear the selection and let resolveServiceKey find the next enabled variant or canonical; if the resolved service is
-        // still this service (no alternative exists), disable the predefined channel or delete the user channel.
+        // Service removal. The selection is cleared, and when the channel then keeps no service other than this one, as hasAlternativeService answers, the
+        // predefined channel is disabled or the user channel deleted.
         if(action === "remove") {
 
           const canonicalKey = entry.canonicalKey?.trim() ?? "";
@@ -169,13 +182,10 @@ export function registerBrowseRoutes(app: Express): void {
           // Clear the selection by deleting it (selecting the canonical default is represented as no entry).
           Reflect.deleteProperty(data.serviceSelections, canonicalKey);
 
-          // Resolve against the in-transaction draft, not the committed module cache: we just cleared this canonical's selection on the draft, so the resolver must
-          // observe that clearance to fall back to an alternative variant or the canonical default. Reading the stale committed cache here would resolve back to the
-          // just-removed service and wrongly disable a multi-service channel.
-          const resolvedKey = resolveServiceKey(canonicalKey, (key) => data.serviceSelections[key]);
-          const resolvedTag = getServiceTagForChannel(resolvedKey);
-
-          if(resolvedTag === serviceSlug) {
+          // hasAlternativeService resolves the channel with no selection stored, the state the deletion above leaves, rather than through the committed module
+          // cache, which still holds the just-removed selection and would wrongly disable a multi-service channel. The browse lineup reports the same answer to
+          // the client as the channel's alternatives, so the remove does what the modal showed.
+          if(!hasAlternativeService(canonicalKey, serviceSlug)) {
 
             // No alternative service exists. Disable predefined channels or delete user channels.
             if(isPredefinedChannel(canonicalKey)) {

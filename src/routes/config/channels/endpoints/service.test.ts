@@ -1,15 +1,16 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * service.test.ts: Tests for the service-selection and service-filter endpoints. The endpoints validate input shape and route to setServiceSelection /
- * mutateEnabledServices / mutateServiceSelections helpers. We test the validation paths with mock req/res; the success-with-changes paths delegate to helpers
- * tested in their own files.
+ * mutateEnabledServices / mutateServiceSelections helpers. Each endpoint describe builds the real channel store in a temp data directory, and we drive the
+ * validation paths and the success responses with mock req/res against it; one bulk-assign row asserts which variant a bulk assign picks.
  */
 import type { Express, RequestHandler } from "express";
+import { PREDEFINED_SUFFIX, getServiceGroup, getServiceSelection } from "../../../../config/services.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
+import { initializeUserChannels, mutateChannels } from "../../../../config/userChannels.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { initializeDataDir } from "../../../../config/paths.ts";
-import { initializeUserChannels } from "../../../../config/userChannels.ts";
 import { makeReqRes } from "../../../express.helpers.ts";
 import os from "node:os";
 import path from "node:path";
@@ -277,6 +278,29 @@ describe("POST /config/service-bulk-assign", () => {
     assert.equal(body["success"], true);
     assert.equal(typeof body["affected"], "number", "affected count present");
     assert.equal(typeof body["total"], "number", "total count present");
+  });
+
+  test("a bulk assign never moves a user override onto its :predefined entry", async () => {
+
+    await mutateChannels((data) => {
+
+      data.channels["amcthrillers"] = { url: "https://www.hulu.com/live" };
+    });
+
+    assert.deepEqual(getServiceGroup("amcthrillers")?.variants.map((variant) => [ variant.key, variant.tag ]),
+      [ [ "amcthrillers", "hulu" ], [ "amcthrillers" + PREDEFINED_SUFFIX, "sling" ], [ "amcthrillers-yttv", "yttv" ] ], "precondition: the user override group");
+
+    const { json, req, res } = makeReqRes({ body: { service: "sling" } });
+
+    await bulkAssign(req, res, () => undefined);
+
+    const body = json.mock.calls[0]?.arguments[0] as Record<string, unknown>;
+    const selections = body["selections"] as Record<string, { variant: string } | undefined>;
+
+    assert.equal(body["success"], true);
+    assert.equal(selections["amc"]?.variant, "amc-sling", "control: the bulk assign ran for the sling tag");
+    assert.equal(selections["amcthrillers"], undefined, "the :predefined entry is never picked");
+    assert.equal(getServiceSelection("amcthrillers"), undefined, "the stored selection is unchanged");
   });
 });
 

@@ -1,16 +1,17 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * services.test.ts: Unit tests for the predicates, lookups, and label dispatchers in services.ts - PREDEFINED_SUFFIX, getServiceDisplayName, getCanonicalKey,
- * isServiceTagEnabled, isChannelAvailableByService, getAllServiceTags, getAuthDomainForChannel, resolvePredefinedVariant, findPredefinedByDomain,
- * getChannelServiceLabel, isServiceVariant, hasMultipleServices, getEnabledServices defensive copy, plus the in-memory cache mutators (setEnabledServices,
- * setServiceSelections), the restriction rule that makes a persisted service list the running filter (applyServiceFilter), and the persisting mutator
- * mutateEnabledServices against a temp data directory. Service-group construction lives in services.serviceGroups.test.ts; sort-key computation lives in
- * channelSort.test.ts.
+ * services.test.ts: Unit tests for the predicates, lookups, and label dispatchers in services.ts - PREDEFINED_SUFFIX, hasPredefinedSuffix, getServiceDisplayName,
+ * getCanonicalKey, isServiceTagEnabled, isChannelAvailableByService, getAllServiceTags, getAuthDomainForChannel, resolvePredefinedVariant,
+ * findPredefinedByDomain, getChannelServiceLabel, isServiceVariant, hasMultipleServices, getEnabledServices defensive copy, and getServiceTagForChannel,
+ * getChannelServiceTags and hasAlternativeService over user override groups, plus the in-memory cache mutators (setEnabledServices, setServiceSelections), the
+ * restriction rule that makes a persisted service list the running filter (applyServiceFilter), and the persisting mutator mutateEnabledServices against a temp
+ * data directory. Service-group construction lives in services.serviceGroups.test.ts; sort-key computation lives in channelSort.test.ts.
  */
 import { CONFIG, initializeConfiguration } from "./index.ts";
 import { PREDEFINED_SUFFIX, applyServiceFilter, buildServiceGroups, findPredefinedByDomain, getAllServiceTags, getAuthDomainForChannel, getCanonicalKey,
-  getChannelServiceLabel, getEnabledServices, getServiceDisplayName, getServiceSelections, getServiceTagForChannel, hasMultipleServices, isChannelAvailableByService,
-  isServiceTagEnabled, isServiceVariant, mutateEnabledServices, resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
+  getChannelServiceLabel, getChannelServiceTags, getEnabledServices, getServiceDisplayName, getServiceGroup, getServiceSelections, getServiceTagForChannel,
+  hasAlternativeService, hasMultipleServices, hasPredefinedSuffix, isChannelAvailableByService, isServiceTagEnabled, isServiceVariant, mutateEnabledServices,
+  resolvePredefinedVariant, setEnabledServices, setServiceSelections } from "./services.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { firstOf, withTempDir } from "../testing.helpers.ts";
 import type { ConfigStore } from "./index.ts";
@@ -28,6 +29,17 @@ describe("PREDEFINED_SUFFIX", () => {
   test("declares the documented :predefined sentinel", () => {
 
     assert.equal(PREDEFINED_SUFFIX, ":predefined");
+  });
+});
+
+describe("hasPredefinedSuffix", () => {
+
+  test("tells a synthetic :predefined key from canonical and variant keys", () => {
+
+    assert.equal(hasPredefinedSuffix("amcthrillers" + PREDEFINED_SUFFIX), true);
+    assert.equal(hasPredefinedSuffix("amcthrillers"), false);
+    assert.equal(hasPredefinedSuffix("amcthrillers-yttv"), false);
+    assert.equal(hasPredefinedSuffix("amcthrillers" + PREDEFINED_SUFFIX + "-yttv"), false, "the suffix counts only at the key's end");
   });
 });
 
@@ -590,6 +602,139 @@ describe("getServiceTagForChannel: missing-channel fallback", () => {
     // unresolved channel (its "if(!channel) return direct" branch) returns the sentinel.
     assert.equal(PREDEFINED_CHANNELS["definitely-not-a-real-channel-key-q7z"], undefined, "guard: the probe key is genuinely unknown");
     assert.equal(getServiceTagForChannel("definitely-not-a-real-channel-key-q7z"), "direct");
+  });
+});
+
+describe("the :predefined entry of a user override group", () => {
+
+  /* A user override of a predefined canonical on a URL outside the group's known domains builds a group that lists the custom canonical first, its :predefined
+   * entry second, and the sorted variants after them, each entry carrying the tag buildServiceGroups computed for it. The amcthrillers fixture gives every
+   * entry a tag of its own: the predefined canonical is the sling service, the override points at hulu.com, and the variant is yttv. A lookup that reads the
+   * wrong entry therefore returns a tag the row can see.
+   */
+
+  let originalEnabled: string[];
+  let originalSelections: Record<string, string>;
+
+  beforeEach(() => {
+
+    originalEnabled = getEnabledServices();
+    originalSelections = getServiceSelections();
+
+    const predefined = PREDEFINED_CHANNELS["amcthrillers"];
+
+    assert.ok(predefined, "precondition: amcthrillers is a predefined channel");
+
+    const channels: ResolvedChannelMap = {
+
+      amcthrillers: makeChannel({ ...predefined, url: "https://www.hulu.com/live" }),
+      "amcthrillers-yttv": makeChannel({ canonicalKey: "amcthrillers", url: "https://tv.youtube.com/live" })
+    };
+
+    setEnabledServices([]);
+    setServiceSelections({});
+    buildServiceGroups(channels);
+
+    assert.deepEqual(getServiceGroup("amcthrillers")?.variants.map((variant) => [ variant.key, variant.tag ]),
+      [ [ "amcthrillers", "hulu" ], [ "amcthrillers" + PREDEFINED_SUFFIX, "sling" ], [ "amcthrillers-yttv", "yttv" ] ],
+      "precondition: the custom canonical precedes the :predefined entry, and every entry carries its own tag");
+  });
+
+  afterEach(() => {
+
+    setEnabledServices(originalEnabled);
+    setServiceSelections(originalSelections);
+  });
+
+  test("getServiceTagForChannel returns the :predefined entry's own tag for a :predefined key", () => {
+
+    assert.equal(getServiceTagForChannel("amcthrillers" + PREDEFINED_SUFFIX), "sling");
+    assert.equal(getServiceTagForChannel("amcthrillers"), "hulu", "the canonical key reads the custom URL's tag");
+  });
+
+  test("getChannelServiceTags leaves out the :predefined entry's tag", () => {
+
+    assert.deepEqual(getChannelServiceTags("amcthrillers"), [ "hulu", "yttv" ]);
+  });
+
+  test("hasAlternativeService answers with the channel's selection cleared", () => {
+
+    setServiceSelections({ amcthrillers: "amcthrillers" + PREDEFINED_SUFFIX });
+
+    assert.equal(hasAlternativeService("amcthrillers", "hulu"), false, "with no selection the channel falls back to the custom canonical");
+    assert.equal(hasAlternativeService("amcthrillers", "sling"), true, "the stored :predefined selection is not read");
+  });
+
+  test("hasAlternativeService falls back through the first enabled variant other than the :predefined entry", () => {
+
+    setEnabledServices(["yttv"]);
+
+    assert.equal(hasAlternativeService("amcthrillers", "yttv"), false, "the first enabled variant is the browsed service");
+
+    setEnabledServices(["sling"]);
+
+    assert.equal(hasAlternativeService("amcthrillers", "sling"), true, "no other variant is enabled, so the channel falls back to the canonical");
+  });
+
+  test("getAuthDomainForChannel resolves a :predefined key to the original predefined channel's domain", () => {
+
+    assert.equal(getAuthDomainForChannel("amcthrillers" + PREDEFINED_SUFFIX), "sling.com");
+    assert.equal(getAuthDomainForChannel("amcthrillers"), "hulu.com", "the canonical key reads the custom URL's domain");
+  });
+});
+
+describe("a :predefined key whose group carries no :predefined entry", () => {
+
+  /* A user override of a predefined canonical on a domain one of its variants already uses builds a group with no :predefined entry: amcthrillers overridden on
+   * tv.youtube.com lists the custom canonical and amcthrillers-yttv, each tagged yttv. The channel store's normalizer turns such an override into a selection of
+   * that variant before it is stored, so the group is built here in memory, where it gives the custom canonical a tag the original predefined channel lacks, as
+   * a stored override on the canonical's own domain does when its user profile carries a tag of its own. A hand-typed amcthrillers:predefined key finds no
+   * entry of its own there, so it resolves through getResolvedChannel to the original predefined channel, the sling service a stream of that key tunes.
+   */
+
+  let originalSelections: Record<string, string>;
+
+  beforeEach(() => {
+
+    originalSelections = getServiceSelections();
+
+    const predefined = PREDEFINED_CHANNELS["amcthrillers"];
+
+    assert.ok(predefined, "precondition: amcthrillers is a predefined channel");
+
+    const channels: ResolvedChannelMap = {
+
+      amcthrillers: makeChannel({ ...predefined, url: "https://tv.youtube.com/live" }),
+      "amcthrillers-yttv": makeChannel({ canonicalKey: "amcthrillers", url: "https://tv.youtube.com/live" })
+    };
+
+    setServiceSelections({});
+    buildServiceGroups(channels);
+
+    assert.deepEqual(getServiceGroup("amcthrillers")?.variants.map((variant) => [ variant.key, variant.tag ]),
+      [ [ "amcthrillers", "yttv" ], [ "amcthrillers-yttv", "yttv" ] ], "precondition: the group carries no :predefined entry");
+  });
+
+  afterEach(() => {
+
+    setServiceSelections(originalSelections);
+  });
+
+  test("getServiceTagForChannel resolves the :predefined key to the original predefined channel's tag", () => {
+
+    assert.equal(getServiceTagForChannel("amcthrillers" + PREDEFINED_SUFFIX), "sling");
+    assert.equal(getServiceTagForChannel("amcthrillers"), "yttv", "the canonical key reads its own entry's tag");
+  });
+
+  test("getAuthDomainForChannel resolves the :predefined key to the channel its service tag reads", () => {
+
+    assert.equal(getAuthDomainForChannel("amcthrillers" + PREDEFINED_SUFFIX), "sling.com");
+    assert.equal(getAuthDomainForChannel("amcthrillers"), "youtube.com", "the canonical key reads the custom URL's domain");
+  });
+
+  test("getServiceTagForChannel resolves a :predefined key whose base is a variant to no channel", () => {
+
+    assert.equal(getServiceTagForChannel("amcthrillers-yttv" + PREDEFINED_SUFFIX), "direct", "only a catalog canonical's key resolves through the suffix");
   });
 });
 
