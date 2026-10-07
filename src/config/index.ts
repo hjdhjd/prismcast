@@ -214,11 +214,11 @@ async function doReloadConfiguration(io: ConfigStore): Promise<ApplyResult> {
 }
 
 /**
- * Normalizes a configuration in place WITHOUT any global side effects: clamps an out-of-vocabulary quality preset to the default and rewrites the persisted
- * debug-filter string to its canonical form. Pure with respect to process state - it touches only the passed config - so it is safe to run on a candidate
- * nextConfig before reload decides whether to commit it. Shared by initializeConfiguration and reloadConfiguration so the two paths cannot drift. The live
- * runtime debug filter is applied separately by commitDebugFilter, which runs only once a configuration is committed, so a rejected reload never changes the
- * running filter.
+ * Normalizes a configuration in place WITHOUT any global side effects: clamps an out-of-vocabulary quality preset to the default, clamps an out-of-range frame
+ * rate to the nearer bound its metadata declares, and rewrites the persisted debug-filter string to its canonical form. Pure with respect to process state - it
+ * touches only the passed config - so it is safe to run on a candidate nextConfig before reload decides whether to commit it. Shared by initializeConfiguration
+ * and reloadConfiguration so the two paths cannot drift. The live runtime debug filter is applied separately by commitDebugFilter, which runs only once a
+ * configuration is committed, so a rejected reload never changes the running filter.
  * @param config - The freshly merged configuration to normalize in place.
  */
 function normalizeConfig(config: Config): void {
@@ -236,9 +236,24 @@ function normalizeConfig(config: Config): void {
 
   if(!validPresets.includes(config.streaming.qualityPreset)) {
 
-    LOG.warn("Invalid quality preset '%s'. Using default '%s'.", config.streaming.qualityPreset, DEFAULTS.streaming.qualityPreset);
+    LOG.warn("The configured quality preset is not one the server recognizes, so the default preset is in use.",
+      { configured: config.streaming.qualityPreset, using: DEFAULTS.streaming.qualityPreset });
 
     config.streaming.qualityPreset = DEFAULTS.streaming.qualityPreset;
+  }
+
+  // Hold the frame rate inside the range its metadata declares, the same bounds the settings form validates a save against. The capture constraint holds the
+  // track to this rate on both bounds, so a rate outside the range is clamped to the nearer bound with a warning rather than handed to tab capture or refused at
+  // startup. A bound the metadata leaves undeclared constrains nothing.
+  const { max = Infinity, min = -Infinity } = getSettingByPath("streaming.frameRate") ?? {};
+  const clampedFrameRate = Math.min(Math.max(config.streaming.frameRate, min), max);
+
+  if(clampedFrameRate !== config.streaming.frameRate) {
+
+    LOG.warn("The configured frame rate is outside the supported range, so the nearer bound is in use.",
+      { applied: clampedFrameRate, configured: config.streaming.frameRate, max, min });
+
+    config.streaming.frameRate = clampedFrameRate;
   }
 }
 
@@ -392,7 +407,7 @@ function checkBounds(name: string, value: number, min: number | undefined, max: 
 /**
  * The capture-related coercions a configuration needs to satisfy the streaming requirements the startup path enforces. collectCoercions describes them without
  * mutating; applyCoercions applies them (startup); reloadConfiguration treats a non-empty set as grounds to reject a live save rather than coerce silently. The
- * preset and debug-filter normalizations are intentionally NOT modeled here - those are benign canonicalizations handled by normalizeConfig on both
+ * preset, frame-rate, and debug-filter normalizations are intentionally NOT modeled here - those are benign corrections handled by normalizeConfig on both
  * the startup and reload paths, whereas these capture coercions guard safety-critical requirements (native capture mode corrupts output after 20-30 minutes of
  * recording; the h264 baseline is universal) and so must surface to the operator on reload rather than be silently rewritten.
  */

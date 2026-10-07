@@ -1,19 +1,22 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * config-initialization.test.ts: Integration-tier coverage for the post-merge branches of initializeConfiguration() in src/config/index.ts. Two branches
- * exist beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts):
+ * config-initialization.test.ts: Integration-tier coverage for the post-merge branches of initializeConfiguration() in src/config/index.ts, the branches that
+ * run beyond the mergeConfiguration pipeline (covered at unit tier in userConfig.merge.test.ts):
  *
  *   1. Persisted debug filter restoration. When config.json carries a logging.debugFilter and no environment- or CLI-driven debug filter is active,
  *      normalizeConfig() rewrites the in-memory copy to its canonical form via canonicalizeDebugPattern() and commitDebugFilter() applies that pattern to the
  *      live runtime filter via initDebugFilter().
  *   2. Quality preset validation gate. An unknown qualityPreset (typo in config.json or a preset removed in a release upgrade) is reset to DEFAULTS with an
  *      operator-visible warning rather than allowed through to the validation layer where it would only surface as a viewport mismatch.
+ *   3. Frame rate range clamp. A frame rate outside the floor and ceiling its metadata declares (a hand-edited config.json or a FRAME_RATE value) is clamped to
+ *      the nearer bound with an operator-visible warning, so the capture constraint, which holds the track to the configured rate on both bounds, never receives
+ *      a rate outside that range, and the server still starts.
  *
  * Each branch is isolated to its own describe block. Each test runs against its own integration context (an isolated data dir disposed via "await using"),
  * and the debugFilter suite's afterEach restores the PRISMCAST_DEBUG env var and clears the runtime filter so env/CLI debug state does not leak between tests.
  */
 import { CONFIG, initializeConfiguration } from "../../../src/config/index.ts";
-import { DEFAULTS, readConfig } from "../../../src/config/userConfig.ts";
+import { DEFAULTS, getSettingByPath, readConfig } from "../../../src/config/userConfig.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { createIntegrationContext, writePersistedJson } from "../../helpers/integration.helpers.ts";
 import { initDebugFilter, isAnyDebugEnabled } from "../../../src/utils/debugFilter.ts";
@@ -145,9 +148,82 @@ describe("initializeConfiguration: invalid quality preset reset", () => {
 
       const arg = call.arguments[0];
 
-      return (typeof arg === "string") && arg.includes("Invalid quality preset");
+      return (typeof arg === "string") && arg.startsWith("The configured quality preset");
     });
 
-    assert.equal(warnings.length, 1, "exactly one warning fired for the invalid preset");
+    assert.deepEqual(warnings.map((call) => call.arguments), [[ "The configured quality preset is not one the server recognizes, so the default preset is in use.",
+      { configured: "nonexistent-preset-xyz", using: DEFAULTS.streaming.qualityPreset } ]],
+    "exactly one warning fired for the invalid preset, naming the configured and default presets");
+  });
+});
+
+describe("initializeConfiguration: out-of-range frame rate clamp", () => {
+
+  /* The branch fires when the loaded CONFIG.streaming.frameRate falls outside the floor and ceiling the streaming.frameRate metadata entry declares. The
+   * function clamps it to the nearer bound with a LOG.warn naming the configured rate, the range, and the rate applied, and the load completes. Every expected
+   * bound is read from the metadata rather than restated, so the rows follow the range the metadata declares and fail against a clamp carrying its own copy.
+   */
+  const setting = getSettingByPath("streaming.frameRate");
+  let warnSpy: ReturnType<typeof mock.method>;
+
+  beforeEach(() => {
+
+    warnSpy = mock.method(LOG, "warn", () => undefined);
+  });
+
+  afterEach(() => {
+
+    warnSpy.mock.restore();
+  });
+
+  /**
+   * Persists a frame rate to config.json, loads the configuration through initializeConfiguration, and collects the frame-rate warnings the load emitted.
+   * @param frameRate - The frame rate to persist.
+   * @returns The arguments of each frame-rate warning, its sentence and then its context object, in call order.
+   */
+  async function loadFrameRate(frameRate: number): Promise<unknown[][]> {
+
+    await using ctx = await createIntegrationContext();
+
+    await writePersistedJson(ctx, "config.json", { streaming: { frameRate } });
+
+    await initializeConfiguration();
+
+    return warnSpy.mock.calls.map((call) => call.arguments).filter(([message]) => (typeof message === "string") && message.startsWith("The configured frame rate"));
+  }
+
+  test("clamps a rate below the metadata floor up to the floor and warns once, naming the configured and applied rates", async () => {
+
+    assert.ok((typeof setting?.min === "number") && (typeof setting.max === "number"), "sanity: the metadata declares both frame-rate bounds");
+
+    const warnings = await loadFrameRate(24);
+
+    assert.equal(CONFIG.streaming.frameRate, setting.min, "a rate below the floor is clamped up to it");
+    assert.deepEqual(warnings, [[ "The configured frame rate is outside the supported range, so the nearer bound is in use.",
+      { applied: setting.min, configured: 24, max: setting.max, min: setting.min } ]],
+    "exactly one warning fired, naming the configured rate, the range, and the rate applied");
+  });
+
+  test("clamps a rate above the metadata ceiling down to the ceiling and warns once, naming the configured and applied rates", async () => {
+
+    assert.ok((typeof setting?.min === "number") && (typeof setting.max === "number"), "sanity: the metadata declares both frame-rate bounds");
+
+    const warnings = await loadFrameRate(120);
+
+    assert.equal(CONFIG.streaming.frameRate, setting.max, "a rate above the ceiling is clamped down to it");
+    assert.deepEqual(warnings, [[ "The configured frame rate is outside the supported range, so the nearer bound is in use.",
+      { applied: setting.max, configured: 120, max: setting.max, min: setting.min } ]],
+    "exactly one warning fired, naming the configured rate, the range, and the rate applied");
+  });
+
+  test("leaves a rate inside the metadata range untouched and warns about nothing", async () => {
+
+    assert.ok((typeof setting?.min === "number") && (typeof setting.max === "number"), "sanity: the metadata declares both frame-rate bounds");
+    assert.ok((setting.min < 45) && (45 < setting.max), "sanity: the rate this row persists sits inside the declared range");
+
+    const warnings = await loadFrameRate(45);
+
+    assert.equal(CONFIG.streaming.frameRate, 45, "a rate inside the range reaches CONFIG unchanged");
+    assert.deepEqual(warnings, [], "no frame-rate warning fired for an in-range rate");
   });
 });

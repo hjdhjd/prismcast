@@ -666,19 +666,19 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
       /* The dimension bounds hold the track to exactly the surface emulateCaptureSurface declared on this page, rather than to a second read of the configured
        * preset, so a preset saved mid-establishment cannot leave the encoder constrained to dimensions the page was never emulated at.
        *
-       * The frame rate is constrained to a 30-60 fps band: 60 is the live-TV ceiling, and a 30 floor keeps motion smooth even when the user configures a lower
-       * rate. The ceiling is fixed at 60 while the floor follows the user's configured rate (clamped into the band), so the encoder favours the requested rate but
-       * never drops below 30. The readiness probe (attemptCaptureProbe) instead holds both bounds to a flat 30 because its acquisition fails or succeeds at the
-       * tabCapture API level before encoding matters, so a representative-but-minimal constraint set suffices there.
+       * Both frame-rate bounds read the configured rate, so the track is held to exactly the rate the user chose. The configuration load keeps that rate inside the
+       * range the setting's metadata declares, 60 being the live-TV ceiling and 30 the floor below which motion judders. The readiness probe (attemptCaptureProbe)
+       * instead holds both bounds to a flat 30 because its acquisition fails or succeeds at the tabCapture API level before encoding matters, so a
+       * representative-but-minimal constraint set suffices there.
        */
       videoConstraints: {
 
         mandatory: {
 
-          maxFrameRate: 60,
+          maxFrameRate: CONFIG.streaming.frameRate,
           maxHeight: surface.height,
           maxWidth: surface.width,
-          minFrameRate: Math.max(30, Math.min(60, CONFIG.streaming.frameRate)),
+          minFrameRate: CONFIG.streaming.frameRate,
           minHeight: surface.height,
           minWidth: surface.width
         }

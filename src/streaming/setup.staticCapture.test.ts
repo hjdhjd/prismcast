@@ -1,20 +1,20 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * setup.staticCapture.test.ts: Unit tests asserting two contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
- * profiles and only for those, and that it brings the browser window on screen, emulates the capture surface, and installs the activation heal before it acquires
- * capture, re-affirming that surface once acquisition has selected the tab. createPageWithCapture
- * composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome launch), a PassThrough
- * capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, a recording surface emulation, and recording surface re-affirmation
- * steps, while the real pipeline runs everything else. The stub page is shaped so the static
+ * setup.staticCapture.test.ts: Unit tests asserting contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
+ * profiles and only for those; that it brings the browser window on screen, emulates the capture surface, and installs the activation heal before it acquires
+ * capture, re-affirming that surface once acquisition has selected the tab; and that the capture it acquires is held to the configured frame rate on both bounds.
+ * createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome
+ * launch), a recording acquisition answering with a PassThrough capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, a
+ * recording surface emulation, and recording surface re-affirmation steps, while the real pipeline runs everything else. The stub page is shaped so the static
  * branch completes: injectVideoSelector uses only evaluateOnNewDocument (a no-op here), and createCaptureSession merely wraps the injected PassThrough. Native
  * capture mode skips the FFmpeg path and skipManifestInterception avoids the CDP interceptor, leaving the static branch (page.goto then the staticCapture poll) as
  * the only pipeline the call exercises. The remaining browser calls (registerManagedPage, unregisterManagedPage) run real: they mutate an in-process page set, so
  * they are inert against the stub.
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
+import type { CaptureStream, CaptureStreamOptions } from "../browser/tabCapture.ts";
 import { before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
-import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { OpenSharedWindowTabContext } from "../browser/tabSelection.ts";
 import { PassThrough } from "node:stream";
@@ -53,6 +53,10 @@ let reaffirmPages: Page[] = [];
 // answers that executor cannot resolve for itself, rather than created wherever Chrome would place it.
 let openContexts: OpenSharedWindowTabContext[] = [];
 
+// The options each capture acquisition was asked for, in call order, so the constraint row reads the bounds the track is held to exactly as acquisition received
+// them.
+let acquiredOptions: CaptureStreamOptions[] = [];
+
 /* A minimal Page for the static-capture pipeline. goto records and resolves. evaluate rejects: injectVideoSelector never calls it (it uses evaluateOnNewDocument),
  * and nothing else on the success path measures the page. For the non-static control, the tune path's channel selection rejects the same way, failing that branch
  * fast so no staticCapture poll is recorded. That path also fires video.ts's own overlay poll through the real consent module (not this file's injected recorder);
@@ -74,18 +78,20 @@ function makeStubPage(): Page {
 }
 
 /* The injected browser-boundary collaborators: getCurrentBrowser hands back a stub browser whose newPage returns the recording stub page (no Chrome),
- * acquireCaptureStream yields a real PassThrough so the real createCaptureSession has a stream to own (no extension protocol), startOverlayHandling records each
- * poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of CDP traffic, emulateCaptureSurface records the
- * density step and answers with a fixed surface so the capture constraints it feeds stay total, and installActivationHeal and reaffirmCaptureSurface record the
- * activation heal and the surface re-affirmation rather than performing them. createPageWithCapture defaults every one of these to the real functions; substituting
- * them here is what keeps the call off a live browser, and recording the acquisition alongside the rest is what makes their order observable.
+ * acquireCaptureStream records the options it was asked for and yields a real PassThrough so the real createCaptureSession has a stream to own (no extension
+ * protocol), startOverlayHandling records each poll's phase and abort signal in place of a live poll, syncWindowVisibility records the window passes in place of
+ * CDP traffic, emulateCaptureSurface records the density step and answers with a fixed surface so the capture constraints it feeds stay total, and
+ * installActivationHeal and reaffirmCaptureSurface record the activation heal and the surface re-affirmation rather than performing them. createPageWithCapture
+ * defaults every one of these to the real functions; substituting them here is what keeps the call off a live browser, and recording the acquisition alongside the
+ * rest is what makes their order observable.
  */
 const deps: CreatePageWithCaptureDeps = {
 
   // The acquisition hands back a real PassThrough carrying the two capture controls, so createCaptureSession owns a genuine stream and destroys a real one.
-  acquireCaptureStream: async (): Promise<CaptureStream> => {
+  acquireCaptureStream: async (_page: Page, options: CaptureStreamOptions): Promise<CaptureStream> => {
 
     depsCalls.push("acquireCaptureStream");
+    acquiredOptions.push(options);
 
     return Object.assign(new PassThrough(), { stop: async (): Promise<void> => undefined, stopped: Promise.resolve() });
   },
@@ -140,6 +146,7 @@ before(() => {
 
 beforeEach(() => {
 
+  acquiredOptions = [];
   depsCalls = [];
   healPages = [];
   openContexts = [];
@@ -228,5 +235,38 @@ describe("createPageWithCapture - window visibility ordering", () => {
     assert.equal(openContexts.length, 1, "exactly one open, routed through the tab-selection executor rather than created on the browser");
     assert.equal(typeof openContexts[0]?.deps.resolveCarrier, "function", "the call site supplies the carrier resolver the executor cannot reach for itself");
     assert.equal(typeof openContexts[0]?.deps.confirmPlacement, "function", "and the placement confirmation beside it");
+  });
+});
+
+describe("createPageWithCapture - capture frame rate", () => {
+
+  test("holds the capture track to the configured frame rate on both bounds", async () => {
+
+    /* Both frame-rate bounds read the configured rate, so the track is held to that rate rather than to a band around it. The row configures 30 because a
+     * constraint reading the setting on one bound only would hand acquisition a 30 floor under a higher ceiling, and tab capture would deliver the ceiling. The
+     * bounds are read from the options acquisition itself received, while the configured rate is still in place.
+     */
+    const originalFrameRate = CONFIG.streaming.frameRate;
+
+    CONFIG.streaming.frameRate = 30;
+
+    try {
+
+      const result = await createPageWithCapture(
+        { profile: makeProfile({ staticCapture: true }), skipManifestInterception: true, streamId: "frame-rate-test", url: "https://static.example/page" }, deps);
+
+      // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
+      result.captureSession.dispose();
+
+      const constraints = acquiredOptions[0]?.videoConstraints.mandatory;
+
+      assert.equal(acquiredOptions.length, 1, "exactly one capture acquisition");
+      assert.ok(constraints, "the acquisition received its constraints");
+      assert.equal(constraints.maxFrameRate, CONFIG.streaming.frameRate, "the frame-rate ceiling is the configured rate");
+      assert.equal(constraints.minFrameRate, constraints.maxFrameRate, "and the floor is that same rate");
+    } finally {
+
+      CONFIG.streaming.frameRate = originalFrameRate;
+    }
   });
 });
