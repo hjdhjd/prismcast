@@ -1257,12 +1257,9 @@ export function buildLaunchOptions(): LaunchOptions & { defaultViewport: null } 
 
     /* PrismCast owns process signals, so the launcher's own listeners are off. Left on, the puppeteer launcher installs handlers for SIGHUP, SIGINT, and SIGTERM
      * on the node process and, on SIGTERM or SIGHUP, ends Chrome's entire process group with SIGKILL - and on SIGINT it kills the group and then exits the process
-     * outright. On SIGINT and SIGTERM it races the shutdown handlers in app.ts and preempts closeBrowserInstance's SIGTERM ladder below, so Chrome gets no shutdown
-     * at all and forfeits whatever it had pending: a window placement inside its save debounce, its session state. With the listeners off, SIGINT and SIGTERM reach
-     * PrismCast's own handlers, the graceful path runs, and Chrome exits through the ladder with its pending writes committed. PrismCast installs no SIGHUP
-     * handler, so a SIGHUP takes Node's default action and ends the process without the graceful path or the ladder. Left on, the launcher's listener would instead
-     * stop that termination, because a registered listener replaces Node's default action, and SIGKILL Chrome's group, leaving the server running with its browser
-     * gone. A Chrome that outlives the process is adopted by a live parent, so the next startup's stale-process sweep reads it as another owner's and spares it.
+     * outright. Each of them races the shutdown handler app.ts installs for the same signal and preempts closeBrowserInstance's SIGTERM ladder below, so Chrome
+     * gets no shutdown at all and forfeits whatever it had pending: a window placement inside its save debounce, its session state. With the listeners off, every
+     * one of these signals reaches PrismCast's own handlers, the graceful path runs, and Chrome exits through the ladder with its pending writes committed.
      */
     handleSIGHUP: false,
     handleSIGINT: false,

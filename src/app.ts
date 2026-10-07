@@ -22,6 +22,7 @@ import { startHdhrServer, stopHdhrServer } from "./hdhr/index.ts";
 import { startPretunePolling, stopPretunePolling } from "./streaming/pretune.ts";
 import { startShowInfoPolling, stopShowInfoPolling } from "./streaming/showInfo.ts";
 import type { CliOverrides } from "./config/index.ts";
+import type { Clock } from "homebridge-plugin-utils";
 import type { ParsedArgs } from "./index.ts";
 import type { ResumeStreamData } from "./streaming/hlsResume.ts";
 import type { StreamOptions } from "morgan";
@@ -104,46 +105,55 @@ function stopIdleCleanup(): void {
  * Closes the main HTTP server, graceful shutdown's step for the listener the boot's tail bound. Connections are destroyed first because the status and log SSE
  * streams (routes/streams.ts and routes/logs.ts) hold their sockets open with a heartbeat, and the close waits on every one of them; the CDP proxy's WebSocket
  * clients have already closed themselves with 1001 in response to the browser disconnect shutdown awaits before this step. An in-flight request ends with the
- * process, because the exit follows immediately.
- * @returns A promise that resolves once the server closes or its bound lapses, and at once when the boot bound no server.
+ * process, because the exit follows immediately. The server reference is taken and cleared before the close, so a close that runs again finds no server.
+ * @param clock - The clock the close bound runs on, the system clock in production and a test clock in a row that crosses the bound.
+ * @returns A promise that resolves once the server closes or its bound lapses, and at once when no server is bound.
  */
-export async function closeMainServer(): Promise<void> {
+export async function closeMainServer(clock: Clock = systemClock): Promise<void> {
 
+  const current = server;
+
+  server = null;
+
+  if(!current) {
+
+    return;
+  }
+
+  // The outer catch keeps a close that throws from rejecting, because shutdown runs unawaited from its signal handler and a rejection here would skip the exit
+  // the shutdown ends with.
   try {
 
-    if(server) {
+    const { promise: closed, resolve } = Promise.withResolvers<boolean>();
 
-      const { promise: closed, resolve } = Promise.withResolvers<boolean>();
+    current.close((error?: Error): void => {
 
-      server.close((error?: Error): void => {
+      if(error) {
 
-        if(error) {
+        LOG.error("The HTTP server reported an error while closing during shutdown.", { error: formatError(error) });
+      } else {
 
-          LOG.error("Error closing server during shutdown: %s.", formatError(error));
-        } else {
-
-          LOG.info("HTTP server closed successfully.");
-        }
-
-        resolve(true);
-      });
-
-      server.closeAllConnections();
-
-      if((await boundedWait(closed, SERVER_CLOSE_BOUND_MS)) === null) {
-
-        LOG.warn("The HTTP server did not close within %sms. Continuing the shutdown.", SERVER_CLOSE_BOUND_MS);
+        LOG.info("HTTP server closed successfully.");
       }
+
+      resolve(true);
+    });
+
+    current.closeAllConnections();
+
+    if((await boundedWait(closed, SERVER_CLOSE_BOUND_MS, { clock })) === null) {
+
+      LOG.warn("The HTTP server did not close within its bound, so the shutdown continues.", { boundMs: SERVER_CLOSE_BOUND_MS });
     }
   } catch(error) {
 
-    LOG.error("Error closing server during shutdown: %s.", formatError(error));
+    LOG.error("The HTTP server could not be closed during shutdown.", { error: formatError(error) });
   }
 }
 
 /**
- * Sets up signal handlers for graceful shutdown. When SIGINT or SIGTERM is received, we close all active streams, the browser and the HTTP server before exiting,
- * so every resource is released cleanly.
+ * Sets up signal handlers for graceful shutdown. When SIGHUP, SIGINT or SIGTERM is received, we close all active streams, the browser and the HTTP server before
+ * exiting, so every resource is released cleanly.
  */
 function setupGracefulShutdown(): void {
 
@@ -228,6 +238,13 @@ function setupGracefulShutdown(): void {
 
     process.exit(0);
   }
+
+  // A hangup asks the process to end as surely as an interrupt or a termination does, when the terminal or the session that started PrismCast goes away, and its
+  // default action would end the process without this teardown or the exit handler, so it runs the same shutdown.
+  process.on("SIGHUP", (): void => {
+
+    void shutdown();
+  });
 
   process.on("SIGINT", (): void => {
 
@@ -970,4 +987,44 @@ export async function startServer(parsedArgs: ParsedArgs): Promise<void> {
 
   // The boot's tail arms what runs for the life of the process: the background services, the HTTP server and HDHomeRun emulation.
   await startBootServices();
+}
+
+/* StartupFailureDeps is what ending a failed startup reads beyond its error: whether shutdown has begun, and how the process exits. It is injected as a default
+ * parameter, after the BootServicesDeps precedent, so a test drives each branch with a recording exit while production runs defaultStartupFailureDeps.
+ */
+export interface StartupFailureDeps {
+
+  readonly exit: (code: number) => void;
+  readonly isGracefulShutdown: () => boolean;
+}
+
+export const defaultStartupFailureDeps: StartupFailureDeps = {
+
+  exit: (code: number): void => {
+
+    process.exit(code);
+  },
+  isGracefulShutdown
+};
+
+/**
+ * Ends a startup that failed, the entry point's catch for startServer. A failure that lands once shutdown has begun is one shutdown caused, such as the browser
+ * warm-up's launch that shutdown superseded, so it is shutdown's to end: shutdown owns the exit, and a second exit racing it here would cut its drain short with the
+ * wrong code, so the handler logs the superseded startup and leaves the exit to it. The entry point's unhandled-rejection handler reads the same state for the
+ * same reason. Any other failure is fatal, and the process exits with a failure code so a process manager sees it.
+ * @param error - The error startServer rejected with.
+ * @param deps - The shutdown reader and the exit: the real ones in production, and recording stubs in a test.
+ */
+export function handleStartupFailure(error: unknown, deps: StartupFailureDeps = defaultStartupFailureDeps): void {
+
+  if(deps.isGracefulShutdown()) {
+
+    LOG.info("Startup was superseded by shutdown, so the process exits through shutdown.");
+
+    return;
+  }
+
+  LOG.error("Fatal startup error occurred.", { error: formatError(error) });
+
+  deps.exit(1);
 }

@@ -1,14 +1,15 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * app.test.ts: Unit tests for the Express application builder module. Almost everything in app.ts is wired into a process-level lifecycle - the HTTP server,
- * the Chrome browser, the file logger, the SIGINT/SIGTERM handlers, the polling intervals - so the lifecycle is the first surface, driven only where a unit row
- * can reach it. startServer itself cannot be invoked safely from a unit test (it spawns Chrome, binds the port, registers signal handlers, and calls
- * process.exit on failure), and no automated suite exercises it, because it needs a live Chrome. releaseInstanceSlot is exercised on its ownership path, the
- * critical-correctness case: a process that does NOT own the identity file must leave it alone. The ownership check is structural (release() reads the file
- * record and refuses to remove a file whose PID does not match this process), and that guarantee holds no matter how the module graph was loaded.
- * startBootServices, the boot's tail, is driven through its injected steps, so each of its shutdown checks is observed at its own boundary with recording stubs
- * standing in for the services, the listener and HDHomeRun, and closeMainServer, shutdown's step for the listener, is driven after such a boot, so the server
- * the boot binds is the one shutdown closes.
+ * the Chrome browser, the file logger, the signal handlers, the polling intervals - so the lifecycle is the first surface, driven only where a unit row can
+ * reach it. startServer itself cannot be invoked safely from a unit test (it spawns Chrome, binds the port, registers signal handlers, and calls process.exit
+ * on failure), and no automated suite exercises it, because it needs a live Chrome; the signal handlers are registered by a private function inside it, so no
+ * row reaches them. releaseInstanceSlot is exercised on its ownership path, the critical-correctness case: a process that does NOT own the identity file must
+ * leave it alone. The ownership check is structural (release() reads the file record and refuses to remove a file whose PID does not match this process), and
+ * that guarantee holds no matter how the module graph was loaded. startBootServices, the boot's tail, is driven through its injected steps, so each of its
+ * shutdown checks is observed at its own boundary with recording stubs standing in for the services, the listener and HDHomeRun, and closeMainServer,
+ * shutdown's step for the listener, is driven after such a boot, so the server the boot binds is the one shutdown closes, with its bound crossed on a test
+ * clock. handleStartupFailure, the entry point's catch, is driven through its injected shutdown reader and exit.
  *
  * The HTTP request-logging rules are the second surface tested here. The skip predicates, the per-level decision and the elapsed-time renderer are pure of the
  * Express plumbing - they take a plain record or a request object and return a decision - so every level's rule set is exercised without booting the server.
@@ -22,8 +23,8 @@ import { LOG, serializeRecord } from "./utils/index.ts";
 import type { PathLike, Stats } from "node:fs";
 import { TestClock, settle, waitUntil } from "homebridge-plugin-utils/testing";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
-import { applyLogSizeChanges, closeMainServer, createRequestLogger, defaultBootServicesDeps, elapsedMillis, releaseInstanceSlot, skipInErrorsMode,
-  skipInFilteredMode, skipRequestLog, stampRequestStart, startBootServices } from "./app.ts";
+import { applyLogSizeChanges, closeMainServer, createRequestLogger, defaultBootServicesDeps, defaultStartupFailureDeps, elapsedMillis, handleStartupFailure,
+  releaseInstanceSlot, skipInErrorsMode, skipInFilteredMode, skipRequestLog, stampRequestStart, startBootServices } from "./app.ts";
 import { closePuppeteerStreamWssOnIdle, withTempDir } from "./testing.helpers.ts";
 import { existsSync, promises, statSync, writeFileSync } from "node:fs";
 import { getServerPidFilePath, initializeDataDir } from "./config/paths.ts";
@@ -333,6 +334,173 @@ describe("startBootServices", () => {
     await closeMainServer();
 
     assert.equal(close.mock.callCount(), 1, "shutdown's close step closed the server the listen step returned");
+  });
+
+  /* The close step's own branches. Each row boots through the recording steps, so the module holds the listen step's server, which never listens, and mocks
+   * that server's close with the outcome the row reads: a reported error, a close that never reports, a close that throws. The close step clears the server
+   * before it closes it, so every row leaves no server behind for the next one.
+   */
+
+  test("shutdown's close step logs the error a close reports, and resolves", async (t) => {
+
+    t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+
+    t.mock.method(boot.httpServer, "close", (callback?: (failure?: Error) => void): Server => {
+
+      callback?.(new Error("The close failed."));
+
+      return boot.httpServer;
+    });
+
+    await startBootServices(boot.deps);
+    await closeMainServer();
+
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments),
+      [[ "The HTTP server reported an error while closing during shutdown.", { error: "The close failed" } ]],
+      "the close's error was logged at error level with the error in the context object");
+  });
+
+  test("a close that never reports lets the shutdown continue once its bound lapses on the clock the close step is handed", async (t) => {
+
+    t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+    const clock = new TestClock();
+
+    let closed = false;
+
+    t.mock.method(boot.httpServer, "close", (): Server => boot.httpServer);
+
+    await startBootServices(boot.deps);
+
+    const closing = closeMainServer(clock).then(() => {
+
+      closed = true;
+    });
+
+    await settle();
+
+    assert.equal(closed, false, "precondition: the close step waits while the close has not reported");
+    assert.equal(clock.advanceToNext(), true, "the close step armed its bound on the clock it was handed");
+
+    await settle();
+
+    assert.equal(closed, true, "the close step resolved once its bound lapsed, with no real time spent");
+    assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), ["The HTTP server did not close within its bound, so the shutdown continues."],
+      "the lapse was logged once at warn level");
+
+    await closing;
+  });
+
+  test("a close step with no server bound closes nothing and logs nothing, so a repeated shutdown close is a no-op", async (t) => {
+
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+    const close = t.mock.method(boot.httpServer, "close", (callback?: (failure?: Error) => void): Server => {
+
+      callback?.();
+
+      return boot.httpServer;
+    });
+
+    await startBootServices(boot.deps);
+    await closeMainServer();
+
+    assert.equal(close.mock.callCount(), 1, "precondition: the first close step closed the server");
+
+    const logged = info.mock.callCount();
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+    const warn = t.mock.method(LOG, "warn", () => { /* Captured via the mock. */ });
+
+    await closeMainServer();
+
+    assert.equal(close.mock.callCount(), 1, "the second close step found no server and closed nothing");
+    assert.equal(info.mock.callCount() + error.mock.callCount() + warn.mock.callCount(), logged, "the second close step logged nothing");
+  });
+
+  test("the close step destroys the open connections once, before it starts its bound", async (t) => {
+
+    t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+
+    const boot = recordBoot();
+    const clock = new TestClock();
+    const pendingAtDestroy: number[] = [];
+
+    t.mock.method(boot.httpServer, "close", (callback?: (failure?: Error) => void): Server => {
+
+      callback?.();
+
+      return boot.httpServer;
+    });
+
+    const closeAll = t.mock.method(boot.httpServer, "closeAllConnections", (): void => {
+
+      pendingAtDestroy.push(clock.pending);
+    });
+
+    await startBootServices(boot.deps);
+    await closeMainServer(clock);
+
+    assert.equal(closeAll.mock.callCount(), 1, "every open connection was destroyed once, so the close waits on no heartbeat stream");
+    assert.deepEqual(pendingAtDestroy, [0], "the connections were destroyed before the bound was armed");
+  });
+
+  test("a close that throws is caught and logged, and the close step still resolves", async (t) => {
+
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+    const boot = recordBoot();
+
+    t.mock.method(boot.httpServer, "close", (): Server => {
+
+      throw new Error("The close threw.");
+    });
+
+    await startBootServices(boot.deps);
+    await assert.doesNotReject(closeMainServer(), "a throwing close never rejects the close step, so the shutdown reaches its exit");
+
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [[ "The HTTP server could not be closed during shutdown.", { error: "The close threw" } ]],
+      "the throw was logged at error level with the error in the context object");
+  });
+});
+
+/* The entry point's catch for a failed startup. Each row hands the handler recording stubs for the shutdown reader and the exit, so neither branch reads the
+ * browser module's state or ends the test process.
+ */
+describe("handleStartupFailure", () => {
+
+  test("a failure once shutdown has begun logs the superseded startup and leaves the exit to shutdown", (t) => {
+
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+    const info = t.mock.method(LOG, "info", () => { /* Captured via the mock. */ });
+    const exit = t.mock.fn((_code: number): void => { /* Captured via the mock. */ });
+
+    handleStartupFailure(new Error("The launch was superseded."), { exit, isGracefulShutdown: () => true });
+
+    assert.equal(exit.mock.callCount(), 0, "the handler left the exit to shutdown");
+    assert.deepEqual(info.mock.calls.map((call) => call.arguments), [["Startup was superseded by shutdown, so the process exits through shutdown."]],
+      "the superseded startup was logged once");
+    assert.equal(error.mock.callCount(), 0, "nothing was logged as fatal");
+  });
+
+  test("any other failure is fatal: the handler logs the error and exits with a failure code", (t) => {
+
+    const error = t.mock.method(LOG, "error", () => { /* Captured via the mock. */ });
+    const exit = t.mock.fn((_code: number): void => { /* Captured via the mock. */ });
+
+    handleStartupFailure(new Error("The boot failed."), { exit, isGracefulShutdown: () => false });
+
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [[ "Fatal startup error occurred.", { error: "The boot failed" } ]],
+      "the fatal error was logged at error level with the error in the context object");
+    assert.deepEqual(exit.mock.calls.map((call) => call.arguments), [[1]], "the process exited once with a failure code");
+  });
+
+  test("the default shutdown reader is the browser module's own", () => {
+
+    assert.equal(defaultStartupFailureDeps.isGracefulShutdown, isGracefulShutdown, "the handler reads the state the signal handler sets");
   });
 });
 

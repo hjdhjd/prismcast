@@ -10,8 +10,8 @@ import "homebridge-plugin-utils/polyfills";
 import { CONFIG_METADATA, DEFAULTS, getEnvOverrideValue, getNestedValue } from "./config/userConfig.ts";
 import { LOG, formatError, getPackageVersion, initDebugFilter, setDebugLogging } from "./utils/index.ts";
 import { getDebugEnv, getStartupLogFilePath, initializeDataDir } from "./config/paths.ts";
+import { handleStartupFailure, releaseInstanceSlot, startServer } from "./app.ts";
 import { isGracefulShutdown, killStaleChrome } from "./browser/index.ts";
-import { releaseInstanceSlot, startServer } from "./app.ts";
 import { flushLogBufferSync } from "./utils/fileLogger.ts";
 import { handleServiceCommand } from "./service/index.ts";
 import { handleUpgradeCommand } from "./upgrade/index.ts";
@@ -399,8 +399,8 @@ if(subcommand === "service") {
    * probe timeout) silently orphan Chrome processes and lose diagnostic messages that are still in the file logger's write buffer.
    *
    * The 'exit' event runs synchronously, so only synchronous operations are safe here. killStaleChrome() uses process.kill() for signaling and Atomics.wait()
-   * for polling, and flushLogBufferSync() writes directly to the filesystem. The graceful shutdown path (SIGTERM/SIGINT) handles cleanup via async closeBrowser()
-   * and shutdownFileLogger() - this handler is a fallback for paths that bypass graceful shutdown.
+   * for polling, and flushLogBufferSync() writes directly to the filesystem. The graceful shutdown path (SIGHUP, SIGINT and SIGTERM) handles cleanup via async
+   * closeBrowser() and shutdownFileLogger() - this handler is a fallback for paths that bypass graceful shutdown.
    *
    * This is registered only in the server branch - not for service subcommands like `prismcast service status`. Running killStaleChrome() from a service
    * subcommand would kill Chrome belonging to the running PrismCast server instance.
@@ -428,21 +428,6 @@ if(subcommand === "service") {
     }
   });
 
-  startServer(parsedArgs).catch((error: unknown): void => {
-
-    /* A startup failure that lands once shutdown has begun is one shutdown caused, such as the browser warm-up's launch that shutdown superseded, so it is
-     * shutdown's to end. Shutdown owns the exit, and a second exit racing it here would cut its drain short with the wrong code, so this catch logs the
-     * superseded startup and leaves the exit to it. The unhandled-rejection handler above reads the same state for the same reason.
-     */
-    if(isGracefulShutdown()) {
-
-      LOG.info("Startup was superseded by shutdown, so the process exits through shutdown.");
-
-      return;
-    }
-
-    LOG.error("Fatal startup error occurred: %s.", formatError(error));
-
-    process.exit(1);
-  });
+  // A startup failure ends through handleStartupFailure, which leaves the exit to a shutdown that has begun and otherwise exits with a failure code.
+  startServer(parsedArgs).catch(handleStartupFailure);
 }

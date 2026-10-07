@@ -604,10 +604,9 @@ describe("buildLaunchOptions", () => {
 
   test("turns off the launcher's own SIGHUP, SIGINT, and SIGTERM listeners so PrismCast owns process signals", () => {
 
-    /* All three are asserted because a launch that carried only two would still let the launcher end Chrome's process group with SIGKILL on the third signal:
-     * for SIGINT and SIGTERM that preempts PrismCast's graceful path, and for SIGHUP, which PrismCast does not handle, the launcher's listener would SIGKILL
-     * Chrome's group and, by being registered at all, stop Node's default termination, leaving the server running on a browser killed out from under it. Asserting
-     * false rather than the keys' absence is the point: the launcher defaults every one of them to true, so an omitted key is silently the wrong behavior.
+    /* All three are asserted because a launch that carried only two would still let the launcher end Chrome's process group with SIGKILL on the third signal,
+     * preempting the graceful path PrismCast runs for each of them. Asserting false rather than the keys' absence is the point: the launcher defaults every one of
+     * them to true, so an omitted key is silently the wrong behavior.
      */
     const options = buildLaunchOptions();
 
