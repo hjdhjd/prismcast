@@ -3,15 +3,15 @@
  * setup.ts: Common stream setup logic for PrismCast.
  */
 import type { Browser, Frame, Page } from "puppeteer-core";
-import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, acquireCaptureStream, confirmSharedWindowPlacement, emulateCaptureSurface,
-  emulateLayoutSurface, getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal, noteBrowserCaptureImpaired, reaffirmCaptureSurface,
-  registerManagedPage, resolveSharedWindowCarrier, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
+import { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError, CaptureLaunchError, acquireCaptureStream, confirmSharedWindowPlacement,
+  emulateCaptureSurface, emulateLayoutSurface, getBrowserInstance, getCaptureImpairment, getCurrentBrowser, installActivationHeal, noteBrowserCaptureImpaired,
+  reaffirmCaptureSurface, registerManagedPage, resolveSharedWindowCarrier, setCaptureProbe, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE, isChannelSelectionProfile } from "../types/index.ts";
 import { CaptureAbandonedError, CaptureTurnTimeoutError, createCaptureLock } from "./captureLock.ts";
 import type { CaptureStream, CaptureStreamOptions } from "../browser/index.ts";
 import { FINALIZE_SETTLE_DELAY, installManifestInterceptor } from "../browser/manifestInterceptor.ts";
-import { LOG, chromeFetch, delay, extractDomain, formatError, getStreamContext, maxRetryDuration, registerAbortController,
-  resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, timeoutSignal, waitWithTimeout } from "../utils/index.ts";
+import { LOG, chromeFetch, extractDomain, formatError, getStreamContext, maxRetryDuration, registerAbortController,
+  resolveFFmpegPath, retryOperation, runWithStreamContext, spawnFFmpeg, startTimer, timeoutSignal, toError, waitWithTimeout } from "../utils/index.ts";
 import type { ManifestInterceptionResult, ManifestInterceptorHandle } from "../browser/manifestInterceptor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
 import type { Nullable, ResolvedChannel, ResolvedSiteProfile, TuneResult, UrlValidationResult } from "../types/index.ts";
@@ -803,7 +803,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
       if(onFFmpegError) {
 
-        onFFmpegError(error instanceof Error ? error : new Error(String(error)));
+        onFFmpegError(toError(error));
       }
     });
 
@@ -1466,14 +1466,16 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         LOG.error("Stream setup failed for %s: %s.", url, errorMessage);
       }
 
-      /* Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include Chrome capture state issues, capture-lock turn-wait
-       * timeouts, and stream initialization failures. Using 503 with Retry-After prevents retry storms when there's a systemic issue. isCaptureInfrastructureError
-       * (recovery.ts) is the single source of truth for this judgment, shared with the browser supervisor's readiness detection.
+      /* Capture infrastructure errors should return 503 to signal Channels DVR to back off. These include a browser whose capture system failed a launch gate,
+       * Chrome capture state issues, capture-lock turn-wait timeouts, and stream initialization failures. Using 503 with Retry-After prevents retry storms when
+       * there's a systemic issue. A launch-gate failure is answered by its type, a CaptureLaunchError, before the classifier reads any message, so the gate's
+       * messages are free to state what happened. isCaptureInfrastructureError (recovery.ts) is the single source of truth for every other failure, shared with the
+       * browser supervisor's readiness detection.
        *
        * The read here is purely for the client-facing status. The side effect that judgment also drives - handing the failure to the passive mid-life capture
        * detector - fires inside createPageWithCapture's own catches, where every caller of the acquisition reaches it rather than only this one.
        */
-      const isCaptureError = isCaptureInfrastructureError(errorMessage);
+      const isCaptureError = (error instanceof CaptureLaunchError) || isCaptureInfrastructureError(errorMessage);
 
       // A failed tune on a service currently marked needs-sign-in most likely failed AT the auth wall, so the user-facing message leads with the remedy.
       throw new StreamSetupError("Stream error.", isCaptureError ? 503 : 500, withSignInGuidance("Failed to start stream.", channelName, serviceName), { cause: error });
@@ -1723,8 +1725,10 @@ export async function reestablishChannelManifest(options: ReestablishChannelMani
  * times with a delay between attempts, giving the system time to settle before giving up. At boot this prevents a rapid restart storm where the service manager
  * relaunches PrismCast repeatedly, each attempt orphaning a Chrome process; at relaunch it provides in-launch settling before the supervisor counts a launch failure.
  * @param browser - The Chrome instance to verify (the local instance being launched, passed in rather than re-acquired to avoid re-entering the launch in flight).
+ * @param clock - The clock the wait between attempts and each attempt's own timing run on. Defaults to the system clock.
+ * @throws CaptureLaunchError when every attempt failed.
  */
-export async function verifyCaptureSystem(browser: Browser): Promise<void> {
+export async function verifyCaptureSystem(browser: Browser, clock: Clock = systemClock): Promise<void> {
 
   const PROBE_MAX_ATTEMPTS = 3;
   const PROBE_RETRY_DELAY = 5000;
@@ -1734,7 +1738,7 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
     // The launch gate runs its capture probe OFF the capture lock, deliberately: it fires pre-publish, when supervisor.current() is null, so a wedged gate task would
     // have no recovery target and would jam the shared lock. GATE mode keeps the acquisition bounded internally instead.
     // eslint-disable-next-line no-await-in-loop -- Sequential retries are intentional; each probe must complete before deciding whether to retry.
-    const result = await attemptCaptureProbe(browser, { boundMs: CAPTURE_PROBE_TIMEOUT_MS, kind: "gate" });
+    const result = await attemptCaptureProbe(browser, { boundMs: CAPTURE_PROBE_TIMEOUT_MS, kind: "gate" }, clock);
 
     // Probe succeeded.
     if(result === null) {
@@ -1748,13 +1752,13 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
       LOG.warn("Capture probe attempt %d of %d failed: %s. Retrying in %ds.", attempt, PROBE_MAX_ATTEMPTS, result, PROBE_RETRY_DELAY / 1000);
 
       // eslint-disable-next-line no-await-in-loop -- Deliberate delay between sequential retry attempts.
-      await delay(PROBE_RETRY_DELAY);
+      await clock.delay(PROBE_RETRY_DELAY);
     } else {
 
       /* On Windows the probe's own error rarely names the cause, and two conditions account for nearly every failure there: a virtualization layer sitting between
        * Chrome and the display, and a profile that will not load an unpacked extension. Naming both in the thrown message saves the user a support round trip.
-       * The message is unchanged on every other platform, and the hint is appended after the probe's own text so the "timed out" substring the
-       * capture-infrastructure classifier reads is still present.
+       * The message is unchanged on every other platform, and the hint follows the probe's own text so the cause the probe named still leads. The failure's
+       * status comes from its type rather than from any wording here, so the hint is free to read as plain advice.
        */
       const windowsHint = (process.platform === "win32") ? " On Windows, Hyper-V or WSL can interfere with Chrome's capture pipeline, and Chrome refuses to " +
         "load the capture extension unless the profile has extension developer mode enabled." : "";
@@ -1762,7 +1766,7 @@ export async function verifyCaptureSystem(browser: Browser): Promise<void> {
       // The probe's message is a diagnostic fragment that may or may not end in a period, so we terminate it before appending a sentence of our own.
       const detail = ((windowsHint.length > 0) && !result.endsWith(".")) ? (result + ".") : result;
 
-      throw new Error("Capture system verification failed after " + String(PROBE_MAX_ATTEMPTS) + " attempts: " + detail + windowsHint);
+      throw new CaptureLaunchError("Capture system verification failed after " + String(PROBE_MAX_ATTEMPTS) + " attempts: " + detail + windowsHint);
     }
   }
 }
@@ -1778,49 +1782,49 @@ type CaptureProbeMode = { boundMs: number; kind: "gate" } | { boundMs: number; k
 
 /**
  * Executes a single capture probe attempt. Creates a temporary page on the given browser, tries to start a capture stream, and tears everything down cleanly. A
- * failed capture never throws in any mode: it returns null on success or an error-message string on failure, so callers branch on the string. The modes differ
- * only in how the acquisition is bounded - see CaptureProbeMode.
- *
- * Opening the probe page and emulating the layout surface on it run before the try block and can still reject out of this function. A rejection from
- * the emulation leaves the probe page registered and open. In gate mode the rejection escapes verifyCaptureSystem's retry loop on that attempt, so the launch fails
- * without its remaining attempts and the supervisor counts it as a failed launch. In mid-life mode the capture lock's run rejects with it, and probeCaptureSerialized
- * classifies it as a failed verdict, which marks the browser. The window sync the mid-life arm runs in its finally block absorbs its own failures, so it adds no
- * rejection, and a rejection from a step that runs before the try block skips that sync, because the function never enters the try.
+ * failed attempt never throws in any mode: it returns null on success or an error-message string on failure, so callers branch on the string. Opening the page
+ * and emulating its layout surface run inside the same try as the acquisition, so a rejection from either is reported the same way, releasing the page when one
+ * was opened, and the gate's retry loop goes on to its next attempt. The modes differ only in how the acquisition is bounded - see CaptureProbeMode.
  * @param browser - The Chrome instance to probe.
  * @param mode - The operating mode: gate (internal acquisition race) or midlife (self-timed acquisition on the lock).
  * @param clock - Clock used for the mid-life self-timing and the teardown confirmation. Defaults to the system clock.
- * @returns Null on success, or an error message string on a failed capture.
- * @throws Whatever opening the probe page or emulating its layout surface rejects with.
+ * @returns Null on success, or an error message string on a failed attempt.
  */
 async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clock: Clock = systemClock): Promise<Nullable<string>> {
 
-  /* The mid-life probe runs against a browser that is serving streams, so its page is opened as a tab of the shared window for the reason a stream's page is: a
-   * probe tab rooted in a discovery window would hold that window open for as long as the probe took. The launch gate keeps the plain create: it runs pre-publish,
-   * when the browser has exactly one window and no discovery window can exist yet, so its tab has no wrong window to land in - and a gate that has to stay bounded
-   * gains nothing from queuing behind the selection executor to prove it.
-   */
-  const page = (mode.kind === "midlife") ? await openSharedWindowTab(browser, { deps: SHARED_WINDOW_TOPOLOGY }) : await browser.newPage({ background: true });
-
-  registerManagedPage(page);
-
-  // The probe page carries the preset-sized layout at the display's density, the surface a capture page starts from before its own declaration, so the probe's
-  // acquisition keeps the shape the field validated.
-  const surface = await emulateLayoutSurface(page);
-
-  // Tears the probe page down cleanly: retire the raw capture stream (destroy plus the stop confirmation) while the browser is still connected, unregister the
-  // managed page, then close it. Shared by every success and self-timed-failure path in both modes.
-  const teardown = async (stream: CaptureStream): Promise<void> => {
-
-    await retireRawStream(stream, clock);
-    unregisterManagedPage(page);
-
-    if(!page.isClosed()) {
-
-      await page.close();
-    }
-  };
+  // The page the attempt opened, held outside the try so the catch can release it. It stays null until the open resolves, so an open that rejects leaves the catch
+  // no page to close.
+  let openedPage: Nullable<Page> = null;
 
   try {
+
+    /* The mid-life probe runs against a browser that is serving streams, so its page is opened as a tab of the shared window for the reason a stream's page is: a
+     * probe tab rooted in a discovery window would hold that window open for as long as the probe took. The launch gate keeps the plain create: it runs
+     * pre-publish, when the browser has exactly one window and no discovery window can exist yet, so its tab has no wrong window to land in - and a gate that has
+     * to stay bounded gains nothing from queuing behind the selection executor to prove it.
+     */
+    const page = (mode.kind === "midlife") ? await openSharedWindowTab(browser, { deps: SHARED_WINDOW_TOPOLOGY }) : await browser.newPage({ background: true });
+
+    openedPage = page;
+    registerManagedPage(page);
+
+    // The probe page carries the preset-sized layout at the display's density, the surface a capture page starts from before its own declaration, so the probe's
+    // acquisition keeps the shape the field validated.
+    const surface = await emulateLayoutSurface(page);
+
+    // Tears the probe page down cleanly: retire the raw capture stream (destroy plus the stop confirmation) while the browser is still connected, unregister the
+    // managed page, then close it. The launch gate, which races its acquisition internally, calls it on success; the mid-life probe, the only one that self-times
+    // its acquisition, calls it before judging that latency, so the page is torn down whether the acquisition lands inside the bound or past it.
+    const teardown = async (stream: CaptureStream): Promise<void> => {
+
+      await retireRawStream(stream, clock);
+      unregisterManagedPage(page);
+
+      if(!page.isClosed()) {
+
+        await page.close();
+      }
+    };
 
     // Use the same capture MIME type and surface as the runtime. The stale state error occurs at the tabCapture API level before encoding matters, so matching
     // those runtime constraints ensures the probe exercises a representative acquisition. The constraints are held to the dimensions the declaration above
@@ -1906,12 +1910,15 @@ async function attemptCaptureProbe(browser: Browser, mode: CaptureProbeMode, clo
 
     const errorMessage = formatError(error);
 
-    // Clean up the test page.
-    unregisterManagedPage(page);
+    // Clean up the test page, when the attempt got as far as opening one.
+    if(openedPage) {
 
-    if(!page.isClosed()) {
+      unregisterManagedPage(openedPage);
 
-      page.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
+      if(!openedPage.isClosed()) {
+
+        openedPage.close().catch(() => { /* Fire-and-forget during error cleanup. */ });
+      }
     }
 
     return errorMessage;

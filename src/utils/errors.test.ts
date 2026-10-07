@@ -1,12 +1,12 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * errors.test.ts: Unit tests for the error formatting helpers in errors.ts. Every export in this module is a pure function; the tests cover the
- * input-shape branches in formatError (Error instance, duck-typed message, fallback to String()), the documented unrecoverable patterns in
- * isSessionClosedError, and the exact-phrase matching in isPageDeathError - including the errors carrying a page-death word in an unrelated sense, which are
- * what prove the phrase matching is not a word search.
+ * input-shape branches in formatError (Error instance, duck-typed message, fallback to String()), the pass-through and the cause toError keeps, the documented
+ * unrecoverable patterns in isSessionClosedError, and the exact-phrase matching in isPageDeathError - including the errors carrying a page-death word in an
+ * unrelated sense, which are what prove the phrase matching is not a word search.
  */
 import { describe, test } from "node:test";
-import { formatError, isPageDeathError, isSessionClosedError } from "./errors.ts";
+import { formatError, isPageDeathError, isSessionClosedError, toError } from "./errors.ts";
 import { EvaluateTimeoutError } from "./evaluate.ts";
 import assert from "node:assert/strict";
 
@@ -89,6 +89,35 @@ describe("formatError", () => {
   test("returns the empty string for the empty string input", () => {
 
     assert.equal(formatError(""), "");
+  });
+});
+
+describe("toError", () => {
+
+  test("passes an Error through as the same object", () => {
+
+    // The identity is the point: a caller branching on the error's class or reading its own fields needs the instance that was thrown, not a copy of its text.
+    const original = new TypeError("The value was not a function.");
+
+    assert.equal(toError(original), original);
+  });
+
+  test("wraps an object or a string in an Error carrying the formatted message and the original value as its cause", () => {
+
+    // A duck-typed object yields its message rather than the [object Object] of String() coercion, and the formatted text drops its trailing punctuation. The
+    // original value travels as the cause, so nothing the thrower handed over is lost.
+    const thrownObject = { code: 7, message: "The extension refused." };
+    const fromObject = toError(thrownObject);
+
+    assert.ok(fromObject instanceof Error, "an object becomes an Error");
+    assert.equal(fromObject.message, "The extension refused", "its message is the object's formatted message");
+    assert.equal(fromObject.cause, thrownObject, "and the object itself is the cause");
+
+    const fromString = toError("capture failed");
+
+    assert.ok(fromString instanceof Error, "a string becomes an Error");
+    assert.equal(fromString.message, "capture failed", "its message is the string");
+    assert.equal(fromString.cause, "capture failed", "and the string itself is the cause");
   });
 });
 

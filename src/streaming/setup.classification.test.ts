@@ -5,16 +5,21 @@
  * A failure from any phase leaves createPageWithCapture through its catch blocks, and each rethrow point can quietly lose a phase: a rethrow that converts the
  * error takes its signature with it. So every phase is driven here, each with a failure the pattern list recognises, and each is read through setupStream's
  * status mapping - the 503 that tells Channels DVR to back off rather than the 500 it would retry straight into. What is asserted here is that the failure
- * survives the rethrows with its signature intact and reaches that mapping as a 503. The catches' own hand-off to the capture verdict is stubbed to answer with
- * none and is not observed, so these rows do not guard it.
+ * survives the rethrows with its signature intact and reaches that mapping as a 503. The catches' hand-off to the capture verdict answers with none, so no row
+ * waits on a probe, and it records each call, so the establishment-phase and site-failure rows assert that the failure was handed off exactly once.
  *
- * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup-tier suites use, so no Chrome and no CDP are involved: the acquisition
- * phase fails by rejecting the capture acquisition, and the establishment phase fails by rejecting the navigation that follows a successful acquisition.
+ * A browser whose capture system failed a launch gate reaches the same mapping by its type rather than by its wording, so its row's message carries no signature
+ * the pattern list recognises and the 503 can come only from the type.
+ *
+ * Everything runs through the CreatePageWithCaptureDeps collaborators the sibling setup-tier suites use, so no Chrome and no CDP are involved: the launch gate
+ * fails by rejecting the browser acquisition, the acquisition phase by rejecting the capture acquisition, and the establishment phase by rejecting the
+ * navigation that follows a successful acquisition.
  */
 import type { Browser, Page } from "puppeteer-core";
 import { StreamSetupError, setupStream } from "./setup.ts";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { CONFIG } from "../config/index.ts";
+import { CaptureLaunchError } from "../browser/index.ts";
 import type { CaptureStream } from "../browser/tabCapture.ts";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
@@ -43,10 +48,14 @@ const PROBE_IDENTITY: ProbeCacheIdentity = { key: "classification-case", stamp: 
 // The stream's start instant, which setup takes from the pending entry. A fixed instant, because no row here completes a tune whose monitor would report it.
 const STREAM_START_TIME = 1700000000000;
 
-// What the acquisition and the navigation do for the current case. A case sets exactly one of them to fail, which is what makes the phase the row names the phase
-// the failure actually came from.
+// What the browser acquisition, the capture acquisition and the navigation do for the current case. A case sets exactly one of them to fail, which is what makes
+// the phase the row names the phase the failure actually came from.
+let browserFailure: Error | null = null;
 let acquisitionFailure: Error | null = null;
 let navigationFailure: Error | null = null;
+
+// How many times the case's failure was handed to the capture verdict.
+let verdictCalls = 0;
 
 /**
  * Builds a stub page whose navigation raises the case's establishment failure, and which answers the handful of other members the failing path touches.
@@ -85,10 +94,24 @@ const deps: CreatePageWithCaptureDeps = {
       { stop: async (): Promise<void> => undefined, stopped: Promise.resolve() });
   },
 
-  // What these rows read is the status code each phase's failure produces, so the verdict answers with none and no case waits on a probe.
-  awaitCaptureVerdict: async (): Promise<null> => null,
+  // What these rows read is the status code each phase's failure produces and whether it was handed off, so the verdict counts the call and answers with none,
+  // and no case waits on a probe.
+  awaitCaptureVerdict: async (): Promise<null> => {
+
+    verdictCalls++;
+
+    return null;
+  },
   emulateCaptureSurface: async (): Promise<{ height: number; width: number }> => ({ height: 1080, width: 1920 }),
-  getCurrentBrowser: async (): Promise<Browser> => ({ newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser),
+  getCurrentBrowser: async (): Promise<Browser> => {
+
+    if(browserFailure) {
+
+      throw browserFailure;
+    }
+
+    return { newPage: async (): Promise<Page> => makeStubPage() } as unknown as Browser;
+  },
   installActivationHeal: async (): Promise<void> => { /* The activation heal is not what this path measures. */ },
   openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* A failing establishment never reaches the re-affirmation. */ },
@@ -145,8 +168,10 @@ after(() => {
 
 beforeEach(() => {
 
+  browserFailure = null;
   acquisitionFailure = null;
   navigationFailure = null;
+  verdictCalls = 0;
 });
 
 describe("setupStream - capture-infrastructure classification across each establishment phase", () => {
@@ -173,16 +198,33 @@ describe("setupStream - capture-infrastructure classification across each establ
     const error = await runFailingTune();
 
     assert.equal(error.statusCode, 503, "an establishment-phase capture-infrastructure failure backs the client off the same way");
+    assert.equal(verdictCalls, 1, "and the establishment catch handed the failure to the capture verdict once");
   });
 
   test("a site failure that is not capture infrastructure still reaches the client as a plain error", async () => {
 
     // The control that keeps the rows above from being satisfied by a path that answers 503 to everything. A site that simply will not load is the channel's
-    // problem, not the capture system's, and the client should see it as such.
+    // problem, not the capture system's, and the client should see it as such. The hand-off is unconditional, because the verdict does its own filtering.
     navigationFailure = new Error("The site returned an unexpected page.");
 
     const error = await runFailingTune();
 
     assert.equal(error.statusCode, 500, "a site-specific failure is not a capture-infrastructure back-off");
+    assert.equal(verdictCalls, 1, "and the establishment catch still handed it to the capture verdict once");
+  });
+
+  test("a launch-gate failure reaches the client as a back-off by its type, with its cause kept", async () => {
+
+    /* The browser launched but its capture probe found no working capture, so the acquisition of a browser for this tune rejects with the gate's error. Its
+     * message names a probe detail no pattern recognises, so only the type can earn the 503, and the setup error carries the gate's error as its cause.
+     */
+    const launchError = new CaptureLaunchError("Capture system verification failed after 3 attempts: The page reported no video dimensions.");
+
+    browserFailure = launchError;
+
+    const error = await runFailingTune();
+
+    assert.equal(error.statusCode, 503, "a launch-gate failure backs the client off");
+    assert.equal(error.cause, launchError, "and the setup error keeps the gate's error as its cause");
   });
 });

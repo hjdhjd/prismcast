@@ -22,7 +22,7 @@
  * this module was written against and derives the settings-object shape from the extension's own source, so a dependency bump that changes either fails the
  * suite with instructions rather than failing a capture in the field.
  */
-import { LOG, formatError, pollUntil, startTimer } from "../utils/index.ts";
+import { LOG, formatError, pollUntil, startTimer, toError } from "../utils/index.ts";
 import type { RawData, WebSocket, WebSocketServer } from "ws";
 import { getExtensionPage, wss } from "puppeteer-stream";
 import { CAPTURE_SOURCE_UNAVAILABLE_MESSAGE } from "../types/index.ts";
@@ -214,17 +214,6 @@ let nextCaptureIndex = 0;
 // Acquisition.
 
 /**
- * Normalizes anything thrown into an Error. Puppeteer delivers a page-side exception that is not an Error object as the primitive itself, and the extension
- * rejects its capture-start with a bare string, so a rethrow that assumed an Error would strip the only diagnostic there was.
- * @param error - The thrown value.
- * @returns The value itself when it is already an Error, otherwise an Error carrying its formatted text.
- */
-function toError(error: unknown): Error {
-
-  return (error instanceof Error) ? error : new Error(formatError(error));
-}
-
-/**
  * Prepares one start attempt: a fresh socket index, a fresh stream, and a connection handler registered on the server BEFORE the extension is invoked. The
  * ordering is required, not tidy - START_RECORDING opens its socket before it asks Chrome for the capture, so a handler registered afterwards would miss the
  * connection, and a start that goes on to fail still connects a socket for its index.
@@ -400,6 +389,8 @@ async function acquireOnce(page: Page, options: CaptureStreamOptions,
 
     if(outcome.value.kind === "grant-pending") {
 
+      // Puppeteer delivers a page-side exception that is not an Error object as the primitive itself, and the extension rejects its capture-start with a bare
+      // string, so the rethrow normalizes what it holds rather than assuming an Error and stripping the only diagnostic there was.
       throw toError(outcome.value.error);
     }
 

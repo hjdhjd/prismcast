@@ -3,9 +3,9 @@
  * errors.ts: Error formatting and handling utilities for PrismCast.
  */
 
-/* These helpers group the error-handling primitives shared across the application: one normalizes arbitrary errors into log-ready text, and two classify
- * browser-state failures - one so a retry loop aborts as soon as the session it was retrying against is gone, the other so a caller can tell a page that
- * died apart from a subject that was never there.
+/* These helpers group the error-handling primitives shared across the application: normalizers that turn an arbitrary thrown value into log-ready text or into
+ * an Error, and classifiers of browser-state failures, so a retry loop aborts as soon as the session it was retrying against is gone and a caller can tell a
+ * page that died apart from a subject that was never there.
  */
 
 /**
@@ -31,6 +31,17 @@ export function formatError(error: unknown): string {
 
   // Strip trailing punctuation to prevent double punctuation when callers add their own.
   return message.replace(/[.!?]+$/, "");
+}
+
+/**
+ * Normalizes an unknown rejection value into an Error. An Error passes through unchanged; any other value becomes an Error whose message is the value's
+ * formatted text, with the original value kept as its cause so nothing is lost.
+ * @param error - The value a promise rejected with or a catch received.
+ * @returns The value itself when it is an Error, otherwise a new Error carrying it as the cause.
+ */
+export function toError(error: unknown): Error {
+
+  return (error instanceof Error) ? error : new Error(formatError(error), { cause: error });
 }
 
 /**

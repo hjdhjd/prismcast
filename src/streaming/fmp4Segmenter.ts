@@ -2,6 +2,7 @@
  *
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
+import { LOG, toError } from "../utils/index.ts";
 import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
 import { computeTimelinePosition, createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.ts";
@@ -9,7 +10,6 @@ import { CAPTURE_BASELINE_CODEC } from "../types/index.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
 import type { Clock } from "homebridge-plugin-utils";
-import { LOG } from "../utils/index.ts";
 import type { MP4Box } from "./mp4Parser.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
@@ -1260,7 +1260,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       parser.push(chunk);
     } catch(error) {
 
-      onError(error instanceof Error ? error : new Error(String(error)));
+      onError(toError(error));
     }
   }
 

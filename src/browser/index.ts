@@ -475,6 +475,20 @@ export { endLoginMode, getLoginPage, getLoginStatus, setLoginModeEndObserver, st
 export { BrowserCaptureImpairedError, BrowserSupersededError, BrowserUnavailableError } from "./browserSupervisor.ts";
 export type { BrowserPurpose, CaptureImpairment } from "./browserSupervisor.ts";
 
+/**
+ * Thrown when the browser launched but its capture system failed a launch gate: the capture extension never became ready, or the capture probe found no
+ * working capture across its attempts. setupStream answers it as a capture-infrastructure failure by its type, so its message is free to state what happened.
+ */
+export class CaptureLaunchError extends Error {
+
+  constructor(message: string, options?: ErrorOptions) {
+
+    super(message, options);
+
+    this.name = "CaptureLaunchError";
+  }
+}
+
 /* The one window-presentation executor for the process lifetime. Its collaborators all live in this module: the registry predicate that says whether capture is
  * reading the compositor, login mode's own flag, the shutdown gate, the two CDP primitives, and a page resolver built on the supervisor.
  *
@@ -2014,20 +2028,31 @@ async function launchReadyBrowser(): Promise<Browser> {
     // at the next launch.
     const initTimeout = CONFIG.browser.initTimeout;
 
-    // Readiness gate, handshake tier (cheap, on-suspicion). Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function
-    // into its options page context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as the
-    // extension loads (typically 200-500ms). On failure this THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined and
-    // every capture acquisition would hang, so the instance is not capture-ready and must not be published. We reclassify the raw waitForFunction timeout into a
-    // capture-infrastructure error carrying "timed out" so the setup layer maps it to a 503 back-off (the same as the capability-tier probe failure), rather than a
-    // 500 the client would not back off from - an unregistered extension is a capture-infrastructure fault, and a fresh relaunch usually clears it.
+    /* Readiness gate, handshake tier (cheap, on-suspicion). Poll for the puppeteer-stream extension to finish initializing - it injects a START_RECORDING function
+     * into its options page context, so its presence is the extension's own readiness signal. We poll rather than fixed-delay so the browser is ready as soon as
+     * the extension loads (typically 200-500ms). On failure this THROWS rather than warning-and-proceeding: an unregistered extension means chrome.tabs is undefined
+     * and every capture acquisition would hang, so the instance is not capture-ready and must not be published.
+     *
+     * Each step throws a CaptureLaunchError whose message states what that step saw, with the underlying error as its cause. The type, not the wording, is what
+     * earns the 503 back-off at the setup layer (the same answer the capability-tier probe failure gets), rather than a 500 the client would not back off from - an
+     * unregistered extension is a capture-infrastructure fault, and a fresh relaunch usually clears it.
+     */
+    let extensionPage: Page;
+
     try {
 
-      const extensionPage = await getExtensionPage(browser);
+      extensionPage = await getExtensionPage(browser);
+    } catch(error) {
+
+      throw new CaptureLaunchError("The capture extension page did not open.", { cause: error });
+    }
+
+    try {
 
       await extensionPage.waitForFunction(EXTENSION_READY_EXPRESSION, { timeout: initTimeout });
-    } catch(handshakeError) {
+    } catch(error) {
 
-      throw new Error("The capture extension handshake timed out after " + String(initTimeout) + " ms.", { cause: handshakeError });
+      throw new CaptureLaunchError("The capture extension did not become ready within " + String(initTimeout) + " ms.", { cause: error });
     }
 
     LOG.debug("timing:browser", "Extension initialized. (+%sms)", browserElapsed());
