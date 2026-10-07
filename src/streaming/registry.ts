@@ -13,6 +13,7 @@ import type { NativeProxy } from "../native/proxy.ts";
 import type { Page } from "puppeteer-core";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
 import type { RefreshedFeedMetadata } from "../native/index.ts";
+import type { StreamSettings } from "../config/streamSettings.ts";
 
 /* The stream registry is the single source of truth for all active streaming sessions. Each stream is tracked in a single StreamRegistryEntry containing browser
  * state, HLS segment storage, and the segmenter reference. This consolidation prevents data desync issues that could occur with separate Maps for each concern. The
@@ -277,12 +278,16 @@ export interface StreamRegistryEntry {
   // What this stream is and what pipeline is producing it. Replaced whole at every mode transition; never mutated member by member.
   identity: StreamIdentity;
 
+  // Stream-specific info for idle detection.
+  info: StreamInfo;
+
+  // The playback health monitor handle, or null if monitoring hasn't started. Exposes the live recovery metrics (read in the termination prologue) and a
+  // self-contained dispose that stops the monitor's polling interval.
+  monitor: Nullable<MonitorHandle>;
+
   // Count of active MPEG-TS client connections consuming this stream. Incremented when a client connects, decremented on disconnect. Used by idle timeout logic to
   // keep the stream alive while MPEG-TS clients are connected.
   mpegTsClientCount: number;
-
-  // Stream-specific info for idle detection.
-  info: StreamInfo;
 
   // The browser page for this stream. Null for pending stream entries that have been registered but whose async setup has not yet completed.
   page: Nullable<Page>;
@@ -300,13 +305,13 @@ export interface StreamRegistryEntry {
   // that have been registered but whose async setup has not yet completed.
   profile: Nullable<ResolvedSiteProfile>;
 
+  // The settings the stream reads for its whole life, copied from the running configuration when this entry was created. They are read-only because a stream
+  // that changed them mid-flight would cut, capture and judge its segments against values its own playlist and encoder never started with.
+  readonly settings: StreamSettings;
+
   // The epoch millisecond instant the stream entry was created, and the basis for the uptime and duration the status and the logs report. The ISO form is produced
   // where the value leaves the process.
-  startTime: number;
-
-  // The playback health monitor handle, or null if monitoring hasn't started. Exposes the live recovery metrics (read in the termination prologue) and a
-  // self-contained dispose that stops the monitor's polling interval.
-  monitor: Nullable<MonitorHandle>;
+  readonly startTime: number;
 
   // String identifier for logging (e.g., "cnn-5jecl6").
   streamIdStr: string;
@@ -335,7 +340,8 @@ export function getNextStreamId(): number {
 }
 
 /**
- * Registers a stream in the registry. This should be called after stream setup is complete and the stream is ready to serve data.
+ * Registers a stream in the registry. The one production caller registers the pending entry before setup begins, so a concurrent request for the channel
+ * finds the stream at once and every later stage of the stream reads the entry it registered.
  * @param entry - The stream registry entry to add.
  */
 export function registerStream(entry: StreamRegistryEntry): void {

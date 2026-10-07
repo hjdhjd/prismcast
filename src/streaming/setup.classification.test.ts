@@ -23,6 +23,7 @@ import { Readable } from "node:stream";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { initializeDataDir } from "../config/paths.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +37,9 @@ const STREAM_URL = "https://play.hbomax.com/channels";
 // The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses and nothing about encryption
 // influences the path under test.
 const PROBE_IDENTITY: ProbeCacheIdentity = { key: "classification-case", stamp: "classification-stamp" };
+
+// The stream's start instant, which setup takes from the pending entry. A fixed instant, because no row here completes a tune whose monitor would report it.
+const STREAM_START_TIME = 1700000000000;
 
 // What the acquisition and the navigation do for the current case. A case sets exactly one of them to fail, which is what makes the phase the row names the phase
 // the failure actually came from.
@@ -99,8 +103,8 @@ async function runFailingTune(): Promise<StreamSetupError> {
 
   try {
 
-    await setupStream({ probeIdentity: PROBE_IDENTITY, staticCapture: true, streamId: "classification-test", url: STREAM_URL },
-      (): void => { /* No circuit break on these paths. */ }, deps);
+    await setupStream({ numericStreamId: 9401, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(), startTime: STREAM_START_TIME, staticCapture: true,
+      streamId: "classification-test", url: STREAM_URL }, (): void => { /* No circuit break on these paths. */ }, deps);
   } catch(error) {
 
     assert.ok(error instanceof StreamSetupError, "the tune failed as a setup error");

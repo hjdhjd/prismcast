@@ -22,6 +22,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { initializeDataDir } from "../config/paths.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +36,19 @@ const STREAM_URL = "https://play.hbomax.com/channels";
 // The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses and nothing about encryption
 // influences the path under test.
 const PROBE_IDENTITY: ProbeCacheIdentity = { key: "capture-impairment-case", stamp: "capture-impairment-stamp" };
+
+// The stream's start instant, which setup takes from the pending entry. A fixed instant, because no row here completes a tune whose monitor would report it.
+const STREAM_START_TIME = 1700000000000;
+
+/**
+ * Builds the setup options every case tunes with: the pending entry's ids, settings, and start instant beside the probe identity and the URL.
+ * @returns The options for setupStream.
+ */
+function makeSetupOptions(): Parameters<typeof setupStream>[0] {
+
+  return { numericStreamId: 9411, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(), startTime: STREAM_START_TIME, streamId: "capture-impairment-test",
+    url: STREAM_URL };
+}
 
 // The impairment the refusing accessor reports, matching the shape a probe's verdict records.
 const IMPAIRMENT = { reason: "Could not start video source", since: 0 };
@@ -119,7 +133,7 @@ describe("setupStream - a browser that can no longer start captures", () => {
      */
     const errors = captureErrors(t);
 
-    await assert.rejects(setupStream({ probeIdentity: PROBE_IDENTITY, url: STREAM_URL }, (): void => { /* No circuit break here. */ },
+    await assert.rejects(setupStream(makeSetupOptions(), (): void => { /* No circuit break here. */ },
       makeDeps(new BrowserCaptureImpairedError(IMPAIRMENT))), (error: unknown) => (error instanceof StreamSetupError) && (error.statusCode === 503) &&
       (error.userMessage === "The browser can no longer start captures and will relaunch as soon as nothing is using it. Please retry shortly."),
     "the refusal reaches the caller as a 503 carrying the impairment message");
@@ -134,7 +148,7 @@ describe("setupStream - a browser that can no longer start captures", () => {
     // about streams; collapsing the pair into one message would fail here.
     const errors = captureErrors(t);
 
-    await assert.rejects(setupStream({ probeIdentity: PROBE_IDENTITY, url: STREAM_URL }, (): void => { /* No circuit break here. */ },
+    await assert.rejects(setupStream(makeSetupOptions(), (): void => { /* No circuit break here. */ },
       makeDeps(new BrowserUnavailableError(0))), (error: unknown) => (error instanceof StreamSetupError) && (error.statusCode === 503) &&
       (error.userMessage === "The capture system is recovering. Please retry shortly."),
     "the governor's back-off keeps its own message");

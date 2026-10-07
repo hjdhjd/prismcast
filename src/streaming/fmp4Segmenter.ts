@@ -13,6 +13,7 @@ import type { MP4Box } from "./mp4Parser.ts";
 import type { Nullable } from "../types/index.ts";
 import type { PlaylistSegmentEntry } from "./playlistBuilder.ts";
 import type { Readable } from "node:stream";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import { buildPlaylist } from "./playlistBuilder.ts";
 import { getStream } from "./registry.ts";
 import { systemClock } from "homebridge-plugin-utils";
@@ -95,6 +96,11 @@ export interface FMP4SegmenterOptions {
   // starting segment index that are still within the sliding window, creating a unified playlist that bridges the preroll-to-live transition with monotonic
   // MEDIA-SEQUENCE.
   prerollSegmentCount?: number;
+
+  // The duration, in seconds, the segmenter cuts at, declares as the playlist's target duration, and lists an earlier segment at when it holds no measured
+  // duration for it. It comes from the stream's settings so every segmenter a stream builds agrees, because a playlist's target duration must not change within a
+  // stream.
+  segmentDuration: StreamSettings["segmentDuration"];
 
   // The numeric stream ID for storage.
   streamId: number;
@@ -511,13 +517,14 @@ export function computeDiscontinuitySequence(options: { discontinuityIndices: Se
 
 /**
  * Creates an fMP4 segmenter that transforms MP4 input into HLS segments. The segmenter parses MP4 boxes, extracts the init segment, optionally detects keyframes
- * in each moof fragment when KEYFRAME_DEBUG is enabled, and accumulates media fragments into segments based on the configured duration.
+ * in each moof fragment when KEYFRAME_DEBUG is enabled, and accumulates media fragments into segments based on the segment duration it is given.
  * @param options - Segmenter options including stream ID and callbacks.
  * @returns The segmenter interface with pipe, stop, and keyframe stats methods.
  */
 export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4SegmenterResult {
 
-  const { clock = systemClock, continuity, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, streamId } = options;
+  const { clock = systemClock, continuity, onError, onStop, pendingDiscontinuity, prerollBaseUrl, prerollCodec, prerollSegmentCount, segmentDuration,
+    streamId } = options;
   const { initialTrackTimestamps, previousInitSegment, priorSessionStats, startingInitVersion, startingSegmentIndex } = continuity ?? {};
 
   // Initialize state.
@@ -626,7 +633,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
 
       const entry: PlaylistSegmentEntry = {
 
-        duration: state.segmentDurations.get(i) ?? CONFIG.hls.segmentDuration,
+        duration: state.segmentDurations.get(i) ?? segmentDuration,
         url: "segment" + String(i) + ".m4s"
       };
 
@@ -673,7 +680,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
       discontinuitySequence,
       initialMapUri,
       mediaSequence: startIndex,
-      targetDuration: CONFIG.hls.segmentDuration,
+      targetDuration: segmentDuration,
       version: 7
     }, entries);
   }
@@ -1033,7 +1040,7 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
         } else {
 
           const elapsedMs = clock.now() - state.segmentStartTime;
-          const targetMs = CONFIG.hls.segmentDuration * 1000;
+          const targetMs = segmentDuration * 1000;
 
           if(elapsedMs >= targetMs) {
 

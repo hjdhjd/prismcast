@@ -35,6 +35,7 @@ import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
 import { createHash } from "node:crypto";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { registerClient } from "./clients.ts";
+import { snapshotStreamSettings } from "../config/streamSettings.ts";
 import { suppressPageAudio } from "../browser/video.ts";
 import { systemClock } from "homebridge-plugin-utils";
 import { triggerShowNameUpdate } from "./showInfo.ts";
@@ -346,7 +347,7 @@ export async function ensureChannelStream(channelName: string, req: Request, res
     }
 
     const clientAddress: Nullable<string> = req.ip ?? req.socket.remoteAddress ?? null;
-    const pending = registerPendingStream(channelName, validation.channel, clientAddress, req, prerollCodec);
+    const pending = registerPendingStream({ channel: validation.channel, channelName, clientAddress, codec: prerollCodec, req });
 
     // Launch async setup. Errors are caught here to clean up the pending entry and prevent unhandled rejections.
     void completeStreamSetup({
@@ -354,16 +355,15 @@ export async function ensureChannelStream(channelName: string, req: Request, res
       channel: validation.channel,
       channelName,
       clientAddress,
-      numericStreamId: pending.numericStreamId,
+      entry: pending,
       profileOverride: req.query["profile"] as string | undefined,
-      streamIdStr: pending.streamIdStr,
       url: validation.channel.url
     }).catch((error: unknown) => {
 
-      handleSetupFailure(pending.numericStreamId, channelName, validation.channel, error);
+      handleSetupFailure(pending.id, channelName, validation.channel, error);
     });
 
-    return pending.numericStreamId;
+    return pending.id;
   }
 
   // Fallback: no preroll available. Block until the stream is fully set up.
@@ -789,16 +789,14 @@ const defaultTabReplacementDeps: TabReplacementDeps = { createPageWithCapture, u
  */
 interface SpliceReplacementCaptureOptions {
 
-  // The channel key the new segmenter's termination handlers close over.
-  readonly channelName: string;
-
   // The freshly established page and capture pipeline that is about to become the stream.
   readonly captureResult: CreatePageWithCaptureResult;
 
   // The injected establishment collaborators, so the page release here goes through the same substitutable boundary the establishment above did.
   readonly deps: TabReplacementDeps;
 
-  // The registry entry being re-pointed at the new pipeline.
+  // The registry entry being re-pointed at the new pipeline. The new segmenter stores under its id, its termination handlers close over its key, and it cuts at its
+  // segment duration.
   readonly entry: StreamRegistryEntry;
 
   // The codec label read off the pre-swap capture identity. A replacement changes the page, never the codec decision, so this carries across unchanged.
@@ -809,12 +807,6 @@ interface SpliceReplacementCaptureOptions {
 
   // The page the stream has been running on, or null for a pending entry that never produced one.
   readonly oldPage: Nullable<Page>;
-
-  // The numeric stream id the new segmenter stores under.
-  readonly numericStreamId: number;
-
-  // The stream's string id, for the page-close diagnostic.
-  readonly streamId: string;
 }
 
 /**
@@ -832,7 +824,7 @@ interface SpliceReplacementCaptureOptions {
  */
 function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): void {
 
-  const { captureResult, channelName, deps, entry, numericStreamId, oldCaptureCodec, oldHardwareAccelerated, oldPage, streamId } = options;
+  const { captureResult, deps, entry, oldCaptureCodec, oldHardwareAccelerated, oldPage } = options;
 
   // Read the outgoing segmenter's continuity at the last possible instant, then tear its pipeline down. The CaptureSession kills the FFmpeg child first (which
   // silences that pipeline's stream listeners for good), then destroys the capture stream - which MUST happen before the old page closes, so chrome.tabCapture
@@ -854,7 +846,7 @@ function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): voi
 
     if(!oldPage.isClosed()) {
 
-      LOG.debug("recovery:tab", "Closing the outgoing page for stream %s.", streamId);
+      LOG.debug("recovery:tab", "Closing the outgoing page for stream %s.", entry.streamIdStr);
 
       oldPage.close().catch((error: unknown) => {
 
@@ -864,13 +856,15 @@ function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): voi
   }
 
   // Build the new segmenter on the continuity just read, and mark its first segment with a discontinuity tag so clients flush decoder state. The tag is
-  // suppressed automatically when the new init segment turns out byte-identical to the old one.
+  // suppressed automatically when the new init segment turns out byte-identical to the old one. The segmenter cuts at the stream's own segment duration, so the
+  // playlist's target duration holds across the replacement.
   const newSegmenter = createFMP4Segmenter({
 
-    ...buildSegmenterTerminationHandlers(numericStreamId, channelName, { logSuffix: "after tab replacement", reasonSuffix: "after recovery" }),
+    ...buildSegmenterTerminationHandlers(entry.id, entry.info.storeKey, { logSuffix: "after tab replacement", reasonSuffix: "after recovery" }),
     ...(continuity ? { continuity } : {}),
     pendingDiscontinuity: true,
-    streamId: numericStreamId
+    segmentDuration: entry.settings.segmentDuration,
+    streamId: entry.id
   });
 
   // Wire the new segmenter into the new capture session (attachSegmenter pipes the session's capture output into it), then re-point the entry at the new
@@ -900,7 +894,6 @@ function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): voi
  *
  * @param numericStreamId - The stream's numeric ID for registry lookups.
  * @param streamId - The stream's string ID for logging.
- * @param channelName - The channel name (or synthetic ad-hoc key like "play-a1b2c3d4") used as the store key for error callbacks and termination.
  * @param url - The URL to navigate to.
  * @param profile - The site profile for video handling.
  * @param metadataComment - Optional comment to embed in FFmpeg output metadata.
@@ -912,7 +905,6 @@ function spliceReplacementCapture(options: SpliceReplacementCaptureOptions): voi
 export function createTabReplacementHandler(
   numericStreamId: number,
   streamId: string,
-  channelName: string,
   url: string,
   profile: ResolvedSiteProfile,
   metadataComment: string | undefined,
@@ -973,6 +965,7 @@ export function createTabReplacementHandler(
           onCircuitBreak();
         },
         profile,
+        settings: stream.settings,
         streamId,
         tabReplacement: true,
         url
@@ -1014,7 +1007,7 @@ export function createTabReplacementHandler(
 
     // The swap, and the commit that follows it in the same synchronous frame. Nothing separates the two, so the error callback can never observe a stream whose
     // registry entry has moved on while the attempt still reads as pending.
-    spliceReplacementCapture({ captureResult, channelName, deps, entry, numericStreamId, oldCaptureCodec, oldHardwareAccelerated, oldPage: entry.page, streamId });
+    spliceReplacementCapture({ captureResult, deps, entry, oldCaptureCodec, oldHardwareAccelerated, oldPage: entry.page });
     attempt.phase = "committed";
 
     LOG.info("Tab replacement complete. New capture started with segment continuity.");
@@ -1104,11 +1097,11 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
   const streamIdStr = generateStreamId(channel ? channelName : undefined, url);
 
   // Register a pending entry in the stream registry. This allows concurrent requests for the same channel to find the stream immediately.
-  createPendingEntry({ ...options, hls: createHLSState(), numericStreamId, streamIdStr });
+  const entry = createPendingEntry({ ...options, hls: createHLSState(), numericStreamId, streamIdStr });
 
   try {
 
-    return await completeStreamSetup({ ...options, numericStreamId, streamIdStr });
+    return await completeStreamSetup({ ...options, entry });
   } catch(error) {
 
     // Skip logging - callers (startHLSStream, handlePlayStream, handleMpegTsStream) handle the re-thrown error with their own error responses and logging.
@@ -1121,15 +1114,24 @@ export async function initializeStream(options: InitializeStreamOptions): Promis
 // Pending Stream Registration.
 
 /**
- * Result of registering a pending stream.
+ * Options for registering a pending stream.
  */
-interface PendingStreamResult {
+interface RegisterPendingStreamOptions {
 
-  // The numeric stream ID.
-  numericStreamId: number;
+  // The resolved channel definition.
+  readonly channel: ResolvedChannel;
 
-  // The string stream ID for logging.
-  streamIdStr: string;
+  // The channel key for registration and deduplication.
+  readonly channelName: string;
+
+  // Client IP address for Channels DVR API integration.
+  readonly clientAddress: Nullable<string>;
+
+  // The preroll codec variant to use for this stream.
+  readonly codec: CaptureCodec;
+
+  // Express request object for deriving the base URL.
+  readonly req: Request;
 }
 
 /**
@@ -1137,16 +1139,14 @@ interface PendingStreamResult {
  * playlist handler. The pending entry has a real stream ID but no playlist yet - the response is held until either the preroll timer fires (after PREROLL_DELAY_MS)
  * or real content arrives from the segmenter/native proxy. This ensures that fast-tuning streams (native, most capture services) skip preroll entirely, while slow
  * streams (Xfinity/Cox at 13-15s) get preroll content after the delay.
- * @param channelName - The channel key for registration and deduplication.
- * @param channel - The resolved channel definition.
- * @param clientAddress - Client IP address for Channels DVR API integration.
- * @param req - Express request object for deriving the base URL.
- * @param codec - The preroll codec variant to use for this stream.
- * @returns The allocated stream IDs.
+ * @param options - The channel, its key, the client's address, the request, and the preroll codec.
+ * @returns The registered pending entry, which carries the stream's ids and settings down to its setup.
  */
-function registerPendingStream(channelName: string, channel: ResolvedChannel, clientAddress: Nullable<string>, req: Request, codec: CaptureCodec): PendingStreamResult {
+function registerPendingStream(options: RegisterPendingStreamOptions): StreamRegistryEntry {
 
-  // The registration instant, read once at this composition point and used for the resume-index read, the entry's start time, and the preroll timer's arming.
+  const { channel, channelName, clientAddress, codec, req } = options;
+
+  // The registration instant, read once at this composition point and used for the resume-index read and the preroll timer's arming.
   const now = systemClock.now();
   const numericStreamId = getNextStreamId();
   const streamIdStr = generateStreamId(channelName, channel.url);
@@ -1167,9 +1167,6 @@ function registerPendingStream(channelName: string, channel: ResolvedChannel, cl
   // Snapshot the resume segment index once at registration. Both the preroll timer callback and completeStreamSetup() use this single snapshot, eliminating the TTL
   // race that would occur if each read the resume map independently at different times.
   hls.resumeSegmentIndex = getResumeSegmentIndex(channelName, now) ?? 0;
-
-  // Capture the stream start time at registration. This timestamp is used for the registry's startTime field (stream age display, etc.).
-  const streamStartTime = now;
 
   if(isPrerollReady(codec)) {
 
@@ -1194,9 +1191,7 @@ function registerPendingStream(channelName: string, channel: ResolvedChannel, cl
   }
 
   // Register the pending entry.
-  createPendingEntry({ channel, channelName, clientAddress, hls, numericStreamId, preTuned: false, streamIdStr, streamStartTime, url: channel.url });
-
-  return { numericStreamId, streamIdStr };
+  return createPendingEntry({ channel, channelName, clientAddress, hls, numericStreamId, preTuned: false, streamIdStr, url: channel.url });
 }
 
 // Pending Entry Helpers.
@@ -1227,9 +1222,6 @@ interface CreatePendingEntryOptions {
   // Pre-allocated string stream ID for logging.
   streamIdStr: string;
 
-  // The epoch millisecond instant the stream was created, for PROGRAM-DATE-TIME anchoring. Defaults to the system clock's reading if not provided.
-  streamStartTime?: number;
-
   // The URL to stream.
   url: string;
 }
@@ -1238,16 +1230,20 @@ interface CreatePendingEntryOptions {
  * Creates a pending stream entry in the registry and sets the channel-to-stream mapping. The entry has null page, profile, segmenter, and other browser-related
  * fields that are filled in asynchronously by completeStreamSetup(). This is the shared core for both the non-blocking preroll path (registerPendingStream) and the
  * blocking path (initializeStream).
+ *
+ * This is the one place a stream's settings are copied out of the running configuration. The entry carries the copy read-only for the stream's whole life, so a
+ * save reaches the streams registered after it and never one already running.
  * @param options - Pending entry options.
+ * @returns The registered entry, the one carrier of the stream's ids, settings, and start instant down to its setup.
  */
-function createPendingEntry(options: CreatePendingEntryOptions): void {
+function createPendingEntry(options: CreatePendingEntryOptions): StreamRegistryEntry {
 
   const { channel, channelName, hls, numericStreamId, streamIdStr, url } = options;
 
-  // The registration instant, read once so the access stamp and the entry's start time agree when the caller supplied no start of its own.
+  // The registration instant, read once so the one instant stamps both the access time and the entry's start.
   const now = systemClock.now();
 
-  registerStream({
+  const entry: StreamRegistryEntry = {
 
     channelName: channel?.name ?? null,
     clientAddress: options.clientAddress ?? null,
@@ -1265,12 +1261,16 @@ function createPendingEntry(options: CreatePendingEntryOptions): void {
     preTuned: options.preTuned ?? false,
     probeIdentity: null,
     profile: null,
-    startTime: options.streamStartTime ?? now,
+    settings: snapshotStreamSettings(CONFIG),
+    startTime: now,
     streamIdStr,
     url
-  });
+  };
 
+  registerStream(entry);
   setChannelStreamId(channelName, numericStreamId);
+
+  return entry;
 }
 
 /**
@@ -1336,18 +1336,34 @@ interface NativeStreamingResult {
 }
 
 /**
+ * Options for attempting the native upgrade.
+ */
+interface NativeProxyOptions {
+
+  // The stream's registry entry, read for its key, its id, and its preroll state.
+  readonly entry: StreamRegistryEntry;
+
+  // Whether the client is an MPEG-TS consumer.
+  readonly mpegTsClient?: boolean;
+
+  // The stream setup result from setupStream().
+  readonly setup: StreamSetupResult;
+
+  // The URL the tune was asked for, as completeStreamSetup received it, which the native proxy and the manifest re-establishment use.
+  readonly url: string;
+}
+
+/**
  * Attempts to upgrade the stream from capture to native HLS. Consumes the manifest interception already finalized by setupStream(), probes the manifest, creates a
  * native proxy, stops the capture pipeline, suppresses page audio, and updates the registry entry. Returns the codec and formatted quality string on success, or
  * null if native is not viable.
- * @param setup - The stream setup result from setupStream().
- * @param numericStreamId - The stream's numeric ID.
- * @param channelName - The channel key for logging and cache operations.
- * @param url - The stream URL for the native proxy.
- * @param mpegTsClient - Whether the client is an MPEG-TS consumer.
+ * @param options - The stream's entry, its setup result, the requested URL, and whether the client is an MPEG-TS consumer.
  * @returns The native codec and quality info, or null if native streaming was not viable.
  */
-async function startNativeProxy(setup: StreamSetupResult, numericStreamId: number, channelName: string, url: string,
-  mpegTsClient?: boolean): Promise<Nullable<NativeStreamingResult>> {
+async function startNativeProxy(options: NativeProxyOptions): Promise<Nullable<NativeStreamingResult>> {
+
+  const { entry, mpegTsClient, setup, url } = options;
+  const { id: numericStreamId, info: { storeKey: channelName } } = entry;
 
   if(!setup.manifestInterception) {
 
@@ -1357,11 +1373,10 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
   // The manifest interception was finalized and verified during setupStream(). By the time we get here, setup.manifestInterception.promise has already resolved
   // (or is about to) with the URL setupStream verified. We just consume it.
 
-  // Read the preroll segment count from the pending entry to pass to the native coordinator. This value is set at registration time (not in the timer callback),
-  // so it's available regardless of whether the deferred preroll timer has fired. The proxy uses it for segment index offset. The base URL for composite playlists
-  // is read dynamically from the stream's HLS state at playlist generation time.
-  const pendingForNative = getStream(numericStreamId);
-  const nativePrerollSegmentCount = pendingForNative?.hls.prerollSegmentCount ?? 0;
+  // Read the preroll segment count from the entry to pass to the native coordinator. This value is set at registration time (not in the timer callback), so it's
+  // available regardless of whether the deferred preroll timer has fired. The proxy uses it for segment index offset. The base URL for composite playlists is read
+  // dynamically from the stream's HLS state at playlist generation time.
+  const nativePrerollSegmentCount = entry.hls.prerollSegmentCount;
 
   // The re-establishment capability closes over the stream's own tune facts here, in the layer that owns them: a token-refresh reload re-acquires its
   // manifest through the stream's real tune rather than a bare navigation. The page stays a parameter rather than a captured value because the callers
@@ -1404,7 +1419,7 @@ async function startNativeProxy(setup: StreamSetupResult, numericStreamId: numbe
       applyNativeQualityRefresh(refreshed, metadata);
     },
     page: setup.page,
-    prerollCodec: pendingForNative?.hls.prerollCodec ?? "h264",
+    prerollCodec: entry.hls.prerollCodec ?? "h264",
     prerollSegmentCount: nativePrerollSegmentCount,
     probeIdentity: setup.probeIdentity,
     reestablishManifest,
@@ -1537,33 +1552,47 @@ export function buildResumeContinuity(options: BuildResumeContinuityOptions): Se
 }
 
 /**
+ * Options for creating a capture stream's segmenter.
+ */
+interface CaptureSegmenterOptions {
+
+  // The stream's registry entry, read for its key, its id, its preroll state, its registered resume index, and its settings.
+  readonly entry: StreamRegistryEntry;
+
+  // The instant the resume data's TTL is measured against.
+  readonly now: number;
+
+  // The stream setup result from setupStream().
+  readonly setup: StreamSetupResult;
+}
+
+/**
  * Creates the fMP4 segmenter for capture mode streams. Reads resume data, creates the segmenter with preroll and resume configuration, and attaches it to the
  * capture session (which pipes the session's capture output into it). Resume data is consumed only after the segmenter is successfully attached to a non-disposed
  * session, ensuring it survives if the stream was terminated during setup.
- * @param setup - The stream setup result from setupStream().
- * @param numericStreamId - The stream's numeric ID.
- * @param channelName - The channel key for resume data and logging.
- * @param now - The instant the resume data's TTL is measured against.
+ * @param options - The stream's entry, its setup result, and the instant the resume data's TTL is measured against.
  * @returns True if the segmenter was attached, false if the stream was terminated during setup (the session was already disposed).
  */
-function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: number, channelName: string, now: number): boolean {
+function createCaptureSegmenter(options: CaptureSegmenterOptions): boolean {
+
+  const { entry, now, setup } = options;
+  const { id: numericStreamId, info: { storeKey: channelName } } = entry;
 
   // Peek at resume data from a previous shutdown without consuming it. The data is consumed (deleted) only after the segmenter is successfully created and
   // stored in the registry. This ensures resume data survives if segmenter creation fails - the next stream start retries with the same resume state instead
   // of losing it and causing an HLS sequence reset.
   const resumeData = peekResumeData(channelName, now);
-  const currentStream = getStream(numericStreamId);
-  const prerollSegmentCount = currentStream?.hls.prerollSegmentCount ?? 0;
+  const prerollSegmentCount = entry.hls.prerollSegmentCount;
 
   // Announce the resume once per resumed capture stream, before the segmenter is built, so a stream terminated mid-setup still reports the session it resumed.
   if(resumeData) {
 
-    logStreamResume({ displayName: currentStream?.channelName ?? channelName, resumeData });
+    logStreamResume({ displayName: entry.channelName ?? entry.info.storeKey, resumeData });
   }
 
   // When preroll is active, use the snapshotted resume index (stored on HLS state at registration) so the segmenter's starting index is guaranteed to match
   // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly - no preroll playlist to be consistent with.
-  const baseSegmentIndex = (prerollSegmentCount > 0) ? (currentStream?.hls.resumeSegmentIndex ?? 0) : (resumeData?.segmentIndex ?? 0);
+  const baseSegmentIndex = (prerollSegmentCount > 0) ? entry.hls.resumeSegmentIndex : (resumeData?.segmentIndex ?? 0);
 
   const continuity = buildResumeContinuity({ baseSegmentIndex, prerollSegmentCount, resumeData });
 
@@ -1575,14 +1604,15 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
 
     ...((prerollSegmentCount > 0) ? {
 
-      prerollBaseUrl: currentStream?.hls.prerollBaseUrl ?? null,
-      prerollCodec: currentStream?.hls.prerollCodec ?? "h264",
+      prerollBaseUrl: entry.hls.prerollBaseUrl,
+      prerollCodec: entry.hls.prerollCodec ?? "h264",
       prerollSegmentCount
     } : {}),
 
     ...((resumeData || (prerollSegmentCount > 0)) ? { pendingDiscontinuity: true } : {}),
 
     ...buildSegmenterTerminationHandlers(numericStreamId, channelName),
+    segmentDuration: entry.settings.segmentDuration,
     streamId: numericStreamId
   });
 
@@ -1611,11 +1641,8 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
  */
 interface CompleteStreamSetupOptions extends InitializeStreamOptions {
 
-  // Pre-allocated numeric stream ID from the pending registration.
-  numericStreamId: number;
-
-  // Pre-allocated string stream ID for logging.
-  streamIdStr: string;
+  // The pending entry, registered before setup began. It carries the stream's ids, its settings, and its start instant.
+  entry: StreamRegistryEntry;
 }
 
 /**
@@ -1627,13 +1654,14 @@ interface CompleteStreamSetupOptions extends InitializeStreamOptions {
  * This is the Phase 2 of the two-phase stream initialization. For the non-blocking HLS path, it runs as fire-and-forget via `void`. For the blocking path
  * (initializeStream), it is awaited directly.
  *
- * @param options - Stream setup options including pre-allocated IDs.
+ * @param options - Stream setup options including the pending entry.
  * @returns The stream ID on success, or null if the stream was terminated during setup.
  * @throws StreamSetupError if setup fails, or Error for unexpected failures.
  */
 async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise<Nullable<number>> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, mpegTsClient, numericStreamId, profileOverride, streamIdStr, url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, mpegTsClient, profileOverride, url } = options;
+  const { id: numericStreamId, settings, streamIdStr } = options.entry;
 
   /* Build the probe-cache identity once, here, and hand it onward as a value. This is the only frame that holds both halves of it on every entry path: the true
    * per-stream key (channelName is the route key for a predefined tune, the binding hash for an ad-hoc /play, the channel id for a pretune) and the binding
@@ -1671,7 +1699,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
   // Factory to create the tab replacement handler. Called by setupStream after resolving the profile, allowing the handler to be created with access to all context.
   const tabReplacementFactory: TabReplacementHandlerFactory = (_, streamId, profile, metadataComment) => {
 
-    return createTabReplacementHandler(numericStreamId, streamId, channelName, url, profile, metadataComment, onCircuitBreak);
+    return createTabReplacementHandler(numericStreamId, streamId, url, profile, metadataComment, onCircuitBreak);
   };
 
   // Capacity was already reserved at the registration site (reserveStreamSlot in ensureChannelStream for the preroll path, and in initializeStream for the blocking
@@ -1679,9 +1707,9 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
   // here: the pending entry is now counted, so a count-based check would double-count this stream against its own slot and could evict a healthy peer at the
   // legitimate boundary. The registration-site reservation is the single source of truth for the capacity decision.
 
-  // Pass the pre-allocated IDs to setupStream so it uses them instead of generating new ones. This ensures the abort controller, health monitor, and tab replacement
-  // handler all reference the same stream identity as the pending registry entry. Pass channelName only for predefined channels - for ad-hoc streams, omitting it
-  // causes generateStreamId to derive the stream ID string from the URL (e.g., "foxsports-abc123"), which is more informative in logs.
+  // Setup takes the entry's ids, so the abort controller, health monitor, and tab replacement handler all reference the stream the registry holds, and the entry's
+  // settings and start instant, so the stream's captures and monitor read the values the stream registered with. Pass channelName only for predefined channels:
+  // setup writes a resolved selector back to that channel's stored record, and an ad-hoc stream has none.
   const setup = await setupStream(
     {
 
@@ -1694,6 +1722,8 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       onTabReplacementFactory: tabReplacementFactory,
       probeIdentity,
       profileOverride,
+      settings,
+      startTime: options.entry.startTime,
       streamId: streamIdStr,
       url
     },
@@ -1724,7 +1754,6 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
   stream.page = setup.page;
   stream.probeIdentity = setup.probeIdentity;
   stream.profile = setup.profile;
-  stream.startTime = setup.startTime;
   stream.url = setup.url;
 
   // Continue within stream context for consistent logging.
@@ -1743,7 +1772,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       let nativeQuality = "";
       let streamingMode: "capture" | "native" = "capture";
 
-      const nativeStreamResult = await startNativeProxy(setup, numericStreamId, channelName, url, mpegTsClient);
+      const nativeStreamResult = await startNativeProxy({ entry: options.entry, mpegTsClient, setup, url });
 
       if(nativeStreamResult) {
 
@@ -1755,7 +1784,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
       // If native streaming was not viable or not attempted, create the fMP4 segmenter for capture mode.
       if(streamingMode === "capture") {
 
-        if(!createCaptureSegmenter(setup, numericStreamId, channelName, now)) {
+        if(!createCaptureSegmenter({ entry: options.entry, now, setup })) {
 
           return null;
         }
@@ -1771,7 +1800,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         (CONFIG.streaming.captureMode === "ffmpeg" ? "FFmpeg [" + ffmpegCodec + "]" : "Native fMP4");
       const displayName = channel?.name ?? url;
 
-      const tuneTime = ((now - setup.startTime) / 1000).toFixed(1);
+      const tuneTime = ((now - options.entry.startTime) / 1000).toFixed(1);
 
       LOG.info("Streaming %s: %s, %s, %s. Tuned in %ss%s.", displayName, setup.serviceName, setup.profileName, captureMode,
         tuneTime, setup.directTune ? " (direct)" : "");
@@ -1809,7 +1838,7 @@ async function completeStreamSetup(options: CompleteStreamSetupOptions): Promise
         logoUrl: getChannelLogo(channelName) ?? "",
         numericStreamId,
         serviceName: setup.serviceName,
-        startTime: setup.startTime,
+        startTime: options.entry.startTime,
         streamingMode,
         url: setup.url
       }));

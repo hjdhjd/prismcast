@@ -21,6 +21,7 @@ import { getCaptureImpairment, reaffirmCaptureSurface, syncWindowVisibility } fr
 import { getEffectiveCaptureCodec, isCaptureHardwareAccelerated } from "./codec.ts";
 import { CONFIG } from "../config/index.ts";
 import type { Clock } from "homebridge-plugin-utils";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import { clearNativeInitState } from "./hlsSegments.ts";
 import { clearProbeCache } from "../native/probe.ts";
 import { emitStreamHealthChanged } from "./statusEmitter.ts";
@@ -82,7 +83,7 @@ interface PageNavigationRecoveryResult {
 }
 
 /**
- * Stream info passed to the monitor for status updates.
+ * The stream's identity and settings, passed to the monitor for its status updates and its health checks.
  */
 export interface MonitorStreamInfo {
 
@@ -92,6 +93,9 @@ export interface MonitorStreamInfo {
 
   // Service filter tag from the domain config (e.g., "xfinity", "hulu"). Used to look up the ProviderModule for service-specific monitoring flags.
   serviceTag?: string;
+
+  // The stream's settings. The monitor's tick interval and its undersized-segment floor read them, so the monitor judges the stream by the values it started with.
+  settings: StreamSettings;
 
   startTime: number;
 }
@@ -314,14 +318,13 @@ export function monitorPlaybackHealth(
   const SEGMENT_STALL_TIMEOUT = 10000;
 
   /* Tiny segment detection. A dead capture pipeline keeps emitting segments while the video element looks healthy - a few bytes each when capture has died
-   * outright, audio alone when only video has - so each new segment is measured against a floor stated as a rate and scaled to the configured segment duration.
-   * The rate derives from the configured video and audio bitrates, and the recovery module's floor constants state what that floor guarantees. A tab replacement
-   * is earned by TINY_SEGMENT_EVIDENCE_SECONDS of consecutive undersized segments, counted in whole segments of the configured duration. The duration and the
-   * bitrates are read once at monitor start, so a run of undersized segments is judged against one floor and one trigger for its whole length.
+   * outright, audio alone when only video has - so each new segment is measured against a floor stated as a rate and scaled to the stream's segment duration.
+   * The rate derives from the stream's video and audio bitrates, and the recovery module's floor constants state what that floor guarantees. A tab replacement
+   * is earned by TINY_SEGMENT_EVIDENCE_SECONDS of consecutive undersized segments, counted in whole segments of the stream's duration. The duration and the
+   * bitrates are the stream's own settings, which hold for its whole life, so a run of undersized segments is judged against the floor and the trigger the
+   * stream started with.
    */
-  const segmentDurationSeconds = CONFIG.hls.segmentDuration;
-  const audioBitsPerSecond = CONFIG.streaming.audioBitsPerSecond;
-  const videoBitsPerSecond = CONFIG.streaming.videoBitsPerSecond;
+  const { audioBitsPerSecond, segmentDuration: segmentDurationSeconds, videoBitsPerSecond } = streamInfo.settings;
   const tinySegmentByteThreshold = deriveTinySegmentThresholdBytes({ audioBitsPerSecond, segmentDurationSeconds, videoBitsPerSecond });
   const tinySegmentCountTrigger = deriveTinySegmentCountTrigger({ evidenceSeconds: TINY_SEGMENT_EVIDENCE_SECONDS, segmentDurationSeconds });
 
@@ -2699,7 +2702,7 @@ export function monitorPlaybackHealth(
       // Log errors that escape the inner try/catch. In normal operation we should not reach here - if we do, there's a bug to investigate.
       LOG.warn("Monitor tick error escaped inner try/catch: %s.", formatError(outerError));
     }));
-  }, CONFIG.playback.monitorInterval, { repeat: true });
+  }, streamInfo.settings.monitorInterval, { repeat: true });
 
   /* The monitor's teardown: mark the interval cleared (so any in-flight async tick short-circuits) and clear it. Self-contained - it owns only the interval. Defined
    * as a const so it is exposed as both dispose() and [Symbol.dispose].

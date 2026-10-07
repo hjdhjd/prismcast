@@ -867,15 +867,15 @@ export function describeResolutionOutcome(inputs: { peak: ResolutionPeak; readin
 /* The rate the floor never exceeds, in bytes per second of segment duration. A dead capture pipeline emits segments a few bytes long, and one whose video has
  * died while its audio continues emits at most 64 kilobytes per second, the configuration's 512 kilobit audio ceiling. The leanest video preset, 480p at 3
  * megabits, runs at about 375 kilobytes per second, and healthy static content has been measured in the field at 311 to 391. This rate sits between the audio
- * ceiling and the leanest preset, and it is the one those field measurements validated...healthy output does not follow a higher configured target upward, so
- * the floor holds here however high the configured bitrates go, and the configured rates can only lower it. Stating the floor as a rate draws its line at every
+ * ceiling and the leanest preset, and it is the one those field measurements validated...healthy output does not follow a higher bitrate target upward, so
+ * the floor holds here however high a stream's bitrates go, and the stream's rates can only lower it. Stating the floor as a rate draws its line at every
  * segment duration the configuration allows, where a fixed byte count per segment draws it at one duration only.
  */
 export const TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND = 256000;
 
-/* The share of the configured total rate, video plus audio, that the floor sits at beneath its cap. At half, a capture delivering at least half its configured
- * rate is never undersized, and a capture whose video has died while its audio continues is undersized whenever the configured video rate exceeds the audio
- * rate, because half the total then sits above the audio rate that capture still delivers and the cap sits above the audio ceiling. Where the audio rate reaches
+/* The share of a stream's total rate, video plus audio, that the floor sits at beneath its cap. At half, a capture delivering at least half the stream's rate
+ * is never undersized, and a capture whose video has died while its audio continues is undersized whenever the stream's video rate exceeds its audio rate,
+ * because half the total then sits above the audio rate that capture still delivers and the cap sits above the audio ceiling. Where the audio rate reaches
  * the video rate, the floor catches a dead pipeline's few-byte segments alone.
  */
 export const TINY_SEGMENT_FLOOR_RATE_FRACTION = 0.5;
@@ -885,10 +885,10 @@ export const TINY_SEGMENT_FLOOR_RATE_FRACTION = 0.5;
 export const TINY_SEGMENT_EVIDENCE_SECONDS = 20;
 
 /**
- * The size below which a segment of the given duration counts as undersized: TINY_SEGMENT_FLOOR_RATE_FRACTION of the configured total rate, video plus audio,
+ * The size below which a segment of the given duration counts as undersized: TINY_SEGMENT_FLOOR_RATE_FRACTION of the stream's total rate, video plus audio,
  * converted to bytes per second and held at or under TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND, then scaled to the segment. Those constants state what the floor
  * guarantees. The monitor's size check reads its floor from here, so the rate and the per-segment figure cannot disagree at any duration.
- * @param options - The configured audio and video bitrates in bits per second, and the configured HLS segment duration in seconds.
+ * @param options - The stream's audio and video bitrates in bits per second, and its HLS segment duration in seconds.
  * @returns The floor in bytes.
  */
 export function deriveTinySegmentThresholdBytes(options: {
@@ -906,7 +906,7 @@ export function deriveTinySegmentThresholdBytes(options: {
  * The number of consecutive undersized segments that covers an evidence window at the given segment duration. The count rounds up, because a run of whole
  * segments shorter than the window would act on less evidence than the window states: at a three-second duration a twenty-second window takes seven segments,
  * not six. It never falls below one, because a single segment is the least evidence there is to act on.
- * @param options - The evidence window in seconds, and the configured HLS segment duration in seconds.
+ * @param options - The evidence window in seconds, and the stream's HLS segment duration in seconds.
  * @returns The count of consecutive undersized segments that earns a recovery.
  */
 export function deriveTinySegmentCountTrigger(options: { readonly evidenceSeconds: number; readonly segmentDurationSeconds: number }): number {

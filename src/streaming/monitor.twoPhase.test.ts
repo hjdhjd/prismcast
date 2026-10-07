@@ -8,11 +8,13 @@
  * the stop calls are counted. So every row here counts, and every throttle row carries its own positive control - a later pass, outside the window, that shows the
  * trigger was still satisfied all along and the throttle is what held it.
  *
- * The file also holds the monitor's reading of the configured bitrates into the undersized-segment floor, which the derivation's own rows cannot reach: they
- * measure the formula, and only a running monitor shows the configured rates are what it is handed.
+ * The file also holds the monitor's reading of the stream's settings: its bitrates and segment duration into the undersized-segment floor, which the derivation's
+ * own rows cannot reach because they measure the formula, and only a running monitor shows the stream's values are what it is handed; and its tick interval,
+ * which only a running monitor's cadence shows.
  */
 import type { MonitorDeps, MonitorStreamInfo } from "./monitor.ts";
 import type { MonitorHandle, TabReplacementResult } from "./recovery.ts";
+import { TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND, deriveTinySegmentThresholdBytes } from "./recovery.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { closePuppeteerStreamWssOnIdle, flushMicrotasks, makeFakePage } from "../testing.helpers.ts";
 import { makeNativeIdentity, makeRegistryEntry } from "./registry.helpers.ts";
@@ -26,17 +28,19 @@ import { LOG } from "../utils/index.ts";
 import type { NativeProxy } from "../native/proxy.ts";
 import type { Nullable } from "../types/index.ts";
 import type { StreamRegistryEntry } from "./registry.ts";
-import { TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND } from "./recovery.ts";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import { TestClock } from "homebridge-plugin-utils/testing";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-const MONITOR_INTERVAL = CONFIG.playback.monitorInterval;
+// The tick step: the interval of the default settings the streamInfo helper hands a row's monitor unless the row states its own.
+const MONITOR_INTERVAL = makeStreamSettings().monitorInterval;
 
 // The window a level-3 recovery arms, from the monitor's own grace table. Every throttle row spends less than this and then more.
 const RECOVERY_GRACE_MS = 10000;
@@ -271,11 +275,12 @@ function makeEntry(numericStreamId: number): StreamRegistryEntry {
 let entry: StreamRegistryEntry;
 let handle: Nullable<MonitorHandle>;
 
-const streamInfo = (numericStreamId: number, clock: TestClock): MonitorStreamInfo => ({
+const streamInfo = (numericStreamId: number, clock: TestClock, settings: StreamSettings = makeStreamSettings()): MonitorStreamInfo => ({
 
   channelName: "Two Phase Test",
   numericStreamId,
   serviceName: "two-phase-test",
+  settings,
   startTime: clock.now()
 });
 
@@ -749,19 +754,21 @@ describe("monitorPlaybackHealth: a dead pipeline on a browser that can start no 
   });
 });
 
-describe("monitorPlaybackHealth: the undersized-segment floor follows the configured bitrates", () => {
+describe("monitorPlaybackHealth: the undersized-segment floor follows the stream's settings", () => {
 
   /**
    * Starts a monitor over a capture whose every segment carries video at the supplied size, drives a few healthy ticks, and reports what the monitor made of
-   * those segments. A row shapes the configured bitrates before calling this, because the monitor reads its floor's inputs at its start. The segment must sit
-   * under the cap's floor at the configured duration, so that only a floor following the configured rates can clear it.
-   * @param options - The size every segment reports, the id the monitor and registry agree on, and the row's test context, which restores its mocks at row end.
+   * those segments. A row states the stream's bitrates and duration through the settings it passes, which the monitor reads its floor's inputs from at its start.
+   * The segment must sit under the cap's floor at the stream's duration, so that only a floor following the stream's rates can clear it.
+   * @param options - The size every segment reports, the stream's settings, the id the monitor and registry agree on, and the row's test context, which restores
+   *                  its mocks at row end.
    * @returns How many segment sizes the monitor read, and how many segments it counted undersized.
    */
-  async function judgeSteadySegments(options: { segmentBytes: number; streamId: number; t: TestContext }): Promise<{ sizeReads: number; undersized: number }> {
+  async function judgeSteadySegments(options: { segmentBytes: number; settings: StreamSettings; streamId: number; t: TestContext }):
+  Promise<{ sizeReads: number; undersized: number }> {
 
-    assert.ok(options.segmentBytes < (TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND * CONFIG.hls.segmentDuration),
-      "the segment sits under the cap's floor at the configured duration, so only the configured rates can clear it");
+    assert.ok(options.segmentBytes < (TINY_SEGMENT_FLOOR_CAP_BYTES_PER_SECOND * options.settings.segmentDuration),
+      "the segment sits under the cap's floor at the stream's duration, so only the stream's rates can clear it");
 
     const clock = new TestClock();
 
@@ -795,7 +802,7 @@ describe("monitorPlaybackHealth: the undersized-segment floor follows the config
     const fake = makeFakePage({ clock });
 
     handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile(), "https://two-phase.test/watch", "floor-rate-" + String(options.streamId),
-      streamInfo(options.streamId, clock), (): void => { /* The breaker is not what these rows read. */ },
+      streamInfo(options.streamId, clock, options.settings), (): void => { /* The breaker is not what these rows read. */ },
       async (): Promise<Nullable<TabReplacementResult>> => null, makeDivergentDeps(clock));
 
     // A few healthy ticks, each producing another segment of the same size.
@@ -806,51 +813,99 @@ describe("monitorPlaybackHealth: the undersized-segment floor follows the config
 
   test("a 300000-byte segment at a 1000000 bit-per-second video rate is not counted undersized", async (t) => {
 
-    /* The floor read through a running monitor rather than through the derivation, because the configured bitrates reach the floor only when the monitor reads
-     * them at its start and passes them on. The segment sits under the cap's floor at the configured duration and well above half the shaped configuration's
-     * rate, so only a floor that follows the configured rates clears it...a floor held at its cap would count every such segment undersized and replace a
-     * healthy low-bitrate capture once per evidence window. The size reads are the control: they show the monitor measured the segments it was fed, so the
-     * absence of an undersized judgment is a verdict rather than a check that never ran.
+    /* The floor read through a running monitor rather than through the derivation, because the stream's bitrates reach the floor only when the monitor reads
+     * them at its start and passes them on. The segment sits under the cap's floor at the stream's duration and well above half the stream's shaped rate, so
+     * only a floor that follows the stream's rates clears it...a floor held at its cap would count every such segment undersized and replace a healthy
+     * low-bitrate capture once per evidence window. The size reads are the control: they show the monitor measured the segments it was fed, so the absence of an
+     * undersized judgment is a verdict rather than a check that never ran.
      */
-    const configuredVideoRate = CONFIG.streaming.videoBitsPerSecond;
+    const judged = await judgeSteadySegments({ segmentBytes: 300000, settings: makeStreamSettings({ videoBitsPerSecond: 1000000 }), streamId: 9330, t });
 
-    CONFIG.streaming.videoBitsPerSecond = 1000000;
-
-    try {
-
-      const judged = await judgeSteadySegments({ segmentBytes: 300000, streamId: 9330, t });
-
-      assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
-      assert.equal(judged.undersized, 0, "and counted none of them undersized");
-    } finally {
-
-      CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
-    }
+    assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
+    assert.equal(judged.undersized, 0, "and counted none of them undersized");
   });
 
   test("a 140000-byte segment at a 1000000 video and 32000 audio bit-per-second rate is not counted undersized", async (t) => {
 
     /* The audio half of the same wiring. The video rate is shaped as in the row above, so the audio rate is what separates this floor from one read at the
-     * default audio rate: at the configured duration the segment sits above half the shaped configuration's rate and below half of the same video rate beside
-     * the default audio rate, so a monitor that passed the default audio rate in place of the configured one would count every such segment undersized.
+     * default audio rate: at the stream's duration the segment sits above half the stream's shaped rate and below half of the same video rate beside the default
+     * audio rate, so a monitor that passed the default audio rate in place of the stream's would count every such segment undersized.
      */
-    const configuredAudioRate = CONFIG.streaming.audioBitsPerSecond;
-    const configuredVideoRate = CONFIG.streaming.videoBitsPerSecond;
+    const settings = makeStreamSettings({ audioBitsPerSecond: 32000, videoBitsPerSecond: 1000000 });
+    const judged = await judgeSteadySegments({ segmentBytes: 140000, settings, streamId: 9331, t });
 
-    CONFIG.streaming.audioBitsPerSecond = 32000;
-    CONFIG.streaming.videoBitsPerSecond = 1000000;
+    assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
+    assert.equal(judged.undersized, 0, "and counted none of them undersized");
+  });
+
+  test("a 700000-byte segment is counted undersized at a 4-second stream duration that clears it at the default duration", async (t) => {
+
+    /* The duration half of the same wiring. At the default bitrates the floor sits at its cap, so the segment clears it at the default duration and falls under
+     * it at the stream's 4 seconds; a monitor that scaled its floor by the default duration, by the running configuration's, or by its own tick interval in
+     * seconds would count none of these segments undersized. The running configuration is assigned a duration apart from the stream's as the negative control.
+     */
+    const settings = makeStreamSettings({ segmentDuration: 4 });
+    const defaults = makeStreamSettings();
+    const configuredDuration = CONFIG.hls.segmentDuration;
+
+    assert.ok(700000 >= deriveTinySegmentThresholdBytes({ audioBitsPerSecond: defaults.audioBitsPerSecond, segmentDurationSeconds: defaults.segmentDuration,
+      videoBitsPerSecond: defaults.videoBitsPerSecond }), "precondition: the segment clears the floor at the default duration");
+
+    CONFIG.hls.segmentDuration = 1;
 
     try {
 
-      const judged = await judgeSteadySegments({ segmentBytes: 140000, streamId: 9331, t });
+      const judged = await judgeSteadySegments({ segmentBytes: 700000, settings, streamId: 9332, t });
 
       assert.ok(judged.sizeReads > 0, "the monitor measured the segments it was fed");
-      assert.equal(judged.undersized, 0, "and counted none of them undersized");
+      assert.ok(judged.undersized > 0, "and counted them undersized against the floor at the stream's duration");
     } finally {
 
-      CONFIG.streaming.audioBitsPerSecond = configuredAudioRate;
-      CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
+      CONFIG.hls.segmentDuration = configuredDuration;
     }
+  });
+});
+
+describe("monitorPlaybackHealth: the tick follows the stream's interval", () => {
+
+  test("a monitor whose settings carry a 500 ms interval ticks exactly four times across 2000 ms while the running configuration holds another", async (t) => {
+
+    /* A static-capture tick reads the page's closed state once and returns, so counting those reads counts ticks. The running configuration is assigned an
+     * interval four times the stream's as the negative control, so a monitor that armed its tick at the configuration's interval would tick once across the
+     * drive rather than four times.
+     */
+    const clock = new TestClock();
+    const settings = makeStreamSettings({ monitorInterval: 500 });
+    const fake = makeFakePage({ clock });
+    const configuredInterval = CONFIG.playback.monitorInterval;
+
+    let ticks = 0;
+
+    t.mock.method(fake.page, "isClosed", (): boolean => {
+
+      ticks++;
+
+      return false;
+    });
+
+    entry = makeEntry(9333);
+    registerStream(entry);
+
+    CONFIG.playback.monitorInterval = settings.monitorInterval * 4;
+
+    try {
+
+      handle = monitorPlaybackHealth(fake.page, fake.page, makeProfile({ staticCapture: true }), "https://two-phase.test/watch", "tick-interval-1",
+        streamInfo(9333, clock, settings), (): void => { /* The breaker is not what this row reads. */ }, undefined, makeDivergentDeps(clock));
+
+      clock.advance(2000);
+      await settle();
+    } finally {
+
+      CONFIG.playback.monitorInterval = configuredInterval;
+    }
+
+    assert.equal(ticks, 4, "the monitor ticked once per 500 ms of the stream's interval");
   });
 });
 

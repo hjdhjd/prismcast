@@ -55,7 +55,7 @@ describe("buildPlaylist", () => {
 
   test("uses the targetDuration option as a floor when entries are shorter", () => {
 
-    // Capture path passes CONFIG.hls.segmentDuration as the floor to avoid under-declaring TARGETDURATION when all real segments are short.
+    // The capture path passes its stream's segment duration as the floor to avoid under-declaring TARGETDURATION when all real segments are short.
     const result = buildPlaylist({ mediaSequence: 0, targetDuration: 4, version: 7 }, [
       { duration: 1, url: "a.m4s" },
       { duration: 1.5, url: "b.m4s" }

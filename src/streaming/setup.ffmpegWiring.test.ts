@@ -10,6 +10,8 @@
  * Both directions are asserted for both listeners, because the two ways to get this wrong are opposites: a gate that silences nothing leaves the hazard open, and
  * a gate that silences everything hides genuine faults on a live pipeline. createPageWithCapture composes on its injected collaborators, so these rows drive the
  * real wiring with a stub browser, a PassThrough capture stream, and an FFmpeg double whose teardown state and stream events the test drives.
+ *
+ * The same double records the audio rate each spawn is handed, which is how a row reads that the FFmpeg encoder runs at the stream's own audio rate.
  */
 import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -19,11 +21,13 @@ import type { ChildProcess } from "node:child_process";
 import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import type { FFmpegProcess } from "../utils/index.ts";
 import { PassThrough } from "node:stream";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -69,6 +73,9 @@ let captureStream: PassThrough;
 // Every error the establishment's caller-facing callback received, in order.
 let faults: Error[];
 
+// The audio rate each FFmpeg spawn was handed, in order.
+let spawnedAudioRates: number[];
+
 // The capture mode the suite found, restored on the way out so the shared CONFIG is left as it was.
 let originalCaptureMode: string;
 
@@ -88,7 +95,12 @@ const deps: CreatePageWithCaptureDeps = {
   installActivationHeal: async (): Promise<void> => { /* Nothing to enrol on a stub page. */ },
   openSharedWindowTab: async (): Promise<Page> => makeStubPage(),
   reaffirmCaptureSurface: async (): Promise<void> => { /* No compositor to re-affirm against. */ },
-  spawnFFmpeg: (): FFmpegProcess => ffmpeg,
+  spawnFFmpeg: (_ffmpegBin: string, audioBitsPerSecond: number): FFmpegProcess => {
+
+    spawnedAudioRates.push(audioBitsPerSecond);
+
+    return ffmpeg;
+  },
   startOverlayHandling: async (): Promise<void> => { /* No overlays on a stub page. */ },
   syncWindowVisibility: async (): Promise<void> => { /* No window to settle. */ }
 };
@@ -112,14 +124,16 @@ function makeStubPage(): Page {
 
 /**
  * Establishes a capture through the real createPageWithCapture on the static branch, which is the shortest path that still runs the whole FFmpeg wiring.
+ * @param settings - The stream's settings the establishment runs at.
  * @returns The established capture session, for the row to dispose.
  */
-async function establish(): Promise<{ dispose: () => void }> {
+async function establish(settings: StreamSettings = makeStreamSettings()): Promise<{ dispose: () => void }> {
 
   const result = await createPageWithCapture({
 
     onFFmpegError: (error: Error): void => { faults.push(error); },
     profile: makeProfile({ staticCapture: true }),
+    settings,
     skipManifestInterception: true,
     streamId: "ffmpeg-wiring-test",
     url: "https://static.example/page"
@@ -145,6 +159,7 @@ beforeEach(() => {
 
   faults = [];
   ffmpeg = makeFakeFFmpeg();
+  spawnedAudioRates = [];
 });
 
 describe("createPageWithCapture: a disposed pipeline never fires its error callback", () => {
@@ -204,5 +219,34 @@ describe("createPageWithCapture: a disposed pipeline never fires its error callb
     assert.equal(faults.length, 1, "a live capture's pipeline fault reaches the caller");
 
     capture.dispose();
+  });
+});
+
+describe("createPageWithCapture: the FFmpeg encoder runs at the stream's audio rate", () => {
+
+  test("the spawn receives the stream's audio rate, not its video rate or the running configuration's", async () => {
+
+    /* The stream's audio and video rates are distinct from each other and from the running configuration's, which is assigned other values as the negative
+     * control, so a spawn handed the video rate or a configuration read receives a rate the stream never started with.
+     */
+    const settings = makeStreamSettings({ audioBitsPerSecond: 96000, videoBitsPerSecond: 3000000 });
+    const configuredAudioRate = CONFIG.streaming.audioBitsPerSecond;
+    const configuredVideoRate = CONFIG.streaming.videoBitsPerSecond;
+
+    CONFIG.streaming.audioBitsPerSecond = 192000;
+    CONFIG.streaming.videoBitsPerSecond = 6000000;
+
+    try {
+
+      const capture = await establish(settings);
+
+      assert.deepEqual(spawnedAudioRates, [settings.audioBitsPerSecond], "the one spawn ran at the stream's audio rate");
+
+      capture.dispose();
+    } finally {
+
+      CONFIG.streaming.audioBitsPerSecond = configuredAudioRate;
+      CONFIG.streaming.videoBitsPerSecond = configuredVideoRate;
+    }
   });
 });

@@ -215,7 +215,7 @@ export interface ProviderModule {
   strategyName: ChannelSelectionStrategy;
 
   // The window, in seconds, of consecutive tiny segments (below the size floor) tolerated before triggering tab replacement recovery. Defaults to the recovery
-  // module's window (TINY_SEGMENT_EVIDENCE_SECONDS) when undefined, and the monitor counts it in whole segments of the configured segment duration. Providers whose
+  // module's window (TINY_SEGMENT_EVIDENCE_SECONDS) when undefined, and the monitor counts it in whole segments of the stream's segment duration. Providers whose
   // normal operation includes extended periods of static or low-motion content (e.g., Comcast Polymer SPA commercial placeholder images) set a longer window to
   // avoid false positive tab replacements while still detecting genuinely frozen video. Dead capture pipelines (segments with no video trafs, hasVideo=false)
   // always use the default window regardless of this setting, ensuring fast detection of audio-only failures.

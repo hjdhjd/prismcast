@@ -374,8 +374,11 @@ describe("reactivity classification", () => {
     // The HDHomeRun handler reconciles them, and the name is read per request.
     [ "live", [ "hdhr.discoveryEnabled", "hdhr.enabled", "hdhr.friendlyName", "hdhr.port" ] ],
 
-    // Read per cut, per stored segment, per playlist, and per idle sweep.
-    [ "live", [ "hls.idleTimeout", "hls.maxSegments", "hls.segmentDuration" ] ],
+    // Read per stored segment, per playlist, and per idle sweep.
+    [ "live", [ "hls.idleTimeout", "hls.maxSegments" ] ],
+
+    // Copied into each stream's settings when the stream registers.
+    [ "next-stream", ["hls.segmentDuration"] ],
 
     // The request-log middleware is chosen and the logger sized at boot.
     [ "restart", [ "logging.httpLogLevel", "logging.maxSize" ] ],
@@ -383,10 +386,13 @@ describe("reactivity classification", () => {
     // Read at launch, teardown, and exit, which must agree, and the logger opens its file at boot.
     [ "restart", [ "paths.chromeDataDir", "paths.logFile" ] ],
 
-    // Read when a monitor arms, per monitor tick, per recovery decision, or per tune step.
+    // Read per monitor tick, per recovery decision, or per tune step.
     [ "live", [ "playback.bufferingGracePeriod", "playback.channelSelectorDelay", "playback.channelSwitchDelay", "playback.iframeInitDelay",
-      "playback.maxPageReloads", "playback.monitorInterval", "playback.pageReloadWindow", "playback.sourceReloadDelay", "playback.stallCountThreshold",
-      "playback.stallThreshold", "playback.sustainedPlaybackRequired" ] ],
+      "playback.maxPageReloads", "playback.pageReloadWindow", "playback.sourceReloadDelay", "playback.stallCountThreshold", "playback.stallThreshold",
+      "playback.sustainedPlaybackRequired" ] ],
+
+    // Copied into each stream's settings when the stream registers.
+    [ "next-stream", ["playback.monitorInterval"] ],
 
     // The stale-page sweep is armed once.
     [ "restart", ["recovery.stalePageCleanupInterval"] ],
@@ -398,8 +404,8 @@ describe("reactivity classification", () => {
     // The listener binds once.
     [ "restart", [ "server.host", "server.port" ] ],
 
-    // Read at each capture establishment and at monitor start.
-    [ "live", [ "streaming.audioBitsPerSecond", "streaming.frameRate", "streaming.videoBitsPerSecond" ] ],
+    // Copied into each stream's settings when the stream registers.
+    [ "next-stream", [ "streaming.audioBitsPerSecond", "streaming.frameRate", "streaming.videoBitsPerSecond" ] ],
 
     // The preroll is encoded once at boot from them.
     [ "restart", [ "streaming.captureCodecs", "streaming.captureMode", "streaming.qualityPreset" ] ],

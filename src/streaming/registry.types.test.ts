@@ -1,6 +1,7 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
- * registry.types.test.ts: Compile-time tests for the stream identity discriminated union in registry.ts.
+ * registry.types.test.ts: Compile-time tests for registry.ts: the stream identity discriminated union, and the registry entry members a stream holds fixed for its
+ * whole life.
  *
  * What the union buys is the states it makes impossible, and that guarantee lives entirely in the type checker - no runtime assertion can observe a shape that
  * cannot be written. So the rows below assert it the way this codebase asserts every other type-level relationship: the legal shapes are written plainly and
@@ -14,6 +15,7 @@ import type { NativeProxy } from "../native/proxy.ts";
 import type { StreamingMode } from "../types/index.ts";
 import assert from "node:assert/strict";
 import { makePendingCaptureIdentity } from "./registry.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 describe("the stream identity union", () => {
 
@@ -87,5 +89,29 @@ describe("the stream identity union", () => {
 
     assert.equal(fromIdentity, "capture");
     assert.equal(fromDto, "native");
+  });
+});
+
+describe("the entry members a stream holds for its whole life", () => {
+
+  test("rejects an assignment to an entry's settings", () => {
+
+    const entry = makeRegistryEntry();
+    const replacement = makeStreamSettings({ segmentDuration: 6 });
+
+    // @ts-expect-error - read-only, because a stream whose settings changed mid-flight would cut and judge its segments against values it never started with.
+    entry.settings = replacement;
+
+    assert.equal(entry.settings, replacement, "the runtime write still lands - the rejection is the compiler's, which is the point");
+  });
+
+  test("rejects an assignment to an entry's start instant", () => {
+
+    const entry = makeRegistryEntry();
+
+    // @ts-expect-error - the start instant is taken at registration and nothing writes it afterwards, so the status, the monitor and the logs report one instant.
+    entry.startTime = 0;
+
+    assert.equal(entry.startTime, 0, "the runtime write still lands - the rejection is the compiler's, which is the point");
   });
 });

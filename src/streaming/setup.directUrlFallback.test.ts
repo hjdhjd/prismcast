@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { getProviderBySlug } from "../browser/channelSelection.ts";
 import { initializeDataDir } from "../config/paths.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +43,9 @@ let gotoUrls: string[] = [];
 // The probe-cache identity every case streams under. A stamp no classification was ever stored against means the cache lookup misses and the interception-skip
 // decision falls to the option each case sets explicitly.
 const PROBE_IDENTITY: ProbeCacheIdentity = { key: "direct-url-fallback-case", stamp: "direct-url-fallback-stamp" };
+
+// The stream's start instant, which setup takes from the pending entry. A fixed instant, because no row here completes a tune whose monitor would report it.
+const STREAM_START_TIME = 1700000000000;
 
 /**
  * Builds a stub page that records every navigation target and then rejects with the case's failure. The remaining members are the ones createPageWithCapture and
@@ -95,7 +99,7 @@ function makeOptions(overrides: { skipDirectUrl?: boolean } = {}): Parameters<ty
 
   const profile: ResolvedSiteProfile = makeProfile({ channelSelection: { strategy: "hboGrid" }, channelSelector: "HBO" });
 
-  return { profile, skipManifestInterception: true, streamId: "direct-url-fallback", url: GUIDE_URL, ...overrides };
+  return { profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "direct-url-fallback", url: GUIDE_URL, ...overrides };
 }
 
 let originalCaptureMode: CaptureMode;
@@ -197,8 +201,9 @@ describe("setupStream - the guide fallback", () => {
      * guide attempt it would have had if the hint had never existed. The navigation list is the assertion - two attempts, the hint then the guide - so removing the
      * fallback leaves a single entry.
      */
-    await assert.rejects(setupStream({ channelSelector: "HBO", probeIdentity: PROBE_IDENTITY, url: GUIDE_URL }, (): void => { /* No circuit break here. */ },
-      deps), "the fallback's own failure surfaces to the caller");
+    await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
+      startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
+    "the fallback's own failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [ PERSISTED_WATCH_URL, GUIDE_URL ], "exactly two establishments ran: the hint, then the guide");
   });
@@ -209,8 +214,9 @@ describe("setupStream - the guide fallback", () => {
     // outcome it had before a fallback existed to decline.
     gotoFailure = new Error("Attempted to use detached Frame '5D2393C3BF7A9BFEAB6C38D638EA01D8'");
 
-    await assert.rejects(setupStream({ channelSelector: "HBO", probeIdentity: PROBE_IDENTITY, url: GUIDE_URL }, (): void => { /* No circuit break here. */ },
-      deps), "the untyped failure surfaces to the caller");
+    await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
+      startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
+    "the untyped failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [PERSISTED_WATCH_URL], "only the first establishment ran");
   });
@@ -220,8 +226,9 @@ describe("setupStream - the guide fallback", () => {
     // The ordinary guide tune. With no hint to resolve, usedDirectUrl is false, the catch's typed arm is never entered, and the fallback has nothing to decline.
     evictPersistedWatchUrl("hbomax", "HBO");
 
-    await assert.rejects(setupStream({ channelSelector: "HBO", probeIdentity: PROBE_IDENTITY, url: GUIDE_URL }, (): void => { /* No circuit break here. */ },
-      deps), "the guide failure surfaces to the caller");
+    await assert.rejects(setupStream({ channelSelector: "HBO", numericStreamId: 9421, probeIdentity: PROBE_IDENTITY, settings: makeStreamSettings(),
+      startTime: STREAM_START_TIME, streamId: "direct-url-fallback", url: GUIDE_URL }, (): void => { /* No circuit break here. */ }, deps),
+    "the guide failure surfaces to the caller");
 
     assert.deepEqual(gotoUrls, [GUIDE_URL], "a tune with no hint makes exactly one attempt");
   });

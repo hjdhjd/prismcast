@@ -11,7 +11,7 @@
 import type { KeyframeStats, SessionStats } from "./fmp4Segmenter.ts";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { computeDiscontinuitySequence, createFMP4Segmenter, formatKeyframeStatsSummary, formatSessionStatsSummary, pruneDiscontinuityIndices } from "./fmp4Segmenter.ts";
-import { getInitSegment, getPlaylist, getSegment, getSegmentCount } from "./hlsSegments.ts";
+import { getInitSegment, getPlaylist, getSegment, getSegmentCount, storeSegment } from "./hlsSegments.ts";
 import { registerStream, unregisterStream } from "./registry.ts";
 import { CONFIG } from "../config/index.ts";
 import { LOG } from "../utils/index.ts";
@@ -20,6 +20,7 @@ import { TestClock } from "homebridge-plugin-utils/testing";
 import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -562,7 +563,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -586,7 +587,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -613,12 +614,13 @@ describe("createFMP4Segmenter", () => {
     assert.equal(onError.mock.calls.length, 0);
   });
 
-  test("cuts the second segment only once elapsed time reaches CONFIG.hls.segmentDuration, never before", () => {
+  test("cuts the second segment only once elapsed time reaches the segment duration it was constructed with, never before", () => {
 
     const clock = new TestClock(1700000000000);
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ clock, onError, onStop, streamId });
+    const { segmentDuration } = makeStreamSettings();
+    const segmenter = createFMP4Segmenter({ clock, onError, onStop, segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -642,7 +644,7 @@ describe("createFMP4Segmenter", () => {
 
     // Advance the injected clock to exactly the segment-duration boundary and feed the next fragment. This is the boundary case (elapsed === target) that a
     // flipped comparison (> instead of >=) would get wrong in either direction.
-    clock.advance(CONFIG.hls.segmentDuration * 1000);
+    clock.advance(segmentDuration * 1000);
 
     readable.write(makeMdat("m2"));
     readable.write(makeTestMoof());
@@ -655,7 +657,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -682,7 +684,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, pendingDiscontinuity: true, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, pendingDiscontinuity: true, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -710,7 +712,15 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { previousInitSegment: init, startingInitVersion: 5 }, onError, onStop, pendingDiscontinuity: true, streamId });
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { previousInitSegment: init, startingInitVersion: 5 },
+      onError,
+      onStop,
+      pendingDiscontinuity: true,
+      segmentDuration: makeStreamSettings().segmentDuration,
+      streamId
+    });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -743,7 +753,15 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { previousInitSegment, startingInitVersion: 5 }, onError, onStop, pendingDiscontinuity: true, streamId });
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { previousInitSegment, startingInitVersion: 5 },
+      onError,
+      onStop,
+      pendingDiscontinuity: true,
+      segmentDuration: makeStreamSettings().segmentDuration,
+      streamId
+    });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -764,7 +782,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -792,7 +810,7 @@ describe("createFMP4Segmenter", () => {
 
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -825,9 +843,11 @@ describe("createFMP4Segmenter", () => {
 
   test("markDiscontinuity flushes the pending fragment immediately and marks the next output segment with a discontinuity", () => {
 
+    const clock = new TestClock(1700000000000);
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ onError, onStop, streamId });
+    const { segmentDuration } = makeStreamSettings();
+    const segmenter = createFMP4Segmenter({ clock, onError, onStop, segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -842,20 +862,12 @@ describe("createFMP4Segmenter", () => {
     assert.equal(getSegmentCount(streamId), 1, "markDiscontinuity flushed the accumulated moof as its own segment");
     assert.equal(segmenter.getSegmentIndex(), 1);
 
-    const originalSegmentDuration = CONFIG.hls.segmentDuration;
+    // Advance the injected clock by the constructed duration, so the next moof satisfies the cut condition and the pending discontinuity armed by
+    // markDiscontinuity() above attaches to the segment it cuts.
+    clock.advance(segmentDuration * 1000);
 
-    CONFIG.hls.segmentDuration = 0;
-
-    try {
-
-      // With the target duration floored at zero, any nonnegative elapsed time satisfies the cut condition on the very next moof, letting the pending
-      // discontinuity armed by markDiscontinuity() above attach to this next segment without needing to manipulate the clock.
-      readable.write(makeMdat("a"));
-      readable.write(makeTestMoof());
-    } finally {
-
-      CONFIG.hls.segmentDuration = originalSegmentDuration;
-    }
+    readable.write(makeMdat("a"));
+    readable.write(makeTestMoof());
 
     assert.equal(segmenter.getSegmentIndex(), 2, "the pending fragment was cut into a second segment");
     assert.match(getPlaylist(streamId) ?? "", /#EXT-X-DISCONTINUITY/, "the segment following markDiscontinuity carries the discontinuity marker");
@@ -875,6 +887,7 @@ describe("createFMP4Segmenter", () => {
         tabReplacementCount: 1 } },
       onError,
       onStop,
+      segmentDuration: makeStreamSettings().segmentDuration,
       streamId
     });
 
@@ -896,6 +909,7 @@ describe("createFMP4Segmenter", () => {
       continuity: { initialTrackTimestamps: new Map<number, bigint>([[ 1, 90000n ]]), startingInitVersion: 3, startingSegmentIndex: 42 },
       onError,
       onStop,
+      segmentDuration: makeStreamSettings().segmentDuration,
       streamId
     });
 
@@ -910,7 +924,14 @@ describe("createFMP4Segmenter", () => {
     // the segmenter had reached at the instant of the call rather than at some earlier one.
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { startingInitVersion: 9, startingSegmentIndex: 17 }, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { startingInitVersion: 9, startingSegmentIndex: 17 },
+      onError,
+      onStop,
+      segmentDuration: makeStreamSettings().segmentDuration,
+      streamId
+    });
 
     const snapshot = segmenter.getContinuitySnapshot();
 
@@ -918,5 +939,98 @@ describe("createFMP4Segmenter", () => {
     assert.equal(snapshot.startingInitVersion, 9);
     assert.deepEqual(snapshot.priorSessionStats, segmenter.getSessionStats(), "the snapshot's statistics are the segmenter's own");
     assert.notEqual(snapshot.priorSessionStats, segmenter.getSessionStats(), "handed over as a copy, so a successor cannot mutate this segmenter's state");
+  });
+
+  test("a segmenter declares and cuts at the duration it was constructed with while the running configuration holds another", () => {
+
+    /* The negative control for the stream's settings. The running configuration is assigned a duration the segmenter was not constructed with, so a segmenter
+     * that read the configuration at its playlist or at its cut would declare a target duration of 4 and hold its second segment until 4 seconds elapsed.
+     * The fast-path first segment is the only entry in the window when the target is read, and its wall-clock duration floors at a tenth of a second, so the
+     * declared target is the floor the segmenter was given.
+     */
+    const clock = new TestClock(1700000000000);
+    const onError = mock.fn();
+    const onStop = mock.fn();
+    const { segmentDuration } = makeStreamSettings({ segmentDuration: 1 });
+    const originalSegmentDuration = CONFIG.hls.segmentDuration;
+
+    CONFIG.hls.segmentDuration = 4;
+
+    try {
+
+      const segmenter = createFMP4Segmenter({ clock, onError, onStop, segmentDuration, streamId });
+      const readable = new PassThrough();
+
+      segmenter.pipe(readable);
+
+      readable.write(makeFtyp());
+      readable.write(makeMoov());
+      readable.write(makeTestMoof());
+      readable.write(makeMdat("m0"));
+      readable.write(makeTestMoof());
+
+      assert.equal(segmenter.getSegmentIndex(), 1, "precondition: segment0 emitted via the fast path and is the window's only entry");
+      assert.match(getPlaylist(streamId) ?? "", /^#EXT-X-TARGETDURATION:1$/m, "the playlist declares the constructed duration, not the running configuration's");
+
+      readable.write(makeMdat("m1"));
+      clock.advance(segmentDuration * 1000);
+      readable.write(makeTestMoof());
+
+      assert.equal(segmenter.getSegmentIndex(), 2, "the second segment is cut once the constructed duration has elapsed, not the running configuration's");
+      assert.equal(onError.mock.calls.length, 0);
+    } finally {
+
+      CONFIG.hls.segmentDuration = originalSegmentDuration;
+    }
+  });
+
+  test("a continuing segmenter lists earlier stored segments it holds no measured duration for at the duration it was constructed with", () => {
+
+    /* A segmenter continuing at a starting index lists the stream's earlier segments, which live on the stream rather than the segmenter, and a segmenter with no
+     * measured duration for one lists it at its own segment duration. The running configuration holds another duration, so a segmenter that fell back to the
+     * configuration would list those segments at 7 seconds.
+     */
+    const onError = mock.fn();
+    const onStop = mock.fn();
+    const { segmentDuration } = makeStreamSettings({ segmentDuration: 3 });
+    const originalSegmentDuration = CONFIG.hls.segmentDuration;
+
+    for(const index of [ 0, 1, 2 ]) {
+
+      storeSegment(streamId, "segment" + String(index) + ".m4s", Buffer.from("earlier-" + String(index)));
+    }
+
+    CONFIG.hls.segmentDuration = 7;
+
+    try {
+
+      const segmenter = createFMP4Segmenter({ continuity: { startingSegmentIndex: 3 }, onError, onStop, segmentDuration, streamId });
+      const readable = new PassThrough();
+
+      segmenter.pipe(readable);
+
+      readable.write(makeFtyp());
+      readable.write(makeMoov());
+      readable.write(makeTestMoof());
+      readable.write(makeMdat("m3"));
+      readable.write(makeTestMoof());
+
+      const lines = (getPlaylist(streamId) ?? "").split("\n");
+
+      assert.equal(segmenter.getSegmentIndex(), 4, "precondition: the continuing segmenter produced its first segment at its starting index");
+
+      for(const index of [ 0, 1, 2 ]) {
+
+        const urlLine = lines.indexOf("segment" + String(index) + ".m4s");
+
+        assert.ok(urlLine > 0, "earlier segment " + String(index) + " is in the window");
+        assert.equal(lines[urlLine - 1], "#EXTINF:" + segmentDuration.toFixed(3) + ",", "earlier segment " + String(index) + " is listed at the constructed duration");
+      }
+
+      assert.equal(onError.mock.calls.length, 0);
+    } finally {
+
+      CONFIG.hls.segmentDuration = originalSegmentDuration;
+    }
   });
 });

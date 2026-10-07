@@ -20,6 +20,7 @@ import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createFMP4Segmenter } from "./fmp4Segmenter.ts";
 import { getSegment } from "./hlsSegments.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { offsetMoofTimestamps } from "./mp4Parser.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
@@ -246,7 +247,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // the unfixed full-map rewrite the video tfdt would be offset twice (3000 + 89000 + 89000 = 181000); the fix scopes the rewrite so it is offset once (92000).
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -284,7 +285,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // it.
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -316,7 +317,7 @@ describe("fMP4 segmenter per-track offset application", () => {
     // alone applies each stored offset once. The second moof's tfdts are the original values plus one offset each (3000 + 89000 = 92000, 800 + 47500 = 48300).
     const onError = mock.fn();
     const onStop = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, streamId });
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop, segmentDuration: makeStreamSettings().segmentDuration, streamId });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);
@@ -369,7 +370,14 @@ describe("fMP4 segmenter shared reference position", () => {
   async function firstSegmentTfdts(initialTrackTimestamps: Map<number, bigint>): Promise<Map<number, bigint>> {
 
     const onError = mock.fn();
-    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop: mock.fn(), streamId });
+    const segmenter = createFMP4Segmenter({
+
+      continuity: { initialTrackTimestamps },
+      onError,
+      onStop: mock.fn(),
+      segmentDuration: makeStreamSettings().segmentDuration,
+      streamId
+    });
     const readable = new PassThrough();
 
     segmenter.pipe(readable);

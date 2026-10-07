@@ -62,8 +62,8 @@ export interface PlaylistOptions {
   mediaSequence: number;
 
   // Floor value for #EXT-X-TARGETDURATION computation. The builder takes the maximum of this value and the maximum entry duration, then applies Math.ceil to produce
-  // the integer required by RFC 8216. When omitted, the builder computes purely from entry durations. The capture path passes CONFIG.hls.segmentDuration as the floor
-  // to avoid under-declaring when all segments are short.
+  // the integer required by RFC 8216. When omitted, the builder computes purely from entry durations. The capture path passes its stream's segment duration as the
+  // floor to avoid under-declaring when all segments are short.
   targetDuration?: number;
 
   // #EXT-X-VERSION value. 7 for fMP4 streams (requires EXT-X-MAP support), 3 for MPEG-TS streams.

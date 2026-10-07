@@ -18,6 +18,7 @@ import type { ManifestInterceptionResult } from "../browser/manifestInterceptor.
 import type { Nullable } from "../types/index.ts";
 import { declareKeysOf } from "../testing.helpers.ts";
 import { generateStreamId } from "./setup.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 /**
  * Compile-time-complete enumeration of every key in StreamRegistryEntry. Pair with assertSameShape in registry.helpers.test.ts to catch drift in either
@@ -43,6 +44,7 @@ export const STREAM_REGISTRY_ENTRY_KEYS = declareKeysOf<StreamRegistryEntry>()([
   "preTuned",
   "probeIdentity",
   "profile",
+  "settings",
   "startTime",
   "streamIdStr",
   "url"
@@ -81,8 +83,9 @@ export function makeNativeIdentity(overrides: Partial<NativeStreamIdentity> = {}
 
 /**
  * Constructs a StreamRegistryEntry with sensible defaults for tests. Defaults are deliberately neutral - empty/null/zero for every nullable field, a fresh
- * HLSState, a fresh id from getNextStreamId, a stable test URL, and the pending capture identity a real stream is born with. A test that wants native mode
- * overrides the identity whole, exactly as production does. Tests override the subset of fields their scenario cares about via the overrides parameter.
+ * HLSState, a fresh id from getNextStreamId, a stable test URL, the pending capture identity a real stream is born with, and the snapshot of the default
+ * settings. A test that wants native mode overrides the identity whole, exactly as production does. Tests override the subset of fields their scenario cares
+ * about via the overrides parameter.
  *
  * The id default comes from getNextStreamId() so registry-keyed assertions stay deterministic relative to the order of registry usage in a test file: every
  * call returns a unique id. Tests that need a specific id should set it explicitly via overrides.id.
@@ -115,6 +118,7 @@ export function makeRegistryEntry(overrides: Partial<StreamRegistryEntry> = {}):
     preTuned: false,
     probeIdentity: null,
     profile: null,
+    settings: makeStreamSettings(),
     startTime: Date.now(),
     streamIdStr,
     url,

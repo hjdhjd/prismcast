@@ -219,7 +219,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 10,
       min: 1,
       path: "hls.segmentDuration",
-      reactivity: "live",
+      reactivity: "next-stream",
       type: "integer",
       unit: "seconds"
     },
@@ -379,7 +379,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 30000,
       min: 500,
       path: "playback.monitorInterval",
-      reactivity: "live",
+      reactivity: "next-stream",
       type: "integer",
       unit: "ms"
     },
@@ -641,7 +641,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 512000,
       min: 32000,
       path: "streaming.audioBitsPerSecond",
-      reactivity: "live",
+      reactivity: "next-stream",
       type: "integer",
       unit: "bps"
     },
@@ -653,7 +653,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 60,
       min: 30,
       path: "streaming.frameRate",
-      reactivity: "live",
+      reactivity: "next-stream",
       type: "integer",
       unit: "fps"
     },
@@ -703,7 +703,7 @@ export const CONFIG_METADATA: Record<string, SettingMetadata[]> = {
       max: 50000000,
       min: 100000,
       path: "streaming.videoBitsPerSecond",
-      reactivity: "live",
+      reactivity: "next-stream",
       type: "integer",
       unit: "bps"
     },

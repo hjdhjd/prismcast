@@ -617,14 +617,14 @@ describe("deriveTinySegmentThresholdBytes", () => {
 
   test("a segment at 1000000 video and 256000 audio bits per second is undersized below 78500 bytes per second of its duration", () => {
 
-    // A configured video rate well under the leanest preset, where half the total sets the rate and scales with the segment like the cap does.
+    // A stream's video rate well under the leanest preset, where half the total sets the rate and scales with the segment like the cap does.
     assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 1000000 }), 78500);
     assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 2, videoBitsPerSecond: 1000000 }), 157000);
   });
 
   test("a one-second segment at a 4096000 bit-per-second total is undersized below 256000 bytes", () => {
 
-    // The break-even, where half the configured total meets the cap exactly.
+    // The break-even, where half the stream's total rate meets the cap exactly.
     assert.equal(deriveTinySegmentThresholdBytes({ audioBitsPerSecond: 256000, segmentDurationSeconds: 1, videoBitsPerSecond: 3840000 }), 256000);
   });
 

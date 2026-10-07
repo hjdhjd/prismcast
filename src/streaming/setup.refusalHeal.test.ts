@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -132,7 +133,8 @@ const deps: CreatePageWithCaptureDeps = {
  */
 function makeOptions(): Parameters<typeof createPageWithCapture>[0] {
 
-  return { profile: makeProfile({ staticCapture: true }), skipManifestInterception: true, streamId: "refusal-test", url: "https://static.example/page" };
+  return { profile: makeProfile({ staticCapture: true }), settings: makeStreamSettings(), skipManifestInterception: true, streamId: "refusal-test",
+    url: "https://static.example/page" };
 }
 
 /**

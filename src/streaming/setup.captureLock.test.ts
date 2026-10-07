@@ -14,6 +14,7 @@ import type { CreatePageWithCaptureDeps } from "./setup.ts";
 import assert from "node:assert/strict";
 import { createPageWithCapture } from "./setup.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // A minimal page that reports itself already closed. setBypassCSP and evaluateOnNewDocument are the only calls createPageWithCapture makes before the lock task, and
 // the task's first statement is the isClosed() check, so a true here routes straight to the typed closed-page throw without ever reaching the acquisition.
@@ -63,7 +64,8 @@ describe("createPageWithCapture - closed-page turn recursion", () => {
     const profile = makeProfile({ staticCapture: true });
 
     await assert.rejects(
-      createPageWithCapture({ profile, skipManifestInterception: true, streamId: "closed-test", url: "https://closed.example/live" }, deps),
+      createPageWithCapture({ profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "closed-test", url: "https://closed.example/live" },
+        deps),
       (error: unknown) => (error instanceof Error) && (error.message === "Browser crashed too many times during capture initialization."),
       "the closed-page recursion exhausts the retry cap and throws the terminal error"
     );

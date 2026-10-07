@@ -14,6 +14,7 @@ import type { CreatePageWithCaptureOptions, CreatePageWithCaptureResult } from "
 import type { FMP4SegmenterResult, SegmenterContinuity } from "./fmp4Segmenter.ts";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { getStream, makePendingCaptureIdentity, registerStream, unregisterStream } from "./registry.ts";
+import { CONFIG } from "../config/index.ts";
 import type { CaptureSession } from "./captureSession.ts";
 import type { Nullable } from "../types/index.ts";
 import type { Page } from "puppeteer-core";
@@ -24,6 +25,8 @@ import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createTabReplacementHandler } from "./hls.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
 import { makeRegistryEntry } from "./registry.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
+import { snapshotStreamSettings } from "../config/streamSettings.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -174,7 +177,7 @@ function makeHandler(establish: TabReplacementDeps["createPageWithCapture"],
     unregisterManagedPage: (page: Page): void => { unregistered.push(page); }
   };
 
-  return createTabReplacementHandler(entry.id, "tab-test", "tab-test-channel", "https://replacement.test/watch", makeProfile(), undefined, onCircuitBreak, deps);
+  return createTabReplacementHandler(entry.id, "tab-test", "https://replacement.test/watch", makeProfile(), undefined, onCircuitBreak, deps);
 }
 
 /**
@@ -243,6 +246,40 @@ describe("createTabReplacementHandler: the replacement builds before it tears do
     assert.equal((identity as { captureSession: unknown }).captureSession, establishment.newSession, "the entry points at the new pipeline");
     assert.equal(identity.captureCodec, "HEVC", "a replacement changes the page, not the codec decision");
     assert.equal((identity as { hardwareAccelerated: boolean }).hardwareAccelerated, true, "nor the acceleration fact");
+  });
+
+  test("the replacement capture is established at the entry's settings, not the running configuration's", async () => {
+
+    /* A tab replacement establishes a fresh capture for a stream that is already running, so its bitrates and frame rate must be the ones the stream started
+     * with. The entry here carries settings apart from the running configuration, so an establishment handed a fresh copy of the configuration, or the
+     * configuration's own values, differs from what the stream registered with.
+     */
+    const settings = makeStreamSettings({ audioBitsPerSecond: 96000, frameRate: 50, monitorInterval: 1500, segmentDuration: 3, videoBitsPerSecond: 4000000 });
+
+    unregisterStream(entry.id);
+    entry = makeRegistryEntry({
+
+      identity: { ...makePendingCaptureIdentity(), captureCodec: "HEVC", captureSession: oldSession, hardwareAccelerated: true },
+      page: oldPage.page,
+      settings
+    });
+    registerStream(entry);
+
+    assert.notDeepEqual(settings, snapshotStreamSettings(CONFIG), "precondition: the entry's settings are apart from the running configuration");
+
+    const establishment = makeEstablishment();
+    const received: CreatePageWithCaptureOptions[] = [];
+    const handler = makeHandler(async (options: CreatePageWithCaptureOptions): Promise<CreatePageWithCaptureResult> => {
+
+      received.push(options);
+
+      return establishment.result;
+    });
+
+    await handler();
+
+    assert.equal(received.length, 1, "precondition: the replacement established exactly once");
+    assert.equal(received[0]?.settings, entry.settings, "the establishment receives the entry's settings object itself");
   });
 
   test("the continuity seeding the new segmenter is read at the swap, not at the start", async () => {

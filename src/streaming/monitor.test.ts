@@ -32,13 +32,15 @@ import { TestClock } from "homebridge-plugin-utils/testing";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
 
-// The cadence the monitor ticks at. Read from configuration rather than hard-coded, so an assertion that depends on the cadence steps in true intervals.
-const MONITOR_INTERVAL = CONFIG.playback.monitorInterval;
+// The cadence the monitor ticks at: the interval of the settings startMonitor hands every monitor, read from them rather than hard-coded, so an assertion that
+// depends on the cadence steps in true intervals.
+const MONITOR_INTERVAL = makeStreamSettings().monitorInterval;
 
 // The evaluate wrapper's default bound, which is what detects a hung tab on the first read of a streak.
 const DEFAULT_EVALUATE_TIMEOUT = 15000;
@@ -170,6 +172,7 @@ function startMonitor(page: ReturnType<typeof makeFakePage>["page"], streamId: s
     channelName: "Monitor Test",
     numericStreamId,
     serviceName: "monitor-test",
+    settings: makeStreamSettings(),
     startTime: clock.now()
   }, options.onCircuitBreak ?? ((): void => { /* The circuit-break callback is not what these assertions exercise. */ }), options.onTabReplacement,
   options.deps ?? makeHealthyDeps(clock));

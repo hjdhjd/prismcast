@@ -2,7 +2,8 @@
  *
  * setup.staticCapture.test.ts: Unit tests asserting contracts of createPageWithCapture: that it launches a bounded staticCapture overlay poll for static-capture
  * profiles and only for those; that it brings the browser window on screen, emulates the capture surface, and installs the activation heal before it acquires
- * capture, re-affirming that surface once acquisition has selected the tab; and that the capture it acquires is held to the configured frame rate on both bounds.
+ * capture, re-affirming that surface once acquisition has selected the tab; and that the capture it acquires runs at the stream's settings, its bitrates and its
+ * frame rate on both bounds, whatever the running configuration holds.
  * createPageWithCapture composes on the browser boundary through its CreatePageWithCaptureDeps collaborators, so the test drives it with a stub browser (no Chrome
  * launch), a recording acquisition answering with a PassThrough capture stream (no puppeteer-stream), a recording overlay poll, a recording window sync, a
  * recording surface emulation, and recording surface re-affirmation steps, while the real pipeline runs everything else. The stub page is shaped so the static
@@ -23,6 +24,7 @@ import assert from "node:assert/strict";
 import { closePuppeteerStreamWssOnIdle } from "../testing.helpers.ts";
 import { createPageWithCapture } from "./setup.ts";
 import { makeProfile } from "../config/profiles.helpers.ts";
+import { makeStreamSettings } from "../config/streamSettings.helpers.ts";
 
 // Schedule background-server cleanup on a 0ms unref'd timer that fires when the suite resolves so the runner can exit cleanly.
 closePuppeteerStreamWssOnIdle();
@@ -168,7 +170,7 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     const profile = makeProfile({ staticCapture: true });
 
     const result = await createPageWithCapture(
-      { profile, skipManifestInterception: true, streamId: "static-test", url: "https://static.example/page" }, deps);
+      { profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "static-test", url: "https://static.example/page" }, deps);
 
     // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
     result.captureSession.dispose();
@@ -191,8 +193,8 @@ describe("createPageWithCapture - static-capture overlay poll", () => {
     // unconditionally rather than gated on profile.staticCapture, this run would record a staticCapture call regardless.
     const profile = makeProfile({ staticCapture: false });
 
-    await assert.rejects(createPageWithCapture({ profile, skipManifestInterception: true, streamId: "tune-test", url: "https://tune.example/live" },
-      deps), "the tune path fails against the stub page rather than reaching a static poll");
+    await assert.rejects(createPageWithCapture({ profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "tune-test",
+      url: "https://tune.example/live" }, deps), "the tune path fails against the stub page rather than reaching a static poll");
 
     assert.equal(overlayCalls.filter((call) => call.phase === "staticCapture").length, 0, "no staticCapture poll runs for a non-static profile");
   });
@@ -216,7 +218,7 @@ describe("createPageWithCapture - window visibility ordering", () => {
     const profile = makeProfile({ staticCapture: true });
 
     const result = await createPageWithCapture(
-      { profile, skipManifestInterception: true, streamId: "order-test", url: "https://static.example/page" }, deps);
+      { profile, settings: makeStreamSettings(), skipManifestInterception: true, streamId: "order-test", url: "https://static.example/page" }, deps);
 
     // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
     result.captureSession.dispose();
@@ -238,22 +240,24 @@ describe("createPageWithCapture - window visibility ordering", () => {
   });
 });
 
-describe("createPageWithCapture - capture frame rate", () => {
+describe("createPageWithCapture - the stream's capture settings", () => {
 
-  test("holds the capture track to the configured frame rate on both bounds", async () => {
+  test("holds the capture track to the stream's frame rate on both bounds", async () => {
 
-    /* Both frame-rate bounds read the configured rate, so the track is held to that rate rather than to a band around it. The row configures 30 because a
-     * constraint reading the setting on one bound only would hand acquisition a 30 floor under a higher ceiling, and tab capture would deliver the ceiling. The
-     * bounds are read from the options acquisition itself received, while the configured rate is still in place.
+    /* Both frame-rate bounds hold the stream's rate, so the track is held to that rate rather than to a band around it. The row's stream runs at 30 because a
+     * constraint holding the rate on one bound only would hand acquisition a 30 floor under a higher ceiling, and tab capture would deliver the ceiling. The
+     * running configuration is assigned another rate as the negative control, so a bound that read the configuration differs from the stream's. The bounds are
+     * read from the options acquisition itself received.
      */
+    const settings = makeStreamSettings({ frameRate: 30 });
     const originalFrameRate = CONFIG.streaming.frameRate;
 
-    CONFIG.streaming.frameRate = 30;
+    CONFIG.streaming.frameRate = 60;
 
     try {
 
-      const result = await createPageWithCapture(
-        { profile: makeProfile({ staticCapture: true }), skipManifestInterception: true, streamId: "frame-rate-test", url: "https://static.example/page" }, deps);
+      const result = await createPageWithCapture({ profile: makeProfile({ staticCapture: true }), settings, skipManifestInterception: true, streamId: "frame-rate-test",
+        url: "https://static.example/page" }, deps);
 
       // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
       result.captureSession.dispose();
@@ -262,11 +266,46 @@ describe("createPageWithCapture - capture frame rate", () => {
 
       assert.equal(acquiredOptions.length, 1, "exactly one capture acquisition");
       assert.ok(constraints, "the acquisition received its constraints");
-      assert.equal(constraints.maxFrameRate, CONFIG.streaming.frameRate, "the frame-rate ceiling is the configured rate");
-      assert.equal(constraints.minFrameRate, constraints.maxFrameRate, "and the floor is that same rate");
+      assert.equal(constraints.maxFrameRate, settings.frameRate, "the frame-rate ceiling is the stream's rate");
+      assert.equal(constraints.minFrameRate, settings.frameRate, "and the floor is that same rate");
     } finally {
 
       CONFIG.streaming.frameRate = originalFrameRate;
+    }
+  });
+
+  test("carries the stream's bitrates and frame rate into the capture options while the running configuration holds other values", async () => {
+
+    /* A tab replacement establishes a capture for a stream that is already running, so every rate the capture is acquired at is the stream's own. The running
+     * configuration is assigned values apart from the stream's as the negative control, so an option that read the configuration differs from the stream's.
+     */
+    const settings = makeStreamSettings({ audioBitsPerSecond: 96000, frameRate: 50, videoBitsPerSecond: 3000000 });
+    const original = { audio: CONFIG.streaming.audioBitsPerSecond, frameRate: CONFIG.streaming.frameRate, video: CONFIG.streaming.videoBitsPerSecond };
+
+    CONFIG.streaming.audioBitsPerSecond = 192000;
+    CONFIG.streaming.frameRate = 30;
+    CONFIG.streaming.videoBitsPerSecond = 6000000;
+
+    try {
+
+      const result = await createPageWithCapture({ profile: makeProfile({ staticCapture: true }), settings, skipManifestInterception: true, streamId: "rates-test",
+        url: "https://static.example/page" }, deps);
+
+      // Release the capture session the successful call transferred to us so its PassThrough does not linger past the test.
+      result.captureSession.dispose();
+
+      const options = acquiredOptions[0];
+
+      assert.ok(options, "the acquisition received its options");
+      assert.equal(options.audioBitsPerSecond, settings.audioBitsPerSecond, "the audio bitrate is the stream's");
+      assert.equal(options.videoBitsPerSecond, settings.videoBitsPerSecond, "the video bitrate is the stream's");
+      assert.equal(options.videoConstraints.mandatory.maxFrameRate, settings.frameRate, "the frame-rate ceiling is the stream's");
+      assert.equal(options.videoConstraints.mandatory.minFrameRate, settings.frameRate, "and so is the floor");
+    } finally {
+
+      CONFIG.streaming.audioBitsPerSecond = original.audio;
+      CONFIG.streaming.frameRate = original.frameRate;
+      CONFIG.streaming.videoBitsPerSecond = original.video;
     }
   });
 });

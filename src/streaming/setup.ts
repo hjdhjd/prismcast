@@ -26,12 +26,12 @@ import type { FFmpegProcess } from "../utils/index.ts";
 import type { InitializePlaybackOptions } from "../browser/video.ts";
 import type { MonitorStreamInfo } from "./monitor.ts";
 import type { ProbeCacheIdentity } from "../native/probe.ts";
+import type { StreamSettings } from "../config/streamSettings.ts";
 import { createCaptureSession } from "./captureSession.ts";
 import { getBuiltinProfile } from "../config/sites.ts";
 import { getCachedEncryption } from "../native/probe.ts";
 import { getCaptureMimeType } from "./codec.ts";
 import { getDomainAuthState } from "../config/health.ts";
-import { getNextStreamId } from "./registry.ts";
 import { getUserProfiles } from "../config/userProfiles.ts";
 import { isCaptureInfrastructureError } from "./recovery.ts";
 import { monitorPlaybackHealth } from "./monitor.ts";
@@ -186,7 +186,7 @@ setCaptureProbe(verifyCaptureSystem);
 // Types.
 
 /**
- * Factory function type for creating tab replacement handlers. Called by setupStream after generating stream IDs and resolving the profile, allowing the caller to
+ * Factory function type for creating tab replacement handlers. Called by setupStream with the stream's ids once it has resolved the profile, allowing the caller to
  * create a handler with access to all necessary context.
  */
 export type TabReplacementHandlerFactory = (
@@ -217,12 +217,11 @@ export interface StreamSetupOptions {
   // Whether to click an element to start playback. Only used for ad-hoc streams. For predefined channels, this comes from the profile definition.
   clickToPlay?: boolean;
 
-  // Pre-allocated numeric stream ID from a pending registry entry. When provided, setupStream uses this instead of allocating a new ID. This ensures the abort
-  // controller, health monitor, and other internal state reference the same ID as the pending entry in the stream registry.
-  numericStreamId?: number;
+  // The pending registry entry's numeric id, so the abort controller, health monitor, and other internal state reference the stream the registry holds.
+  numericStreamId: number;
 
-  // Factory function to create a tab replacement handler. Called after stream IDs are generated so the handler has access to them. If not provided, tab replacement
-  // recovery is disabled.
+  // Factory function to create a tab replacement handler. Called with the stream's ids once the profile is resolved, so the handler holds the ids and the
+  // profile. If not provided, tab replacement recovery is disabled.
   onTabReplacementFactory?: TabReplacementHandlerFactory;
 
   // The probe-cache identity this stream resolves under, built by completeStreamSetup - the one caller holding both the true per-stream key and the binding it
@@ -232,12 +231,17 @@ export interface StreamSetupOptions {
   // Override the autodetected profile with a specific profile name.
   profileOverride?: string;
 
+  // The stream's settings, which its captures and its health monitor read for the stream's whole life.
+  settings: StreamSettings;
+
+  // The stream's start instant, the epoch millisecond instant its registry entry was created, which the health monitor's status reports from.
+  startTime: number;
+
   // Whether to treat this as a static page capture (no video element detection or playback monitoring).
   staticCapture?: boolean;
 
-  // Pre-allocated string stream ID from a pending registry entry. When provided, setupStream uses this instead of generating a new one. Must be provided together
-  // with numericStreamId to maintain ID consistency.
-  streamId?: string;
+  // The pending registry entry's string id, for log correlation.
+  streamId: string;
 
   // The URL to stream. Required.
   url: string;
@@ -284,10 +288,6 @@ export interface StreamSetupResult {
 
   // Friendly service display name derived from the URL domain via DOMAIN_CONFIG (e.g., "Hulu" for hulu.com). Used for SSE status display.
   serviceName: string;
-
-  // The epoch millisecond instant the stream started, and the basis for the uptime and duration the status and the logs report. The ISO form is produced where the
-  // value leaves the process.
-  startTime: number;
 
   // The playback health monitor handle. Exposes the live recovery metrics (read in the termination prologue) and a self-contained dispose that stops the monitor.
   monitor: MonitorHandle;
@@ -364,6 +364,10 @@ export interface CreatePageWithCaptureOptions {
 
   // The resolved site profile for video handling.
   profile: ResolvedSiteProfile;
+
+  // The stream's settings. The capture's bitrates, its frame-rate bounds, and the FFmpeg audio rate read them, so every capture a stream establishes, its tab
+  // replacements included, runs at the values the stream started with.
+  settings: StreamSettings;
 
   // When true, the direct watch URL is not resolved at all and the establishment navigates to the guide URL. Set by setupStream's guide fallback, whose whole
   // purpose is to take the path a resolved URL would have bypassed. Skipping the resolver rather than discarding its answer is what makes a second
@@ -595,7 +599,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
   deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<CreatePageWithCaptureResult> {
 
   const captureElapsed = startTimer();
-  const { comment, onFFmpegError, profile, streamId, url } = options;
+  const { comment, onFFmpegError, profile, settings, streamId, url } = options;
 
   /* Bring the window on screen before anything else. Capture reads the compositor's output for the shared window, and that output is only composed correctly for a
    * window the desktop is presenting, so the sync has to land ahead of capture acquisition rather than alongside it. The pending registry entry is already in
@@ -658,27 +662,27 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
     const streamOptions: CaptureStreamOptions = {
 
       audio: true,
-      audioBitsPerSecond: CONFIG.streaming.audioBitsPerSecond,
+      audioBitsPerSecond: settings.audioBitsPerSecond,
       mimeType: captureMimeType,
       video: true,
-      videoBitsPerSecond: CONFIG.streaming.videoBitsPerSecond,
+      videoBitsPerSecond: settings.videoBitsPerSecond,
 
       /* The dimension bounds hold the track to exactly the surface emulateCaptureSurface declared on this page, rather than to a second read of the configured
        * preset, so a preset saved mid-establishment cannot leave the encoder constrained to dimensions the page was never emulated at.
        *
-       * Both frame-rate bounds read the configured rate, so the track is held to exactly the rate the user chose. The configuration load keeps that rate inside the
-       * range the setting's metadata declares, 60 being the live-TV ceiling and 30 the floor below which motion judders. The readiness probe (attemptCaptureProbe)
-       * instead holds both bounds to a flat 30 because its acquisition fails or succeeds at the tabCapture API level before encoding matters, so a
-       * representative-but-minimal constraint set suffices there.
+       * Both frame-rate bounds hold the stream's frame rate, so the track is held to exactly the rate the stream started with, on its first capture and on every
+       * tab replacement alike. The configuration load keeps that rate inside the range the setting's metadata declares, 60 being the live-TV ceiling and 30 the
+       * floor below which motion judders. The readiness probe (attemptCaptureProbe) instead holds both bounds to a flat 30 because its acquisition fails or
+       * succeeds at the tabCapture API level before encoding matters, so a representative-but-minimal constraint set suffices there.
        */
       videoConstraints: {
 
         mandatory: {
 
-          maxFrameRate: CONFIG.streaming.frameRate,
+          maxFrameRate: settings.frameRate,
           maxHeight: surface.height,
           maxWidth: surface.width,
-          minFrameRate: CONFIG.streaming.frameRate,
+          minFrameRate: settings.frameRate,
           minHeight: surface.height,
           minWidth: surface.width
         }
@@ -735,7 +739,7 @@ export async function createPageWithCapture(options: CreatePageWithCaptureOption
 
     if(useFFmpeg) {
 
-      const ffmpeg = deps.spawnFFmpeg(ffmpegBin, CONFIG.streaming.audioBitsPerSecond, (error) => {
+      const ffmpeg = deps.spawnFFmpeg(ffmpegBin, settings.audioBitsPerSecond, (error) => {
 
         LOG.error("FFmpeg process error: %s.", formatError(error));
 
@@ -1243,15 +1247,12 @@ export async function adjudicateChannelSelection(handle: ManifestInterceptorHand
 export async function setupStream(options: StreamSetupOptions, onCircuitBreak: () => void,
   deps: CreatePageWithCaptureDeps = defaultCreatePageWithCaptureDeps): Promise<StreamSetupResult> {
 
-  const { channel, channelName, channelSelector, clickSelector, clickToPlay, onTabReplacementFactory, probeIdentity, profileOverride, staticCapture,
-    url } = options;
+  const { channel, channelName, channelSelector, clickSelector, clickToPlay, numericStreamId, onTabReplacementFactory, probeIdentity, profileOverride, settings,
+    staticCapture, streamId, url } = options;
 
-  // Use pre-allocated IDs from a pending registry entry when available, or generate new ones. Pre-allocated IDs ensure the abort controller, health monitor, and
-  // tab replacement handler all reference the same stream identity as the pending entry in the registry.
-  const streamId = options.streamId ?? generateStreamId(channelName, url);
-  const numericStreamId = options.numericStreamId ?? getNextStreamId();
-  // Stream setup is a composition point - it builds the capture lock, the health monitor, and the page - so it reads the system clock at its own boundary.
-  const startTime = systemClock.now();
+  // The stream's start instant is its registry entry's, taken at registration, so the health monitor's status and the tune-time line report the one instant the
+  // registry holds.
+  const { startTime } = options;
 
   // Create and register the AbortController for this stream. This allows pending evaluate calls to be cancelled immediately when the stream is terminated.
   const abortController = new AbortController();
@@ -1393,6 +1394,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
         onFFmpegError: onCircuitBreak,
         persistResolution,
         profile,
+        settings,
         skipManifestInterception: skipInterception,
         streamId,
         url
@@ -1517,6 +1519,7 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       numericStreamId,
       serviceName,
       serviceTag: getDomainConfig(url)?.serviceTag,
+      settings,
       startTime
     };
 
@@ -1565,7 +1568,6 @@ export async function setupStream(options: StreamSetupOptions, onCircuitBreak: (
       profile,
       profileName,
       serviceName,
-      startTime,
       streamId,
       url
     };
