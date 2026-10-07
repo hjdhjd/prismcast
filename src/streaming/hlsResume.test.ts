@@ -3,21 +3,100 @@
  * hlsResume.test.ts: Unit tests for HLS sequence resume across PrismCast restarts. hlsResume.ts persists final media-sequence numbers and per-track timestamps to
  * disk during shutdown, then loads them at the next startup so HLS playlists continue advancing forward instead of resetting to 0. The TTL guard discards entries
  * older than 90 seconds so stale resume state does not poison a fresh recording. The tests exercise the file round-trip, TTL discard, peek/delete consume contract,
- * and the merge-with-active-streams path used by saveResumeState.
+ * the merge-with-active-streams path used by saveResumeState, and the resume line's figure, measured from persisted counters over a persisted init segment.
  */
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { deleteResumeData, getResumeSegmentIndex, loadResumeState, peekResumeData, saveResumeState } from "./hlsResume.ts";
+import { deleteResumeData, getResumeSegmentIndex, loadResumeState, logStreamResume, peekResumeData, saveResumeState } from "./hlsResume.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import { LOG } from "../utils/index.ts";
+import type { Nullable } from "../types/index.ts";
+import type { ResumeData } from "./hlsResume.ts";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { format } from "node:util";
 import { initializeDataDir } from "../config/paths.ts";
 import os from "node:os";
 import path from "node:path";
 
 // The reference instant every row in this file counts from, so a row's expected timestamps read as offsets rather than absolute epochs.
 const BASE_TIME_MS = 1700000000000;
+
+/* makeBox builds a minimal MP4 box: 4-byte size + 4-byte type + payload. The size includes the 8-byte header. A file-local copy of the same minimal builder
+ * used by mp4Parser.moov.test.ts, per the convention that each mp4Parser.*.test.ts (and this file) defines its own copy rather than sharing one.
+ */
+function makeBox(type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
+
+  const size = 8 + payload.length;
+  const buf = Buffer.alloc(size);
+
+  buf.writeUInt32BE(size, 0);
+  buf.write(type, 4, 4, "ascii");
+  payload.copy(buf, 8);
+
+  return buf;
+}
+
+/* makeTrak builds one complete version-0 track: a tkhd carrying the track_ID at byte 20, and an mdia holding an mdhd with the timescale at byte 20 and an hdlr
+ * with the handler type at byte 16 - the offsets parseMoovTrackInfo reads.
+ */
+function makeTrak(options: { handlerType: string; timescale: number; trackId: number }): Buffer {
+
+  const tkhd = Buffer.alloc(16);
+  const mdhd = Buffer.alloc(16);
+  const hdlr = Buffer.alloc(12);
+
+  tkhd.writeUInt32BE(options.trackId, 12);
+  mdhd.writeUInt32BE(options.timescale, 12);
+  hdlr.write(options.handlerType, 8, 4, "ascii");
+
+  return makeBox("trak", Buffer.concat([ makeBox("tkhd", tkhd), makeBox("mdia", Buffer.concat([ makeBox("mdhd", mdhd), makeBox("hdlr", hdlr) ])) ]));
+}
+
+// The tracks every figure row declares: a video track at 90000 and an audio track at 48000, the timescales a capture's moov carries.
+const VIDEO_TRAK = makeTrak({ handlerType: "vide", timescale: 90000, trackId: 1 });
+const AUDIO_TRAK = makeTrak({ handlerType: "soun", timescale: 48000, trackId: 2 });
+
+/* An init segment, the ftyp followed by the moov the given tracks make up. The counters the figure rows pair with it put the video track at 120.5 seconds and
+ * the audio track at 126.5, deliberately fractional: their mean, 123.5, rounds to 2m 4s, and a conversion that truncates a track's seconds or floors the mean
+ * reads 2m 3s, while the largest track, the smallest, the largest raw counter, one timescale for every track, the sum, and any track alone each read another
+ * figure.
+ */
+function makeInitSegment(...traks: Buffer[]): Buffer {
+
+  return Buffer.concat([ makeBox("ftyp", Buffer.from("isom")), makeBox("moov", Buffer.concat(traks)) ]);
+}
+
+/**
+ * Builds the resume data a figure row hands logStreamResume.
+ * @param initSegment - The persisted init segment, or null.
+ * @param trackTimestamps - The persisted counters, in the order the row inserts them.
+ * @returns The resume data.
+ */
+function makeResumeData(initSegment: Nullable<Buffer>, trackTimestamps: [ number, bigint ][]): ResumeData {
+
+  return { initSegment, initVersion: 1, segmentIndex: 10, trackTimestamps: new Map(trackTimestamps) };
+}
+
+/**
+ * Logs a resume for the stream named Channel and returns every info line it produced, formatted as the logger renders it.
+ * @param t - The test context the info logger is mocked through.
+ * @param resumeData - The resume data to log.
+ * @returns The rendered info lines.
+ */
+function captureResumeLines(t: TestContext, resumeData: ResumeData): string[] {
+
+  const lines: string[] = [];
+
+  t.mock.method(LOG, "info", (message: string, ...args: unknown[]): void => {
+
+    lines.push(format(message, ...args));
+  });
+
+  logStreamResume({ displayName: "Channel", resumeData });
+
+  return lines;
+}
 
 /**
  * Shape of a single channel's persisted resume entry. Mirrors ResumeEntryJSON in the production module; we keep a local copy so tests do not import a private
@@ -241,6 +320,29 @@ describe("peekResumeData", () => {
     assertEqual(data.trackTimestamps.get(1), 1000n, "track timestamps deserialized to bigint");
   });
 
+  test("returns the data of an entry loaded inside the TTL and logs no Resuming line, the announcement being the caller's", async (t: TestContext) => {
+
+    const infos: string[] = [];
+
+    await makeResumeFile(tempDir, {
+
+      quiet: { initVersion: 2, segmentIndex: 30, timestamp: BASE_TIME_MS, trackTimestamps: { 1: "10845000" } }
+    });
+
+    loadResumeState(BASE_TIME_MS);
+
+    t.mock.method(LOG, "info", (message: string): void => {
+
+      infos.push(message);
+    });
+
+    const data = peekResumeData("quiet", BASE_TIME_MS);
+
+    assert(data, "precondition: the peek returned the entry, so a line it logged would have fired");
+    assertEqual(data.segmentIndex, 30);
+    assert.deepEqual(infos.filter((message) => message.startsWith("Resuming")), [], "the peek logs no Resuming line");
+  });
+
   test("returns null for unknown channels", () => {
 
     assertEqual(peekResumeData("unknown-channel", BASE_TIME_MS), null);
@@ -280,6 +382,68 @@ describe("peekResumeData", () => {
     assert(first);
     assert(second);
     assertEqual(first.segmentIndex, second.segmentIndex, "same segment index across peeks");
+  });
+});
+
+describe("logStreamResume", () => {
+
+  // The line a resume whose counters and init segment measure a figure logs: the mean of the video track's 120.5 seconds and the audio track's 126.5.
+  const FIGURE_LINE = "Resuming stream for Channel from previous session (2m 4s of prior content).";
+
+  // The line a resume whose data measures nothing logs: the same sentence without the parenthetical.
+  const BARE_LINE = "Resuming stream for Channel from previous session.";
+
+  test("logs the position the persisted counters reached over the persisted init segment's timescales, once, at info", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(makeInitSegment(VIDEO_TRAK, AUDIO_TRAK), [ [ 1, 10845000n ], [ 2, 6072000n ] ]));
+
+    assert.deepEqual(lines, [FIGURE_LINE]);
+  });
+
+  test("logs the same figure with the counters inserted in the other order", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(makeInitSegment(VIDEO_TRAK, AUDIO_TRAK), [ [ 2, 6072000n ], [ 1, 10845000n ] ]));
+
+    assert.deepEqual(lines, [FIGURE_LINE]);
+  });
+
+  test("logs the bare line for a null init segment", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(null, [ [ 1, 10845000n ], [ 2, 6072000n ] ]));
+
+    assert.deepEqual(lines, [BARE_LINE]);
+  });
+
+  test("logs the bare line for counters whose track ids the moov does not declare", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(makeInitSegment(VIDEO_TRAK, AUDIO_TRAK), [ [ 3, 10845000n ], [ 4, 6072000n ] ]));
+
+    assert.deepEqual(lines, [BARE_LINE]);
+  });
+
+  test("logs the bare line for empty counters", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(makeInitSegment(VIDEO_TRAK, AUDIO_TRAK), []));
+
+    assert.deepEqual(lines, [BARE_LINE]);
+  });
+
+  test("logs the bare line for an init segment that carries no moov", (t: TestContext) => {
+
+    const lines = captureResumeLines(t, makeResumeData(makeBox("ftyp", Buffer.from("isom")), [ [ 1, 10845000n ], [ 2, 6072000n ] ]));
+
+    assert.deepEqual(lines, [BARE_LINE]);
+  });
+
+  test("logs the bare line for a moov rebuilt around a first track cut ten bytes short, rather than throwing", (t: TestContext) => {
+
+    /* The moov's declared size matches the bytes it holds, so the box parser emits it and the walk reaches the truncated track, whose own declared size runs
+     * past its buffer. An init segment cut short inside the moov instead never emits the box at all, because the parser holds an incomplete box and discards
+     * it at flush - the no-moov row's case, not this one.
+     */
+    const lines = captureResumeLines(t, makeResumeData(makeInitSegment(VIDEO_TRAK.subarray(0, VIDEO_TRAK.length - 10)), [ [ 1, 10845000n ], [ 2, 6072000n ] ]));
+
+    assert.deepEqual(lines, [BARE_LINE]);
   });
 });
 
@@ -421,7 +585,7 @@ describe("saveResumeState", () => {
     // Boundary: empty input AND empty in-memory map -> no file. We first clear any in-memory state that prior tests in the suite may have left behind by issuing
     // deleteResumeData for every channel name those tests touched. Sibling tests cover the merge-with-carryforward path in isolation; this case is specifically
     // about the "nothing to save" branch.
-    for(const key of [ "alpha", "bar", "boundary", "cnn", "espn", "expired", "foo", "fresh", "gone", "maybe", "ok", "same", "stale" ]) {
+    for(const key of [ "alpha", "bar", "boundary", "cnn", "espn", "expired", "foo", "fresh", "gone", "maybe", "ok", "quiet", "same", "stale" ]) {
 
       deleteResumeData(key);
     }

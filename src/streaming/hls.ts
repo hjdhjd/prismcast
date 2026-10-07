@@ -12,7 +12,7 @@ import { applyNativeQualityRefresh, cancelPrerollTimer, createHLSState, getAllSt
   makePendingCaptureIdentity, registerStream, updateLastAccess } from "./registry.ts";
 import { buildProbeCacheStamp, clearProbeCache } from "../native/probe.ts";
 import { createInitialStreamStatus, emitStreamAdded } from "./statusEmitter.ts";
-import { deleteResumeData, getResumeSegmentIndex, peekResumeData } from "./hlsResume.ts";
+import { deleteResumeData, getResumeSegmentIndex, logStreamResume, peekResumeData } from "./hlsResume.ts";
 import { emitCurrentSystemStatus, isLoginModeActive, syncWindowVisibility, unregisterManagedPage } from "../browser/index.ts";
 import { generatePrerollPlaylist, getPrerollCodec, getPrerollSegmentCount, isPrerollReady } from "./preroll.ts";
 import { getAllChannels, getChannelLogo, isPredefinedChannelDisabled } from "../config/userChannels.ts";
@@ -1554,6 +1554,12 @@ function createCaptureSegmenter(setup: StreamSetupResult, numericStreamId: numbe
   const resumeData = peekResumeData(channelName, now);
   const currentStream = getStream(numericStreamId);
   const prerollSegmentCount = currentStream?.hls.prerollSegmentCount ?? 0;
+
+  // Announce the resume once per resumed capture stream, before the segmenter is built, so a stream terminated mid-setup still reports the session it resumed.
+  if(resumeData) {
+
+    logStreamResume({ displayName: currentStream?.channelName ?? channelName, resumeData });
+  }
 
   // When preroll is active, use the snapshotted resume index (stored on HLS state at registration) so the segmenter's starting index is guaranteed to match
   // the preroll playlist's MEDIA-SEQUENCE offset. When preroll is inactive, use the resume data directly - no preroll playlist to be consistent with.

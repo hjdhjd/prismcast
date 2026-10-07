@@ -3,7 +3,7 @@
  * fmp4Segmenter.ts: fMP4 HLS segmentation for PrismCast.
  */
 import { buildPrerollEntries, computePrerollWindow, getPrerollTotalDurationSec } from "./preroll.ts";
-import { createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
+import { computeTimelinePosition, createMP4BoxParser, detectMoofKeyframe, offsetMoofTimestamps, parseMoovCodecConfig, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { getSegmentCount, storeInitSegment, storeSegment, updatePlaylist } from "./hlsSegments.ts";
 import { CONFIG } from "../config/index.ts";
 import type { CaptureCodec } from "./codec.ts";
@@ -162,11 +162,12 @@ export interface FMP4SegmenterResult {
   // it splices the new pipeline in, because the index, the timestamps, and the session statistics all advance live while the replacement page is being tuned.
   getContinuitySnapshot: () => SegmenterContinuity;
 
-  // Returns the combined init segment (ftyp + moov) buffer, or null if the init segment has not been received yet. Used by tab replacement to pass the previous
-  // init segment to the new segmenter for byte comparison.
+  // Returns the combined init segment (ftyp + moov) buffer, or null if the init segment has not been received yet. Used by the shutdown handler, which persists it
+  // with the resume state so the resumed segmenter can compare its own init segment against it byte for byte.
   getInitSegment: () => Nullable<Buffer>;
 
-  // Returns the current init version counter. Used by tab replacement to continue the version sequence so init URIs remain monotonically increasing.
+  // Returns the current init version counter. Used by the shutdown handler, which persists it with the resume state so the resumed stream's init URIs keep
+  // increasing.
   getInitVersion: () => number;
 
   // Returns a snapshot of the current keyframe detection statistics.
@@ -179,14 +180,15 @@ export interface FMP4SegmenterResult {
   // Get the size in bytes of the last segment stored. Used by the monitor to detect dead capture pipelines producing empty segments.
   getLastSegmentSize: () => number;
 
-  // Get the current segment index. Used by tab replacement to continue numbering from where the old segmenter left off.
+  // Get the current segment index. Used by the monitor to watch segment production, by stream termination to count the session's segments, and by the shutdown
+  // handler, which persists it with the resume state so the resumed playlist continues the numbering.
   getSegmentIndex: () => number;
 
-  // Returns a snapshot of the accumulated session statistics. Used by tab replacement to carry stats to the new segmenter, and by stream termination to log the summary.
+  // Returns a snapshot of the accumulated session statistics. Used by stream termination to log the summary.
   getSessionStats: () => SessionStats;
 
-  // Returns a copy of the per-track timestamp counters. Used by tab replacement to pass accumulated timestamps to the new segmenter, ensuring monotonic
-  // baseMediaDecodeTime across capture restarts.
+  // Returns a copy of the per-track timestamp counters. Used by the shutdown handler, which persists them with the resume state so the resumed segmenter
+  // continues a monotonic baseMediaDecodeTime across the restart.
   getTrackTimestamps: () => Map<number, bigint>;
 
   // Flush the current fragment buffer as a short segment and mark the next segment with a discontinuity tag. Called after recovery events (source reload, page
@@ -223,8 +225,8 @@ interface SegmenterState {
   // Boxes collected for the init segment (ftyp + moov).
   initBoxes: Buffer[];
 
-  // The combined init segment buffer (ftyp + moov) after it has been assembled. Null until the moov box is received. Retained for the getInitSegment() getter so
-  // tab replacement can pass it to the new segmenter for byte comparison.
+  // The combined init segment buffer (ftyp + moov) after it has been assembled. Null until the moov box is received. Retained for the continuity snapshot, so a
+  // successor can compare its own init segment against it byte for byte, and for the getInitSegment() getter the resume state persists it through.
   initSegment: Nullable<Buffer>;
 
   // Monotonic version counter for the init segment URI. Incremented each time the init content changes (new stream startup or different codec parameters after tab
@@ -325,8 +327,9 @@ interface SegmenterState {
   // timescale units) to seconds for EXTINF: seconds = duration / timescale.
   trackTimescales: Map<number, number>;
 
-  // Per-track timestamp counters, keyed by track_ID. Each value is the next expected baseMediaDecodeTime (originalTfdt + offset + duration), used for tab replacement
-  // handoff via getTrackTimestamps(). Audio and video tracks have separate counters because they may use different timescales (e.g., 90000 for video, 48000 for audio).
+  // Per-track timestamp counters, keyed by track_ID. Each value is the next expected baseMediaDecodeTime (originalTfdt + offset + duration), handed to a successor
+  // through the continuity snapshot and persisted with the resume state through getTrackTimestamps(). Audio and video tracks have separate counters because they may
+  // use different timescales (e.g., 90000 for video, 48000 for audio).
   trackTimestamps: Map<number, bigint>;
 
   // The trackId identified as the video track from the moov's hdlr box (handler_type === "vide"). Null until the moov is parsed or if no video track is found.
@@ -986,30 +989,14 @@ export function createFMP4Segmenter(options: FMP4SegmenterOptions): FMP4Segmente
             LOG.debug("streaming:segmenter", "Failed to parse codec configuration from moov.");
           }
 
-          // Compute the normalized reference position for tab replacement offset initialization. This converts the old segmenter's per-track timestamp counters
-          // to seconds via the new moov's timescales (which Chrome keeps consistent across captures), then averages across tracks to produce a single shared position.
+          // Compute the normalized reference position the per-track offsets derive from when this segmenter continues earlier counters. computeTimelinePosition,
+          // the timeline conversion in the parser module, converts the counters to seconds via the new moov's timescales (which Chrome keeps consistent across
+          // captures), then averages across tracks to produce a single shared position - the same position the resume line reports from persisted counters.
           // Deriving all per-track offsets from this shared reference eliminates the inter-track bias that per-track independent offsets would freeze from the old
-          // segmenter's A-V jitter at the moment of replacement.
-          if(initialTrackTimestamps && (state.trackTimescales.size > 0)) {
+          // segmenter's A-V jitter at the moment of replacement. A null result, when no track carries both a counter and a timescale, leaves the reference unset.
+          if(initialTrackTimestamps) {
 
-            let totalSec = 0;
-            let count = 0;
-
-            for(const [ trackId, timestamp ] of initialTrackTimestamps) {
-
-              const timescale = state.trackTimescales.get(trackId);
-
-              if(timescale) {
-
-                totalSec += Number(timestamp) / timescale;
-                count++;
-              }
-            }
-
-            if(count > 0) {
-
-              state.normalizedReferencePositionSec = totalSec / count;
-            }
+            state.normalizedReferencePositionSec = computeTimelinePosition({ timescales: state.trackTimescales, trackTimestamps: initialTrackTimestamps });
           }
 
           // When preroll is active, override the normalized reference position with the total preroll duration in seconds. This makes Chrome's real content PTS

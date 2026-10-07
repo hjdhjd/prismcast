@@ -1,12 +1,13 @@
 /* Copyright(C) 2024-2026, HJD (https://github.com/hjdhjd). All rights reserved.
  *
  * mp4Parser.moov.test.ts: Unit tests for parseMoovTrackInfo in mp4Parser.ts - the moov-walker that reads tkhd track IDs and mdhd timescales for both v0 and v1
- * box widths. Basic box parsing lives in mp4Parser.test.ts; fragment parsing lives in mp4Parser.fragments.test.ts; codec-config parsing lives in
- * mp4Parser.codec.test.ts.
+ * box widths - for parseInitSegmentTrackInfo, which finds the moov inside an init segment, and for computeTimelinePosition, the conversion of per-track counters
+ * into one timeline position. Basic box parsing lives in mp4Parser.test.ts; fragment parsing lives in mp4Parser.fragments.test.ts; codec-config parsing lives
+ * in mp4Parser.codec.test.ts.
  */
+import { computeTimelinePosition, parseInitSegmentTrackInfo, parseMoovTrackInfo } from "./mp4Parser.ts";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { parseMoovTrackInfo } from "./mp4Parser.ts";
 
 /* makeBox builds a minimal MP4 box: 4-byte size + 4-byte type + payload. The size includes the 8-byte header.
  */
@@ -227,5 +228,54 @@ describe("parseMoovTrackInfo", () => {
     const result = parseMoovTrackInfo(moov);
 
     assert.equal(result.size, 0, "a track with a truncated hdlr is omitted, not recorded with a garbage handler");
+  });
+});
+
+// The two-track moov the init-segment and timeline rows share: track 1 a video track at 90000, track 2 an audio track at 48000.
+const TWO_TRACK_MOOV = makeBox("moov", Buffer.concat([
+  makeTrak(makeTkhd({ trackId: 1, version: 0 }), makeMdia(makeMdhd({ timescale: 90000, version: 0 }), makeHdlr("vide"))),
+  makeTrak(makeTkhd({ trackId: 2, version: 0 }), makeMdia(makeMdhd({ timescale: 48000, version: 0 }), makeHdlr("soun")))
+]));
+
+// The ftyp an init segment opens with.
+const FTYP = makeBox("ftyp", Buffer.from("isom"));
+
+describe("parseInitSegmentTrackInfo", () => {
+
+  test("reads the moov inside an ftyp-led init segment, the same map parseMoovTrackInfo reads from the moov alone", () => {
+
+    const result = parseInitSegmentTrackInfo(Buffer.concat([ FTYP, TWO_TRACK_MOOV ]));
+
+    assert.deepEqual(result, new Map([ [ 1, { handlerType: "vide", timescale: 90000 } ], [ 2, { handlerType: "soun", timescale: 48000 } ] ]));
+    assert.deepEqual(result, parseMoovTrackInfo(TWO_TRACK_MOOV));
+  });
+
+  test("returns an empty map for an init segment that carries no moov", () => {
+
+    assert.equal(parseInitSegmentTrackInfo(FTYP).size, 0);
+  });
+});
+
+describe("computeTimelinePosition", () => {
+
+  // The tracks' timescales and counters: the video track at 120.5 seconds and the audio track at 126.5, whose mean is exactly 123.5.
+  const timescales = new Map([ [ 1, 90000 ], [ 2, 48000 ] ]);
+  const trackTimestamps = new Map([ [ 1, 10845000n ], [ 2, 6072000n ] ]);
+
+  test("averages each counter over its track's timescale across the tracks that carry both", () => {
+
+    assert.equal(computeTimelinePosition({ timescales, trackTimestamps }), 123.5);
+  });
+
+  test("ignores a counter whose track carries no timescale", () => {
+
+    assert.equal(computeTimelinePosition({ timescales, trackTimestamps: new Map([ ...trackTimestamps, [ 3, 999999n ] ]) }), 123.5);
+  });
+
+  test("returns null for empty counters, for empty timescales, and for a track whose timescale is 0", () => {
+
+    assert.equal(computeTimelinePosition({ timescales, trackTimestamps: new Map() }), null, "no counters");
+    assert.equal(computeTimelinePosition({ timescales: new Map(), trackTimestamps }), null, "no timescales");
+    assert.equal(computeTimelinePosition({ timescales: new Map([[ 1, 0 ]]), trackTimestamps: new Map([[ 1, 10845000n ]]) }), null, "a zero timescale");
   });
 });

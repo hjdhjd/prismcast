@@ -6,9 +6,11 @@
  * re-walks the whole moof and offsets the known track twice. These tests drive createFMP4Segmenter with synthetic ftyp/moov/moof/mdat boxes and a nonzero
  * initialTrackTimestamps basis, then parse the emitted segment bytes and assert each track's tfdt carries exactly one offset application.
  *
- * The moov is deliberately trackless (zero trak children), so state.trackTimescales stays empty and the offset computation engages the initialValue-minus-originalTfdt
- * formula rather than the tab-replacement normalized-reference path - the expected tfdt values are derived from that engaged formula. The box builders are file-local
- * copies per the convention that each mp4Parser/fmp4Segmenter test file defines its own minimal builders rather than sharing one.
+ * The double-application rows build a deliberately trackless moov (zero trak children), so state.trackTimescales stays empty and the offset computation keeps the
+ * per-track initialValue-minus-originalTfdt formula engaged - the expected tfdt values are derived from that formula. The shared-reference rows declare tracks
+ * instead, to reach the shared reference position computeTimelinePosition converts the counters to: a row whose counters name the declared tracks, so every track
+ * anchors to that one position, and a row whose counters name no declared track, so the conversion finds nothing and the reference stays unset. The box builders
+ * are file-local copies per the convention that each mp4Parser/fmp4Segmenter test file defines its own minimal builders rather than sharing one.
  */
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import { registerStream, unregisterStream } from "./registry.ts";
@@ -114,6 +116,61 @@ function makeFtyp(): Buffer {
 function makeMoov(): Buffer {
 
   return makeBox("moov", Buffer.alloc(0));
+}
+
+/* makeTkhd, makeMdhd, and makeHdlr build the version-0 track header, media header, and handler boxes parseMoovTrackInfo reads: the track_ID at byte 20 of the
+ * tkhd, the timescale at byte 20 of the mdhd, and the handler type at byte 16 of the hdlr.
+ */
+function makeTkhd(trackId: number): Buffer {
+
+  const payload = Buffer.alloc(16);
+
+  payload.writeUInt32BE(trackId, 12);
+
+  return makeBox("tkhd", payload);
+}
+
+function makeMdhd(timescale: number): Buffer {
+
+  const payload = Buffer.alloc(16);
+
+  payload.writeUInt32BE(timescale, 12);
+
+  return makeBox("mdhd", payload);
+}
+
+function makeHdlr(handlerType: string): Buffer {
+
+  const payload = Buffer.alloc(12);
+
+  payload.write(handlerType, 8, 4, "ascii");
+
+  return makeBox("hdlr", payload);
+}
+
+/* makeMdia and makeTrak assemble the media and track containers from their children.
+ */
+function makeMdia(...children: Buffer[]): Buffer {
+
+  return makeBox("mdia", Buffer.concat(children));
+}
+
+function makeTrak(...children: Buffer[]): Buffer {
+
+  return makeBox("trak", Buffer.concat(children));
+}
+
+// The timescales the track-declaring moov gives its video track (track 1) and its audio track (track 2).
+const VIDEO_TIMESCALE = 90000;
+const AUDIO_TIMESCALE = 48000;
+
+/* makeTrackMoov builds a moov declaring the video and audio tracks the trafs below carry, so parseMoovTrackInfo fills trackTimescales and a continued segmenter
+ * reaches the shared reference position.
+ */
+function makeTrackMoov(): Buffer {
+
+  return makeBox("moov", Buffer.concat([ makeTrak(makeTkhd(1), makeMdia(makeMdhd(VIDEO_TIMESCALE), makeHdlr("vide"))),
+    makeTrak(makeTkhd(2), makeMdia(makeMdhd(AUDIO_TIMESCALE), makeHdlr("soun"))) ]));
 }
 
 /* makeMdat builds an mdat box wrapping the given payload string as its media bytes.
@@ -286,5 +343,71 @@ describe("fMP4 segmenter per-track offset application", () => {
     assert.equal(tfdts.get(1), 92000n, "video tfdt is original plus one stored offset (3000 + 89000)");
     assert.equal(tfdts.get(2), 48300n, "audio tfdt is original plus one stored offset (800 + 47500)");
     assert.equal(onError.mock.calls.length, 0, "no malformed-moof errors");
+  });
+});
+
+describe("fMP4 segmenter shared reference position", () => {
+
+  let streamId: number;
+
+  beforeEach(() => {
+
+    ({ streamId } = makeAndRegisterStream());
+  });
+
+  afterEach(() => {
+
+    unregisterStream(streamId);
+  });
+
+  /**
+   * Continues a segmenter on the track-declaring moov from the given counters, feeds it one moof carrying the video track at a tfdt of 1000 and the audio track
+   * at 500, cuts that moof as the first segment with a second moof, and reads the first segment's tfdts back.
+   * @param initialTrackTimestamps - The counters the segmenter continues from.
+   * @returns Each track's tfdt in the first segment.
+   */
+  async function firstSegmentTfdts(initialTrackTimestamps: Map<number, bigint>): Promise<Map<number, bigint>> {
+
+    const onError = mock.fn();
+    const segmenter = createFMP4Segmenter({ continuity: { initialTrackTimestamps }, onError, onStop: mock.fn(), streamId });
+    const readable = new PassThrough();
+
+    segmenter.pipe(readable);
+
+    readable.write(makeFtyp());
+    readable.write(makeTrackMoov());
+    readable.write(makeMoof(videoTraf(1000), audioTraf(500)));
+    readable.write(makeMdat("va0"));
+    readable.write(makeMoof(videoTraf(5000)));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const firstSegment = getSegment(streamId, "segment0.m4s");
+
+    assert.ok(firstSegment, "the first moof was cut as segment0 when the second moof arrived");
+    assert.equal(onError.mock.calls.length, 0, "no malformed-moof errors");
+
+    return readTrackTfdts(firstSegment);
+  }
+
+  test("anchors every track to the one position the counters convert to over the moov's timescales", async () => {
+
+    // The video counter is 120.5 seconds at its timescale and the audio counter 126.5 at its own, so the shared position is their mean, 123.5 seconds, and each
+    // track's first tfdt lands at that position in its own timescale rather than at its own counter.
+    const videoCounter = 10845000n;
+    const audioCounter = 6072000n;
+    const positionSec = ((Number(videoCounter) / VIDEO_TIMESCALE) + (Number(audioCounter) / AUDIO_TIMESCALE)) / 2;
+    const tfdts = await firstSegmentTfdts(new Map([ [ 1, videoCounter ], [ 2, audioCounter ] ]));
+
+    assert.equal(tfdts.get(1), BigInt(Math.round(positionSec * VIDEO_TIMESCALE)), "the video tfdt is the shared position in the video timescale");
+    assert.equal(tfdts.get(2), BigInt(Math.round(positionSec * AUDIO_TIMESCALE)), "the audio tfdt is the shared position in the audio timescale");
+  });
+
+  test("leaves the reference unset when no counter names a declared track, so each track keeps its own tfdt", async () => {
+
+    const tfdts = await firstSegmentTfdts(new Map([[ 3, 10845000n ]]));
+
+    assert.equal(tfdts.get(1), 1000n, "the video tfdt passes through");
+    assert.equal(tfdts.get(2), 500n, "the audio tfdt passes through");
   });
 });

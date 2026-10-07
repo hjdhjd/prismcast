@@ -3,10 +3,9 @@
  * hlsResume.ts: HLS sequence number persistence across restarts.
  */
 import { LOG, formatDuration, formatError, stringifySorted } from "../utils/index.ts";
-import { CONFIG } from "../config/index.ts";
+import { computeTimelinePosition, parseInitSegmentTrackInfo } from "./mp4Parser.ts";
 import type { Nullable } from "../types/index.ts";
 import fs from "node:fs";
-import { getResolvedChannel } from "../config/services.ts";
 import { getResumeFilePath } from "../config/paths.ts";
 
 /* When PrismCast restarts mid-recording, HLS media sequences reset to 0. Channels DVR detects "Playlist reset to a lower sequence" and produces unpredictable
@@ -172,9 +171,10 @@ export function getResumeSegmentIndex(channelName: string, now: number): Nullabl
 }
 
 /**
- * Reads resume data for a channel without removing it from the map. Returns the seeding parameters if the entry exists and is within TTL, or null if no resume data
- * is available. The caller must call deleteResumeData() after successfully using the data to prevent double-consumption. This two-step pattern ensures resume data
- * survives if segmenter creation fails - the next stream start can retry with the same resume state instead of starting from scratch.
+ * Reads resume data for a channel without removing it from the map, and without logging: announcing the resume is the caller's, through logStreamResume. Returns
+ * the seeding parameters if the entry exists and is within TTL, or null if no resume data is available. The caller must call deleteResumeData() after
+ * successfully using the data to prevent double-consumption. This two-step pattern ensures resume data survives if segmenter creation fails - the next stream
+ * start can retry with the same resume state instead of starting from scratch.
  * @param channelName - The channel key to look up.
  * @param now - The instant the TTL is measured against.
  * @returns Resume data for seeding the segmenter, or null.
@@ -196,11 +196,6 @@ export function peekResumeData(channelName: string, now: number): Nullable<Resum
     return null;
   }
 
-  const displayName = getResolvedChannel(channelName)?.name ?? channelName;
-  const priorContent = formatDuration(entry.segmentIndex * CONFIG.hls.segmentDuration * 1000);
-
-  LOG.info("Resuming stream for %s from previous session (%s of prior content).", displayName, priorContent);
-
   return {
 
     initSegment: entry.initSegment,
@@ -208,6 +203,59 @@ export function peekResumeData(channelName: string, now: number): Nullable<Resum
     segmentIndex: entry.segmentIndex,
     trackTimestamps: entry.trackTimestamps
   };
+}
+
+/**
+ * Options for logging a resumed stream.
+ */
+export interface StreamResumeLogOptions {
+
+  // The name the line shows for the stream: its channel's display name when it has one, its key otherwise.
+  displayName: string;
+
+  // The resume data the stream continues from, as peekResumeData returned it.
+  resumeData: ResumeData;
+}
+
+/**
+ * Logs that a stream resumes a previous session. The line carries the prior content the previous session's output reached when the resume data measures it,
+ * and is the same sentence without that figure when it does not, because a figure is reported only when it is measured.
+ * @param options - The display name and the resume data.
+ */
+export function logStreamResume(options: StreamResumeLogOptions): void {
+
+  const { displayName, resumeData } = options;
+  const priorContentMs = measurePriorContent(resumeData);
+
+  if(priorContentMs === null) {
+
+    LOG.info("Resuming stream for %s from previous session.", displayName);
+
+    return;
+  }
+
+  LOG.info("Resuming stream for %s from previous session (%s of prior content).", displayName, formatDuration(priorContentMs));
+}
+
+/* The position the previous session's output timeline reached, in milliseconds: the persisted decode-time counters over the persisted init segment's
+ * timescales, converted exactly as a continuing segmenter converts the counters it is handed. The timeline includes a preroll's duration when a preroll
+ * opened it, and the sessions it resumed when none did. A shutdown between a tab replacement's swap and the successor's moov persists no init segment, so
+ * the line carries no figure; one between the successor's moov and a track's first moof persists that track's counter from the predecessor, and the
+ * conversion assumes, as the segmenter's own does, that Chrome keeps a track's timescale across captures. Null when the resume data carries no init
+ * segment or no track carries a counter together with a timescale, which is also what a malformed moov yields, because the walk finds no track in it
+ * rather than throwing.
+ */
+function measurePriorContent(resumeData: ResumeData): Nullable<number> {
+
+  if(!resumeData.initSegment) {
+
+    return null;
+  }
+
+  const timescales = new Map(Array.from(parseInitSegmentTrackInfo(resumeData.initSegment), ([ trackId, info ]): [ number, number ] => [ trackId, info.timescale ]));
+  const positionSec = computeTimelinePosition({ timescales, trackTimestamps: resumeData.trackTimestamps });
+
+  return (positionSec === null) ? null : (positionSec * 1000);
 }
 
 /**

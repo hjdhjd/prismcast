@@ -915,6 +915,74 @@ export function parseMoovTrackInfo(moovData: Buffer): Map<number, MoovTrackInfo>
   return result;
 }
 
+/**
+ * Extracts per-track metadata from an init segment, the ftyp box followed by the moov box. The box parser walks the segment's top-level boxes to find the moov,
+ * which parseMoovTrackInfo then reads; handed the whole init segment, parseMoovTrackInfo would read the ftyp's header as its parent's and find no track.
+ * @param initSegment - The init segment buffer.
+ * @returns Map from track_ID to track info, or an empty map when the buffer carries no complete moov box.
+ */
+export function parseInitSegmentTrackInfo(initSegment: Buffer): Map<number, MoovTrackInfo> {
+
+  let moovBox: Nullable<Buffer> = null;
+
+  const parser = createMP4BoxParser((box) => {
+
+    if(box.type === "moov") {
+
+      moovBox = box.data;
+    }
+  });
+
+  parser.push(initSegment);
+  parser.flush();
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- moovBox is set inside the parser callback; TS can't track closure mutations.
+  return moovBox ? parseMoovTrackInfo(moovBox) : new Map<number, MoovTrackInfo>();
+}
+
+// Timeline Position.
+
+/**
+ * Options for converting per-track decode-time counters into one timeline position.
+ */
+export interface TimelinePositionOptions {
+
+  // Each track's timescale, in units per second, keyed by track_ID.
+  timescales: ReadonlyMap<number, number>;
+
+  // Each track's decode-time counter, in units of its own timescale, keyed by track_ID.
+  trackTimestamps: ReadonlyMap<number, bigint>;
+}
+
+/**
+ * Converts per-track decode-time counters into one position on the timeline the tracks share, in seconds: each counter over its track's timescale, averaged
+ * across the tracks that carry both. A continuing segmenter derives every track's offset from this one position, so the tracks share a reference rather than
+ * freezing the jitter between them, and the resume line reports the same position from the counters a previous session persisted.
+ * @param options - The tracks' timescales and counters.
+ * @returns The position in seconds, or null when no track carries both a counter and a positive timescale.
+ */
+export function computeTimelinePosition(options: TimelinePositionOptions): Nullable<number> {
+
+  const { timescales, trackTimestamps } = options;
+  let totalSec = 0;
+  let count = 0;
+
+  for(const [ trackId, timestamp ] of trackTimestamps) {
+
+    const timescale = timescales.get(trackId);
+
+    if((timescale === undefined) || (timescale <= 0)) {
+
+      continue;
+    }
+
+    totalSec += Number(timestamp) / timescale;
+    count++;
+  }
+
+  return (count > 0) ? (totalSec / count) : null;
+}
+
 // Codec Configuration Extraction.
 
 /**
