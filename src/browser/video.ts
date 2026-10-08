@@ -440,7 +440,7 @@ export async function startVideoPlayback(context: Frame | Page, selectorType: Vi
 /**
  * Puts the page on the given URL the way the profile's strategy enters its site: through the strategy's own navigator when its provider declares one, and
  * otherwise through a plain document load under the profile's wait preference. Every navigation on the tune path, the re-establishment path, and the recovery
- * route comes through here, which is what lets a provider that cannot always load its guide by URL take over the route without any caller knowing.
+ * route comes through here, which is what lets a provider that owns its route onto its site take over that route without any caller knowing.
  * @param page - The Puppeteer page object.
  * @param url - The URL to navigate to.
  * @param profile - The site profile whose strategy and wait preference select the route.
@@ -462,8 +462,8 @@ export async function navigateToPage(page: Page, url: string, profile: ResolvedS
 /**
  * Reloads the current page, mirroring navigateToPage's wait strategy. Two callers, one mechanism. An accepted embedded-player consent gate only creates the player
  * iframe on a fresh load, so a reload re-renders the page with consent persisted and the video resolves on the second pass. A guide that never rendered is the
- * other: the reload is what gives channel selection a fresh surface to read. A strategy that owns its route re-enters at the page's current URL rather than
- * reloading it, because a reload requests that URL directly - the load the strategy exists to avoid.
+ * other: the reload is what gives channel selection a fresh surface to read. A strategy that owns its route re-enters at the page's current URL through that
+ * route rather than reloading it, so the reload lands wherever the strategy would have put the page.
  * @param page - The Puppeteer page object.
  * @param profile - The site profile, whose strategy and waitForNetworkIdle flag select the reload route and its wait condition.
  */

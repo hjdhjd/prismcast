@@ -1059,7 +1059,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "19548",
     services: {
       cox: { channelSelector: "HBO", url: "https://watchtv.cox.com/listings" },
-      site: { channelSelector: "HBO", url: "https://play.hbomax.com" },
+      site: { channelSelector: "HBO", url: "https://play.hbomax.com/channels" },
       xfinity: { channelSelector: "HBO", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "HBO East", url: "https://tv.youtube.com/live" },
     },
@@ -1071,7 +1071,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "59839",
     services: {
       cox: { channelSelector: "HBOCH", url: "https://watchtv.cox.com/listings" },
-      site: { channelSelector: "HBO Comedy", url: "https://play.hbomax.com" },
+      site: { channelSelector: "HBO Comedy", url: "https://play.hbomax.com/channels" },
       xfinity: { channelSelector: "HBOCH", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "HBO Comedy East", url: "https://tv.youtube.com/live" },
     },
@@ -1083,7 +1083,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "59363",
     services: {
       cox: { channelSelector: "HBOSH", url: "https://watchtv.cox.com/listings" },
-      site: { channelSelector: "HBO Drama", url: "https://play.hbomax.com" },
+      site: { channelSelector: "HBO Drama", url: "https://play.hbomax.com/channels" },
       xfinity: { channelSelector: "HBOSH", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "HBO Drama East", url: "https://tv.youtube.com/live" },
     },
@@ -1095,7 +1095,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "59368",
     services: {
       cox: { channelSelector: "HBO2H", url: "https://watchtv.cox.com/listings" },
-      site: { channelSelector: "HBO Hits", url: "https://play.hbomax.com" },
+      site: { channelSelector: "HBO Hits", url: "https://play.hbomax.com/channels" },
       xfinity: { channelSelector: "HBO2H", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "HBO Hits East", url: "https://tv.youtube.com/live" },
     },
@@ -1107,7 +1107,7 @@ const BASE_CHANNEL_DEFINITIONS: Record<string, ChannelDefinition> = {
     stationId: "59845",
     services: {
       cox: { channelSelector: "HBOZH", url: "https://watchtv.cox.com/listings" },
-      site: { channelSelector: "HBO Movies", url: "https://play.hbomax.com" },
+      site: { channelSelector: "HBO Movies", url: "https://play.hbomax.com/channels" },
       xfinity: { channelSelector: "HBOZH", url: "https://www.xfinity.com/stream/listings" },
       yttv: { channelSelector: "HBO Movies East", url: "https://tv.youtube.com/live" },
     },

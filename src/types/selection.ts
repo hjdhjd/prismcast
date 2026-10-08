@@ -81,9 +81,10 @@ export interface ChannelStrategyEntry {
   invalidateDirectUrl?: (channelSelector: string) => void;
 
   /**
-   * Puts the page on a URL for this strategy, in place of the plain document load. A provider whose guide is not always reachable by requesting its URL
-   * directly declares this and owns the route in; the navigation and reload functions in browser/video.ts dispatch to it for every profile on this strategy,
-   * so the tune path, the re-establishment path, and the recovery route all enter the same way. Undefined for every strategy whose pages load by URL.
+   * Puts the page on a URL for this strategy, in place of the plain document load. A provider that owns its route onto its site declares this, whether
+   * because its guide is not always reachable by requesting its URL directly or because the address a channel names is not where its guide is; the
+   * navigation and reload functions in browser/video.ts dispatch to it for every profile on this strategy, so the tune path, the re-establishment path, and
+   * the recovery route all enter the same way. Undefined for every strategy whose pages load by URL.
    */
   navigate?: StrategyNavigator;
 

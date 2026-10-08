@@ -6,17 +6,24 @@ import type { ChannelSelectionProfile, ChannelSelectorResult, DiscoveredChannel,
 import { LOG, delay, evaluateWithAbort, formatError } from "../../utils/index.ts";
 import { createProviderChannelCache, dedupeCacheEntries } from "./cache.ts";
 import { CONFIG } from "../../config/index.ts";
+import type { DocumentLoadOptions } from "../navigation.ts";
 import type { Page } from "puppeteer-core";
 import type { PersistedLineupChannel } from "../../config/providerLineups.ts";
+import { loadDocument } from "../navigation.ts";
 import { logAvailableChannels } from "./shared.ts";
 
 // Base URL for HBO Max watch page navigation. Used to build full watch URLs by concatenating with the relative /channel/watch/<uuid>/<uuid> path read from the
 // rail. Kept as a separate constant from HBO_CHANNELS_URL so the two roles (path-concatenation base vs. landing-URL constant) stay distinct.
 const HBO_MAX_BASE_URL = "https://play.hbomax.com";
 
-// The /channels hub URL where HBO Max surfaces all live linear channels. PrismCast lands here directly via provider.guideUrl; this is the single landing URL for
-// both tuning and discovery.
+// The /channels hub URL where HBO Max surfaces all live linear channels, and the one page the channel rail is read from. Discovery lands here through
+// provider.guideUrl, which withProviderGuidePage loads before it walks, and a tune lands here through the strategy's navigator below, so this is the single
+// landing URL for tuning and discovery alike.
 const HBO_CHANNELS_URL = "https://play.hbomax.com/channels";
+
+// The wait the strategy's navigator loads with, stated once here so the provider profile below reads the same preference rather than restating it. A plain
+// load, because the hub and the watch page render at the load event.
+const HBO_DOCUMENT_LOAD: DocumentLoadOptions = { waitForNetworkIdle: false };
 
 // Internal cache entry combining discovery metadata and tuning data. The discovered field provides the API-facing DiscoveredChannel (name, channelSelector), and
 // the watchUrl provides the direct navigation target for tuning. Both are populated from the same readHboChannelRail() result, ensuring a single source of truth
@@ -236,7 +243,7 @@ async function readHboChannelRail(page: Page): Promise<HboRailResult> {
  * channels are cached so subsequent tunes resolve via resolveDirectUrl without re-reading the rail.
  *
  * The strategy handles two phases per tune:
- *   1. Channel rail (page is already on /channels, navigated by the coordinator via provider.guideUrl) -> read all watch URLs.
+ *   1. Channel rail (the page is on the /channels hub, where the strategy's navigator enters the site) -> read all watch URLs.
  *   2. Watch page -> video playback begins.
  *
  * @param page - The Puppeteer page object, expected to be on https://play.hbomax.com/channels.
@@ -247,7 +254,8 @@ async function hboGridStrategy(page: Page, profile: ChannelSelectionProfile): Pr
 
   const channelName = profile.channelSelector;
 
-  // Phase 1: Read the channel rail. The coordinator has already navigated the page to provider.guideUrl (the /channels hub), so we read the rail in place.
+  // Phase 1: Read the channel rail in place. The strategy's navigator put the page on the /channels hub before channel selection runs, whether the channel
+  // names the hub itself or the site's home page.
   const railResult = await readHboChannelRail(page);
 
   if(!railResult.railFound) {
@@ -305,8 +313,8 @@ async function resolveHboDirectUrlAsync(channelSelector: string, _page: Page): P
 
 /**
  * Discovers all channels from the HBO Max channel rail. Returns cached results if the unified channel cache is populated from a prior tune or discovery call.
- * Otherwise reads the rail in place - the route handler has already navigated the page to provider.guideUrl (the /channels hub).
- * @param page - The Puppeteer page object, already on https://play.hbomax.com/channels (navigated by the route handler).
+ * Otherwise reads the rail in place, on the /channels hub that withProviderGuidePage loads through provider.guideUrl before it calls this.
+ * @param page - The Puppeteer page object, on https://play.hbomax.com/channels as withProviderGuidePage loaded it.
  * @returns Array of discovered channels.
  */
 async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
@@ -319,7 +327,7 @@ async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
     return cached;
   }
 
-  // Read the channel rail directly. The discovery route handler has already landed the page on /channels.
+  // Read the channel rail directly, on the /channels hub withProviderGuidePage loaded through provider.guideUrl.
   const railResult = await readHboChannelRail(page);
 
   if(!railResult.railFound || (railResult.channels.length === 0)) {
@@ -330,6 +338,26 @@ async function discoverHboChannels(page: Page): Promise<DiscoveredChannel[]> {
   populateHboChannelCache(railResult.channels);
 
   return hboCache.discovered();
+}
+
+/**
+ * The one route onto HBO Max, taken by every navigation and reload of a profile on this strategy. The site's home page, which a channel a user adds or
+ * customizes may name, has no channel rail to read, so it enters at the /channels hub, the one page the rail is read from. Every other address loads as given:
+ * a cached or persisted watch URL, a content page a user names, or the page's own URL on a reload. The navigator reads no cache, because the direct-URL
+ * resolution has already chosen the address before it is handed one.
+ * @param page - The Puppeteer page object.
+ * @param url - The address to put the page on.
+ */
+async function enterHboMax(page: Page, url: string): Promise<void> {
+
+  const isHomePage = URL.canParse(url) && (new URL(url).pathname === "/");
+
+  if(isHomePage) {
+
+    LOG.debug("tuning:hbo", "Entering the HBO Max channel hub in place of the home page.");
+  }
+
+  await loadDocument(page, isHomePage ? HBO_CHANNELS_URL : url, HBO_DOCUMENT_LOAD);
 }
 
 export const hboProvider: ProviderModule = {
@@ -349,7 +377,8 @@ export const hboProvider: ProviderModule = {
     channelSelection: { strategy: "hboGrid" },
     description: "HBO Max with live channel rail selection. Set Channel Selector to the channel name (e.g., HBO, HBO Hits).",
     extends: "fullscreenApi",
-    summary: "HBO Max (live channels, needs selector)"
+    summary: "HBO Max (live channels, needs selector)",
+    waitForNetworkIdle: HBO_DOCUMENT_LOAD.waitForNetworkIdle
   },
   profileName: "hboMax",
   slug: "hbomax",
@@ -358,6 +387,7 @@ export const hboProvider: ProviderModule = {
     clearCache: clearHboCache,
     execute: hboGridStrategy,
     invalidateDirectUrl: hboCache.invalidate,
+    navigate: enterHboMax,
     resolveDirectUrl: resolveHboDirectUrlAsync
   },
   strategyName: "hboGrid"
