@@ -36,7 +36,8 @@ interface HboChannelEntry {
 
 // Unified channel cache for HBO Max. Maps lowercased channel names (e.g., "hbo", "hbo hits") to their combined discovery and tuning data. Populated during the
 // first tune (when the strategy reads all channels from the channel rail) or the first discovery call. Both tuning (via resolveHboDirectUrl) and discovery (via
-// getCachedChannels / discoverHboChannels) read from this single cache. Cleared on browser disconnect via clearHboCache().
+// getCachedChannels / discoverHboChannels) read from this single cache. The strategy's cache clear empties it when the browser restarts, since watch URLs
+// cached in one browser session may be stale in the next.
 const hboCache = createProviderChannelCache<HboChannelEntry>((entry) => entry.discovered);
 
 /**
@@ -56,15 +57,6 @@ function resolveHboDirectUrl(channelSelector: string): Nullable<string> {
   }
 
   return null;
-}
-
-/**
- * Clears the unified HBO channel cache. Called by clearChannelSelectionCaches() in the coordinator when the browser restarts, since cached watch URLs may be
- * stale in a new browser session.
- */
-function clearHboCache(): void {
-
-  hboCache.clear();
 }
 
 /**
@@ -384,7 +376,7 @@ export const hboProvider: ProviderModule = {
   slug: "hbomax",
   strategy: {
 
-    clearCache: clearHboCache,
+    clearCache: hboCache.clear,
     execute: hboGridStrategy,
     invalidateDirectUrl: hboCache.invalidate,
     navigate: enterHboMax,
