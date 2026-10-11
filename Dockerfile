@@ -103,8 +103,8 @@ RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firm
 RUN npm install -g prismcast
 
 # Create a Chrome wrapper script that passes --no-sandbox for container environments and enables Intel VA-API hardware video encoding.
-RUN printf '#!/bin/bash\nexec /usr/bin/google-chrome-stable --no-sandbox --disable-setuid-sandbox --disable-gpu-sandbox --enable-features=VaapiVideoDecoder,VaapiVideoEncoder,AcceleratedVideoEncoder,VaapiIgnoreDriverChecks --ignore-gpu-blocklist "$@"\n' > /usr/local/bin/chrome-no-sandbox \
-    && chmod +x /usr/local/bin/chrome-no-sandbox
+COPY scripts/chrome-no-sandbox.sh /usr/local/bin/chrome-no-sandbox
+RUN chmod +x /usr/local/bin/chrome-no-sandbox
 
 # Copy the startup script into the container.
 COPY docker-entrypoint.sh /usr/local/bin/
