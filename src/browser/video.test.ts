@@ -404,12 +404,13 @@ describe("applyVideoStyles", () => {
     });
   });
 
-  test("clears every property that moves or clamps the video's own box, and leaves its ancestors' transforms alone", async () => {
+  test("clears every property that moves or clamps the video's own box, and leaves an ancestor that captures nothing as authored", async () => {
 
     /* The field failures this catches: a player centers its video with its own translate, which slides the anchored full-viewport box off-center and leaves the
      * capture compositing a corner of the frame, and a stylesheet max holds the box to a fraction of the viewport without ever contesting the width and height
-     * the styling sets. Positioning alone answers neither, so the styling neutralizes the video's geometry and motion outright. The ancestors are the boundary -
-     * the standard tier deliberately does not reach into their transforms, which is the aggressive tier's business.
+     * the styling sets. Positioning alone answers neither, so the styling neutralizes the video's geometry and motion outright. The ancestors here set nothing
+     * that captures a fixed-position descendant, so the walk leaves their transforms exactly as the page authored them; the row below covers the ancestors
+     * that do.
      */
     const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
 
@@ -430,6 +431,59 @@ describe("applyVideoStyles", () => {
 
       assert.equal(styleOf(window, "c").transform, "", "the container's transform is left where the page put it");
       assert.equal(styleOf(window, "p").transform, "", "and so is the static parent's");
+    });
+  });
+
+  test("releases the video from every ancestor that would capture it as a fixed-position containing block, and from nothing else", async () => {
+
+    /* The field failure this catches: YouTube TV centers its player layout with transform: translate(-50%, -50%) and wraps it in elements carrying scale(1) and
+     * translateY(0px). Each of those makes the ancestor the containing block for the position:fixed video, so the styled video fills the player's shifted box
+     * rather than the viewport, the fill verification fails on every attempt, and only the aggressive tier's ancestor rewrite gets the capture full-frame. The
+     * fixture stacks one ancestor per capturing property, at the values a site sets that change nothing visually, alongside an ancestor whose will-change names
+     * only opacity, which captures nothing and must be left alone, and a parent that sets nothing at all. The header outside the chain carries a transform of
+     * its own that the walk never reaches.
+     */
+    const callback = await captureCallback<StyleCallback>((context) => applyVideoStyles(context, "selectFirstVideo", false));
+
+    const fixture = "<header id=\"h\" style=\"position:relative;transform:translateY(-100%)\"></header>" +
+      "<div id=\"t\" style=\"position:relative;transform:translateY(0px);transition:transform 0.3s\">" +
+      "<div id=\"o\" style=\"position:relative;will-change:opacity\">" +
+      "<div id=\"b\" style=\"position:absolute;transform:scale(1)\">" +
+      "<div id=\"k\" style=\"position:absolute;contain:paint;filter:blur(0px)\">" +
+      "<div id=\"q\" style=\"position:relative;container-type:inline-size\">" +
+      "<div id=\"g\" style=\"position:absolute;translate:-50% -50%;will-change:transform, visibility\">" +
+      "<div id=\"p\" style=\"position:relative\"><video id=\"v\"></video></div></div></div></div></div></div></div>";
+
+    withDocument(fixture, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", false);
+
+      assert.equal(styleOf(window, "t").transform, "none", "a translateY(0px) wrapper still captures the video, so its transform is cleared");
+      assert.equal(styleOf(window, "t").transition, "none", "and its transition with it, so the clear snaps instead of animating through verification");
+      assert.equal(styleOf(window, "b").transform, "none", "a scale(1) backdrop is cleared the same way");
+      assert.equal(styleOf(window, "k").getPropertyValue("contain"), "none", "paint containment is cleared");
+      assert.equal(styleOf(window, "k").filter, "none", "and so is a filter, even one that blurs by nothing");
+      assert.equal(styleOf(window, "q").getPropertyValue("container-type"), "normal", "a size container query is cleared");
+      assert.equal(styleOf(window, "g").getPropertyValue("translate"), "none", "the centering translate is cleared");
+      assert.equal(styleOf(window, "g").getPropertyValue("will-change"), "auto", "and a will-change naming transform with it");
+      assert.equal(styleOf(window, "o").getPropertyValue("will-change"), "opacity", "a will-change naming only opacity captures nothing and is left alone");
+      assert.equal(styleOf(window, "o").transition, "", "and gains no transition reset either");
+      assert.equal(styleOf(window, "p").transform, "", "a parent that sets nothing is left as authored");
+      assert.equal(styleOf(window, "p").transition, "", "including its transition");
+      assert.equal(styleOf(window, "h").transform, "translateY(-100%)", "an element outside the video's chain keeps its transform");
+    });
+
+    // The priority contract the other properties follow holds here too: a site's own stylesheet rule outranks an unflagged inline reset.
+    withDocument(fixture, (window) => {
+
+      seedVideoSelector(window, window.document.getElementById("v"));
+
+      callback("selectFirstVideo", true);
+
+      assert.equal(styleOf(window, "t").getPropertyPriority("transform"), "important", "the cleared transform carries the requested priority");
+      assert.equal(styleOf(window, "g").getPropertyPriority("translate"), "important", "and so does the cleared translate");
     });
   });
 

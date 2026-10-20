@@ -718,6 +718,9 @@ export async function waitForVideoReady(context: Frame | Page, profile: Resolved
  *   still in motion
  * - zIndex: 999000 on the video and, within each one's own stacking context, on every ancestor - a z-index only ranks within its nearest stacking context,
  *   so the ancestors are lifted to the same layer
+ * - On an ancestor that establishes a containing block for fixed-position descendants - any transform, an independent transform property, a perspective, a
+ *   filter or backdrop filter, a will-change naming one of those, layout or paint containment, or size container queries - that property is neutralized,
+ *   because otherwise the video is laid out against that ancestor's box instead of the viewport. Ancestors that set none of them are left as authored
  * - objectFit: contain - Maintains aspect ratio while fitting within the viewport
  * - background: black - Fills any letterbox/pillarbox areas with black
  * - cursor: none - Hides the mouse cursor for cleaner capture
@@ -769,7 +772,19 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
      * where it was static so a z-index applies to it, and takes the layer unless it already ranks at or above it, so the aggressive path's higher
      * tiers are never lowered by a later standard pass. The ancestor's own box does not move; a static ancestor made relative does become the
      * containing block for absolutely positioned descendants inside it. The walk stops at the body, where the root context decides the order.
+     *
+     * The same walk frees the video from any ancestor that would capture it. A position:fixed element is laid out against the viewport only while no ancestor
+     * establishes a containing block for fixed-position descendants, and several properties establish one whatever they do visually: any transform - a
+     * scale(1) or a translateY(0px) included - each independent transform property, a perspective, a filter or backdrop filter, a will-change naming one of
+     * those, layout or paint containment, and size container queries. A player that centers its layout with translate(-50%, -50%) therefore confines the
+     * full-viewport video to that layout's box, shifted half its size up and left, and the fill verification fails however the video itself is styled. YouTube
+     * TV's player does exactly this. Only a property an ancestor actually sets is neutralized, so an ancestor that sets none is left as the page authored it,
+     * and the ancestor's transition is cleared alongside so the reset snaps rather than animating through the verification window. The video is anchored to the
+     * viewport, so an ancestor's own box moving as a result only moves what the video already covers.
      */
+    const containingBlockResets: [string, string][] = [ [ "backdrop-filter", "none" ], [ "filter", "none" ], [ "perspective", "none" ], [ "rotate", "none" ],
+      [ "scale", "none" ], [ "transform", "none" ], [ "translate", "none" ] ];
+
     let ancestor = video.parentElement;
 
     while(ancestor && (ancestor !== document.body)) {
@@ -784,6 +799,42 @@ export async function applyVideoStyles(context: Frame | Page, selectorType: Vide
       if(!(Number(computed.zIndex) >= Number(layer))) {
 
         ancestor.style.setProperty("z-index", layer, priority);
+      }
+
+      let released = false;
+
+      for(const [ property, reset ] of containingBlockResets) {
+
+        const value = computed.getPropertyValue(property);
+
+        if(value && (value !== reset)) {
+
+          ancestor.style.setProperty(property, reset, priority);
+          released = true;
+        }
+      }
+
+      if(/\b(transform|translate|scale|rotate|perspective|filter)\b/.test(computed.getPropertyValue("will-change"))) {
+
+        ancestor.style.setProperty("will-change", "auto", priority);
+        released = true;
+      }
+
+      if(/\b(layout|paint|strict|content)\b/.test(computed.getPropertyValue("contain"))) {
+
+        ancestor.style.setProperty("contain", "none", priority);
+        released = true;
+      }
+
+      if(/\b(size|inline-size)\b/.test(computed.getPropertyValue("container-type"))) {
+
+        ancestor.style.setProperty("container-type", "normal", priority);
+        released = true;
+      }
+
+      if(released) {
+
+        ancestor.style.setProperty("transition", "none", priority);
       }
 
       ancestor = ancestor.parentElement;
