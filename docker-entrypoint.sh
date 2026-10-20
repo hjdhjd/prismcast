@@ -13,6 +13,9 @@ SCREEN_DEPTH=${SCREEN_DEPTH:-24}
 VNC_PORT=${VNC_PORT:-5900}
 NOVNC_PORT=${NOVNC_PORT:-6080}
 
+# Export the screen dimensions so the Chrome wrapper can size the browser window to fill the virtual display.
+export SCREEN_WIDTH SCREEN_HEIGHT
+
 # Set up XDG_RUNTIME_DIR (required by libva to avoid "XDG_RUNTIME_DIR not set" errors).
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-root}
 mkdir -p "$XDG_RUNTIME_DIR"
